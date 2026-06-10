@@ -247,6 +247,204 @@ class FW_Site_Converter_Media {
 	}
 
 	/**
+	 * Count the inline graphics on a page that CAN'T be sideloaded — inline
+	 * <svg> elements and data: image URIs. AI-generated sites often draw every
+	 * icon/logo this way, so a scan can legitimately find zero fetchable files;
+	 * this lets the UI explain "nothing to fetch" instead of looking broken.
+	 *
+	 * @param string $html
+	 * @return array{ inline_svg:int, data_uri:int }
+	 */
+	public static function count_inline_graphics( $html ) {
+		$svg  = preg_match_all( '/<svg\b/i', $html, $m ) ? count( $m[0] ) : 0;
+		$data = preg_match_all( '/\bdata:image\//i', $html, $m ) ? count( $m[0] ) : 0;
+
+		return array( 'inline_svg' => (int) $svg, 'data_uri' => (int) $data );
+	}
+
+	/**
+	 * Image refs from <meta og:image / twitter:image> and <link rel=icon /
+	 * apple-touch-icon>. Catches the social/share image + favicons that aren't
+	 * <img> tags. Returns absolute URLs.
+	 *
+	 * @param string $html
+	 * @param string $base
+	 * @return string[]
+	 */
+	public static function scan_meta( $html, $base = '' ) {
+		$found = array();
+
+		if ( preg_match_all( '/<meta\b[^>]*\b(?:property|name)\s*=\s*["\'](?:og:image(?::secure_url)?|twitter:image(?::src)?)["\'][^>]*>/i', $html, $tags ) ) {
+			foreach ( $tags[0] as $tag ) {
+				if ( preg_match( '/\bcontent\s*=\s*["\']([^"\']+)["\']/i', $tag, $m ) ) {
+					$found[] = $m[1];
+				}
+			}
+		}
+		if ( preg_match_all( '/<link\b[^>]*\brel\s*=\s*["\'][^"\']*(?:icon|apple-touch-icon)[^"\']*["\'][^>]*>/i', $html, $tags ) ) {
+			foreach ( $tags[0] as $tag ) {
+				if ( preg_match( '/\bhref\s*=\s*["\']([^"\']+)["\']/i', $tag, $m ) ) {
+					$found[] = $m[1];
+				}
+			}
+		}
+
+		return self::absolutize_list( $found, $base );
+	}
+
+	/**
+	 * Same-origin <script src> URLs — the bundles to mine for image assets on a
+	 * JS-rendered (SPA) site, where the real images never appear in the static
+	 * HTML. Restricted to the page's own host (never fetches third-party JS).
+	 *
+	 * @param string $html
+	 * @param string $base
+	 * @return string[]
+	 */
+	public static function script_srcs( $html, $base = '' ) {
+		$out = array();
+		if ( preg_match_all( '/<script\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) {
+			foreach ( $m[1] as $u ) {
+				$abs = self::absolutize( trim( $u ), $base );
+				if ( $abs !== '' && self::same_host( $abs, $base ) ) {
+					$out[ $abs ] = true;
+				}
+			}
+		}
+
+		return array_keys( $out );
+	}
+
+	/**
+	 * Pull image-file URLs out of arbitrary text (a JS/CSS bundle): absolute
+	 * URLs and root-relative `/assets/foo.webp` references. Raster formats only
+	 * (SVG is excluded — WordPress blocks SVG upload and bundles reference many
+	 * inline icon SVGs that would just fail).
+	 *
+	 * @param string $text
+	 * @param string $base
+	 * @return string[]
+	 */
+	public static function extract_asset_urls( $text, $base = '' ) {
+		$found = array();
+		// Absolute or protocol-relative image URLs.
+		if ( preg_match_all( '#(?:https?:)?//[^"\'\\\\\s()]+?\.(?:png|jpe?g|webp|gif|avif)#i', $text, $m ) ) {
+			$found = array_merge( $found, $m[0] );
+		}
+		// Root-relative refs in quotes/parens, e.g. "/assets/hero-abc.webp".
+		if ( preg_match_all( '#["\'(]\s*(/[A-Za-z0-9._/-]+?\.(?:png|jpe?g|webp|gif|avif))#i', $text, $m ) ) {
+			$found = array_merge( $found, $m[1] );
+		}
+
+		return self::absolutize_list( $found, $base );
+	}
+
+	/**
+	 * Orchestrated page scan: fetch the page, collect <img>/srcset/url() +
+	 * meta/favicon refs, and (when $deep) fetch up to $max_scripts same-origin
+	 * script bundles and mine them for image assets — so JS-rendered apps work.
+	 *
+	 * @param string $page_url
+	 * @param bool   $deep        Also fetch + scan same-origin JS bundles.
+	 * @param int    $max_scripts Cap on bundles fetched.
+	 * @return array  Report: { urls[], html, meta, js, scripts, inline_svg, data_uri, error }.
+	 */
+	public static function scan_page( $page_url, $deep = true, $max_scripts = 4 ) {
+		$report = array(
+			'urls' => array(), 'html' => 0, 'meta' => 0, 'js' => 0,
+			'scripts' => 0, 'inline_svg' => 0, 'data_uri' => 0, 'error' => '',
+		);
+
+		$resp = wp_remote_get( $page_url, array(
+			'timeout'    => 20,
+			'user-agent' => 'UnysonPlus-SiteConverter/1.0; ' . home_url( '/' ),
+		) );
+		if ( is_wp_error( $resp ) ) {
+			$report['error'] = $resp->get_error_message();
+			return $report;
+		}
+		if ( (int) wp_remote_retrieve_response_code( $resp ) >= 400 ) {
+			$report['error'] = sprintf( 'HTTP %d fetching the page.', (int) wp_remote_retrieve_response_code( $resp ) );
+			return $report;
+		}
+
+		$html = (string) wp_remote_retrieve_body( $resp );
+
+		$g = self::count_inline_graphics( $html );
+		$report['inline_svg'] = $g['inline_svg'];
+		$report['data_uri']   = $g['data_uri'];
+
+		$set = array();
+		foreach ( self::scan_html( $html, $page_url ) as $u ) {
+			if ( ! isset( $set[ $u ] ) ) { $report['html']++; }
+			$set[ $u ] = true;
+		}
+		foreach ( self::scan_meta( $html, $page_url ) as $u ) {
+			if ( ! isset( $set[ $u ] ) ) { $report['meta']++; }
+			$set[ $u ] = true;
+		}
+
+		if ( $deep ) {
+			$n = 0;
+			foreach ( self::script_srcs( $html, $page_url ) as $src ) {
+				if ( $n >= $max_scripts ) { break; }
+				$jr = wp_remote_get( $src, array( 'timeout' => 25 ) );
+				if ( is_wp_error( $jr ) || (int) wp_remote_retrieve_response_code( $jr ) >= 400 ) {
+					continue;
+				}
+				$n++;
+				foreach ( self::extract_asset_urls( (string) wp_remote_retrieve_body( $jr ), $page_url ) as $u ) {
+					if ( ! isset( $set[ $u ] ) ) { $report['js']++; }
+					$set[ $u ] = true;
+				}
+			}
+			$report['scripts'] = $n;
+		}
+
+		$report['urls'] = array_keys( $set );
+
+		return $report;
+	}
+
+	/**
+	 * Absolutise + de-dupe a list of raw refs, dropping empties and data: URIs.
+	 *
+	 * @param string[] $urls
+	 * @param string   $base
+	 * @return string[]
+	 */
+	private static function absolutize_list( array $urls, $base ) {
+		$out = array();
+		foreach ( $urls as $u ) {
+			$u = trim( html_entity_decode( (string) $u, ENT_QUOTES ) );
+			if ( $u === '' || stripos( $u, 'data:' ) === 0 ) {
+				continue;
+			}
+			$abs = self::absolutize( $u, $base );
+			if ( $abs !== '' ) {
+				$out[ $abs ] = true;
+			}
+		}
+
+		return array_keys( $out );
+	}
+
+	/**
+	 * Whether two URLs share the same host.
+	 *
+	 * @param string $url
+	 * @param string $base
+	 * @return bool
+	 */
+	private static function same_host( $url, $base ) {
+		$a = wp_parse_url( $url );
+		$b = wp_parse_url( $base );
+
+		return $a && $b && ! empty( $a['host'] ) && ! empty( $b['host'] )
+			&& strcasecmp( $a['host'], $b['host'] ) === 0;
+	}
+
+	/**
 	 * Rewrite source image URLs to their new media URLs in a content string.
 	 * Replaces longest keys first so a shorter URL can't clobber a longer one.
 	 *

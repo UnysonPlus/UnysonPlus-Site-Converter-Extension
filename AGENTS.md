@@ -41,6 +41,10 @@ Pure static helpers so the admin page, a future bundle importer, and WP-CLI shar
 | `find_by_source( $url )` | Existing attachment imported from this URL (the dedup lookup). |
 | `import_urls( $urls, $post_id = 0 )` | Batch — returns one result row per URL `{ source, ok, id?, url?, reused?, message? }`. |
 | `scan_html( $html, $base = '' )` | Collect image refs from `<img src>`, `srcset` candidates, and `url(...)` in inline styles / `<style>`. Returns **absolute**, de-duped URLs; skips `data:`. |
+| `scan_meta( $html, $base = '' )` | `<meta og:image / twitter:image>` + `<link rel=icon / apple-touch-icon>` refs (the share image + favicons). |
+| `scan_page( $url, $deep = true, $max = 4 )` | **Orchestrator** — fetch the page, run `scan_html` + `scan_meta`, and (when `$deep`) fetch up to `$max` same-origin `<script>` bundles and mine them for assets. Returns a report `{ urls[], html, meta, js, scripts, inline_svg, data_uri, error }`. **This is what makes JS apps work.** |
+| `script_srcs( $html, $base )` | Same-origin `<script src>` URLs (the bundles to mine). Never fetches third-party JS. |
+| `extract_asset_urls( $text, $base )` | Image URLs (absolute + root-relative `/assets/*.ext`) from arbitrary JS/CSS text. Raster only (SVG excluded — WP blocks it). |
 | `absolutize( $url, $base )` | Resolve root-relative / doc-relative / protocol-relative refs against a base URL. |
 | `rewrite( $content, $map )` | Replace `source_url => new_url` in content (longest-key-first, so a short URL can't clobber a longer one). For re-pointing page content / settings at the imported media. |
 
@@ -48,6 +52,13 @@ Pure static helpers so the admin page, a future bundle importer, and WP-CLI shar
 on several pages) reuses the existing attachment instead of duplicating. The theme-settings
 design export **strips** `attachment_id` on purpose (contract §4.2) — the importer re-attaches
 on the target via this engine.
+
+**JS apps (React / Vite / Lovable / v0):** the static HTML is just a `<div id="root">` shell —
+the real images are injected at runtime and never appear in the markup. `scan_page($url, deep:true)`
+handles this by fetching the page's own `<script>` bundles and extracting `/assets/*.jpg`-style
+asset URLs from them (verified: a Lovable site exposed 0 `<img>` in HTML but 17 images in its
+bundle). For sites a server-side scan still can't see, fall back to the URL-list mode — the agent
+that built the site can render it and supply the image URLs (the bundle's media manifest).
 
 **Gotchas:** WP blocks SVG upload by default, so inline-SVG sites (e.g. the PayForItUK
 round-trip) yield zero bitmap fetches — that's expected, their graphics live inline in the

@@ -99,30 +99,37 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		}
 		check_admin_referer( self::NONCE );
 
-		$mode    = isset( $_POST['fw_sc_mode'] ) ? sanitize_key( wp_unslash( $_POST['fw_sc_mode'] ) ) : 'urls';
-		$post_id = isset( $_POST['fw_sc_attach_post'] ) ? absint( $_POST['fw_sc_attach_post'] ) : 0;
+		$mode     = isset( $_POST['fw_sc_mode'] ) ? sanitize_key( wp_unslash( $_POST['fw_sc_mode'] ) ) : 'scan';
+		$post_id  = isset( $_POST['fw_sc_attach_post'] ) ? absint( $_POST['fw_sc_attach_post'] ) : 0;
+		$deep     = ! empty( $_POST['fw_sc_deep'] );
+		$page_url = isset( $_POST['fw_sc_page_url'] ) ? esc_url_raw( trim( wp_unslash( $_POST['fw_sc_page_url'] ) ) ) : '';
+		$raw_urls = isset( $_POST['fw_sc_urls'] ) ? trim( (string) wp_unslash( $_POST['fw_sc_urls'] ) ) : '';
 
+		// Forgiving: use whichever field actually has content if the radio disagrees,
+		// so pasting URLs while "Scan" is selected (the default) doesn't silently no-op.
+		if ( $mode === 'scan' && $page_url === '' && $raw_urls !== '' ) {
+			$mode = 'urls';
+		}
+		if ( $mode === 'urls' && $raw_urls === '' && $page_url !== '' ) {
+			$mode = 'scan';
+		}
+
+		$report = null;
 		$urls   = array();
-		$source = '';
 
 		if ( $mode === 'scan' ) {
-			$source = isset( $_POST['fw_sc_page_url'] ) ? esc_url_raw( trim( wp_unslash( $_POST['fw_sc_page_url'] ) ) ) : '';
-			if ( $source !== '' ) {
-				$resp = wp_remote_get( $source, array(
-					'timeout'    => 20,
-					'user-agent' => 'UnysonPlus-SiteConverter/1.0; ' . home_url( '/' ),
-				) );
-				if ( ! is_wp_error( $resp ) && (int) wp_remote_retrieve_response_code( $resp ) < 400 ) {
-					$urls = FW_Site_Converter_Media::scan_html( (string) wp_remote_retrieve_body( $resp ), $source );
-				} else {
-					$msg = is_wp_error( $resp ) ? $resp->get_error_message() : __( 'HTTP error fetching the page.', 'fw' );
-					set_transient( $this->results_transient_key(), array( 'error' => $msg ), 5 * MINUTE_IN_SECONDS );
-					$this->redirect_back();
-				}
+			if ( $page_url === '' ) {
+				set_transient( $this->results_transient_key(), array( 'error' => __( 'Enter a page URL to scan, or paste image URLs in the list box.', 'fw' ) ), 5 * MINUTE_IN_SECONDS );
+				$this->redirect_back();
 			}
+			$report = FW_Site_Converter_Media::scan_page( $page_url, $deep );
+			if ( $report['error'] !== '' ) {
+				set_transient( $this->results_transient_key(), array( 'error' => $report['error'] ), 5 * MINUTE_IN_SECONDS );
+				$this->redirect_back();
+			}
+			$urls = $report['urls'];
 		} else {
-			$raw  = isset( $_POST['fw_sc_urls'] ) ? wp_unslash( $_POST['fw_sc_urls'] ) : '';
-			$urls = preg_split( '/\r\n|\r|\n/', (string) $raw );
+			$urls = preg_split( '/\r\n|\r|\n/', $raw_urls );
 		}
 
 		$urls    = array_values( array_filter( array_map( 'trim', (array) $urls ) ) );
@@ -130,7 +137,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		set_transient( $this->results_transient_key(), array(
 			'mode'    => $mode,
-			'source'  => $source,
+			'source'  => $mode === 'scan' ? $page_url : '',
+			'report'  => $report,
 			'results' => $results,
 		), 5 * MINUTE_IN_SECONDS );
 
@@ -186,8 +194,13 @@ class FW_Extension_Site_Converter extends FW_Extension {
 								<input type="radio" name="fw_sc_mode" value="scan" checked>
 								<?php esc_html_e( 'Scan a page URL for images', 'fw' ); ?>
 							</label>
-							<input type="url" name="fw_sc_page_url" class="regular-text" placeholder="https://example.netlify.app/" style="width:32em;max-width:100%">
-							<p class="description"><?php esc_html_e( 'Fetches the page and collects every <img>, srcset, and CSS url() reference.', 'fw' ); ?></p>
+							<input type="url" name="fw_sc_page_url" class="regular-text" placeholder="https://example.lovable.app/" style="width:32em;max-width:100%">
+							<p class="description"><?php esc_html_e( 'Collects images from <img>, srcset, CSS url(), and the page\'s social/favicon meta tags.', 'fw' ); ?></p>
+							<label style="display:block;margin:.5em 0 0">
+								<input type="checkbox" name="fw_sc_deep" value="1" checked>
+								<?php esc_html_e( 'Also mine the site\'s JavaScript bundle for images', 'fw' ); ?>
+							</label>
+							<p class="description"><?php esc_html_e( 'Needed for JS apps (React / Vite / Lovable / v0) where images are injected at runtime and never appear in the static HTML. Fetches the page\'s own script bundles and extracts image assets from them. Slightly slower.', 'fw' ); ?></p>
 
 							<label style="display:block;margin:1em 0 .4em">
 								<input type="radio" name="fw_sc_mode" value="urls">
@@ -233,14 +246,36 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			}
 		}
 
+		$report = isset( $data['report'] ) && is_array( $data['report'] ) ? $data['report'] : null;
+
+		// Scan-source breakdown (scan mode only) — explains WHERE images came from,
+		// and why 0 is 0 (inline SVG / JS-only).
+		if ( $report ) {
+			$found = count( $report['urls'] );
+			$scan  = sprintf(
+				/* translators: 1: source URL, 2: total, 3: html, 4: meta, 5: js, 6: scripts */
+				__( 'Scanned %1$s — found %2$d image reference(s): %3$d in HTML, %4$d in meta tags, %5$d in JS bundle(s) (%6$d script(s) mined).', 'fw' ),
+				esc_url( $data['source'] ), $found, $report['html'], $report['meta'], $report['js'], $report['scripts']
+			);
+			if ( $report['inline_svg'] || $report['data_uri'] ) {
+				$scan .= ' ' . sprintf(
+					/* translators: 1: inline svg count, 2: data uri count */
+					__( '%1$d inline SVG + %2$d data-URI graphic(s) skipped (they live in the markup — nothing to fetch).', 'fw' ),
+					$report['inline_svg'], $report['data_uri']
+				);
+			}
+			echo '<div class="notice notice-info is-dismissible"><p>' . esc_html( $scan ) . '</p></div>';
+
+			if ( $found === 0 ) {
+				echo '<div class="notice notice-warning"><p>' . esc_html__( 'No fetchable images found. If this is a JavaScript app, make sure "mine the JS bundle" is enabled above — or paste the image URLs directly in the list box (the agent that built the site can supply them).', 'fw' ) . '</p></div>';
+			}
+		}
+
 		$summary = sprintf(
 			/* translators: 1: imported count, 2: reused count, 3: failed count */
 			__( 'Imported %1$d image(s) — %2$d reused (already in library), %3$d failed.', 'fw' ),
 			$ok, $reused, $failed
 		);
-		if ( ! empty( $data['source'] ) ) {
-			$summary .= ' ' . sprintf( __( 'Source: %s', 'fw' ), esc_url( $data['source'] ) );
-		}
 		?>
 		<div class="notice <?php echo $failed ? 'notice-warning' : 'notice-success'; ?> is-dismissible">
 			<p><?php echo esc_html( $summary ); ?></p>
