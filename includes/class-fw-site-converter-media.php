@@ -176,39 +176,31 @@ class FW_Site_Converter_Media {
 	 * @return string[]
 	 */
 	public static function scan_html( $html, $base = '' ) {
-		$found = array();
+		$declared = array(); // <img>/srcset — trusted images
+		$other    = array(); // url() — could be a font/anything, must look like an image
 
 		if ( preg_match_all( '/<img\b[^>]*?\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) {
-			$found = array_merge( $found, $m[1] );
+			$declared = array_merge( $declared, $m[1] );
 		}
 		if ( preg_match_all( '/\bsrcset\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) {
 			foreach ( $m[1] as $srcset ) {
 				foreach ( explode( ',', $srcset ) as $cand ) {
-					$u = trim( $cand );
-					$u = trim( substr( $u, 0, strcspn( $u, " \t" ) ) ); // drop the descriptor
+					$cand = trim( $cand );
+					$u    = trim( substr( $cand, 0, strcspn( $cand, " \t" ) ) ); // drop the descriptor
 					if ( $u !== '' ) {
-						$found[] = $u;
+						$declared[] = $u;
 					}
 				}
 			}
 		}
 		if ( preg_match_all( '/url\(\s*["\']?([^"\')]+)["\']?\s*\)/i', $html, $m ) ) {
-			$found = array_merge( $found, $m[1] );
+			$other = $m[1];
 		}
 
-		$out = array();
-		foreach ( $found as $u ) {
-			$u = trim( html_entity_decode( $u, ENT_QUOTES ) );
-			if ( $u === '' || stripos( $u, 'data:' ) === 0 ) {
-				continue;
-			}
-			$abs = self::absolutize( $u, $base );
-			if ( $abs !== '' ) {
-				$out[ $abs ] = true;
-			}
-		}
-
-		return array_keys( $out );
+		return array_values( array_unique( array_merge(
+			self::collect( $declared, $base, true ),
+			self::collect( $other, $base, false )
+		) ) );
 	}
 
 	/**
@@ -289,7 +281,7 @@ class FW_Site_Converter_Media {
 			}
 		}
 
-		return self::absolutize_list( $found, $base );
+		return self::collect( $found, $base, false );
 	}
 
 	/**
@@ -336,7 +328,7 @@ class FW_Site_Converter_Media {
 			$found = array_merge( $found, $m[1] );
 		}
 
-		return self::absolutize_list( $found, $base );
+		return self::collect( $found, $base, false );
 	}
 
 	/**
@@ -407,26 +399,57 @@ class FW_Site_Converter_Media {
 	}
 
 	/**
-	 * Absolutise + de-dupe a list of raw refs, dropping empties and data: URIs.
+	 * Absolutise + filter + de-dupe raw refs into real image URLs. Drops empties,
+	 * data: URIs, and — crucially — non-images: a CSS `url()` or a JS-bundle string
+	 * is only kept if it actually points at a raster image. `<img>`/`srcset` refs
+	 * ($declared = true) are trusted as images (still rejecting obvious non-image
+	 * file types like fonts). This is what stops `.woff2` fonts, `.ico` favicons,
+	 * and junk like `window.location.href` from being queued for import.
 	 *
-	 * @param string[] $urls
+	 * @param string[] $raw
 	 * @param string   $base
+	 * @param bool     $declared Came from an <img>/srcset (trusted) vs url()/JS.
 	 * @return string[]
 	 */
-	private static function absolutize_list( array $urls, $base ) {
+	private static function collect( array $raw, $base, $declared ) {
 		$out = array();
-		foreach ( $urls as $u ) {
+		foreach ( $raw as $u ) {
 			$u = trim( html_entity_decode( (string) $u, ENT_QUOTES ) );
 			if ( $u === '' || stripos( $u, 'data:' ) === 0 ) {
 				continue;
 			}
 			$abs = self::absolutize( $u, $base );
-			if ( $abs !== '' ) {
-				$out[ $abs ] = true;
+			if ( $abs === '' || ! self::accept_image_url( $abs, $declared ) ) {
+				continue;
 			}
+			$out[ $abs ] = true;
 		}
 
 		return array_keys( $out );
+	}
+
+	/**
+	 * Whether a URL should be treated as a fetchable raster image.
+	 *
+	 * @param string $url
+	 * @param bool   $declared <img>/srcset source (trusted) vs url()/JS (must look like an image).
+	 * @return bool
+	 */
+	private static function accept_image_url( $url, $declared ) {
+		$path = (string) wp_parse_url( $url, PHP_URL_PATH );
+
+		// Always reject known non-image file types — fonts, code, docs, video,
+		// vector/icon (WP blocks SVG/ICO upload). Catches the @font-face url()s.
+		if ( preg_match( '/\.(?:woff2?|ttf|otf|eot|css|m?js|json|html?|xml|svg|ico|cur|mp4|webm|mov|avi|map|txt|php)(?:$|[?#])/i', $path ) ) {
+			return false;
+		}
+
+		if ( $declared ) {
+			return true; // an <img>/srcset URL — trust it's an image
+		}
+
+		// A url()/JS-bundle ref: keep only if the path carries a raster image extension.
+		return (bool) preg_match( '~\.(?:png|jpe?g|gif|webp|avif|bmp)(?:$|[/?#])~i', $path );
 	}
 
 	/**

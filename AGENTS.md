@@ -67,10 +67,18 @@ requires them lazily).
 
 ## Admin page — Unyson+ → Convert
 
-`render_page()` shows the **Fetch images** tool: scan a source page URL **or** paste image
-URLs, optionally attach to a post, → results table (imported / reused / failed, with links to
-each Media entry). Run handler `_maybe_run()` validates the nonce, fetches (`wp_remote_get` for
-scan mode), calls `import_urls()`, stashes results in a transient, PRG-redirects.
+**Two-step flow:** **Scan** (a page URL or pasted URLs) → a **thumbnail picker** (every candidate
+shown as a remote `<img>` with a checkbox; "in library" badge + auto-unchecked for already-imported
+ones; Select all / none / only-new) → **Import selected**, which runs **via AJAX one image per
+request** (`wp_ajax_fw_sc_import`) with a **live progress bar**, so a big batch never times out and
+each tile turns green/red as it lands. No-JS degrades to a normal POST that imports server-side and
+shows a results table. `_maybe_run()` dispatches the two steps (`run_scan` → preview transient;
+`run_import` → results) via the `fw_sc_step` field; both PRG-redirect.
+
+**Only real images are offered.** `accept_image_url()` filters candidates to fetchable raster
+images, so CSS `@font-face` `url(...woff2)`, favicons (`.ico`), SVG, video, and junk like
+`url(window.location.href)` never reach the picker. `<img>`/`srcset` URLs are trusted; `url()` and
+JS-bundle refs must carry a raster extension (png/jpg/jpeg/gif/webp/avif/bmp).
 
 ## Verification
 
