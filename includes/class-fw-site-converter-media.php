@@ -20,6 +20,15 @@ class FW_Site_Converter_Media {
 	/** Postmeta key that records the original remote URL each attachment came from. */
 	const SOURCE_META = '_unysonplus_source_url';
 
+	/** A real browser UA — some hosts (Wix, etc.) serve a stripped page to unknown agents. */
+	const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+	/** Postmeta key recording the MD5 of the file bytes — for content-level de-dup. */
+	const HASH_META = '_unysonplus_source_hash';
+
+	/** Set by sideload(): true if the last call reused an existing attachment (same URL or identical bytes). */
+	public static $last_reused = false;
+
 	/**
 	 * Sideload one remote image into the media library, de-duped by source URL.
 	 *
@@ -29,6 +38,7 @@ class FW_Site_Converter_Media {
 	 * @return int|WP_Error   Attachment ID, or WP_Error on failure / skip.
 	 */
 	public static function sideload( $url, $post_id = 0, $desc = '' ) {
+		self::$last_reused = false;
 		$url = esc_url_raw( trim( (string) $url ) );
 
 		if ( $url === '' ) {
@@ -40,9 +50,10 @@ class FW_Site_Converter_Media {
 			return new WP_Error( 'data_uri', __( 'Skipped inline data: URI (no fetch needed).', 'fw' ) );
 		}
 
-		// Already imported on a previous run? Reuse it.
+		// De-dup #1 (no download): same source URL imported before → reuse it.
 		$existing = self::find_by_source( $url );
 		if ( $existing ) {
+			self::$last_reused = true;
 			return $existing;
 		}
 
@@ -53,6 +64,22 @@ class FW_Site_Converter_Media {
 		$tmp = download_url( $url );
 		if ( is_wp_error( $tmp ) ) {
 			return $tmp;
+		}
+
+		// De-dup #2 (content): identical bytes already imported under a DIFFERENT
+		// URL (e.g. the same photo on two sites) → reuse it, don't duplicate the file.
+		$hash = @md5_file( $tmp );
+		if ( $hash ) {
+			$dupe = self::find_by_hash( $hash );
+			if ( $dupe ) {
+				if ( file_exists( $tmp ) ) {
+					@unlink( $tmp );
+				}
+				// Record this URL too, so a later scan of THIS url short-circuits at de-dup #1.
+				add_post_meta( $dupe, self::SOURCE_META, $url ); // multi-value; find_by_source matches any
+				self::$last_reused = true;
+				return $dupe;
+			}
 		}
 
 		// Derive a sane filename + extension from the ACTUAL file contents, so
@@ -77,8 +104,36 @@ class FW_Site_Converter_Media {
 		}
 
 		update_post_meta( $id, self::SOURCE_META, $url );
+		if ( $hash ) {
+			update_post_meta( $id, self::HASH_META, $hash );
+		}
 
 		return (int) $id;
+	}
+
+	/**
+	 * Find an attachment previously imported with identical file bytes (content
+	 * de-dup — catches the same image fetched from a different URL).
+	 *
+	 * @param string $hash MD5 of the file.
+	 * @return int Attachment ID, or 0.
+	 */
+	public static function find_by_hash( $hash ) {
+		if ( $hash === '' ) {
+			return 0;
+		}
+		$ids = get_posts( array(
+			'post_type'        => 'attachment',
+			'post_status'      => 'inherit',
+			'numberposts'      => 1,
+			'fields'           => 'ids',
+			'no_found_rows'    => true,
+			'suppress_filters' => false,
+			'meta_key'         => self::HASH_META,
+			'meta_value'       => $hash,
+		) );
+
+		return $ids ? (int) $ids[0] : 0;
 	}
 
 	/**
@@ -147,8 +202,7 @@ class FW_Site_Converter_Media {
 			}
 			$seen[ $url ] = true;
 
-			$reused = self::find_by_source( $url ) > 0;
-			$id     = self::sideload( $url, $post_id );
+			$id = self::sideload( $url, $post_id );
 
 			if ( is_wp_error( $id ) ) {
 				$out[] = array( 'source' => $url, 'ok' => false, 'message' => $id->get_error_message() );
@@ -158,7 +212,7 @@ class FW_Site_Converter_Media {
 					'ok'     => true,
 					'id'     => $id,
 					'url'    => wp_get_attachment_url( $id ),
-					'reused' => $reused,
+					'reused' => self::$last_reused,
 				);
 			}
 		}
@@ -343,13 +397,13 @@ class FW_Site_Converter_Media {
 	 */
 	public static function scan_page( $page_url, $deep = true, $max_scripts = 4 ) {
 		$report = array(
-			'urls' => array(), 'html' => 0, 'meta' => 0, 'js' => 0,
+			'urls' => array(), 'html' => 0, 'meta' => 0, 'embedded' => 0, 'js' => 0,
 			'scripts' => 0, 'inline_svg' => 0, 'data_uri' => 0, 'error' => '',
 		);
 
 		$resp = wp_remote_get( $page_url, array(
 			'timeout'    => 20,
-			'user-agent' => 'UnysonPlus-SiteConverter/1.0; ' . home_url( '/' ),
+			'user-agent' => self::BROWSER_UA,
 		) );
 		if ( is_wp_error( $resp ) ) {
 			$report['error'] = $resp->get_error_message();
@@ -375,12 +429,19 @@ class FW_Site_Converter_Media {
 			if ( ! isset( $set[ $u ] ) ) { $report['meta']++; }
 			$set[ $u ] = true;
 		}
+		// Also mine the page HTML itself for absolute image URLs embedded in JSON /
+		// data-attrs / inline scripts (Wix, Next.js, Nuxt … inline their media URLs
+		// rather than emitting <img src>). These are HTML-entity-decoded in collect().
+		foreach ( self::extract_asset_urls( $html, $page_url ) as $u ) {
+			if ( ! isset( $set[ $u ] ) ) { $report['embedded']++; }
+			$set[ $u ] = true;
+		}
 
 		if ( $deep ) {
 			$n = 0;
 			foreach ( self::script_srcs( $html, $page_url ) as $src ) {
 				if ( $n >= $max_scripts ) { break; }
-				$jr = wp_remote_get( $src, array( 'timeout' => 25 ) );
+				$jr = wp_remote_get( $src, array( 'timeout' => 25, 'user-agent' => self::BROWSER_UA ) );
 				if ( is_wp_error( $jr ) || (int) wp_remote_retrieve_response_code( $jr ) >= 400 ) {
 					continue;
 				}

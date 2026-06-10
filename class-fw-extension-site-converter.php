@@ -216,8 +216,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			wp_send_json_error( array( 'url' => $url, 'name' => $name, 'message' => __( 'Invalid URL.', 'fw' ) ) );
 		}
 
-		$reused = FW_Site_Converter_Media::find_by_source( $url ) > 0;
-		$id     = FW_Site_Converter_Media::sideload( $url, $post_id );
+		$id = FW_Site_Converter_Media::sideload( $url, $post_id );
 
 		if ( is_wp_error( $id ) ) {
 			wp_send_json_error( array( 'url' => $url, 'name' => $name, 'message' => $id->get_error_message() ) );
@@ -227,7 +226,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'url'    => $url,
 			'name'   => $name,
 			'id'     => (int) $id,
-			'reused' => $reused,
+			'reused' => FW_Site_Converter_Media::$last_reused,
 			'edit'   => get_edit_post_link( $id, 'raw' ),
 		) );
 	}
@@ -322,9 +321,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			return;
 		}
 		$scan = sprintf(
-			/* translators: 1: source, 2: total, 3: html, 4: meta, 5: js, 6: scripts */
-			__( 'Scanned %1$s — found %2$d image reference(s): %3$d in HTML, %4$d in meta tags, %5$d in JS bundle(s) (%6$d script(s) mined).', 'fw' ),
-			esc_url( $source ), count( $report['urls'] ), $report['html'], $report['meta'], $report['js'], $report['scripts']
+			/* translators: 1: source, 2: total, 3: html, 4: meta, 5: embedded, 6: js, 7: scripts */
+			__( 'Scanned %1$s — found %2$d image reference(s): %3$d in HTML, %4$d in meta tags, %5$d embedded in page JSON/scripts, %6$d in JS bundle(s) (%7$d script(s) mined).', 'fw' ),
+			esc_url( $source ), count( $report['urls'] ), $report['html'], $report['meta'],
+			isset( $report['embedded'] ) ? $report['embedded'] : 0, $report['js'], $report['scripts']
 		);
 		if ( $report['inline_svg'] || $report['data_uri'] ) {
 			$scan .= ' ' . sprintf(
@@ -370,6 +370,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			.fw-sc-name{word-break:break-all;color:#50575e}
 			.fw-sc-badge{position:absolute;top:6px;right:6px;background:#2271b1;color:#fff;font-size:10px;padding:1px 6px;border-radius:10px}
 			.fw-sc-card.is-done{outline:2px solid #1a7f37;outline-offset:-2px}
+			.fw-sc-card.is-dup{outline:2px solid #bd8600;outline-offset:-2px}
 			.fw-sc-card.is-fail{outline:2px solid #b32d2e;outline-offset:-2px}
 			.fw-sc-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:.5em 0}
 			.fw-sc-progress{display:none;margin:1em 0;padding:12px 14px;border:1px solid #dcdcde;border-radius:6px;background:#fff;max-width:520px}
@@ -455,12 +456,12 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					if ( ! picks.length ) { return; }
 					e.preventDefault();
 					var postId = ( f.querySelector( '[name="fw_sc_attach_post"]' ) || {} ).value || 0;
-					var total = picks.length, done = 0, ok = 0, failed = 0, idx = 0, CONC = 3;
+					var total = picks.length, done = 0, ok = 0, reused = 0, failed = 0, idx = 0, CONC = 3;
 					f.querySelectorAll( 'button' ).forEach( function ( b ) { b.disabled = true; } );
 					prog.style.display = 'block';
 					function update() {
 						fill.style.width = Math.round( done / total * 100 ) + '%';
-						text.textContent = done + ' / ' + total + ' — ' + ok + ' imported, ' + failed + ' failed';
+						text.textContent = done + ' / ' + total + ' — ' + ok + ' imported, ' + reused + ' reused, ' + failed + ' failed';
 					}
 					update();
 					function next() {
@@ -476,15 +477,17 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							.then( function ( r ) { return r.json(); } )
 							.then( function ( res ) {
 								done++;
-								if ( res && res.success ) { ok++; if ( card ) { card.classList.add( 'is-done' ); } }
-								else { failed++; if ( card ) { card.classList.add( 'is-fail' ); card.title = ( res && res.data && res.data.message ) || 'failed'; } }
+								if ( res && res.success ) {
+									if ( res.data && res.data.reused ) { reused++; if ( card ) { card.classList.add( 'is-dup' ); card.title = 'Already in library (#' + res.data.id + ')'; } }
+									else { ok++; if ( card ) { card.classList.add( 'is-done' ); } }
+								} else { failed++; if ( card ) { card.classList.add( 'is-fail' ); card.title = ( res && res.data && res.data.message ) || 'failed'; } }
 							} )
 							.catch( function () { done++; failed++; if ( card ) { card.classList.add( 'is-fail' ); } } )
 							.then( function () {
 								update();
 								if ( done >= total ) {
 									fill.style.width = '100%';
-									text.textContent = '<?php echo esc_js( __( 'Done', 'fw' ) ); ?> — ' + ok + ' imported, ' + failed + ' failed of ' + total + '.';
+									text.textContent = '<?php echo esc_js( __( 'Done', 'fw' ) ); ?> — ' + ok + ' imported, ' + reused + ' reused, ' + failed + ' failed of ' + total + '.';
 								} else {
 									next();
 								}

@@ -37,12 +37,12 @@ Pure static helpers so the admin page, a future bundle importer, and WP-CLI shar
 
 | Method | Purpose |
 |---|---|
-| `sideload( $url, $post_id = 0, $desc = '' )` | Download one remote image (`download_url`) + insert it (`media_handle_sideload`). **De-duped** by source URL via the `_unysonplus_source_url` postmeta. Sniffs the real type from file contents (`getimagesize` → `image_type_to_extension`) so extension-less URLs land valid. Skips `data:` URIs. Returns attachment ID or `WP_Error`. |
-| `find_by_source( $url )` | Existing attachment imported from this URL (the dedup lookup). |
+| `sideload( $url, $post_id = 0, $desc = '' )` | Download one remote image (`download_url`) + insert it (`media_handle_sideload`). **Two-level de-dup:** (1) same source URL (`_unysonplus_source_url` postmeta, no download); (2) identical **content hash** (`_unysonplus_source_hash` = md5 of the bytes) — catches the same image fetched from a *different* URL/site, reusing the existing attachment instead of duplicating. Sets `self::$last_reused`. Sniffs the real type (`getimagesize`) so extension-less URLs land valid. Skips `data:`. Returns attachment ID or `WP_Error`. |
+| `find_by_source( $url )` / `find_by_hash( $md5 )` | The two dedup lookups (by URL / by file content). |
 | `import_urls( $urls, $post_id = 0 )` | Batch — returns one result row per URL `{ source, ok, id?, url?, reused?, message? }`. |
 | `scan_html( $html, $base = '' )` | Collect image refs from `<img src>`, `srcset` candidates, and `url(...)` in inline styles / `<style>`. Returns **absolute**, de-duped URLs; skips `data:`. |
 | `scan_meta( $html, $base = '' )` | `<meta og:image / twitter:image>` + `<link rel=icon / apple-touch-icon>` refs (the share image + favicons). |
-| `scan_page( $url, $deep = true, $max = 4 )` | **Orchestrator** — fetch the page, run `scan_html` + `scan_meta`, and (when `$deep`) fetch up to `$max` same-origin `<script>` bundles and mine them for assets. Returns a report `{ urls[], html, meta, js, scripts, inline_svg, data_uri, error }`. **This is what makes JS apps work.** |
+| `scan_page( $url, $deep = true, $max = 4 )` | **Orchestrator** — fetch the page (with a real **browser UA**, since hosts like Wix serve unknown agents a stripped page), run `scan_html` + `scan_meta`, mine the **page HTML itself** for absolute image URLs embedded in JSON/data-attrs/inline scripts (Wix/Next/Nuxt inline their media URLs), and (when `$deep`) fetch up to `$max` same-origin `<script>` bundles. Returns a report `{ urls[], html, meta, embedded, js, scripts, inline_svg, data_uri, error }`. **This is what makes JS apps work.** |
 | `script_srcs( $html, $base )` | Same-origin `<script src>` URLs (the bundles to mine). Never fetches third-party JS. |
 | `extract_asset_urls( $text, $base )` | Image URLs (absolute + root-relative `/assets/*.ext`) from arbitrary JS/CSS text. Raster only (SVG excluded — WP blocks it). |
 | `absolutize( $url, $base )` | Resolve root-relative / doc-relative / protocol-relative refs against a base URL. |
@@ -57,8 +57,16 @@ on the target via this engine.
 the real images are injected at runtime and never appear in the markup. `scan_page($url, deep:true)`
 handles this by fetching the page's own `<script>` bundles and extracting `/assets/*.jpg`-style
 asset URLs from them (verified: a Lovable site exposed 0 `<img>` in HTML but 17 images in its
-bundle). For sites a server-side scan still can't see, fall back to the URL-list mode — the agent
-that built the site can render it and supply the image URLs (the bundle's media manifest).
+bundle). It also mines the page HTML for image URLs embedded in JSON/data-attrs (Wix encodes them
+as `&quot;uri&quot;:&quot;https://static.wixstatic.com/…png&quot;`). **Heavy client-rendered sites
+(esp. Wix)** still expose only a few images statically — most load at runtime via API from media
+IDs, and the bundles are cross-origin (not mined). For those, fall back to the URL-list mode — the
+agent that built the site can render it and supply the image URLs.
+
+**De-dup:** re-running, or scanning a *different* site that hosts the *same* image, never duplicates
+— `sideload()` reuses the existing attachment (by source URL, then by content md5) and flags it
+`reused`. The picker badges already-imported URLs; content dupes (different URL, identical bytes)
+are caught at import and shown amber ("reused").
 
 **Gotchas:** WP blocks SVG upload by default, so inline-SVG sites (e.g. the PayForItUK
 round-trip) yield zero bitmap fetches — that's expected, their graphics live inline in the
