@@ -34,6 +34,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-media.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-presets.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-menus.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-theme-settings.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-bundle.php' );
 
 		if ( is_admin() ) {
 			add_action( 'admin_menu', array( $this, '_action_admin_menu' ), 30 );
@@ -111,10 +113,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			$this->run_import();
 		} elseif ( $step === 'import_presets' ) {
 			$this->run_import_presets();
+		} elseif ( $step === 'import_theme_settings' ) {
+			$this->run_import_theme_settings();
+		} elseif ( $step === 'reset_theme_settings' ) {
+			$this->run_reset_theme_settings();
 		} elseif ( $step === 'import_menus' ) {
 			$this->run_import_menus();
 		} elseif ( $step === 'scan_menus' ) {
 			$this->run_scan_menus();
+		} elseif ( $step === 'import_bundle' ) {
+			$this->run_import_bundle();
 		} else {
 			$this->run_scan();
 		}
@@ -138,6 +146,46 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'stage'    => 'presets_result',
 			'imported' => $result['imported'],
 			'skipped'  => $result['skipped'],
+		), 5 * MINUTE_IN_SECONDS );
+
+		$this->redirect_back();
+	}
+
+	/**
+	 * Theme-settings tool — apply a pasted design file (the `_fw_settings_export`
+	 * / theme-settings `.json`) to the theme's settings store. Reuses the
+	 * FW_Site_Converter_Theme_Settings engine.
+	 */
+	private function run_import_theme_settings() {
+		$raw    = isset( $_POST['fw_sc_theme_json'] ) ? (string) wp_unslash( $_POST['fw_sc_theme_json'] ) : '';
+		$result = FW_Site_Converter_Theme_Settings::import_json( $raw );
+
+		if ( $result['error'] !== '' ) {
+			set_transient( $this->results_transient_key(), array( 'error' => $result['error'] ), 5 * MINUTE_IN_SECONDS );
+			$this->redirect_back();
+		}
+
+		set_transient( $this->results_transient_key(), array(
+			'stage'       => 'theme_result',
+			'imported'    => $result['imported'],
+			'skipped'     => $result['skipped'],
+			'cross_theme' => ! empty( $result['cross_theme'] ),
+		), 5 * MINUTE_IN_SECONDS );
+
+		$this->redirect_back();
+	}
+
+	/**
+	 * Recovery — delete the theme-settings option so a corrupted / blank Theme
+	 * Settings page falls back to defaults and renders again.
+	 */
+	private function run_reset_theme_settings() {
+		$res = FW_Site_Converter_Theme_Settings::reset();
+
+		set_transient( $this->results_transient_key(), array(
+			'stage'       => 'theme_reset',
+			'option_name' => $res['option_name'],
+			'existed'     => ! empty( $res['existed'] ),
 		), 5 * MINUTE_IN_SECONDS );
 
 		$this->redirect_back();
@@ -189,6 +237,46 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'menus'   => $scan['menus'],
 			'prefill' => (string) $json,
 		), 30 * MINUTE_IN_SECONDS );
+
+		$this->redirect_back();
+	}
+
+	/**
+	 * Convert bundle — one-shot: unzip an uploaded `.zip` and apply every phase we
+	 * have an engine for (media → presets → … → menus). Reuses
+	 * FW_Site_Converter_Bundle, which orchestrates the individual engines.
+	 */
+	private function run_import_bundle() {
+		$file = isset( $_FILES['fw_sc_bundle'] ) ? $_FILES['fw_sc_bundle'] : null;
+
+		if ( ! $file || ! isset( $file['tmp_name'] ) || $file['tmp_name'] === '' || ! empty( $file['error'] ) ) {
+			set_transient( $this->results_transient_key(), array( 'error' => __( 'Choose a .zip bundle to upload.', 'fw' ) ), 5 * MINUTE_IN_SECONDS );
+			$this->redirect_back();
+		}
+
+		$tmp_name = $file['tmp_name'];
+		$orig     = isset( $file['name'] ) ? sanitize_file_name( $file['name'] ) : '';
+
+		// Must be a real upload, a .zip, and within a sane size.
+		if ( ! is_uploaded_file( $tmp_name ) ) {
+			set_transient( $this->results_transient_key(), array( 'error' => __( 'Invalid upload.', 'fw' ) ), 5 * MINUTE_IN_SECONDS );
+			$this->redirect_back();
+		}
+		$ft = wp_check_filetype( $orig, array( 'zip' => 'application/zip' ) );
+		if ( strtolower( (string) pathinfo( $orig, PATHINFO_EXTENSION ) ) !== 'zip' && $ft['ext'] !== 'zip' ) {
+			set_transient( $this->results_transient_key(), array( 'error' => __( 'The bundle must be a .zip file.', 'fw' ) ), 5 * MINUTE_IN_SECONDS );
+			$this->redirect_back();
+		}
+
+		$result = FW_Site_Converter_Bundle::import_zip( $tmp_name );
+
+		if ( $result['error'] !== '' && ! $result['sections'] ) {
+			set_transient( $this->results_transient_key(), array( 'error' => $result['error'] ), 5 * MINUTE_IN_SECONDS );
+			$this->redirect_back();
+		}
+
+		$result['stage'] = 'bundle_result';
+		set_transient( $this->results_transient_key(), $result, 5 * MINUTE_IN_SECONDS );
 
 		$this->redirect_back();
 	}
@@ -344,11 +432,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		<div class="wrap fw-ext-site-converter">
 			<h1 class="wp-heading-inline"><?php esc_html_e( 'Convert — AI Site Importer', 'fw' ); ?></h1>
 			<p class="description" style="max-width:54em">
-				<?php esc_html_e( 'Bring an AI-generated site into WordPress. Scan a source page (or paste URLs) to PREVIEW its images, pick the ones you want, then import them into your Media Library (de-duped by source URL). Below, you can also import a Styling Presets export and the site navigation (header / footer menus). A one-shot bundle import is coming next.', 'fw' ); ?>
+				<?php esc_html_e( 'Bring an AI-generated site into WordPress. Use the one-shot bundle import to apply media, styling presets, and menus from a single .zip — or run the individual tools below: scan a source page (or paste URLs) to preview and import images (de-duped by source URL), import a Styling Presets export, and import the site navigation (header / footer menus).', 'fw' ); ?>
 			</p>
 
 			<?php
-			if ( is_array( $data ) && isset( $data['error'] ) ) {
+			if ( is_array( $data ) && ! empty( $data['error'] ) ) {
 				echo '<div class="notice notice-error is-dismissible"><p>' . esc_html( $data['error'] ) . '</p></div>';
 			} elseif ( $stage === 'preview' ) {
 				$this->render_preview( $data );
@@ -356,12 +444,29 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				$this->render_results( $data );
 			} elseif ( $stage === 'presets_result' ) {
 				$this->render_presets_result( $data );
+			} elseif ( $stage === 'theme_result' ) {
+				$this->render_theme_result( $data );
 			} elseif ( $stage === 'menus_result' ) {
 				$this->render_menus_result( $data );
 			} elseif ( $stage === 'menus_scanned' ) {
 				$this->render_menus_scanned( $data );
+			} elseif ( $stage === 'bundle_result' ) {
+				$this->render_bundle_result( $data );
 			}
 			?>
+
+			<h2><?php esc_html_e( 'Convert from a bundle (.zip)', 'fw' ); ?></h2>
+			<p class="description" style="max-width:54em">
+				<?php esc_html_e( 'The one-shot path. Upload the .zip your agent produced and every phase it contains is applied in order: media (media.json) → styling presets (presets.json) → theme settings (theme-settings.json) → menus (menus.json). Pages are recognized but not applied yet. Prefer to go piece by piece? Use the individual tools below.', 'fw' ); ?>
+			</p>
+			<form method="post" action="" enctype="multipart/form-data">
+				<?php wp_nonce_field( self::NONCE ); ?>
+				<input type="hidden" name="fw_sc_step" value="import_bundle">
+				<input type="file" name="fw_sc_bundle" accept=".zip,application/zip">
+				<button type="submit" class="button button-primary"><?php esc_html_e( 'Import bundle', 'fw' ); ?></button>
+			</form>
+
+			<hr style="margin:2.5em 0">
 
 			<h2 style="margin-top:1.5em"><?php echo $stage === 'preview' ? esc_html__( 'Scan another source', 'fw' ) : esc_html__( 'Find images', 'fw' ); ?></h2>
 			<form method="post" action="">
@@ -411,6 +516,75 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<button type="submit" class="button button-primary"><?php esc_html_e( 'Import presets', 'fw' ); ?></button>
 				</p>
 			</form>
+
+			<hr style="margin:2.5em 0">
+
+			<h2><?php esc_html_e( 'Import Theme Settings', 'fw' ); ?></h2>
+			<p class="description" style="max-width:54em">
+				<?php esc_html_e( 'Paste the theme-settings design file your agent produced (the _fw_settings_export / theme-settings .json). It applies global chrome, typography defaults, header / footer slot config and any bespoke CSS (misc_custom_css) to your Theme Settings — overlaying only the keys the file carries. Operational keys (analytics, custom scripts, maintenance) are never imported, and source-site media references are dropped (the media tool re-attaches them).', 'fw' ); ?>
+			</p>
+			<form method="post" action="">
+				<?php wp_nonce_field( self::NONCE ); ?>
+				<input type="hidden" name="fw_sc_step" value="import_theme_settings">
+				<textarea name="fw_sc_theme_json" rows="10" class="large-text code" spellcheck="false" placeholder='{ "_fw_settings_export": { "theme_id": "unysonplus" }, "values": { "misc_custom_css": "…", "header_layout": "…" } }'></textarea>
+				<p class="description"><?php esc_html_e( 'Applies to fw_theme_settings_options. The theme also has its own Appearance → Theme Settings → Miscellaneous → Import for the same file.', 'fw' ); ?></p>
+				<p class="submit">
+					<button type="submit" class="button button-primary"><?php esc_html_e( 'Apply theme settings', 'fw' ); ?></button>
+				</p>
+			</form>
+
+			<?php $diag = FW_Site_Converter_Theme_Settings::diagnose(); ?>
+			<p class="description" style="max-width:54em;margin-top:1em">
+				<strong><?php esc_html_e( 'Theme Settings page blank or not loading?', 'fw' ); ?></strong>
+				<?php esc_html_e( 'Use the doctor below to inspect the stored settings and, if needed, reset them to defaults so the page renders again.', 'fw' ); ?>
+			</p>
+			<?php if ( $stage === 'theme_reset' ) : ?>
+				<div class="notice notice-success is-dismissible"><p>
+					<?php echo esc_html( ! empty( $data['existed'] )
+						? sprintf( __( 'Theme settings were reset — deleted %s. Reload Appearance → Theme Settings; it now uses defaults.', 'fw' ), $data['option_name'] )
+						: sprintf( __( 'Nothing to reset — %s did not exist.', 'fw' ), $data['option_name'] ) ); ?>
+				</p></div>
+			<?php endif; ?>
+			<details style="max-width:54em;border:1px solid #dcdcde;border-radius:4px;padding:.5em 1em;background:#fff"<?php echo ( $stage === 'theme_reset' ? ' open' : '' ); ?>>
+				<summary style="cursor:pointer;font-weight:600"><?php esc_html_e( 'Theme Settings Doctor', 'fw' ); ?></summary>
+				<table class="widefat striped" style="margin:1em 0">
+					<tbody>
+						<tr><td style="width:220px"><?php esc_html_e( 'Active theme', 'fw' ); ?></td><td><code><?php echo esc_html( $diag['theme_name'] . ' (' . $diag['theme_id'] . ')' ); ?></code></td></tr>
+						<tr><td><?php esc_html_e( 'Settings option', 'fw' ); ?></td><td><code><?php echo esc_html( $diag['option_name'] ); ?></code> — <?php echo $diag['exists']
+							? esc_html( sprintf( __( 'exists, %1$s bytes, %2$d top-level key(s)', 'fw' ), number_format_i18n( $diag['size'] ), $diag['key_count'] ) )
+							: esc_html__( 'not set (using defaults)', 'fw' ); ?></td></tr>
+						<?php if ( $diag['nonarray'] ) : ?>
+						<tr><td><?php esc_html_e( 'Suspicious values', 'fw' ); ?></td><td style="color:#b32d2e"><?php echo esc_html( implode( ', ', $diag['nonarray'] ) ); ?> — <?php esc_html_e( 'scalar where a container is expected', 'fw' ); ?></td></tr>
+						<?php endif; ?>
+						<tr><td><code>fw_get_db_settings_option()</code></td><td><?php
+							if ( $diag['get_error'] !== '' ) {
+								echo '<span style="color:#b32d2e">ERROR: ' . esc_html( $diag['get_error'] ) . '</span>';
+							} else {
+								echo $diag['get_ok'] ? esc_html( sprintf( __( 'ok — %d key(s)', 'fw' ), $diag['get_count'] ) ) : esc_html__( 'returned a non-array', 'fw' );
+							}
+						?></td></tr>
+						<tr><td><?php esc_html_e( 'Registered settings options', 'fw' ); ?></td><td><?php
+							if ( $diag['reg_error'] !== '' ) {
+								echo '<span style="color:#b32d2e">ERROR: ' . esc_html( $diag['reg_error'] ) . '</span>';
+							} else {
+								echo esc_html( (string) $diag['registered'] );
+								if ( $diag['registered'] === 0 ) {
+									echo ' — <span style="color:#b32d2e">' . esc_html__( 'none collected (this alone makes the page blank)', 'fw' ) . '</span>';
+								}
+							}
+						?></td></tr>
+						<?php if ( $diag['keys'] ) : ?>
+						<tr><td><?php esc_html_e( 'Top-level keys', 'fw' ); ?></td><td><code style="word-break:break-all;font-size:11px"><?php echo esc_html( implode( ', ', $diag['keys'] ) ); ?></code></td></tr>
+						<?php endif; ?>
+					</tbody>
+				</table>
+				<form method="post" action="" onsubmit="return confirm('<?php echo esc_js( __( 'Reset ALL theme settings to defaults? This deletes the stored settings option. You can re-import a design file afterwards.', 'fw' ) ); ?>');">
+					<?php wp_nonce_field( self::NONCE ); ?>
+					<input type="hidden" name="fw_sc_step" value="reset_theme_settings">
+					<button type="submit" class="button button-secondary" style="color:#b32d2e;border-color:#b32d2e"><?php esc_html_e( 'Reset theme settings to defaults', 'fw' ); ?></button>
+					<span class="description" style="margin-left:.5em"><?php esc_html_e( 'Deletes the stored option; the page falls back to defaults.', 'fw' ); ?></span>
+				</form>
+			</details>
 
 			<hr style="margin:2.5em 0">
 
@@ -478,6 +652,40 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		if ( ! empty( $skipped ) ) {
 			echo '<div class="notice notice-info is-dismissible"><p>'
 				. esc_html( sprintf( __( 'Skipped unknown keys: %s', 'fw' ), implode( ', ', $skipped ) ) )
+				. '</p></div>';
+		}
+	}
+
+	/**
+	 * Success / detail notice after a theme-settings import.
+	 *
+	 * @param array $data
+	 */
+	private function render_theme_result( array $data ) {
+		$imported = isset( $data['imported'] ) && is_array( $data['imported'] ) ? $data['imported'] : array();
+		$skipped  = isset( $data['skipped'] ) && is_array( $data['skipped'] ) ? $data['skipped'] : array();
+
+		if ( empty( $imported ) ) {
+			echo '<div class="notice notice-warning is-dismissible"><p>'
+				. esc_html__( 'No theme-settings keys were applied from that design file.', 'fw' )
+				. '</p></div>';
+		} else {
+			echo '<div class="notice notice-success is-dismissible"><p><strong>'
+				. esc_html( sprintf(
+					_n( 'Applied %d theme-settings key:', 'Applied %d theme-settings keys:', count( $imported ), 'fw' ),
+					count( $imported )
+				) ) . '</strong> ' . esc_html( implode( ', ', $imported ) ) . '</p></div>';
+		}
+
+		if ( ! empty( $data['cross_theme'] ) ) {
+			echo '<div class="notice notice-warning is-dismissible"><p>'
+				. esc_html__( 'Heads-up: that design file was exported from a different theme — some settings may not map exactly.', 'fw' )
+				. '</p></div>';
+		}
+
+		if ( ! empty( $skipped ) ) {
+			echo '<div class="notice notice-info is-dismissible"><p>'
+				. esc_html( sprintf( __( 'Skipped operational keys (analytics / scripts / maintenance): %s', 'fw' ), implode( ', ', $skipped ) ) )
 				. '</p></div>';
 		}
 	}
@@ -561,6 +769,80 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		} else {
 			echo '<div class="notice notice-warning is-dismissible"><p>'
 				. esc_html__( 'No navigation was found in that page. If it is a JavaScript app, paste the menus JSON manually.', 'fw' )
+				. '</p></div>';
+		}
+	}
+
+	/**
+	 * Combined summary after a one-shot bundle import (media + presets + menus).
+	 *
+	 * @param array $data
+	 */
+	private function render_bundle_result( array $data ) {
+		$manifest = isset( $data['manifest'] ) && is_array( $data['manifest'] ) ? $data['manifest'] : array();
+		$deferred = isset( $data['deferred'] ) && is_array( $data['deferred'] ) ? $data['deferred'] : array();
+		$source   = isset( $manifest['source'] ) ? $manifest['source'] : ( isset( $manifest['name'] ) ? $manifest['name'] : '' );
+
+		$lines = array();
+
+		if ( isset( $data['media'] ) && is_array( $data['media'] ) ) {
+			$m       = $data['media'];
+			$lines[] = sprintf(
+				/* translators: 1: imported, 2: reused, 3: failed */
+				__( 'Media — %1$d imported, %2$d reused, %3$d failed.', 'fw' ),
+				(int) $m['imported'], (int) $m['reused'], (int) $m['failed']
+			);
+		}
+
+		if ( isset( $data['presets'] ) && is_array( $data['presets'] ) ) {
+			$imp  = isset( $data['presets']['imported'] ) && is_array( $data['presets']['imported'] ) ? $data['presets']['imported'] : array();
+			$keys = array();
+			foreach ( $imp as $k => $c ) {
+				$keys[] = $k . ' (' . (int) $c . ')';
+			}
+			$lines[] = $keys
+				? sprintf( __( 'Presets — %s.', 'fw' ), implode( ', ', $keys ) )
+				: __( 'Presets — nothing applied.', 'fw' );
+		}
+
+		if ( isset( $data['theme_settings'] ) && is_array( $data['theme_settings'] ) ) {
+			$ti      = isset( $data['theme_settings']['imported'] ) && is_array( $data['theme_settings']['imported'] ) ? $data['theme_settings']['imported'] : array();
+			$lines[] = $ti
+				? sprintf( __( 'Theme settings — %1$d key(s): %2$s.', 'fw' ), count( $ti ), implode( ', ', $ti ) )
+				: __( 'Theme settings — nothing applied.', 'fw' );
+		}
+
+		if ( isset( $data['menus']['menus'] ) && is_array( $data['menus']['menus'] ) ) {
+			$parts = array();
+			foreach ( $data['menus']['menus'] as $mm ) {
+				if ( ! empty( $mm['error'] ) ) {
+					continue;
+				}
+				$where   = ! empty( $mm['assigned'] ) ? '→ ' . $mm['location'] : __( '(unassigned)', 'fw' );
+				$parts[] = sprintf( '%1$s: %2$d %3$s', $mm['name'], (int) $mm['items'], $where );
+			}
+			$lines[] = $parts
+				? sprintf( __( 'Menus — %s.', 'fw' ), implode( '; ', $parts ) )
+				: __( 'Menus — nothing built.', 'fw' );
+		}
+
+		$head = $source !== ''
+			? sprintf( __( 'Imported bundle (%s).', 'fw' ), $source )
+			: __( 'Imported bundle.', 'fw' );
+
+		echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html( $head ) . '</strong></p>';
+		if ( $lines ) {
+			echo '<ul style="margin:.2em 0 .4em 1.5em;list-style:disc">';
+			foreach ( $lines as $l ) {
+				echo '<li>' . esc_html( $l ) . '</li>';
+			}
+			echo '</ul>';
+		}
+		echo '</div>';
+
+		if ( $deferred ) {
+			echo '<div class="notice notice-info is-dismissible"><p>'
+				. esc_html( sprintf( __( 'The bundle also contained sections not applied yet (coming soon): %s.', 'fw' ), implode( ', ', $deferred ) ) )
 				. '</p></div>';
 		}
 	}

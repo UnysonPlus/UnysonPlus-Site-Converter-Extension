@@ -13,9 +13,10 @@ conversion initiative; see `d:\Web Dev\ai-to-wordpress-conversion-contract.md` a
 `ai-to-wordpress-conversion-plan.md`). It ingests the artifacts an agent emits per the
 conversion contract and applies them to the site, replacing today's manual import steps.
 
-Built incrementally. **Shipped so far: the Media tool, the Styling Presets importer, and
-the Menu importer.** Planned next: a one-shot "Convert bundle" that orchestrates every phase
-(media → presets → theme settings → pages → menus).
+Built incrementally. **Shipped so far: the Media tool, the Styling Presets importer, the Menu
+importer, the Theme-settings importer, and the one-shot Convert bundle** (orchestrates media +
+presets + theme settings + menus from one `.zip`). Planned next: the pages importer (the last
+bundle phase).
 
 ## Structure
 
@@ -24,9 +25,11 @@ site-converter/
 ├── manifest.php                              ← extension manifest (own version + repo)
 ├── class-fw-extension-site-converter.php     ← main class: admin page (Unyson+ → Convert)
 └── includes/
-    ├── class-fw-site-converter-media.php     ← reusable media engine (static helpers)
-    ├── class-fw-site-converter-presets.php   ← styling-presets importer (static)
-    └── class-fw-site-converter-menus.php     ← nav-menu importer (static)
+    ├── class-fw-site-converter-media.php          ← reusable media engine (static helpers)
+    ├── class-fw-site-converter-presets.php        ← styling-presets importer (static)
+    ├── class-fw-site-converter-menus.php          ← nav-menu importer + scanner (static)
+    ├── class-fw-site-converter-theme-settings.php ← theme-settings (design file) importer (static)
+    └── class-fw-site-converter-bundle.php         ← one-shot bundle orchestrator (static)
 ```
 
 Mirrors the `post-types` extension's admin-page pattern: a submenu under `fw-extensions`
@@ -156,7 +159,54 @@ dropdowns survive). **Footer** = the `<footer>`'s links flattened (de-duped, cap
 a pure client-rendered SPA has no nav in the static HTML (paste the JSON instead) — same limitation as
 the media scanner. The scan only *prefills*; nothing is created until the user clicks **Import menus**.
 
+## Theme-settings importer (shipped)
+
+`includes/class-fw-site-converter-theme-settings.php` (`FW_Site_Converter_Theme_Settings`) applies a
+**design file** (the contract §4 export — `{ "_fw_settings_export": {…}, "values": { id: value } }`)
+to the theme's settings store: the single `fw_theme_settings_options:{theme-id}` wp_option, via
+`fw_get_db_settings_option()` / `fw_set_db_settings_option()`. `import($array)` / `import_json($string)`
+**mirror the theme's own Misc → Import** (`unysonplus-theme inc/includes/settings-export-import.php`)
+and reuse its helpers when present (`unysonplus_settings_io_exclude_keys`,
+`unysonplus_settings_io_strip_media`), falling back to built-in equivalents so it still works under
+another theme. Each imported key is applied **on its own** via the single-option path
+(`fw_set_db_settings_option($id, $value)`), so only the keys the file carries are touched and every
+other setting is preserved. **Do NOT write the whole map** via `fw_set_db_settings_option(null, $map)`
+— that re-runs every registered option's `storage_save()` on its already-stored value (which expects
+fresh form input, not the stored shape) and corrupts unrelated settings (the bug that bit 1.0.9). **Operational keys are never imported**
+(`misc_analytics`, `misc_performance`, `misc_maintenance`, `misc_404`, `misc_custom_scripts` — blocks
+tracking / script injection) and **`attachment_id` media refs are blanked** (the media engine
+re-attaches on target, §4.2). Fires `do_action('fw_settings_form_saved', $current, $merged)` so the
+theme regenerates assets / flushes cache, and flags a `cross_theme` warning if the file's `theme_id`
+differs. Admin wiring: the `import_theme_settings` step → `theme_result` stage. Returns
+`{ imported: [ids], skipped: [ids], cross_theme: bool, error }`.
+
+## Convert bundle (shipped — one-shot orchestrator)
+
+`includes/class-fw-site-converter-bundle.php` (`FW_Site_Converter_Bundle`) ingests one agent-produced
+`.zip` and applies every phase it has an engine for, in contract order. It owns no import logic —
+it unzips and delegates to the media / presets / menu engines. Bundle layout (every file optional):
+
+```
+bundle.zip
+├── bundle.json        (optional metadata: { name, source, generated })
+├── media.json          ({ "urls": [ … ] })                  → FW_Site_Converter_Media::import_urls
+├── presets.json        ({ "values": { theme_colors:[…] } }) → FW_Site_Converter_Presets::import
+├── theme-settings.json ({ "values": { id: value } })        → FW_Site_Converter_Theme_Settings::import
+├── menus.json          ({ "menus": [ … ] })                 → FW_Site_Converter_Menus::import
+└── pages.json / pages/ (reserved — reported as deferred)
+```
+
+`import_zip($path)` → `unzip_file` (WP_Filesystem) into a temp dir, `import_dir()`, then delete the
+temp dir. `import_dir($dir)` (reusable if already unzipped) `locate_root()`s the bundle (handles a
+single wrapping folder), reads each known file, and runs media → presets → theme settings → menus,
+returning a combined `{ manifest, media{imported,reused,failed,total}, presets{imported,skipped},
+theme_settings{imported,skipped,…}, menus{…}, sections[], deferred[], error }`. A `pages.json` /
+`pages/` is detected and listed in `deferred` (no engine yet). Admin wiring: the `import_bundle` step (a `multipart/form-data` upload validated as a
+real `.zip`) → `FW_Site_Converter_Bundle::import_zip( $_FILES tmp )` → `bundle_result` stage with a
+combined per-phase summary. The bundle upload is the page's headline tool (the individual tools sit
+below for piecemeal runs).
+
 ## Roadmap (next slices)
 
-- **Convert bundle** — ingest one `.zip`/JSON (manifest + presets + theme settings + page
-  templates + media manifest) and apply Phases 1–5, using these media / presets / menu engines.
+- **Pages importer** (contract §2) — create WP pages from page-builder Full templates; plug it into
+  the bundle's `pages.json` / `pages/` phase. Once it lands, the bundle covers all five phases.
