@@ -13,8 +13,8 @@ conversion initiative; see `d:\Web Dev\ai-to-wordpress-conversion-contract.md` a
 `ai-to-wordpress-conversion-plan.md`). It ingests the artifacts an agent emits per the
 conversion contract and applies them to the site, replacing today's manual import steps.
 
-Built incrementally. **Shipped so far: the Media tool.** Planned next: presets importer,
-menu importer, and a one-shot "Convert bundle" that orchestrates every phase
+Built incrementally. **Shipped so far: the Media tool, the Styling Presets importer, and
+the Menu importer.** Planned next: a one-shot "Convert bundle" that orchestrates every phase
 (media → presets → theme settings → pages → menus).
 
 ## Structure
@@ -24,7 +24,9 @@ site-converter/
 ├── manifest.php                              ← extension manifest (own version + repo)
 ├── class-fw-extension-site-converter.php     ← main class: admin page (Unyson+ → Convert)
 └── includes/
-    └── class-fw-site-converter-media.php     ← reusable media engine (static helpers)
+    ├── class-fw-site-converter-media.php     ← reusable media engine (static helpers)
+    ├── class-fw-site-converter-presets.php   ← styling-presets importer (static)
+    └── class-fw-site-converter-menus.php     ← nav-menu importer (static)
 ```
 
 Mirrors the `post-types` extension's admin-page pattern: a submenu under `fw-extensions`
@@ -115,8 +117,46 @@ Static so the future Convert bundle / WP-CLI can reuse it (mirrors the media eng
 the `import_presets` step on the Convert page → PRG redirect + result transient (`presets_result`
 stage). Returns `{ imported: {key:count}, skipped: [keys], error: '' }`.
 
+## Menus importer (shipped)
+
+`includes/class-fw-site-converter-menus.php` (`FW_Site_Converter_Menus`) builds WordPress nav
+menus from the source site's navigation and assigns them to the theme's menu locations — the
+contract's recommended low-risk chrome path (§3: "create the two WP menus from the source's
+nav/footer links and assign them to primary/footer"). `import($array)` / `import_json($string)`
+accept `{ "menus": [ … ] }`, a bare list of menu specs, or a single menu object. Each menu spec:
+`{ name, location, items: [ { label, url, children: [ … ] } ] }` — field lookups are lenient
+(`label|title|text`, `url|href|link`, `children|items|sub`). Per menu:
+
+- **Get-or-create by name**, then **rebuild its items** (delete existing first) — re-running is
+  idempotent, never duplicates. `wp_create_nav_menu` / `wp_update_nav_menu_item` (no admin
+  includes needed; these live in `wp-includes/nav-menu.php`).
+- **Item targets:** an internal link whose path matches an existing page (`get_page_by_path`)
+  becomes a real **page** menu item (`menu-item-type=post_type`); an internal link with no match
+  is kept **site-relative** (source host dropped so it works on the new domain); an external link
+  is a custom link as-is; `#`/anchors pass through. Children recurse (dropdowns).
+- **Location:** assigned via `set_theme_mod('nav_menu_locations', …)` when the slug is one the
+  theme registers (`get_registered_nav_menus`). If `location` is omitted, it's **inferred from the
+  name** (Primary/Main/Header/Nav → `primary`, Footer → `footer`) but only if that location exists.
+  Unregistered/unknown → menu still created, reported as "not assigned" (assign under Appearance →
+  Menus). The UnysonPlus theme exposes `primary` (`#masthead`) and `footer` (`#colophon`).
+
+Static so the future Convert bundle / WP-CLI can reuse it. Admin wiring: the `import_menus` step on
+the Convert page → PRG redirect + result transient (`menus_result` stage). Returns
+`{ menus: [ {name, location, assigned, items, created, error} ], locations: {slug=>label}, error }`.
+
+**Nav scanner (scan-first UX, like the Media tool).** `scan_page($url)` fetches a source page (reuses
+the media engine's browser-UA `wp_remote_get` + `absolutize`) and `extract_menus($html, $base)` parses
+it with `DOMDocument`/`DOMXPath` into the same `{ menus: [ … ] }` shape, which the admin page
+pretty-prints into the import box for review (`scan_menus` step → `menus_scanned` stage prefills the
+`fw_sc_menus_json` textarea). **Primary** = the nav-ish container (`header nav` / `nav` /
+`[role=navigation]` / `header`) yielding the most top-level items; its richest `<ul>` is walked into
+nested items (`<li>` own-anchor for label/url, immediate child `<ul>` → `children`, recursing — so
+dropdowns survive). **Footer** = the `<footer>`'s links flattened (de-duped, capped). Icon-only links
+(no text) are skipped; labels are whitespace-collapsed + entity-decoded. Works on static / SSR markup;
+a pure client-rendered SPA has no nav in the static HTML (paste the JSON instead) — same limitation as
+the media scanner. The scan only *prefills*; nothing is created until the user clicks **Import menus**.
+
 ## Roadmap (next slices)
 
-- **Menu importer** — create Primary/Footer menus + assign (contract §3.3).
 - **Convert bundle** — ingest one `.zip`/JSON (manifest + presets + theme settings + page
-  templates + media manifest) and apply Phases 1–5, using this media engine for the media phase.
+  templates + media manifest) and apply Phases 1–5, using these media / presets / menu engines.

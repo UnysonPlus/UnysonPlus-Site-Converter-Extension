@@ -33,6 +33,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	public function _init() {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-media.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-presets.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-menus.php' );
 
 		if ( is_admin() ) {
 			add_action( 'admin_menu', array( $this, '_action_admin_menu' ), 30 );
@@ -110,6 +111,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			$this->run_import();
 		} elseif ( $step === 'import_presets' ) {
 			$this->run_import_presets();
+		} elseif ( $step === 'import_menus' ) {
+			$this->run_import_menus();
+		} elseif ( $step === 'scan_menus' ) {
+			$this->run_scan_menus();
 		} else {
 			$this->run_scan();
 		}
@@ -134,6 +139,56 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'imported' => $result['imported'],
 			'skipped'  => $result['skipped'],
 		), 5 * MINUTE_IN_SECONDS );
+
+		$this->redirect_back();
+	}
+
+	/**
+	 * Menus tool — build WordPress nav menus from a pasted menus JSON and assign
+	 * them to the theme's menu locations (primary / footer). Reuses the
+	 * FW_Site_Converter_Menus engine.
+	 */
+	private function run_import_menus() {
+		$raw    = isset( $_POST['fw_sc_menus_json'] ) ? (string) wp_unslash( $_POST['fw_sc_menus_json'] ) : '';
+		$result = FW_Site_Converter_Menus::import_json( $raw );
+
+		if ( $result['error'] !== '' ) {
+			set_transient( $this->results_transient_key(), array( 'error' => $result['error'] ), 5 * MINUTE_IN_SECONDS );
+			$this->redirect_back();
+		}
+
+		set_transient( $this->results_transient_key(), array(
+			'stage'     => 'menus_result',
+			'menus'     => $result['menus'],
+			'locations' => $result['locations'],
+		), 5 * MINUTE_IN_SECONDS );
+
+		$this->redirect_back();
+	}
+
+	/**
+	 * Menu scanner — fetch a source page, extract its header/footer navigation,
+	 * and prefill the import box with the resulting JSON for review. Reuses the
+	 * FW_Site_Converter_Menus::scan_page engine (and the media engine's fetch).
+	 */
+	private function run_scan_menus() {
+		$url  = isset( $_POST['fw_sc_menus_url'] ) ? esc_url_raw( trim( wp_unslash( $_POST['fw_sc_menus_url'] ) ) ) : '';
+		$scan = FW_Site_Converter_Menus::scan_page( $url );
+
+		// Hard error (couldn't fetch / nothing at all) → message only.
+		if ( $scan['error'] !== '' && ! $scan['menus'] ) {
+			set_transient( $this->results_transient_key(), array( 'error' => $scan['error'] ), 5 * MINUTE_IN_SECONDS );
+			$this->redirect_back();
+		}
+
+		$json = wp_json_encode( array( 'menus' => $scan['menus'] ), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+
+		set_transient( $this->results_transient_key(), array(
+			'stage'   => 'menus_scanned',
+			'source'  => $scan['source'],
+			'menus'   => $scan['menus'],
+			'prefill' => (string) $json,
+		), 30 * MINUTE_IN_SECONDS );
 
 		$this->redirect_back();
 	}
@@ -283,11 +338,13 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			delete_transient( $this->results_transient_key() );
 		}
 		$stage = is_array( $data ) && isset( $data['stage'] ) ? $data['stage'] : '';
+		// When a menu scan just ran, prefill the import box with its JSON.
+		$menus_prefill = ( $stage === 'menus_scanned' && isset( $data['prefill'] ) ) ? (string) $data['prefill'] : '';
 		?>
 		<div class="wrap fw-ext-site-converter">
 			<h1 class="wp-heading-inline"><?php esc_html_e( 'Convert — AI Site Importer', 'fw' ); ?></h1>
 			<p class="description" style="max-width:54em">
-				<?php esc_html_e( 'Bring an AI-generated site into WordPress. Scan a source page (or paste URLs) to PREVIEW its images, pick the ones you want, then import them into your Media Library (de-duped by source URL). Below, you can also import a Styling Presets export. Menus and a one-shot bundle import are coming next.', 'fw' ); ?>
+				<?php esc_html_e( 'Bring an AI-generated site into WordPress. Scan a source page (or paste URLs) to PREVIEW its images, pick the ones you want, then import them into your Media Library (de-duped by source URL). Below, you can also import a Styling Presets export and the site navigation (header / footer menus). A one-shot bundle import is coming next.', 'fw' ); ?>
 			</p>
 
 			<?php
@@ -299,6 +356,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				$this->render_results( $data );
 			} elseif ( $stage === 'presets_result' ) {
 				$this->render_presets_result( $data );
+			} elseif ( $stage === 'menus_result' ) {
+				$this->render_menus_result( $data );
+			} elseif ( $stage === 'menus_scanned' ) {
+				$this->render_menus_scanned( $data );
 			}
 			?>
 
@@ -350,6 +411,41 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<button type="submit" class="button button-primary"><?php esc_html_e( 'Import presets', 'fw' ); ?></button>
 				</p>
 			</form>
+
+			<hr style="margin:2.5em 0">
+
+			<h2><?php esc_html_e( 'Import Menus', 'fw' ); ?></h2>
+			<p class="description" style="max-width:54em">
+				<?php esc_html_e( 'Scan a source page to extract its header / footer navigation automatically, or paste the menus JSON yourself. Each menu is created (or rebuilt if it already exists) from its items and assigned to a theme menu location. Internal links that match an existing page become real page menu items; everything else becomes a custom link. Re-running rebuilds the same menus — it never duplicates them.', 'fw' ); ?>
+			</p>
+
+			<form method="post" action="" style="margin:0 0 1em">
+				<?php wp_nonce_field( self::NONCE ); ?>
+				<input type="hidden" name="fw_sc_step" value="scan_menus">
+				<input type="url" name="fw_sc_menus_url" class="regular-text" style="width:28em;max-width:100%" placeholder="https://source-site.com/" value="<?php echo esc_attr( $stage === 'menus_scanned' && isset( $data['source'] ) ? $data['source'] : '' ); ?>">
+				<button type="submit" class="button"><?php esc_html_e( 'Scan navigation', 'fw' ); ?></button>
+				<span class="description" style="margin-left:.5em"><?php esc_html_e( 'Fetches the page and fills the box below for review.', 'fw' ); ?></span>
+			</form>
+			<?php
+			$loc_slugs = array_keys( FW_Site_Converter_Menus::registered_locations() );
+			?>
+			<form method="post" action="">
+				<?php wp_nonce_field( self::NONCE ); ?>
+				<input type="hidden" name="fw_sc_step" value="import_menus">
+				<textarea name="fw_sc_menus_json" rows="14" class="large-text code" spellcheck="false" placeholder='{ "menus": [ { "name": "Primary", "location": "primary", "items": [ { "label": "Home", "url": "/" }, { "label": "About", "url": "/about" }, { "label": "Services", "url": "#", "children": [ { "label": "Design", "url": "/services/design" } ] } ] }, { "name": "Footer", "location": "footer", "items": [ { "label": "Privacy", "url": "/privacy" } ] } ] }'><?php echo esc_textarea( $menus_prefill ); ?></textarea>
+				<p class="description">
+					<?php
+					if ( $loc_slugs ) {
+						echo esc_html( sprintf( __( 'This theme\'s menu locations: %s. (If you omit "location", Primary / Footer names are matched to those automatically.)', 'fw' ), implode( ', ', $loc_slugs ) ) );
+					} else {
+						esc_html_e( 'The active theme registers no menu locations — menus will be created but you\'ll assign them under Appearance → Menus.', 'fw' );
+					}
+					?>
+				</p>
+				<p class="submit">
+					<button type="submit" class="button button-primary"><?php esc_html_e( 'Import menus', 'fw' ); ?></button>
+				</p>
+			</form>
 		</div>
 		<?php
 	}
@@ -382,6 +478,89 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		if ( ! empty( $skipped ) ) {
 			echo '<div class="notice notice-info is-dismissible"><p>'
 				. esc_html( sprintf( __( 'Skipped unknown keys: %s', 'fw' ), implode( ', ', $skipped ) ) )
+				. '</p></div>';
+		}
+	}
+
+	/**
+	 * Success / detail notice after a menus import.
+	 *
+	 * @param array $data
+	 */
+	private function render_menus_result( array $data ) {
+		$menus     = isset( $data['menus'] ) && is_array( $data['menus'] ) ? $data['menus'] : array();
+		$locations = isset( $data['locations'] ) && is_array( $data['locations'] ) ? $data['locations'] : array();
+
+		$built = array_filter( $menus, function ( $m ) {
+			return empty( $m['error'] );
+		} );
+
+		if ( empty( $built ) ) {
+			echo '<div class="notice notice-warning is-dismissible"><p>'
+				. esc_html__( 'No menus were imported — check the JSON shape (a { "menus": [ … ] } object, each menu with a name and items).', 'fw' )
+				. '</p></div>';
+		} else {
+			$parts = array();
+			foreach ( $built as $m ) {
+				$where    = ! empty( $m['assigned'] )
+					? sprintf( /* translators: %s: location slug */ __( '→ %s', 'fw' ), $m['location'] )
+					: __( '(not assigned)', 'fw' );
+				$parts[] = sprintf( '%1$s: %2$d item(s) %3$s', $m['name'], (int) $m['items'], $where );
+			}
+			echo '<div class="notice notice-success is-dismissible"><p><strong>'
+				. esc_html( sprintf(
+					_n( 'Imported %d menu:', 'Imported %d menus:', count( $built ), 'fw' ),
+					count( $built )
+				) ) . '</strong> ' . esc_html( implode( '; ', $parts ) ) . '</p></div>';
+		}
+
+		// Per-menu errors / unassigned warnings.
+		foreach ( $menus as $m ) {
+			if ( ! empty( $m['error'] ) ) {
+				echo '<div class="notice notice-error is-dismissible"><p>'
+					. esc_html( sprintf( __( 'Menu "%1$s": %2$s', 'fw' ), isset( $m['name'] ) ? $m['name'] : '', $m['error'] ) )
+					. '</p></div>';
+			} elseif ( empty( $m['assigned'] ) ) {
+				$loc = isset( $m['location'] ) && $m['location'] !== '' ? $m['location'] : '';
+				$msg = $loc !== ''
+					? sprintf( __( 'Menu "%1$s" was created but its location "%2$s" is not registered by the active theme — assign it under Appearance → Menus.', 'fw' ), $m['name'], $loc )
+					: sprintf( __( 'Menu "%1$s" was created but not assigned to a location (none given) — assign it under Appearance → Menus.', 'fw' ), $m['name'] );
+				echo '<div class="notice notice-info is-dismissible"><p>' . esc_html( $msg ) . '</p></div>';
+			}
+		}
+
+		if ( $locations ) {
+			echo '<p class="description">'
+				. esc_html( sprintf( __( 'Theme menu locations: %s', 'fw' ), implode( ', ', array_keys( $locations ) ) ) )
+				. '</p>';
+		}
+	}
+
+	/**
+	 * Notice after a nav scan — what was extracted (the JSON is prefilled below).
+	 *
+	 * @param array $data
+	 */
+	private function render_menus_scanned( array $data ) {
+		$menus  = isset( $data['menus'] ) && is_array( $data['menus'] ) ? $data['menus'] : array();
+		$source = isset( $data['source'] ) ? $data['source'] : '';
+
+		$parts = array();
+		foreach ( $menus as $m ) {
+			$count   = isset( $m['items'] ) && is_array( $m['items'] ) ? count( $m['items'] ) : 0;
+			$parts[] = sprintf( '%1$s (%2$d)', isset( $m['name'] ) ? $m['name'] : '?', $count );
+		}
+
+		if ( $parts ) {
+			echo '<div class="notice notice-info is-dismissible"><p>'
+				. esc_html( sprintf(
+					/* translators: 1: source URL, 2: list like "Primary (5), Footer (8)" */
+					__( 'Scanned %1$s — extracted %2$s top-level item(s). Review the JSON below (edit if needed) and click “Import menus”.', 'fw' ),
+					esc_url( $source ), implode( ', ', $parts )
+				) ) . '</p></div>';
+		} else {
+			echo '<div class="notice notice-warning is-dismissible"><p>'
+				. esc_html__( 'No navigation was found in that page. If it is a JavaScript app, paste the menus JSON manually.', 'fw' )
 				. '</p></div>';
 		}
 	}
