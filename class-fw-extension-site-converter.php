@@ -32,6 +32,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 */
 	public function _init() {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-media.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-presets.php' );
 
 		if ( is_admin() ) {
 			add_action( 'admin_menu', array( $this, '_action_admin_menu' ), 30 );
@@ -107,9 +108,34 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		if ( $step === 'import' ) {
 			$this->run_import();
+		} elseif ( $step === 'import_presets' ) {
+			$this->run_import_presets();
 		} else {
 			$this->run_scan();
 		}
+	}
+
+	/**
+	 * Styling-presets tool — apply a pasted `_fw_presets_export` / `presets.json`
+	 * to the theme-independent preset store (palette, font sizes, button colors,
+	 * spacing/gap scales, …). Reuses the FW_Site_Converter_Presets engine.
+	 */
+	private function run_import_presets() {
+		$raw    = isset( $_POST['fw_sc_presets_json'] ) ? (string) wp_unslash( $_POST['fw_sc_presets_json'] ) : '';
+		$result = FW_Site_Converter_Presets::import_json( $raw );
+
+		if ( $result['error'] !== '' ) {
+			set_transient( $this->results_transient_key(), array( 'error' => $result['error'] ), 5 * MINUTE_IN_SECONDS );
+			$this->redirect_back();
+		}
+
+		set_transient( $this->results_transient_key(), array(
+			'stage'    => 'presets_result',
+			'imported' => $result['imported'],
+			'skipped'  => $result['skipped'],
+		), 5 * MINUTE_IN_SECONDS );
+
+		$this->redirect_back();
 	}
 
 	/**
@@ -261,7 +287,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		<div class="wrap fw-ext-site-converter">
 			<h1 class="wp-heading-inline"><?php esc_html_e( 'Convert — AI Site Importer', 'fw' ); ?></h1>
 			<p class="description" style="max-width:54em">
-				<?php esc_html_e( 'Bring an AI-generated site into WordPress. Scan a source page (or paste URLs) to PREVIEW its images, pick the ones you want, then import them into your Media Library (de-duped by source URL). Presets, menus and a one-shot bundle import are coming next.', 'fw' ); ?>
+				<?php esc_html_e( 'Bring an AI-generated site into WordPress. Scan a source page (or paste URLs) to PREVIEW its images, pick the ones you want, then import them into your Media Library (de-duped by source URL). Below, you can also import a Styling Presets export. Menus and a one-shot bundle import are coming next.', 'fw' ); ?>
 			</p>
 
 			<?php
@@ -271,6 +297,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				$this->render_preview( $data );
 			} elseif ( $stage === 'results' ) {
 				$this->render_results( $data );
+			} elseif ( $stage === 'presets_result' ) {
+				$this->render_presets_result( $data );
 			}
 			?>
 
@@ -306,8 +334,56 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<button type="submit" class="button button-primary"><?php esc_html_e( 'Scan for images', 'fw' ); ?></button>
 				</p>
 			</form>
+
+			<hr style="margin:2.5em 0">
+
+			<h2><?php esc_html_e( 'Import Styling Presets', 'fw' ); ?></h2>
+			<p class="description" style="max-width:54em">
+				<?php esc_html_e( 'Paste the presets JSON your agent produced (the presets.json / _fw_presets_export payload from the conversion contract). It writes the palette, font sizes, button colors, and spacing / gap scales into your site\'s Styling Presets in one step. Only known preset keys are applied — anything else is skipped.', 'fw' ); ?>
+			</p>
+			<form method="post" action="">
+				<?php wp_nonce_field( self::NONCE ); ?>
+				<input type="hidden" name="fw_sc_step" value="import_presets">
+				<textarea name="fw_sc_presets_json" rows="10" class="large-text code" spellcheck="false" placeholder='{ "values": { "theme_colors": [ ... ], "font_sizes": [ ... ] } }'></textarea>
+				<p class="description"><?php echo esc_html( sprintf( __( 'Importable keys: %s.', 'fw' ), implode( ', ', FW_Site_Converter_Presets::allowed_keys() ) ) ); ?></p>
+				<p class="submit">
+					<button type="submit" class="button button-primary"><?php esc_html_e( 'Import presets', 'fw' ); ?></button>
+				</p>
+			</form>
 		</div>
 		<?php
+	}
+
+	/**
+	 * Success / skip notice after a presets import.
+	 *
+	 * @param array $data
+	 */
+	private function render_presets_result( array $data ) {
+		$imported = isset( $data['imported'] ) && is_array( $data['imported'] ) ? $data['imported'] : array();
+		$skipped  = isset( $data['skipped'] ) && is_array( $data['skipped'] ) ? $data['skipped'] : array();
+
+		if ( empty( $imported ) ) {
+			echo '<div class="notice notice-warning is-dismissible"><p>'
+				. esc_html__( 'No known preset keys were found in that payload — nothing was imported.', 'fw' )
+				. '</p></div>';
+		} else {
+			$parts = array();
+			foreach ( $imported as $key => $count ) {
+				$parts[] = $key . ' (' . (int) $count . ')';
+			}
+			echo '<div class="notice notice-success is-dismissible"><p><strong>'
+				. esc_html( sprintf(
+					_n( 'Imported %d preset group:', 'Imported %d preset groups:', count( $imported ), 'fw' ),
+					count( $imported )
+				) ) . '</strong> ' . esc_html( implode( ', ', $parts ) ) . '</p></div>';
+		}
+
+		if ( ! empty( $skipped ) ) {
+			echo '<div class="notice notice-info is-dismissible"><p>'
+				. esc_html( sprintf( __( 'Skipped unknown keys: %s', 'fw' ), implode( ', ', $skipped ) ) )
+				. '</p></div>';
+		}
 	}
 
 	/**

@@ -96,11 +96,27 @@ JS-bundle refs must carry a raster extension (png/jpg/jpeg/gif/webp/avif/bmp).
 3. Re-run the same URL → every row shows **reused** (de-dup works; no duplicate attachments).
 4. URL-list mode: paste a couple of direct image URLs → imported. An extension-less image URL
    still lands with a correct type (sniffed).
+5. Presets: paste a presets export (a `{ "values": { … } }` JSON) → **Import presets** → a success
+   notice lists the imported keys + counts; Shortcode Settings → presets reflect them. A non-preset
+   key in the payload shows as skipped.
+
+## Styling Presets importer (shipped)
+
+`includes/class-fw-site-converter-presets.php` (`FW_Site_Converter_Presets`) applies a presets
+export to the theme-independent store. `import($array)` / `import_json($string)` accept either a
+`{ "values": { key: value, … } }` envelope (tolerating a leading `_fw_presets_export` / `_note`
+metadata block) or a raw `key => value` map; keys starting with `_` are ignored. Each whitelisted
+key is written via `FW_WP_Option::set( 'fw_ext_settings_options:shortcodes', $key, $value )` — the
+same option `unysonplus_preset_store_get()` reads. **Whitelist** (`ALLOWED_KEYS`): `theme_colors`,
+`font_sizes`, `button_colors`, `button_sizes`, `button_animations`, `border_presets`,
+`table_presets`, `spacing_scale`, `gap_scale`, `default_gap`, `default_gap_x`, `default_gap_y`.
+Unknown keys are reported as **skipped** (never written), so a stray key can't pollute the option.
+Static so the future Convert bundle / WP-CLI can reuse it (mirrors the media engine). Admin wiring:
+the `import_presets` step on the Convert page → PRG redirect + result transient (`presets_result`
+stage). Returns `{ imported: {key:count}, skipped: [keys], error: '' }`.
 
 ## Roadmap (next slices)
 
-- **Presets importer** — `_fw_presets_export` → `fw_ext_settings_options:shortcodes` (contract
-  §1.4, the top gap). Mirror the theme-settings export/import in `unysonplus-theme`.
 - **Menu importer** — create Primary/Footer menus + assign (contract §3.3).
 - **Convert bundle** — ingest one `.zip`/JSON (manifest + presets + theme settings + page
   templates + media manifest) and apply Phases 1–5, using this media engine for the media phase.

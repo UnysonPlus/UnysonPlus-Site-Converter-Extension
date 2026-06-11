@@ -7,11 +7,11 @@ $manifest = array();
 $manifest['name']        = __( 'Site Converter', 'fw' );
 $manifest['slug']        = 'unysonplus-site-converter';
 $manifest['description'] = __(
-	'Bring an AI-generated website into WordPress. The admin home (Unyson+ → Convert) for the AI-site importer: it ingests the artifacts an agent emits per the conversion contract and applies them to the site. This release ships the Media tool — fetch the source site\'s images into the Media Library (de-duped by source URL) from a pasted URL list or by scanning a page. Presets import, menu import, and a one-shot "Convert bundle" are coming next.',
+	'Bring an AI-generated website into WordPress. The admin home (Unyson+ → Convert) for the AI-site importer: it ingests the artifacts an agent emits per the conversion contract and applies them to the site. Ships two tools so far: the Media tool — fetch the source site\'s images into the Media Library (de-duped by source URL) from a pasted URL list or by scanning a page — and the Styling Presets importer, which applies a presets export (palette, font sizes, button colors, spacing/gap scales) into the theme-independent preset store in one step. Menu import and a one-shot "Convert bundle" are coming next.',
 	'fw'
 );
 
-$manifest['version']       = '1.0.3';
+$manifest['version']       = '1.0.4';
 $manifest['github_update'] = 'UnysonPlus/UnysonPlus-Site-Converter-Extension';
 $manifest['display']       = true;
 $manifest['standalone']    = true;
