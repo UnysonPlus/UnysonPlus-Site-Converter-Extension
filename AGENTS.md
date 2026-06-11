@@ -215,6 +215,30 @@ bundle.zip
 └── menus.json          ({ "menus": [ … ] })                 → FW_Site_Converter_Menus::import
 ```
 
+### Authoring a bundle — verified gotchas (from the SmartRoute SPA round-trip)
+
+The importer writes whatever shape it's given, so the **emitter** must match the plugin's exact
+shapes. Three that bit a real conversion and will bite again:
+
+1. **Per-shortcode att keys are exact.** Clone shapes from a real export (the canonical reference is
+   `examples/static-html-site/full-page-template.json` in the conversion repo) and only swap content.
+   E.g. `text_block`'s content field id is **`text`** (not `content`); `special_heading` uses
+   `title` / `overline` / `heading`; `icon_box` uses `custom_icon` (inline SVG) / `title` / `content`.
+   Column `width` is a **top-level** key (`"1_3"`), not an att.
+2. **`misc_custom_css` is a `multi` option** → its value MUST be `{ "custom_css": "…" }`, **not a raw
+   string**. A string makes the Theme Settings admin page do `$value['custom_css']` on a string →
+   fatal → blank page (recover with the Theme Settings Doctor; fix the design file). Other
+   theme-settings ids that are containers (uploads, multis) likewise need their object shape.
+3. **Carried design CSS must be admin-scoped.** `misc_custom_css` is `wp_head`-only, but the asset
+   optimizer **absorbs it into a combined bundle that also loads in wp-admin** — so bare global
+   selectors (`body{}`, `h1–h6{}`, `a{}`) restyle the admin. Scope them to **`body:not(.wp-admin)`**.
+   Page-scoped classes (`.sr-card`, `#masthead`, `#colophon`) are safe.
+
+For client-rendered SPAs (React / Vite / Lovable), the page must be **rendered** to extract content +
+tokens — `chrome --headless --dump-dom` (run the JS) for the DOM, `--screenshot` for the look, and the
+linked stylesheet for the token system. Images are usually lazy-loaded (the URL-list `media.json`
+captures only what's statically reachable; the building agent can supply the rest).
+
 `import_zip($path)` → `unzip_file` (WP_Filesystem) into a temp dir, `import_dir()`, then delete the
 temp dir. `import_dir($dir)` (reusable if already unzipped) `locate_root()`s the bundle (handles a
 single wrapping folder), reads each known file, and runs media → presets → theme settings → pages →
