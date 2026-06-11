@@ -33,12 +33,11 @@ class FW_Site_Converter_Bundle {
 	const FILE_MEDIA          = array( 'media.json' );
 	const FILE_PRESETS        = array( 'presets.json' );
 	const FILE_THEME_SETTINGS = array( 'theme-settings.json', 'theme_settings.json' );
+	const FILE_PAGES          = array( 'pages.json' );
 	const FILE_MENUS          = array( 'menus.json' );
 
 	/** Sections we recognize but can't apply yet (reported as deferred). */
-	const DEFERRED = array(
-		'pages' => 'pages.json',
-	);
+	const DEFERRED = array();
 
 	/**
 	 * Unzip a bundle to a temp dir, apply it, then clean up.
@@ -129,7 +128,14 @@ class FW_Site_Converter_Bundle {
 			$out['sections'][]     = 'theme-settings';
 		}
 
-		// --- Phase 4 (pages): reserved, reported as deferred ---
+		// --- Phase 4: pages (page-builder trees → WordPress pages) ---
+		$pages = self::read_json( $dir, self::FILE_PAGES );
+		if ( $pages !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
+			$out['pages']      = FW_Site_Converter_Pages::import( $pages );
+			$out['sections'][] = 'pages';
+		}
+
+		// --- Any sections recognized but not yet applied ---
 		foreach ( self::DEFERRED as $name => $file ) {
 			$present = is_file( trailingslashit( $dir ) . $file )
 				|| ( $name === 'pages' && is_dir( trailingslashit( $dir ) . 'pages' ) );
@@ -146,7 +152,7 @@ class FW_Site_Converter_Bundle {
 		}
 
 		if ( ! $out['sections'] ) {
-			$out['error'] = __( 'The bundle had no recognized sections (media.json, presets.json, theme-settings.json, menus.json).', 'fw' );
+			$out['error'] = __( 'The bundle had no recognized sections (media.json, presets.json, theme-settings.json, pages.json, menus.json).', 'fw' );
 		}
 
 		return $out;
@@ -162,6 +168,7 @@ class FW_Site_Converter_Bundle {
 			'media'          => null,
 			'presets'        => null,
 			'theme_settings' => null,
+			'pages'          => null,
 			'menus'          => null,
 			'sections'       => array(),
 			'deferred'       => array(),
@@ -222,7 +229,7 @@ class FW_Site_Converter_Bundle {
 	 * @return string
 	 */
 	private static function locate_root( $dir ) {
-		$markers = array_merge( self::FILE_MANIFEST, self::FILE_MEDIA, self::FILE_PRESETS, self::FILE_THEME_SETTINGS, self::FILE_MENUS );
+		$markers = array_merge( self::FILE_MANIFEST, self::FILE_MEDIA, self::FILE_PRESETS, self::FILE_THEME_SETTINGS, self::FILE_PAGES, self::FILE_MENUS );
 		foreach ( $markers as $m ) {
 			if ( is_file( trailingslashit( $dir ) . $m ) ) {
 				return $dir;

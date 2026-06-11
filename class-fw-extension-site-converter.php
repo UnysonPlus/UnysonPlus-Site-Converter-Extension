@@ -35,6 +35,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-presets.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-menus.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-theme-settings.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-pages.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-bundle.php' );
 
 		if ( is_admin() ) {
@@ -117,6 +118,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			$this->run_import_theme_settings();
 		} elseif ( $step === 'reset_theme_settings' ) {
 			$this->run_reset_theme_settings();
+		} elseif ( $step === 'import_pages' ) {
+			$this->run_import_pages();
 		} elseif ( $step === 'import_menus' ) {
 			$this->run_import_menus();
 		} elseif ( $step === 'scan_menus' ) {
@@ -186,6 +189,27 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'stage'       => 'theme_reset',
 			'option_name' => $res['option_name'],
 			'existed'     => ! empty( $res['existed'] ),
+		), 5 * MINUTE_IN_SECONDS );
+
+		$this->redirect_back();
+	}
+
+	/**
+	 * Pages tool — create WordPress pages from a pasted pages JSON (page-builder
+	 * trees). Reuses the FW_Site_Converter_Pages engine.
+	 */
+	private function run_import_pages() {
+		$raw    = isset( $_POST['fw_sc_pages_json'] ) ? (string) wp_unslash( $_POST['fw_sc_pages_json'] ) : '';
+		$result = FW_Site_Converter_Pages::import_json( $raw );
+
+		if ( $result['error'] !== '' && ! $result['pages'] ) {
+			set_transient( $this->results_transient_key(), array( 'error' => $result['error'] ), 5 * MINUTE_IN_SECONDS );
+			$this->redirect_back();
+		}
+
+		set_transient( $this->results_transient_key(), array(
+			'stage' => 'pages_result',
+			'pages' => $result['pages'],
 		), 5 * MINUTE_IN_SECONDS );
 
 		$this->redirect_back();
@@ -446,6 +470,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				$this->render_presets_result( $data );
 			} elseif ( $stage === 'theme_result' ) {
 				$this->render_theme_result( $data );
+			} elseif ( $stage === 'pages_result' ) {
+				$this->render_pages_result( $data );
 			} elseif ( $stage === 'menus_result' ) {
 				$this->render_menus_result( $data );
 			} elseif ( $stage === 'menus_scanned' ) {
@@ -457,7 +483,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 			<h2><?php esc_html_e( 'Convert from a bundle (.zip)', 'fw' ); ?></h2>
 			<p class="description" style="max-width:54em">
-				<?php esc_html_e( 'The one-shot path. Upload the .zip your agent produced and every phase it contains is applied in order: media (media.json) → styling presets (presets.json) → theme settings (theme-settings.json) → menus (menus.json). Pages are recognized but not applied yet. Prefer to go piece by piece? Use the individual tools below.', 'fw' ); ?>
+				<?php esc_html_e( 'The one-shot path. Upload the .zip your agent produced and every phase it contains is applied in order: media (media.json) → styling presets (presets.json) → theme settings (theme-settings.json) → pages (pages.json) → menus (menus.json). Prefer to go piece by piece? Use the individual tools below.', 'fw' ); ?>
 			</p>
 			<form method="post" action="" enctype="multipart/form-data">
 				<?php wp_nonce_field( self::NONCE ); ?>
@@ -588,6 +614,22 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 			<hr style="margin:2.5em 0">
 
+			<h2><?php esc_html_e( 'Import Pages', 'fw' ); ?></h2>
+			<p class="description" style="max-width:54em">
+				<?php esc_html_e( 'Paste the page bodies as JSON — each is created as a WordPress page from its page-builder tree. The plugin generates the content with its own encoder (nothing is hand-coded), so each page stays fully editable in the builder. Pages are matched by slug, so re-running updates rather than duplicates. Tip: start with a single page to confirm it renders and opens in the builder before importing many.', 'fw' ); ?>
+			</p>
+			<form method="post" action="">
+				<?php wp_nonce_field( self::NONCE ); ?>
+				<input type="hidden" name="fw_sc_step" value="import_pages">
+				<textarea name="fw_sc_pages_json" rows="12" class="large-text code" spellcheck="false" placeholder='{ "pages": [ { "title": "Home", "slug": "home", "front_page": true, "builder": [ { "type": "section", "atts": {}, "_items": [] } ] } ] }'></textarea>
+				<p class="description"><?php esc_html_e( 'Each page: title, optional slug / status / front_page, and a "builder" tree (array of sections) or a stringified "json".', 'fw' ); ?></p>
+				<p class="submit">
+					<button type="submit" class="button button-primary"><?php esc_html_e( 'Import pages', 'fw' ); ?></button>
+				</p>
+			</form>
+
+			<hr style="margin:2.5em 0">
+
 			<h2><?php esc_html_e( 'Import Menus', 'fw' ); ?></h2>
 			<p class="description" style="max-width:54em">
 				<?php esc_html_e( 'Scan a source page to extract its header / footer navigation automatically, or paste the menus JSON yourself. Each menu is created (or rebuilt if it already exists) from its items and assigned to a theme menu location. Internal links that match an existing page become real page menu items; everything else becomes a custom link. Re-running rebuilds the same menus — it never duplicates them.', 'fw' ); ?>
@@ -687,6 +729,66 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			echo '<div class="notice notice-info is-dismissible"><p>'
 				. esc_html( sprintf( __( 'Skipped operational keys (analytics / scripts / maintenance): %s', 'fw' ), implode( ', ', $skipped ) ) )
 				. '</p></div>';
+		}
+	}
+
+	/**
+	 * Result table after a pages import (created / updated, with edit + view links).
+	 *
+	 * @param array $data
+	 */
+	private function render_pages_result( array $data ) {
+		$pages = isset( $data['pages'] ) && is_array( $data['pages'] ) ? $data['pages'] : array();
+		$ok    = array_filter( $pages, function ( $p ) {
+			return empty( $p['error'] ) && ! empty( $p['id'] );
+		} );
+
+		$created = 0;
+		$updated = 0;
+		foreach ( $ok as $p ) {
+			if ( ! empty( $p['created'] ) ) {
+				$created++;
+			} else {
+				$updated++;
+			}
+		}
+
+		if ( empty( $ok ) ) {
+			echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html__( 'No pages were created.', 'fw' ) . '</p></div>';
+		} else {
+			echo '<div class="notice notice-success is-dismissible"><p><strong>'
+				. esc_html( sprintf( __( 'Imported %1$d page(s): %2$d created, %3$d updated.', 'fw' ), count( $ok ), $created, $updated ) )
+				. '</strong></p></div>';
+		}
+
+		foreach ( $pages as $p ) {
+			if ( ! empty( $p['error'] ) ) {
+				echo '<div class="notice notice-error is-dismissible"><p>'
+					. esc_html( sprintf( __( 'Page "%1$s": %2$s', 'fw' ), isset( $p['title'] ) ? $p['title'] : '', $p['error'] ) )
+					. '</p></div>';
+			}
+		}
+
+		if ( $ok ) {
+			echo '<table class="widefat striped" style="margin-bottom:1.5em"><thead><tr><th>'
+				. esc_html__( 'Page', 'fw' ) . '</th><th style="width:90px">' . esc_html__( 'Status', 'fw' )
+				. '</th><th style="width:150px">' . esc_html__( 'Links', 'fw' ) . '</th></tr></thead><tbody>';
+			foreach ( $ok as $p ) {
+				$edit = get_edit_post_link( $p['id'], 'raw' );
+				$view = get_permalink( $p['id'] );
+				echo '<tr><td>' . esc_html( $p['title'] ) . ' <code style="font-size:11px">/' . esc_html( $p['slug'] ) . '</code>'
+					. ( ! empty( $p['front_page'] ) ? ' <span style="color:#1a7f37">' . esc_html__( '(front page)', 'fw' ) . '</span>' : '' ) . '</td>';
+				echo '<td>' . ( ! empty( $p['created'] ) ? esc_html__( 'created', 'fw' ) : esc_html__( 'updated', 'fw' ) ) . '</td>';
+				echo '<td>';
+				if ( $edit ) {
+					echo '<a href="' . esc_url( $edit ) . '">' . esc_html__( 'Edit', 'fw' ) . '</a> ';
+				}
+				if ( $view ) {
+					echo '&middot; <a href="' . esc_url( $view ) . '" target="_blank" rel="noopener">' . esc_html__( 'View', 'fw' ) . '</a>';
+				}
+				echo '</td></tr>';
+			}
+			echo '</tbody></table>';
 		}
 	}
 
@@ -810,6 +912,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			$lines[] = $ti
 				? sprintf( __( 'Theme settings — %1$d key(s): %2$s.', 'fw' ), count( $ti ), implode( ', ', $ti ) )
 				: __( 'Theme settings — nothing applied.', 'fw' );
+		}
+
+		if ( isset( $data['pages']['pages'] ) && is_array( $data['pages']['pages'] ) ) {
+			$pp = array_filter( $data['pages']['pages'], function ( $p ) {
+				return empty( $p['error'] ) && ! empty( $p['id'] );
+			} );
+			$created = count( array_filter( $pp, function ( $p ) { return ! empty( $p['created'] ); } ) );
+			$lines[] = $pp
+				? sprintf( __( 'Pages — %1$d (%2$d created, %3$d updated).', 'fw' ), count( $pp ), $created, count( $pp ) - $created )
+				: __( 'Pages — none created.', 'fw' );
 		}
 
 		if ( isset( $data['menus']['menus'] ) && is_array( $data['menus']['menus'] ) ) {

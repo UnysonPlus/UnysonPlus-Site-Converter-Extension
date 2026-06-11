@@ -13,10 +13,9 @@ conversion initiative; see `d:\Web Dev\ai-to-wordpress-conversion-contract.md` a
 `ai-to-wordpress-conversion-plan.md`). It ingests the artifacts an agent emits per the
 conversion contract and applies them to the site, replacing today's manual import steps.
 
-Built incrementally. **Shipped so far: the Media tool, the Styling Presets importer, the Menu
-importer, the Theme-settings importer, and the one-shot Convert bundle** (orchestrates media +
-presets + theme settings + menus from one `.zip`). Planned next: the pages importer (the last
-bundle phase).
+Built incrementally. **All five phases now ship:** the Media tool, the Styling Presets importer, the
+Theme-settings importer, the Pages importer, and the Menu importer — plus the one-shot **Convert
+bundle** that runs all of them from a single `.zip`. The conversion pipeline is feature-complete.
 
 ## Structure
 
@@ -29,6 +28,7 @@ site-converter/
     ├── class-fw-site-converter-presets.php        ← styling-presets importer (static)
     ├── class-fw-site-converter-menus.php          ← nav-menu importer + scanner (static)
     ├── class-fw-site-converter-theme-settings.php ← theme-settings (design file) importer (static)
+    ├── class-fw-site-converter-pages.php          ← pages importer (builder trees → WP pages, static)
     └── class-fw-site-converter-bundle.php         ← one-shot bundle orchestrator (static)
 ```
 
@@ -180,6 +180,25 @@ theme regenerates assets / flushes cache, and flags a `cross_theme` warning if t
 differs. Admin wiring: the `import_theme_settings` step → `theme_result` stage. Returns
 `{ imported: [ids], skipped: [ids], cross_theme: bool, error }`.
 
+## Pages importer (shipped)
+
+`includes/class-fw-site-converter-pages.php` (`FW_Site_Converter_Pages`) creates WordPress pages from
+page-builder content (contract §2 — the builder-tree JSON). **It never hand-authors the encoded
+shortcode string** (contract rule #1): it `wp_insert_post`s a `page`, then sets the post's
+`page-builder` option via `fw_set_db_post_option($post_id, 'page-builder', { json, builder_active:true })`.
+That fires the page-builder extension's own `fw_post_options_update` hook
+(`_action_fw_post_options_update`), which regenerates `post_content` from the tree with the plugin's
+encoder (`json_to_shortcodes`). Setting the option this way is **side-effect-safe** — it doesn't read
+`$_POST`, so it can't wipe other post options the way a programmatic `save_post` would.
+
+Payload: `{ "pages": [ { title, slug?, status?, front_page?, builder:[…] | json:"…" } ] }` (or a bare
+list / single object). The `builder` value is the §2.1 tree (array of sections) — normalized to a JSON
+**string** before storage (the option's `json` is a string). **Idempotent by slug** (`get_page_by_path`
+→ update, else create); optional `front_page` sets `show_on_front`/`page_on_front`. Per-leaf **att keys
+are the agent's responsibility** (per each shortcode's `AGENTS.md`) — e.g. `text_block`'s content field
+id is `text`, not `content`. Admin wiring: the `import_pages` step → `pages_result` stage (a table with
+Edit/View links). Returns `{ pages: [ {title, slug, id, created, front_page, error} ], error }`.
+
 ## Convert bundle (shipped — one-shot orchestrator)
 
 `includes/class-fw-site-converter-bundle.php` (`FW_Site_Converter_Bundle`) ingests one agent-produced
@@ -192,21 +211,23 @@ bundle.zip
 ├── media.json          ({ "urls": [ … ] })                  → FW_Site_Converter_Media::import_urls
 ├── presets.json        ({ "values": { theme_colors:[…] } }) → FW_Site_Converter_Presets::import
 ├── theme-settings.json ({ "values": { id: value } })        → FW_Site_Converter_Theme_Settings::import
-├── menus.json          ({ "menus": [ … ] })                 → FW_Site_Converter_Menus::import
-└── pages.json / pages/ (reserved — reported as deferred)
+├── pages.json          ({ "pages": [ … ] })                 → FW_Site_Converter_Pages::import
+└── menus.json          ({ "menus": [ … ] })                 → FW_Site_Converter_Menus::import
 ```
 
 `import_zip($path)` → `unzip_file` (WP_Filesystem) into a temp dir, `import_dir()`, then delete the
 temp dir. `import_dir($dir)` (reusable if already unzipped) `locate_root()`s the bundle (handles a
-single wrapping folder), reads each known file, and runs media → presets → theme settings → menus,
-returning a combined `{ manifest, media{imported,reused,failed,total}, presets{imported,skipped},
-theme_settings{imported,skipped,…}, menus{…}, sections[], deferred[], error }`. A `pages.json` /
-`pages/` is detected and listed in `deferred` (no engine yet). Admin wiring: the `import_bundle` step (a `multipart/form-data` upload validated as a
+single wrapping folder), reads each known file, and runs media → presets → theme settings → pages →
+menus, returning a combined `{ manifest, media{imported,reused,failed,total}, presets{imported,skipped},
+theme_settings{imported,skipped,…}, pages{pages[…]}, menus{…}, sections[], deferred[], error }`. All
+five phases are wired; `deferred` stays empty unless a future, not-yet-supported section appears. Admin wiring: the `import_bundle` step (a `multipart/form-data` upload validated as a
 real `.zip`) → `FW_Site_Converter_Bundle::import_zip( $_FILES tmp )` → `bundle_result` stage with a
 combined per-phase summary. The bundle upload is the page's headline tool (the individual tools sit
 below for piecemeal runs).
 
-## Roadmap (next slices)
+## Roadmap
 
-- **Pages importer** (contract §2) — create WP pages from page-builder Full templates; plug it into
-  the bundle's `pages.json` / `pages/` phase. Once it lands, the bundle covers all five phases.
+The five-phase pipeline (media → presets → theme settings → pages → menus) is **complete** and wired
+into the one-shot bundle. Possible future polish: bundling actual media **files** in the zip (today
+`media.json` is a URL list), a `pages/` folder of per-page template-envelope `.json` files, and a
+combined progress UI for very large bundles.
