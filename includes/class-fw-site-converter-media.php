@@ -61,7 +61,7 @@ class FW_Site_Converter_Media {
 		require_once ABSPATH . 'wp-admin/includes/media.php';
 		require_once ABSPATH . 'wp-admin/includes/image.php';
 
-		$tmp = download_url( $url );
+		$tmp = self::download_to_tmp( $url );
 		if ( is_wp_error( $tmp ) ) {
 			return $tmp;
 		}
@@ -94,7 +94,34 @@ class FW_Site_Converter_Media {
 			'tmp_name' => $tmp,
 		);
 
+		// WebP / AVIF guard. On many hosts PHP's getimagesize()/finfo can't identify webp/avif,
+		// so WP's strict real-mime check in media_handle_sideload() blanks the ext+type and
+		// rejects the file ("not permitted for security reasons"). Trust the extension for these
+		// known raster image types (scoped to THIS sideload only) and ensure they're allowed.
+		$accept_modern = static function ( $data, $f, $filename, $mimes, $real_mime = '' ) {
+			if ( ! empty( $data['ext'] ) && ! empty( $data['type'] ) ) {
+				return $data;
+			}
+			$e     = strtolower( (string) pathinfo( $filename, PATHINFO_EXTENSION ) );
+			$known = array( 'webp' => 'image/webp', 'avif' => 'image/avif' );
+			if ( isset( $known[ $e ] ) ) {
+				$data['ext']  = $e;
+				$data['type'] = $known[ $e ];
+			}
+			return $data;
+		};
+		$allow_modern = static function ( $m ) {
+			$m['webp'] = 'image/webp';
+			$m['avif'] = 'image/avif';
+			return $m;
+		};
+		add_filter( 'wp_check_filetype_and_ext', $accept_modern, 99, 5 );
+		add_filter( 'upload_mimes', $allow_modern, 99 );
+
 		$id = media_handle_sideload( $file, (int) $post_id, $desc !== '' ? $desc : null );
+
+		remove_filter( 'wp_check_filetype_and_ext', $accept_modern, 99 );
+		remove_filter( 'upload_mimes', $allow_modern, 99 );
 
 		if ( is_wp_error( $id ) ) {
 			if ( file_exists( $tmp ) ) {
@@ -109,6 +136,55 @@ class FW_Site_Converter_Media {
 		}
 
 		return (int) $id;
+	}
+
+	/**
+	 * Download a URL to a temp file. Tries WP's streamed download_url() first (memory-light);
+	 * on failure — common when a demo/CDN host (e.g. Cloudflare bot rules) 403s a datacenter
+	 * request that carries a library User-Agent and no Referer — retries with a browser-like
+	 * User-Agent + a same-origin Referer, which clears most hotlink / bot guards.
+	 *
+	 * @param string $url
+	 * @return string|WP_Error Temp file path, or WP_Error.
+	 */
+	private static function download_to_tmp( $url ) {
+		$tmp = download_url( $url );
+		if ( ! is_wp_error( $tmp ) ) {
+			return $tmp;
+		}
+
+		$pu      = wp_parse_url( $url );
+		$referer = ( $pu && ! empty( $pu['scheme'] ) && ! empty( $pu['host'] ) ) ? $pu['scheme'] . '://' . $pu['host'] . '/' : '';
+		$resp = wp_remote_get( $url, array(
+			'timeout'     => 30,
+			'redirection' => 5,
+			'user-agent'  => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+			'headers'     => array(
+				'Referer' => $referer,
+				'Accept'  => 'image/avif,image/webp,image/apng,image/png,image/*,*/*;q=0.8',
+			),
+		) );
+		if ( is_wp_error( $resp ) ) {
+			return $resp;
+		}
+		$code = (int) wp_remote_retrieve_response_code( $resp );
+		if ( 200 !== $code ) {
+			$reason = wp_remote_retrieve_response_message( $resp );
+			return new WP_Error( 'http_' . $code, $reason !== '' ? $reason : sprintf( 'HTTP %d', $code ) );
+		}
+		$body = wp_remote_retrieve_body( $resp );
+		if ( '' === $body ) {
+			return new WP_Error( 'empty_body', __( 'Empty response body.', 'fw' ) );
+		}
+		$tmp2 = wp_tempnam( $url );
+		if ( ! $tmp2 ) {
+			return new WP_Error( 'no_tmp', __( 'Could not create a temp file.', 'fw' ) );
+		}
+		if ( false === file_put_contents( $tmp2, $body ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+			@unlink( $tmp2 );
+			return new WP_Error( 'write_failed', __( 'Could not write the downloaded file.', 'fw' ) );
+		}
+		return $tmp2;
 	}
 
 	/**
@@ -551,5 +627,42 @@ class FW_Site_Converter_Media {
 		} );
 
 		return strtr( $content, $clean );
+	}
+
+	/**
+	 * Localize every importable image URL in a content string (HTML or CSS) to its local
+	 * attachment URL — matched by the source-URL postmeta the importer set. Covers <img src>,
+	 * srcset and CSS url(...), including .svg and query-stringed URLs. A no-op when nothing
+	 * matches (e.g. media not imported yet), so it's safe to call in any context.
+	 *
+	 * @param string $content
+	 * @return string
+	 */
+	public static function localize( $content ) {
+		if ( ! is_string( $content ) || $content === '' || ! function_exists( 'wp_get_attachment_url' ) ) {
+			return $content;
+		}
+		if ( ! preg_match_all( '#https?://[^"\'\\\\\s)]+?\.(?:jpe?g|png|gif|webp|avif|svg)(?:\?[^"\'\\\\\s)]*)?#i', $content, $m ) ) {
+			return $content;
+		}
+		$map = array();
+		foreach ( array_unique( $m[0] ) as $url ) {
+			$id = self::find_by_source( $url );
+			if ( ! $id ) {
+				// Some references carry a cache-busting query the import stored without — retry bare.
+				$bare = preg_replace( '/\?.*$/', '', $url );
+				if ( $bare !== $url ) {
+					$id = self::find_by_source( $bare );
+				}
+			}
+			if ( $id ) {
+				$local = wp_get_attachment_url( $id );
+				if ( $local ) {
+					$map[ $url ] = $local;
+				}
+			}
+		}
+
+		return $map ? self::rewrite( $content, $map ) : $content;
 	}
 }

@@ -126,6 +126,11 @@ class FW_Site_Converter_Pages {
 			$json = '[]'; // empty page (no builder content) — still create the post
 		}
 
+		// Re-point any source image URLs in the tree at the imported Media Library
+		// attachments (the media phase runs first, so they exist + carry a source-URL
+		// postmeta). Falls through harmlessly when an image wasn't imported.
+		$json = self::resolve_media_urls( $json );
+
 		$status   = in_array( $status, array( 'publish', 'draft', 'pending', 'private' ), true ) ? $status : 'publish';
 		$slug_eff = sanitize_title( $slug !== '' ? $slug : $title );
 
@@ -173,6 +178,30 @@ class FW_Site_Converter_Pages {
 		}
 
 		return $row;
+	}
+
+	/**
+	 * Rewrite source image URLs in a builder-tree JSON string to the local
+	 * attachment URLs of the imported media (matched by the `_unysonplus_source_url`
+	 * postmeta the media engine sets). Re-encodes with unescaped slashes first so a
+	 * single URL form is matched, then delegates to the media engine's rewriter.
+	 *
+	 * @param string $json
+	 * @return string
+	 */
+	private static function resolve_media_urls( $json ) {
+		if ( ! class_exists( 'FW_Site_Converter_Media' ) || ! function_exists( 'wp_get_attachment_url' ) ) {
+			return $json;
+		}
+
+		// Re-encode with unescaped slashes so a single URL form is matched, then delegate to
+		// the media engine's localizer (handles <img src>, srcset and CSS url(...), incl. svg
+		// + query strings — so code-block HTML, carousel slide atts and section custom_css all
+		// get their images re-pointed to the imported attachments).
+		$decoded = json_decode( $json, true );
+		$work    = is_array( $decoded ) ? (string) wp_json_encode( $decoded, JSON_UNESCAPED_SLASHES ) : (string) $json;
+
+		return FW_Site_Converter_Media::localize( $work );
 	}
 
 	/**

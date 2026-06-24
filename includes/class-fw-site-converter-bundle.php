@@ -13,16 +13,18 @@
  * Bundle layout (every file optional — only what's present is applied):
  *
  *   bundle.zip
- *   ├── bundle.json        (optional metadata: { name, source, generated })
- *   ├── media.json         ({ "urls": [ "https://…/hero.jpg", … ] })  → media engine
- *   ├── presets.json       ({ "values": { theme_colors:[…], … } })    → presets engine
- *   ├── menus.json         ({ "menus": [ { name, location, items }, … ] }) → menu engine
- *   ├── theme-settings.json (reserved — reported, not yet applied)
- *   └── pages.json / pages/ (reserved — reported, not yet applied)
+ *   ├── bundle.json         (optional metadata: { name, source, generated })
+ *   ├── media.json          ({ "urls": [ "https://…/hero.jpg", … ] })  → media engine
+ *   ├── presets.json        ({ "values": { theme_colors:[…], … } })    → presets engine
+ *   ├── theme-settings.json ({ "values": { id: value } })              → theme-settings engine
+ *   ├── design-config.json  (the chrome design config / a raw capture) → theme generator
+ *   ├── pages.json          ({ "pages": [ … ] })                       → pages engine
+ *   └── menus.json          ({ "menus": [ { name, location, items }, … ] }) → menu engine
  *
- * Phases run in contract order: media → presets → (theme settings) → (pages) → menus.
- * Theme-settings + pages have no engine yet, so a bundle carrying them is imported
- * for the parts we support and those sections are reported as deferred.
+ * Phases run in contract order: media → presets → theme settings → theme (generate the
+ * child/standalone theme from the design config) → pages → menus. With a design-config
+ * the bundle becomes a true one-shot: upload one .zip and the theme + Home page are
+ * built; the user just activates the generated theme.
  *
  * Static so a WP-CLI command can reuse it (mirrors the other engines).
  */
@@ -33,6 +35,9 @@ class FW_Site_Converter_Bundle {
 	const FILE_MEDIA          = array( 'media.json' );
 	const FILE_PRESETS        = array( 'presets.json' );
 	const FILE_THEME_SETTINGS = array( 'theme-settings.json', 'theme_settings.json' );
+	const FILE_THEME_DESIGN   = array( 'theme-design.json', 'design-config.json' );
+	const FILE_STYLEGUIDE     = array( 'styleguide.json' );
+	const FILE_MAPPING        = array( 'mapping.json' );
 	const FILE_PAGES          = array( 'pages.json' );
 	const FILE_MENUS          = array( 'menus.json' );
 
@@ -45,7 +50,7 @@ class FW_Site_Converter_Bundle {
 	 * @param string $zip_path Path to the uploaded .zip (e.g. $_FILES tmp_name).
 	 * @return array Combined result (see import_dir), with `error` set on unzip failure.
 	 */
-	public static function import_zip( $zip_path ) {
+	public static function import_zip( $zip_path, $phase = '', $opts = array() ) {
 		$out = self::blank_result();
 
 		if ( ! is_string( $zip_path ) || ! is_file( $zip_path ) ) {
@@ -73,7 +78,7 @@ class FW_Site_Converter_Bundle {
 			return $out;
 		}
 
-		$out = self::import_dir( $tmp );
+		$out = self::import_dir( $tmp, $phase, $opts );
 
 		global $wp_filesystem;
 		$wp_filesystem->delete( $tmp, true );
@@ -90,7 +95,7 @@ class FW_Site_Converter_Bundle {
 	 *   sections: string[], deferred: string[], error: string
 	 * }
 	 */
-	public static function import_dir( $dir ) {
+	public static function import_dir( $dir, $phase = '', $opts = array() ) {
 		$out = self::blank_result();
 
 		if ( ! is_string( $dir ) || ! is_dir( $dir ) ) {
@@ -100,11 +105,26 @@ class FW_Site_Converter_Bundle {
 
 		$dir = self::locate_root( $dir );
 
+		// Phase gating for the review-first flow: 'design' applies the design system
+		// (media, presets, theme settings, theme + the Style Guide page) and defers the
+		// content pages; 'pages' applies only pages + menus. '' (default) = everything.
+		$do_design = ( $phase === '' || $phase === 'design' );
+		$do_pages  = ( $phase === '' || $phase === 'pages' );
+
+		// Per-convert options (apply-time toggles): each defaults ON, so omitting them = full
+		// convert (back-compat). `theme` = generate + activate the child theme; `media` = import
+		// images; `header`/`footer` = mirror that part of the source chrome into the theme.
+		$opt = function ( $k ) use ( $opts ) { return ! isset( $opts[ $k ] ) || ! empty( $opts[ $k ] ); };
+		$do_media  = $opt( 'media' );
+		$do_theme  = $opt( 'theme' );
+		$do_header = $opt( 'header' );
+		$do_footer = $opt( 'footer' );
+
 		$out['manifest'] = self::read_json( $dir, self::FILE_MANIFEST );
 
 		// --- Phase 1: media (URL list → sideload, de-duped) ---
 		$media = self::read_json( $dir, self::FILE_MEDIA );
-		if ( $media !== null && class_exists( 'FW_Site_Converter_Media' ) ) {
+		if ( $do_design && $do_media && $media !== null && class_exists( 'FW_Site_Converter_Media' ) ) {
 			$urls = isset( $media['urls'] ) && is_array( $media['urls'] )
 				? $media['urls']
 				: ( self::is_list( $media ) ? $media : array() );
@@ -116,21 +136,76 @@ class FW_Site_Converter_Bundle {
 
 		// --- Phase 2: styling presets ---
 		$presets = self::read_json( $dir, self::FILE_PRESETS );
-		if ( $presets !== null && class_exists( 'FW_Site_Converter_Presets' ) ) {
+		if ( $do_design && $presets !== null && class_exists( 'FW_Site_Converter_Presets' ) ) {
 			$out['presets']    = FW_Site_Converter_Presets::import( $presets );
 			$out['sections'][] = 'presets';
 		}
 
 		// --- Phase 3: theme settings (design file → fw_theme_settings_options) ---
 		$theme = self::read_json( $dir, self::FILE_THEME_SETTINGS );
-		if ( $theme !== null && class_exists( 'FW_Site_Converter_Theme_Settings' ) ) {
+		if ( $do_design && $theme !== null && class_exists( 'FW_Site_Converter_Theme_Settings' ) ) {
 			$out['theme_settings'] = FW_Site_Converter_Theme_Settings::import( $theme );
 			$out['sections'][]     = 'theme-settings';
 		}
 
+		// --- Phase 3b: theme generation (design config → child/standalone theme) ---
+		// Skipped when "create child theme" is off — the converted sections are then imported as
+		// page content into the ACTIVE theme (dev wants to grab structure into an existing site).
+		$theme_design = self::read_json( $dir, self::FILE_THEME_DESIGN );
+		if ( $do_design && $do_theme && $theme_design !== null && class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
+			// Honor the header/footer toggles: drop the mirrored chrome the user didn't want, so the
+			// generated theme reproduces only the requested parts (the rest fall back to the theme's).
+			if ( ! $do_header || ! $do_footer ) {
+				foreach ( array( 'chrome', 'raw_chrome' ) as $ck ) {
+					if ( isset( $theme_design[ $ck ] ) && is_array( $theme_design[ $ck ] ) ) {
+						if ( ! $do_header ) { $theme_design[ $ck ]['header_html'] = ''; $theme_design[ $ck ]['header_css'] = ''; }
+						if ( ! $do_footer ) { $theme_design[ $ck ]['footer_html'] = ''; $theme_design[ $ck ]['footer_css'] = ''; }
+					}
+				}
+			}
+			$res               = FW_Site_Converter_Theme_Generator::install( $theme_design );
+			$out['theme']      = $res;
+			$out['sections'][] = 'theme';
+			// Remember this design-config so the standalone "Install into themes" panel can
+			// pre-fill + one-click re-install the same theme later (no re-uploading the zip).
+			update_option( 'fw_sc_last_theme_design', wp_json_encode( $theme_design ), false );
+			// Activate the freshly generated theme so the converted header/footer goes live
+			// in one step (the whole point of a convert). Only on a clean install (no error),
+			// and only if it isn't already the active theme.
+			if ( empty( $res['error'] ) && ! empty( $res['slug'] ) && function_exists( 'switch_theme' ) ) {
+				if ( get_stylesheet() !== $res['slug'] && wp_get_theme( $res['slug'] )->exists() ) {
+					switch_theme( $res['slug'] );
+					$out['theme']['activated'] = true;
+				}
+			}
+		}
+
+		// --- Phase 3c: Style Guide page (review artifact from the captured design tokens) ---
+		$styleguide = self::read_json( $dir, self::FILE_STYLEGUIDE );
+		if ( $do_design && $styleguide !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
+			$out['styleguide'] = FW_Site_Converter_Pages::import( $styleguide );
+			$out['sections'][] = 'styleguide';
+			$first = isset( $out['styleguide']['pages'][0] ) ? $out['styleguide']['pages'][0] : null;
+			if ( $first && ! empty( $first['id'] ) ) {
+				$out['styleguide_url'] = get_permalink( (int) $first['id'] );
+			}
+		}
+
+		// Mapping document — returned (with suggested roles) during the design phase so the admin
+		// can show the review editor; the pages are then built from the user's corrected roles
+		// (NOT from pages.json) via FW_Site_Converter_Mapper.
+		if ( $do_design ) {
+			$mapping = self::read_json( $dir, self::FILE_MAPPING );
+			if ( $mapping !== null && class_exists( 'FW_Site_Converter_Mapper' ) ) {
+				$out['mapping'] = FW_Site_Converter_Mapper::suggest_mapping( $mapping );
+			}
+		}
+
 		// --- Phase 4: pages (page-builder trees → WordPress pages) ---
+		// Skipped when the review editor is driving the build (it posts a corrected mapping to
+		// the dedicated build action); kept as the no-mapping fallback.
 		$pages = self::read_json( $dir, self::FILE_PAGES );
-		if ( $pages !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
+		if ( $do_pages && $pages !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
 			$out['pages']      = FW_Site_Converter_Pages::import( $pages );
 			$out['sections'][] = 'pages';
 		}
@@ -146,7 +221,7 @@ class FW_Site_Converter_Bundle {
 
 		// --- Phase 5: menus ---
 		$menus = self::read_json( $dir, self::FILE_MENUS );
-		if ( $menus !== null && class_exists( 'FW_Site_Converter_Menus' ) ) {
+		if ( $do_pages && $menus !== null && class_exists( 'FW_Site_Converter_Menus' ) ) {
 			$out['menus']      = FW_Site_Converter_Menus::import( $menus );
 			$out['sections'][] = 'menus';
 		}
@@ -168,6 +243,7 @@ class FW_Site_Converter_Bundle {
 			'media'          => null,
 			'presets'        => null,
 			'theme_settings' => null,
+			'theme'          => null,
 			'pages'          => null,
 			'menus'          => null,
 			'sections'       => array(),
@@ -177,27 +253,51 @@ class FW_Site_Converter_Bundle {
 	}
 
 	/**
-	 * Roll up media import rows into counts.
+	 * Roll up media import rows into counts (+ the filenames newly added).
 	 *
 	 * @param array $results Rows from FW_Site_Converter_Media::import_urls().
-	 * @return array{imported: int, reused: int, failed: int, total: int}
+	 * @return array{imported: int, reused: int, failed: int, total: int, names: string[]}
 	 */
 	private static function summarize_media( array $results ) {
 		$imported = 0;
 		$reused   = 0;
 		$failed   = 0;
+		$names    = array();
+		$errors   = array();
 		foreach ( $results as $r ) {
 			if ( ! empty( $r['ok'] ) ) {
 				if ( ! empty( $r['reused'] ) ) {
 					$reused++;
 				} else {
 					$imported++;
+					$names[] = self::media_name( $r );
 				}
 			} else {
 				$failed++;
+				// Surface why an image didn't import (e.g. a rejected file type) so it's visible
+				// in the convert result instead of silently hotlinking — capped to keep it small.
+				if ( count( $errors ) < 20 ) {
+					$src = isset( $r['source'] ) ? (string) $r['source'] : '';
+					$msg = isset( $r['message'] ) ? (string) $r['message'] : '';
+					$errors[] = trim( $src . ( $msg !== '' ? ' — ' . $msg : '' ) );
+				}
 			}
 		}
-		return array( 'imported' => $imported, 'reused' => $reused, 'failed' => $failed, 'total' => count( $results ) );
+		return array(
+			'imported' => $imported,
+			'reused'   => $reused,
+			'failed'   => $failed,
+			'total'    => count( $results ),
+			'names'    => array_values( array_filter( $names ) ),
+			'errors'   => array_values( array_filter( $errors ) ),
+		);
+	}
+
+	/** The stored filename of an imported attachment row (from its URL, else its source). */
+	private static function media_name( array $r ) {
+		$src = ! empty( $r['url'] ) ? $r['url'] : ( isset( $r['source'] ) ? $r['source'] : '' );
+		$path = (string) wp_parse_url( (string) $src, PHP_URL_PATH );
+		return $path !== '' ? wp_basename( $path ) : '';
 	}
 
 	/**
@@ -229,7 +329,7 @@ class FW_Site_Converter_Bundle {
 	 * @return string
 	 */
 	private static function locate_root( $dir ) {
-		$markers = array_merge( self::FILE_MANIFEST, self::FILE_MEDIA, self::FILE_PRESETS, self::FILE_THEME_SETTINGS, self::FILE_PAGES, self::FILE_MENUS );
+		$markers = array_merge( self::FILE_MANIFEST, self::FILE_MEDIA, self::FILE_PRESETS, self::FILE_THEME_SETTINGS, self::FILE_THEME_DESIGN, self::FILE_PAGES, self::FILE_MENUS );
 		foreach ( $markers as $m ) {
 			if ( is_file( trailingslashit( $dir ) . $m ) ) {
 				return $dir;

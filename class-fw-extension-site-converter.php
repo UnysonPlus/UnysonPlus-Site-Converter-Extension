@@ -39,6 +39,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-bundle.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-theme-generator.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-mapper.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-stitch.php' );
 
 		if ( is_admin() ) {
 			add_action( 'admin_menu', array( $this, '_action_admin_menu' ), 30 );
@@ -182,6 +183,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			$this->run_scan_menus();
 		} elseif ( $step === 'import_bundle' ) {
 			$this->run_import_bundle();
+		} elseif ( $step === 'stitch_build' ) {
+			$this->run_stitch_build();
 		} elseif ( $step === 'generate_theme' ) {
 			$this->run_generate_theme();
 		} else {
@@ -360,6 +363,91 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$result['stage'] = 'bundle_result';
 		set_transient( $this->results_transient_key(), $result, 5 * MINUTE_IN_SECONDS );
 
+		$this->redirect_back();
+	}
+
+	/**
+	 * Google Stitch tool — turn a Stitch export (a `.zip` of `code.html`+`screen.png`, or a single
+	 * pasted `code.html`) into a convert-bundle and either IMPORT it now (Tier 1, no AI — child theme
+	 * tokens + pages + media + menus) or DOWNLOAD the draft `.zip` (Tier 2 — refine pages.json with
+	 * Claude, then re-upload via Convert bundle). Reuses FW_Site_Converter_Stitch + the bundle engine.
+	 */
+	private function run_stitch_build() {
+		$action = ( isset( $_POST['fw_sc_stitch_action'] ) && $_POST['fw_sc_stitch_action'] === 'download' ) ? 'download' : 'import';
+		$html   = isset( $_POST['fw_sc_stitch_html'] ) ? (string) wp_unslash( $_POST['fw_sc_stitch_html'] ) : '';
+		$title  = isset( $_POST['fw_sc_stitch_title'] ) ? sanitize_text_field( wp_unslash( $_POST['fw_sc_stitch_title'] ) ) : 'Home';
+		if ( $title === '' ) { $title = 'Home'; }
+
+		$bundle  = null;
+		$cleanup = '';
+
+		// A .zip upload (Stitch export) takes precedence over pasted HTML.
+		$file = isset( $_FILES['fw_sc_stitch_zip'] ) ? $_FILES['fw_sc_stitch_zip'] : null;
+		if ( $file && ! empty( $file['tmp_name'] ) && empty( $file['error'] ) && is_uploaded_file( $file['tmp_name'] ) ) {
+			$orig = isset( $file['name'] ) ? sanitize_file_name( $file['name'] ) : '';
+			if ( strtolower( (string) pathinfo( $orig, PATHINFO_EXTENSION ) ) !== 'zip' ) {
+				$this->stitch_fail( __( 'The Stitch export must be a .zip file.', 'fw' ) );
+			}
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+			if ( ! WP_Filesystem() ) { $this->stitch_fail( __( 'Could not access the filesystem to unzip the export.', 'fw' ) ); }
+			$tmp = trailingslashit( get_temp_dir() ) . 'fw-sc-stitch-in-' . wp_generate_password( 12, false );
+			if ( ! wp_mkdir_p( $tmp ) ) { $this->stitch_fail( __( 'Could not create a temp folder.', 'fw' ) ); }
+			$unzip = unzip_file( $file['tmp_name'], $tmp );
+			if ( is_wp_error( $unzip ) ) {
+				global $wp_filesystem;
+				if ( $wp_filesystem ) { $wp_filesystem->delete( $tmp, true ); }
+				$this->stitch_fail( sprintf( __( 'Could not unzip the Stitch export: %s', 'fw' ), $unzip->get_error_message() ) );
+			}
+			$bundle  = FW_Site_Converter_Stitch::build_bundle( array( 'folder' => $tmp ) );
+			$cleanup = $tmp;
+		} elseif ( trim( $html ) !== '' ) {
+			$bundle = FW_Site_Converter_Stitch::build_bundle( array( 'html' => $html, 'title' => $title ) );
+		} else {
+			$this->stitch_fail( __( 'Upload a Stitch .zip export, or paste a screen’s code.html.', 'fw' ) );
+		}
+
+		$this->stitch_cleanup( $cleanup ); // input temp no longer needed once the bundle is built (in memory)
+		$cleanup = '';
+
+		if ( ! is_array( $bundle ) || ! empty( $bundle['error'] ) || empty( $bundle['files'] ) ) {
+			$this->stitch_fail( is_array( $bundle ) && $bundle['error'] !== '' ? $bundle['error'] : __( 'Nothing recognizable in the Stitch export.', 'fw' ) );
+		}
+
+		if ( $action === 'download' ) {
+			$zip = FW_Site_Converter_Stitch::build_zip( $bundle, 'stitch-bundle' );
+			if ( $zip['error'] !== '' || empty( $zip['path'] ) || ! is_file( $zip['path'] ) ) {
+				$this->stitch_fail( $zip['error'] !== '' ? $zip['error'] : __( 'Could not build the draft bundle.', 'fw' ) );
+			}
+			nocache_headers();
+			header( 'Content-Type: application/zip' );
+			header( 'Content-Disposition: attachment; filename="' . $zip['filename'] . '"' );
+			header( 'Content-Length: ' . filesize( $zip['path'] ) );
+			readfile( $zip['path'] );
+			@unlink( $zip['path'] ); // phpcs:ignore
+			exit;
+		}
+
+		$result = FW_Site_Converter_Stitch::import_bundle( $bundle );
+		if ( ! empty( $result['error'] ) && empty( $result['sections'] ) ) {
+			$this->stitch_fail( $result['error'] );
+		}
+		$result['stage']         = 'bundle_result';
+		$result['stitch_screens'] = isset( $bundle['screens'] ) ? (int) $bundle['screens'] : 1;
+		set_transient( $this->results_transient_key(), $result, 5 * MINUTE_IN_SECONDS );
+		$this->redirect_back();
+	}
+
+	/** Delete a temp dir created while ingesting a Stitch export (no-op when empty). */
+	private function stitch_cleanup( $dir ) {
+		if ( $dir === '' ) { return; }
+		global $wp_filesystem;
+		if ( ! $wp_filesystem ) { require_once ABSPATH . 'wp-admin/includes/file.php'; WP_Filesystem(); }
+		if ( $wp_filesystem ) { $wp_filesystem->delete( $dir, true ); }
+	}
+
+	/** Record a Stitch-tool error and PRG-redirect back to the Convert page. */
+	private function stitch_fail( $message ) {
+		set_transient( $this->results_transient_key(), array( 'error' => (string) $message ), 5 * MINUTE_IN_SECONDS );
 		$this->redirect_back();
 	}
 
@@ -1180,6 +1268,46 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				<input type="hidden" name="fw_sc_step" value="import_bundle">
 				<input type="file" name="fw_sc_bundle" accept=".zip,application/zip">
 				<button type="submit" class="button button-primary"><?php esc_html_e( 'Import bundle', 'fw' ); ?></button>
+			</form>
+				</div>
+			</details>
+
+			<details class="fw-sc-card">
+				<summary><span class="dashicons dashicons-layout"></span> <?php esc_html_e( 'Convert a Google Stitch screen', 'fw' ); ?></summary>
+				<div class="fw-sc-card-body">
+			<p class="description">
+				<?php esc_html_e( 'Bring a Google Stitch design straight into WordPress. In Stitch, Export → .zip (or "Code to Clipboard" for one screen). Upload the .zip — both layouts work: a single exported frame (a flat folder with code.html) or a whole project (one subfolder per screen). The design tokens (colors / fonts / spacing from the tailwind.config + DESIGN.md) become the child-theme styling, each labelled section becomes the right element (heading → Special Heading, paragraph → Text Block, CTA → Button, feature/bento card → Icon Box, image → media), and the header/footer nav become menus.', 'fw' ); ?>
+			</p>
+			<p class="description" style="margin-top:-.4em">
+				<strong><?php esc_html_e( 'No AI required.', 'fw' ); ?></strong>
+				<?php esc_html_e( '“Build & import” converts deterministically and offline. Want higher-fidelity mapping (testimonials sliders, accordions, exact layouts)? Use “Download draft bundle”, refine pages.json with Claude, then re-upload it through “Convert from a bundle (.zip)” above.', 'fw' ); ?>
+			</p>
+			<form method="post" action="" enctype="multipart/form-data">
+				<?php wp_nonce_field( self::NONCE ); ?>
+				<input type="hidden" name="fw_sc_step" value="stitch_build">
+				<table class="form-table" role="presentation">
+					<tr>
+						<th scope="row"><?php esc_html_e( 'Stitch export (.zip)', 'fw' ); ?></th>
+						<td><input type="file" name="fw_sc_stitch_zip" accept=".zip,application/zip">
+							<p class="description"><?php esc_html_e( 'The export you downloaded from Stitch. Takes precedence over the paste box below.', 'fw' ); ?></p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="fw_sc_stitch_html"><?php esc_html_e( '…or paste one screen’s code.html', 'fw' ); ?></label></th>
+						<td>
+							<p style="margin:0 0 .4em">
+								<input type="text" name="fw_sc_stitch_title" class="regular-text" placeholder="<?php esc_attr_e( 'Page title (e.g. Home)', 'fw' ); ?>">
+							</p>
+							<?php echo $this->json_editor_field( 'fw_sc_stitch_html', '<!DOCTYPE html> … the Stitch screen markup …', '', 10, 'fw_sc_stitch_html', '.html,text/html,text/plain' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+							<p class="description"><?php esc_html_e( 'For a quick single-screen test (Stitch → Export → Code to Clipboard).', 'fw' ); ?></p>
+						</td>
+					</tr>
+				</table>
+				<p class="submit" style="display:flex;gap:.6em;align-items:center;flex-wrap:wrap">
+					<button type="submit" class="button button-primary" name="fw_sc_stitch_action" value="import"><?php esc_html_e( 'Build &amp; import', 'fw' ); ?></button>
+					<button type="submit" class="button" name="fw_sc_stitch_action" value="download"><?php esc_html_e( 'Download draft bundle (.zip)', 'fw' ); ?></button>
+					<span class="description"><?php esc_html_e( 'Import writes the child theme + pages now; download gives you the bundle .zip to refine and re-import.', 'fw' ); ?></span>
+				</p>
 			</form>
 				</div>
 			</details>

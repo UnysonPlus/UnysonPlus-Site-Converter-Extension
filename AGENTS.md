@@ -29,7 +29,9 @@ site-converter/
     ├── class-fw-site-converter-menus.php          ← nav-menu importer + scanner (static)
     ├── class-fw-site-converter-theme-settings.php ← theme-settings (design file) importer (static)
     ├── class-fw-site-converter-pages.php          ← pages importer (builder trees → WP pages, static)
-    └── class-fw-site-converter-bundle.php         ← one-shot bundle orchestrator (static)
+    ├── class-fw-site-converter-bundle.php         ← one-shot bundle orchestrator (static)
+    ├── class-fw-site-converter-theme-generator.php ← header/footer → child|standalone theme (static)
+    └── class-fw-site-converter-stitch.php         ← Google Stitch ingest engine (static)
 ```
 
 Mirrors the `post-types` extension's admin-page pattern: a submenu under `fw-extensions`
@@ -249,9 +251,166 @@ real `.zip`) → `FW_Site_Converter_Bundle::import_zip( $_FILES tmp )` → `bund
 combined per-phase summary. The bundle upload is the page's headline tool (the individual tools sit
 below for piecemeal runs).
 
+## Theme generator — `FW_Site_Converter_Theme_Generator` (header/footer conversion, shipped)
+
+The "make the header & footer perfect" tool. Takes a **design config** (the chrome half of a capture)
+and writes a real WordPress theme that reproduces the source's **header + footer design** — never its
+content. Generalized from the proven hand-built SmartRoute child theme. Static, so a bundle / WP-CLI
+can reuse it.
+
+**Cardinal rule — copy stylings, not content.** The generated header logo is always the site's own
+(`the_custom_logo()` → `get_bloginfo('name')`); the footer brand is the Site Title. The CTA *label* is
+config-supplied (a structural element the user controls), defaulting to "Get started". Never hard-code
+the source's brand text.
+
+**Two modes (the top-level conversion choice the user picks in the UI):**
+
+| Mode | What ships | `style.css` header |
+|---|---|---|
+| `child` (default, recommended) | 4 files: `style.css`, `functions.php`, `template-parts/header-builder.php`, `footer-builder.php` | has `Template: unysonplus-theme` |
+| `standalone` | a **copy of the parent tree**, de-parented, chrome overlaid; generated functions become `inc/site-converter-chrome.php` + a `require` appended to the copied `functions.php`; `style.css` = parent style body (header stripped/rewritten) + generated chrome appended | **no** `Template:` line |
+
+Both still use the Unyson+ plugin + page builder — standalone just has the other files needed to stand
+on its own.
+
+**Key methods:** `normalize($config)` (sparse → full, sensible defaults), `build_files($cfg)` (the 4-file
+map), `chrome_css($cfg)` (the parameterized stylesheet — header `style: pill|bar|minimal`, dotted canvas,
+nav-underline, CTA, footer; **all global rules scoped `body:not(.wp-admin)`** per the same optimizer
+lesson as misc_custom_css), `install($config)` (writes into `get_theme_root()/<slug>`; standalone copies
+the parent tree first), `build_zip($config)` (downloadable; `ZipArchive`, parent tree added then overlaid).
+
+**Capture → generate (shipped).** `is_capture($c)` detects a raw `design-capture.json` (carries
+`tokens` / `assets` / a `header.nav` array) and `from_capture($cap)` maps it to a design-config —
+`normalize()` runs this automatically, so the admin "Generate theme" textarea accepts **either** a
+design-config **or** the capture tool's raw JSON. `from_capture` copies stylings only: heading font from
+the logo/section headings, body font from `<body>`, the source's own `fonts.googleapis.com/css` URL
+(icon fonts like Material Symbols skipped), `--primary` (→ nav-active → CTA bg) as the accent, foreground
+/ background / footer colors (oklch passed through verbatim — evergreen-safe), `position:fixed|sticky` →
+`sticky`, and the CTA label + an **origin-stripped, de-branded** href (`https://src.app/signup` → `/signup`).
+It also copies the **logo styling** (`header.logo`: font/size/weight/color/letter-spacing — applied to the
+site's OWN text logo, so it *looks* like the source but is never the source's wording) and the **button
+styling** (`header.cta.style`: bg/color/radius/padding/font-weight from the source button — a pill button's
+absurd reported radius like `3.35e7px` is `clamp_radius`'d to `9999px`). The menu always renders the live
+WordPress menu assigned to `header.menu_location` (`wp_nav_menu`), so it uses the site's current menu.
+The logo/brand text is never taken from the capture.
+
+**Editable footer ("copy the whole thing", shipped).** The footer is reproduced as an *editable* replica,
+not baked content. `from_capture` maps the captured footer into `footer.menu` (link columns — a titled
+group becomes a top-level item with its links as children; flat links become top-level items; hrefs
+origin-stripped), `footer.social`, and `footer.copyright` (just the editable tagline *after* the
+"© {year} {brand}." sentence — that sentence is reproduced dynamically from Site Title + year). The
+generated theme: registers an `sc_footer` nav-menu location (always), renders it as columns in
+`footer-builder.php` (brand = Site Title, then the menu, widgets, social, dynamic copyright), and — key —
+bakes an **`after_switch_theme` bootstrap** into `functions.php` that creates a "Footer" menu from the
+captured links and assigns it to `sc_footer` **on activation** (idempotent; reuses an existing "Footer"
+menu). This sidesteps the theme-switch `nav_menu_locations` reset: the theme re-creates + re-assigns its
+own footer menu every activation, so the user never has to. The **header nav** uses the very same
+mechanism — `from_capture` maps the captured top nav into `header.menu` (CTA label dropped, hrefs
+de-branded) and the theme bootstraps a "Header" menu to `header.menu_location` on activation. Both
+bootstraps are emitted by the shared `menu_bootstrap_code()` helper, so **activating the generated
+theme brings up the entire chrome — header nav + footer columns — with nothing to re-import.**
+**Gotcha:** `wp_create_nav_menu()` / `wp_update_nav_menu_item()` are in `wp-admin/includes/nav-menu.php`
+(not loaded by default when `after_switch_theme` fires) — the bootstrap `require_once`s it first or
+activation fatals.
+
+**Body → editable Home page (shipped, tooling).** The capture tool's `to-pages.mjs` maps the captured
+body `sections[]` into the **Pages importer** payload, cloning the heavy default att-blobs from
+`atom-templates.json` (real nodes from a proven export) and swapping only content
+(`special_heading` / `text_block` / `icon_box` in `1_1`/`1_3`/`1_4` columns). The plugin's own encoder
+regenerates `post_content`, so every section is builder-editable.
+
+**One-shot bundle (shipped).** `FW_Site_Converter_Bundle` now has a **theme phase**: a bundle carrying
+`theme-design.json` (or `design-config.json`) is fed to `FW_Site_Converter_Theme_Generator::install()`,
+so a single `.zip` builds the child/standalone theme **and** the Home page (`pages.json`) in one upload —
+the user just activates the generated theme. The design-capture tool emits a ready `convert-bundle.zip`
+(`bundle.json` + `theme-design.json` + `pages.json`) via a tiny dependency-free STORE-method zip writer
+(`minimal-zip.mjs`). The capture tool
+(`tools/design-capture/to-design-config.mjs`, imported by `capture.mjs`) is a JS mirror of this and emits
+a ready `design-config.json` next to `design-capture.json` — verified to produce byte-identical config to
+the PHP path on the SmartRoute capture (Fraunces heading, Manrope body, terracotta accent, `/signup` CTA).
+
+**Design-config shape** (everything optional — omitted keys default):
+
+```jsonc
+{
+  "theme":  { "name": "My Site", "slug": "my-site", "mode": "child|standalone" },
+  "fonts":  { "heading": "Fraunces", "body": "Manrope", "google": "https://fonts.googleapis.com/css2?…" },
+  "colors": { "ink": "#34251f", "accent": "#994920", "bg": "#fbf9f0",
+              "header_bg": "rgba(251,249,240,.72)", "header_border": "#ece6da",
+              "footer_bg": "#34251f", "footer_text": "#fbf9f0" },
+  "header": { "layout": "logo-left-nav-center-cta-right", "style": "pill",
+              "menu_location": "primary", "sticky": false,
+              "cta": { "enabled": true, "label": "Get started", "href": "/#get-started", "dedupe_from_menu": true } },
+  "footer": { "widget_area": true, "brand": true, "copyright": "All rights reserved." },
+  "background": { "dotted": true, "dot_color": "#e7e1d4", "canvas": "#fbf9f0" },
+  "custom_css": "/* extra carried CSS, already body:not(.wp-admin)-scoped */"
+}
+```
+
+Generated CSS classes are namespaced `sc-*` (`.sc-header-inner`, `.sc-menu`, `.sc-header-btn`,
+`.sc-footer-inner`, `.sc-widget`) and the footer widget area id is `sc-footer-widgets`.
+
+**Admin wiring:** the `generate_theme` step. The **Child / Standalone radio** is the source of truth for
+mode (folded into the config server-side). Two submit buttons share the form: `fw_sc_theme_action=install`
+(PRG → `theme_generated` stage with the path + an "activate + re-import menus" note) and `…=download`
+(streamed `.zip` on the load- hook, before any output — `readfile` + `unlink` + `exit`).
+
+**Gotcha — menu locations reset on theme switch.** WordPress stores `nav_menu_locations` as theme_mods,
+so activating the generated theme clears the assignment. The success panel tells the user to **re-import
+menus** after activating (the menus engine re-assigns them).
+
+## Google Stitch ingest — `FW_Site_Converter_Stitch` (shipped)
+
+`includes/class-fw-site-converter-stitch.php` turns a **Google Stitch** export into the SAME convert-bundle
+the rest of the extension imports — so a Stitch design becomes a native child theme + page-builder Full
+Page **without any LLM**. Stitch is a *first-class deterministic* input (unlike a scraped site): the design
+tokens are handed to us in the inline `tailwind.config` JSON (and/or a sibling `DESIGN.md` YAML
+frontmatter), sections are explicitly comment-labelled, and the markup is clean semantic HTML — so a
+Stitch-aware parser maps confidently with no AI.
+
+**Input — both export layouts** (`build_bundle()` accepts a folder or a `{ html }` payload):
+- **Single frame** (Export → one frame, or "Code to Clipboard") — a **flat** folder `{ code.html, DESIGN.md,
+  screen.png }`.
+- **Multi-screen** (Export → the whole project) — a parent folder with **one subfolder per screen**
+  (`<screen>/code.html`) + top-level `<system>/DESIGN.md`. Each screen → one page (the first is the front page).
+
+**Pipeline (offline):** `parse_tokens()` (+ `merge_design_md()`) → `tokens_to_theme_settings()` writes the
+carried design CSS into **`misc_custom_css`** (object shape `{ custom_css }` — gotcha #2 — all rules scoped
+`body:not(.wp-admin)` — gotcha #3): a `:root` of CSS vars from the palette/spacing/radius, the Google-Fonts
+`@import` (Material Symbols dropped — its glyphs convert to Font Awesome; `&amp;` entities decoded), base
+canvas + the two type families, and a primary-`.btn` rule. `scan_images()` (reuses the media engine) →
+`media.json`. `html_to_mapping()` walks each `<section>`/`<footer>` into the **Mapper's** role-annotated
+mapping (pill → overline, `<h1..2>` → title, `<p>` → text, CTA `<button>`/`<a>` → button, a `grid` of cards
+with headings → a `columns` row of **icon_box**es at `col-span-N`/`grid-cols-K` widths, `<img>` → verbatim
+media) → `FW_Site_Converter_Mapper::build_pages()` → `pages.json`. `extract_menus()` → `menus.json` (header
+nav → primary, footer nav → footer). `build_bundle()` assembles the five files; `import_bundle()` runs them
+through `FW_Site_Converter_Bundle::import_dir()` (Tier 1, no AI) and `build_zip()` streams the draft for
+Claude refinement (Tier 2).
+
+**Admin wiring:** the `stitch_build` step (a "Convert a Google Stitch screen" card in **Manual tools**).
+Upload the `.zip` (or paste one `code.html`) → **Build & import** (deterministic, offline) or **Download
+draft bundle (.zip)** (refine `pages.json` with Claude, then re-upload via Convert bundle). Reuses the
+bundle's `bundle_result` view.
+
+**Self-learning — LOCAL only, privacy-safe (NO telemetry; nothing leaves the machine).** `rules_get()` /
+`rules_put()` persist a per-install `signature → role` store (`fw_site_converter_stitch_rules` wp_option)
+consulted before the built-in mapping (a learned rule wins). `distill_from_ai()` diffs a Claude-authored
+`pages.json` against the deterministic draft and records the deltas as local rules, so the next no-AI run
+on **this** install improves. There is deliberately **no central data collection** — collecting users'
+design/content would be a GDPR/CCPA consent + privacy-policy + backend burden for no real gain. Global
+improvement happens instead through the **maintainer's curated release**: distil accumulated rules into the
+parser's built-in tables (`rules_export()` helps), review, commit — the GitHub auto-updater ships it to
+everyone. Document this guarantee anywhere the feature is surfaced.
+
+The Claude authoring recipe (Tier 2 — how to hand-write a higher-fidelity `pages.json` from a Stitch
+screen, honoring each shortcode's `AGENTS.md`) lives in the working copy at
+`framework/extensions/site-converter/docs/stitch-to-unysonplus.md`.
+
 ## Roadmap
 
 The five-phase pipeline (media → presets → theme settings → pages → menus) is **complete** and wired
-into the one-shot bundle. Possible future polish: bundling actual media **files** in the zip (today
-`media.json` is a URL list), a `pages/` folder of per-page template-envelope `.json` files, and a
-combined progress UI for very large bundles.
+into the one-shot bundle; the **header/footer theme generator** (child + standalone) ships alongside it;
+and the **Google Stitch ingest** (deterministic, no-AI, with a local self-learning loop) is shipped.
+Possible future polish: an in-page review editor for the Stitch draft mapping (today: download → edit →
+re-import), a `media_image` node so `<img>` localizes instead of hotlinking, bundling actual media
+**files** in the zip (today `media.json` is a URL list), and a combined progress UI for large bundles.
