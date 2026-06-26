@@ -64,7 +64,7 @@ child-theme generation as the one-click path; only the page mapping is user-corr
 
 **AI companion (the fidelity tier).** An optional **"Use AI"** checkbox in the file form. The AI lives in
 the SAME local capture service (`unysonplus-html-to-wordpress-conversion/tools/design-capture`, package
-`unysonplus-site-capture`) — a new `POST /ai-convert` endpoint (`to-ai.mjs`) that calls Claude with the
+`unysonplus-site-capture`) — a new `POST /ai-convert` endpoint (`to-ai.mjs`) that refines via Claude.
 **Two backends, auto-detected** (`to-ai.mjs` `aiBackend()`): an **`ANTHROPIC_API_KEY`** (pay-per-use API)
 OR the **Claude Code CLI** (`claude -p` — uses the user's *subscription*, no key). Pick order:
 `AI_BACKEND` env → API key → `claude` on PATH → off. Both are held in the LOCAL service, NEVER in
