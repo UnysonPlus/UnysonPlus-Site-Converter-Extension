@@ -22,13 +22,16 @@
  * Pipeline (all offline):
  *    code.html (+ DESIGN.md)
  *      → parse_tokens()          design tokens
- *      → tokens_to_theme_settings()  → theme-settings.json (misc_custom_css :root vars + fonts)
+ *      → tokens_to_design_config()  → theme-design.json — the bundle's theme phase generates a
+ *                                     CHILD THEME (palette, fonts, header/footer chrome) which the
+ *                                     admin then ACTIVATES, so it's a one-step "upload .zip → done".
  *      → scan_images()           → media.json
  *      → html_to_mapping()       → the Mapper's role-annotated mapping → build_pages() → pages.json
- *      → extract_menus()         → menus.json
- *    → build_bundle() assembles the five files; the admin then either imports them
- *      via FW_Site_Converter_Bundle::import_dir() (Tier 1, no AI) or streams them as a
- *      `.zip` for the user to refine pages.json with Claude (Tier 2) and re-upload.
+ *    → build_bundle() assembles the files; the admin imports them via
+ *      FW_Site_Converter_Bundle::import_dir() (Tier 1, no AI) and activates the generated theme, or
+ *      streams the bundle as a `.zip` for the user to refine pages.json with Claude (Tier 2, advanced).
+ *      (Menus are NOT a separate file — the design-config's header.menu / footer.menu are built into
+ *      real WP menus by the generated theme's activation bootstrap.)
  *
  * Self-learning (Tier 3, privacy-safe — NO telemetry, nothing leaves the machine):
  *  - rules_get()/rules_put() persist a LOCAL `class-pattern → role/shortcode` store
@@ -45,6 +48,52 @@ class FW_Site_Converter_Stitch {
 
 	/** Local, per-install learned rules (signature/class-pattern → role). NOT transmitted anywhere. */
 	const RULES_OPTION = 'fw_site_converter_stitch_rules';
+
+	/* ---------------------------------------------------------------------- *
+	 * Source detection (the file-upload "auto-detect" — is this a Stitch export?)
+	 * ---------------------------------------------------------------------- */
+
+	/**
+	 * Confidence (0..1) that an export FOLDER is a Google Stitch export. The unified Convert flow's
+	 * detector (`FW_Site_Converter_Sources`) calls this; the highest-scoring adapter wins.
+	 *
+	 * @param string $dir
+	 * @return float
+	 */
+	public static function detect_dir( $dir ) {
+		if ( ! is_string( $dir ) || ! is_dir( $dir ) ) { return 0.0; }
+		$dir  = rtrim( $dir, '/\\' );
+		$html = '';
+		if ( is_file( $dir . '/code.html' ) ) {
+			$html = (string) file_get_contents( $dir . '/code.html' );
+		} else {
+			$g = glob( $dir . '/*/code.html' );
+			if ( $g ) { $html = (string) file_get_contents( $g[0] ); }
+		}
+		$has_design_md = is_file( $dir . '/DESIGN.md' ) || glob( $dir . '/*/DESIGN.md' ) || glob( $dir . '/DESIGN.md' );
+		return self::detect_html( $html, (bool) $has_design_md );
+	}
+
+	/**
+	 * Confidence (0..1) that a single `code.html` is a Google Stitch screen. Stitch fingerprints: an
+	 * inline `tailwind.config`, Google's `aida-public` image CDN, the Material Symbols icon font, and
+	 * (for a folder) a sibling DESIGN.md. Two or more → almost certainly Stitch.
+	 *
+	 * @param string $html
+	 * @param bool   $has_design_md
+	 * @return float
+	 */
+	public static function detect_html( $html, $has_design_md = false ) {
+		$html = (string) $html;
+		if ( trim( $html ) === '' ) { return 0.0; }
+		$score = 0;
+		if ( stripos( $html, 'tailwind.config' ) !== false ) { $score += 2; } // the strongest signal
+		if ( stripos( $html, 'lh3.googleusercontent.com/aida-public' ) !== false ) { $score += 2; }
+		if ( stripos( $html, 'Material+Symbols' ) !== false ) { $score += 1; }
+		if ( stripos( $html, 'cdn.tailwindcss.com' ) !== false ) { $score += 1; }
+		if ( $has_design_md ) { $score += 2; }
+		return min( 1.0, $score / 4 );
+	}
 
 	/* ---------------------------------------------------------------------- *
 	 * Design tokens
@@ -187,7 +236,8 @@ class FW_Site_Converter_Stitch {
 	/**
 	 * The theme-settings.json payload: the carried design CSS in `misc_custom_css`. That key is a
 	 * `multi` option, so its value MUST be the object `{ custom_css: "…" }`, never a raw string
-	 * (bundle gotcha #2 — a string fatals the Theme Settings page).
+	 * (bundle gotcha #2 — a string fatals the Theme Settings page). Kept for the "apply to the active
+	 * theme" path; the default bundle emits `theme-design.json` instead (a child theme — see below).
 	 *
 	 * @param array $tokens
 	 * @return array{ values: array }
@@ -195,6 +245,156 @@ class FW_Site_Converter_Stitch {
 	public static function tokens_to_theme_settings( array $tokens ) {
 		$css = self::tokens_to_css_vars( $tokens );
 		return array( 'values' => array( 'misc_custom_css' => array( 'custom_css' => $css ) ) );
+	}
+
+	/**
+	 * The theme-design.json payload — the **design-config** the bundle's theme phase feeds to
+	 * `FW_Site_Converter_Theme_Generator::install()` to generate a **child theme** (the plan's target).
+	 * Maps the Stitch tokens + the screen's chrome to the generator's config shape: fonts, colors,
+	 * header (pill/bar, CTA, nav), footer (links), and component CSS (cards) under `custom_css`. The
+	 * generator bakes the palette/fonts into the child theme's own style.css, so the converted site
+	 * loads ONE clean child stylesheet — no `misc_custom_css` on the active theme.
+	 *
+	 * @param array  $tokens
+	 * @param string $html  the home screen markup (for header/footer detection)
+	 * @param string $title page/theme name
+	 * @return array design-config
+	 */
+	public static function tokens_to_design_config( array $tokens, $html, $title ) {
+		list( $head_font, $body_font ) = self::pick_fonts_raw( $tokens );
+		$google = '';
+		foreach ( ( $tokens['fonts'] ?? array() ) as $href ) { $google = $href; break; }
+		// Fall back to the families named in the Google-Fonts URL when the tailwind.config had no fontFamily.
+		$gfonts = self::fonts_from_google( $google );
+		if ( $head_font === '' && isset( $gfonts[0] ) ) { $head_font = $gfonts[0]; }
+		if ( $body_font === '' ) { $body_font = isset( $gfonts[1] ) ? $gfonts[1] : ( isset( $gfonts[0] ) ? $gfonts[0] : '' ); }
+
+		$ink    = self::token_color( $tokens, array( 'text', 'on-background', 'on-surface' ) );
+		$bg     = self::token_color( $tokens, array( 'page-bg', 'background', 'surface', 'white-soft' ) );
+		$accent = self::token_color( $tokens, array( 'accent', 'secondary-container', 'secondary', 'tertiary-container' ) );
+		// A token accent that's missing or near-neutral isn't a real brand color — scan the markup's
+		// inline colors for a vivid one (Stitch puts the accent in gradients like `from-[#FF416C]`).
+		if ( $accent === '' || self::is_neutral_hex( $accent ) ) {
+			$scanned = self::scan_accent( (string) $html );
+			$accent  = $scanned !== '' ? $scanned : ( $accent !== '' ? $accent : '#FF4B2B' );
+		}
+		$line   = self::token_color( $tokens, array( 'line', 'outline-variant', 'outline' ) );
+		$dark   = self::token_color( $tokens, array( 'deep-black', 'black', 'surface-container-lowest' ) );
+		if ( $dark === '' ) { $dark = '#141414'; }
+		$ftext  = self::token_color( $tokens, array( 'page-bg', 'on-background', 'white-soft' ) );
+
+		$hdr  = self::detect_header( (string) $html );
+		$name = trim( (string) $title ) !== '' ? trim( (string) $title ) : 'Stitch Site';
+
+		return array(
+			'theme'  => array( 'name' => $name, 'slug' => sanitize_title( $name ), 'mode' => 'child' ),
+			'fonts'  => array( 'heading' => $head_font, 'body' => $body_font, 'google' => $google ),
+			'colors' => array(
+				'ink'          => $ink !== '' ? $ink : '#1a1a1a',
+				'accent'       => $accent,
+				'bg'           => $bg !== '' ? $bg : '#ffffff',
+				'header_bg'    => $hdr['dark'] ? $dark : '',
+				'header_border'=> $line !== '' ? $line : '#ececec',
+				'footer_bg'    => $dark,
+				'footer_text'  => $ftext !== '' ? $ftext : '#f5f5f5',
+			),
+			'header' => array(
+				'style'         => $hdr['style'],
+				'sticky'        => $hdr['sticky'],
+				'menu_location' => 'primary',
+				'menu'          => self::design_menu( (string) $html, 'primary' ),
+				'cta'           => array(
+					'enabled' => $hdr['cta']['label'] !== '',
+					'label'   => $hdr['cta']['label'] !== '' ? $hdr['cta']['label'] : 'Get started',
+					'href'    => $hdr['cta']['href'] !== '' ? $hdr['cta']['href'] : '#',
+				),
+			),
+			'footer' => array(
+				'brand'       => true,
+				'widget_area' => false,
+				'copyright'   => 'All rights reserved.',
+				'menu'        => self::design_menu( (string) $html, 'footer' ),
+			),
+			'background' => array( 'dotted' => false, 'canvas' => $bg !== '' ? $bg : '#ffffff' ),
+			'custom_css' => self::tokens_to_component_css( $tokens ),
+		);
+	}
+
+	/** Detect the Stitch header's chrome: pill vs bar, sticky, dark fill, and the CTA button. */
+	private static function detect_header( $html ) {
+		$out = array( 'style' => 'bar', 'sticky' => false, 'dark' => false, 'cta' => array( 'label' => '', 'href' => '' ) );
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return $out; }
+		$header = $dom->getElementsByTagName( 'header' )->item( 0 );
+		if ( ! $header ) { return $out; }
+		$hcls = self::cls( $header );
+		if ( strpos( $hcls, 'sticky' ) !== false || strpos( $hcls, 'fixed' ) !== false ) { $out['sticky'] = true; }
+		// A pill nav: a container with rounded-full. Dark fill if it carries a near-black bg.
+		foreach ( $header->getElementsByTagName( 'div' ) as $d ) {
+			$c = self::cls( $d );
+			if ( strpos( $c, 'rounded-full' ) !== false ) {
+				$out['style'] = 'pill';
+				if ( preg_match( '/bg-(?:black|zinc-9|neutral-9|gray-9|slate-9|stone-9|\[#0|\[#1[0-9a-f]{2}\b)/', $c ) || strpos( $c, 'bg-deep' ) !== false || strpos( $c, 'bg-[#000' ) !== false ) {
+					$out['dark'] = true;
+				}
+				break;
+			}
+		}
+		// CTA = the header's button (or a button-styled link).
+		foreach ( $header->getElementsByTagName( 'button' ) as $b ) { $out['cta']['label'] = self::text_no_icons( $b ); break; }
+		if ( $out['cta']['label'] === '' ) {
+			foreach ( $header->getElementsByTagName( 'a' ) as $a ) {
+				if ( self::is_button( $a ) ) { $out['cta']['label'] = self::text_no_icons( $a ); $out['cta']['href'] = $a->getAttribute( 'href' ); break; }
+			}
+		}
+		return $out;
+	}
+
+	/** The design-config menu items (label/url list) for a location, from the page chrome. */
+	private static function design_menu( $html, $location ) {
+		$m = self::extract_menus( $html );
+		foreach ( $m['menus'] as $menu ) {
+			if ( ( $menu['location'] ?? '' ) === $location ) { return $menu['items']; }
+		}
+		return array();
+	}
+
+	/** Component CSS baked into the child theme (cards / image rounding) — palette/fonts the generator does. */
+	private static function tokens_to_component_css( array $tokens ) {
+		$surface = self::token_color( $tokens, array( 'white-card', 'soft-card-2', 'surface-container-low', 'panel-bg', 'surface-container' ) );
+		$line    = self::token_color( $tokens, array( 'line', 'outline-variant' ) );
+		$muted   = self::token_color( $tokens, array( 'muted', 'on-surface-variant' ) );
+		$radius  = '';
+		foreach ( array( '3xl', 'xl', 'lg', 'full' ) as $k ) { if ( ! empty( $tokens['rounded'][ $k ] ) && ! is_array( $tokens['rounded'][ $k ] ) ) { $radius = (string) $tokens['rounded'][ $k ]; break; } }
+		if ( $radius === '' ) { $radius = '20px'; }
+		$surface = $surface !== '' ? $surface : '#ffffff';
+		$line    = $line !== '' ? $line : '#ececec';
+		$muted   = $muted !== '' ? $muted : '#8a8a8a';
+		$out = array();
+		$out[] = "body:not(.wp-admin) .icon-box{background:$surface;border:1px solid $line;border-radius:$radius;padding:32px;height:100%;box-shadow:0 16px 38px -26px rgba(20,20,20,.18);}";
+		$out[] = "body:not(.wp-admin) .icon-box__title{font-weight:700;margin-bottom:8px;}";
+		$out[] = "body:not(.wp-admin) .icon-box__content{color:$muted;line-height:1.6;}";
+		$out[] = "body:not(.wp-admin) section img,body:not(.wp-admin) .fw-main-row img{border-radius:$radius;max-width:100%;}";
+		return implode( "\n", $out );
+	}
+
+	/** (headline, body) RAW font family names from the fontFamily tokens (the generator wraps them). */
+	private static function pick_fonts_raw( array $tokens ) {
+		$ff = $tokens['fontFamily'] ?? array();
+		$first = function ( $keys ) use ( $ff ) {
+			foreach ( $keys as $k ) {
+				if ( isset( $ff[ $k ] ) ) {
+					$v = is_array( $ff[ $k ] ) ? reset( $ff[ $k ] ) : $ff[ $k ];
+					$v = trim( (string) $v );
+					if ( $v !== '' ) { return $v; }
+				}
+			}
+			return '';
+		};
+		return array(
+			$first( array( 'headline-xl', 'headline-lg', 'headline-md', 'display', 'h1', 'h2', 'heading' ) ),
+			$first( array( 'body-md', 'body-lg', 'body', 'label', 'label-sm' ) ),
+		);
 	}
 
 	/* ---------------------------------------------------------------------- *
@@ -581,34 +781,37 @@ class FW_Site_Converter_Stitch {
 		$tokens = self::parse_tokens( $screens[0]['html'] );
 		$tokens = self::merge_design_md( $tokens, $design_md );
 		$out['tokens'] = $tokens;
+		// The home screen's markup, for the optional AI companion (it refines the mapping + writes CSS
+		// against the original design). Capped so a huge page doesn't bloat the AJAX payload.
+		$out['html'] = mb_substr( (string) $screens[0]['html'], 0, 120000 );
 
-		// Media + menus from across all screens.
+		// Media + pages from across all screens (menus are carried inside the design-config and built
+		// by the generated theme on activation, so they're not assembled here).
 		$urls = array();
-		$menus = array();
 		$pages = array();
 		$mapping_all = array( 'include_animations' => false, 'pages' => array() );
 
-		foreach ( $screens as $i => $sc ) {
+		foreach ( $screens as $sc ) {
 			$urls = array_merge( $urls, self::scan_images( $sc['html'] ) );
 			$map  = self::html_to_mapping( $sc['html'], $sc['title'], $sc['slug'], $sc['front'] );
 			$mapping_all['pages'] = array_merge( $mapping_all['pages'], $map['pages'] );
-			if ( $i === 0 ) { // menus from the home screen's chrome
-				$menus = self::extract_menus( $sc['html'] );
-			}
 		}
 		$urls = array_values( array_unique( array_filter( $urls ) ) );
 
 		$out['mapping'] = $mapping_all;
 		$pages = class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::build_pages( $mapping_all ) : array();
 
-		// Assemble the five bundle files (only non-empty ones).
+		// Assemble the bundle files (only non-empty ones).
 		$files = array();
 		$files['bundle.json'] = array( 'name' => 'Google Stitch import', 'source' => 'stitch', 'generated' => '' );
 		if ( $urls )  { $files['media.json'] = array( 'urls' => $urls ); }
-		$ts = self::tokens_to_theme_settings( $tokens );
-		if ( ! empty( $ts['values']['misc_custom_css']['custom_css'] ) ) { $files['theme-settings.json'] = $ts; }
+		// theme-design.json → the bundle's theme phase generates a CHILD THEME carrying the Stitch
+		// palette/fonts/header+footer chrome (the plan's target), instead of dumping CSS on the active
+		// theme. The design-config's header.menu / footer.menu are built into real WP menus by the
+		// generated theme's activation bootstrap — so we DON'T also emit menus.json (that would create
+		// duplicate Header/Primary menus).
+		$files['theme-design.json'] = self::tokens_to_design_config( $tokens, $screens[0]['html'], $screens[0]['title'] );
 		if ( $pages ) { $files['pages.json'] = array( 'pages' => $pages ); }
-		if ( ! empty( $menus['menus'] ) ) { $files['menus.json'] = $menus; }
 
 		$out['files']   = $files;
 		$out['screens'] = count( $screens );
@@ -1016,7 +1219,8 @@ class FW_Site_Converter_Stitch {
 
 		// Flat single-frame: code.html at the root.
 		if ( is_file( $dir . '/code.html' ) ) {
-			$screens[] = array( 'html' => (string) file_get_contents( $dir . '/code.html' ), 'title' => self::title_from_dir( $dir ), 'slug' => '', 'front' => true );
+			$html = (string) file_get_contents( $dir . '/code.html' );
+			$screens[] = array( 'html' => $html, 'title' => self::title_from_html( $html, self::title_from_dir( $dir ) ), 'slug' => '', 'front' => true );
 			if ( is_file( $dir . '/DESIGN.md' ) ) { $design_md = (string) file_get_contents( $dir . '/DESIGN.md' ); }
 			return array( $screens, $design_md );
 		}
@@ -1026,9 +1230,10 @@ class FW_Site_Converter_Stitch {
 		$first = true;
 		foreach ( (array) $subs as $sub ) {
 			if ( is_file( $sub . '/code.html' ) ) {
+				$html = (string) file_get_contents( $sub . '/code.html' );
 				$screens[] = array(
-					'html'  => (string) file_get_contents( $sub . '/code.html' ),
-					'title' => self::title_from_dir( $sub ),
+					'html'  => $html,
+					'title' => self::title_from_html( $html, self::title_from_dir( $sub ) ),
 					'slug'  => $first ? '' : sanitize_title( basename( $sub ) ),
 					'front' => $first,
 				);
@@ -1045,7 +1250,54 @@ class FW_Site_Converter_Stitch {
 		$name = basename( rtrim( $dir, '/\\' ) );
 		$name = preg_replace( '/^stitch[_-]/i', '', $name );
 		$name = trim( preg_replace( '/[_-]+/', ' ', $name ) );
-		return $name !== '' ? ucwords( $name ) : 'Home';
+		// A ZIP unzips into a random temp dir (fw-sc-stitch-in-XXXX) — never a usable title.
+		if ( $name === '' || preg_match( '/^fw[ -]sc[ -]stitch[ -]in[ -]/i', $name ) ) { return 'Home'; }
+		return ucwords( $name );
+	}
+
+	/** The page title from the HTML `<title>` (the best source for a Stitch screen), else $fallback. */
+	private static function title_from_html( $html, $fallback ) {
+		if ( preg_match( '/<title[^>]*>(.*?)<\/title>/is', (string) $html, $m ) ) {
+			$t = trim( html_entity_decode( wp_strip_all_tags( $m[1] ), ENT_QUOTES | ENT_HTML5 ) );
+			// Stitch titles are "Brand - Tagline" / "Brand | Tagline" — keep just the brand half.
+			if ( $t !== '' && preg_match( '/^(.{2,40}?)\s*[-–—|:]\s+\S/u', $t, $mm ) ) {
+				$t = trim( $mm[1] );
+			}
+			if ( $t !== '' ) { return $t; }
+		}
+		return $fallback;
+	}
+
+	/** Font family names parsed from a Google-Fonts css2 URL (family=Inter&family=Manrope → [Inter, Manrope]). */
+	private static function fonts_from_google( $href ) {
+		$out = array();
+		if ( preg_match_all( '/family=([^:&]+)/', (string) $href, $m ) ) {
+			foreach ( $m[1] as $f ) { $out[] = trim( str_replace( '+', ' ', urldecode( $f ) ) ); }
+		}
+		return array_values( array_filter( $out ) );
+	}
+
+	/** Scan inline colors (`[#rrggbb]`, `from-[#..]`) for the most saturated one — the brand accent. */
+	private static function scan_accent( $html ) {
+		if ( ! preg_match_all( '/#([0-9a-fA-F]{6})\b/', (string) $html, $m ) ) { return ''; }
+		$best = ''; $bestScore = 0;
+		foreach ( array_unique( $m[1] ) as $hex ) {
+			$r = hexdec( substr( $hex, 0, 2 ) ); $g = hexdec( substr( $hex, 2, 2 ) ); $b = hexdec( substr( $hex, 4, 2 ) );
+			$max = max( $r, $g, $b ); $min = min( $r, $g, $b );
+			$sat = $max ? ( $max - $min ) / $max : 0;          // HSV saturation
+			$score = $sat * ( $max / 255 );                     // favor vivid + bright
+			if ( $sat > 0.45 && $score > $bestScore ) { $bestScore = $score; $best = '#' . strtolower( $hex ); }
+		}
+		return $best;
+	}
+
+	/** Is a hex color a near-neutral (grey/near-white/near-black) — i.e. a poor accent? */
+	private static function is_neutral_hex( $hex ) {
+		if ( ! preg_match( '/^#([0-9a-f]{6})$/i', (string) $hex, $m ) ) { return true; }
+		$r = hexdec( substr( $m[1], 0, 2 ) ); $g = hexdec( substr( $m[1], 2, 2 ) ); $b = hexdec( substr( $m[1], 4, 2 ) );
+		$max = max( $r, $g, $b ); $min = min( $r, $g, $b );
+		$sat = $max ? ( $max - $min ) / $max : 0;
+		return $sat < 0.25; // low saturation → neutral
 	}
 
 	/** A stable section id from the section's first descriptive class, else section-N. */

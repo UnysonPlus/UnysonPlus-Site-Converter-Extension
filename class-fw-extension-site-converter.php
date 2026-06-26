@@ -40,6 +40,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-theme-generator.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-mapper.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-stitch.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sources.php' );
 
 		if ( is_admin() ) {
 			add_action( 'admin_menu', array( $this, '_action_admin_menu' ), 30 );
@@ -56,6 +57,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			add_action( 'wp_ajax_fw_sc_analyze_apply', array( $this, '_ajax_analyze_apply' ) );
 			// Mapper: build the page from the user's corrected element→role mapping.
 			add_action( 'wp_ajax_fw_sc_build_mapping', array( $this, '_ajax_build_mapping' ) );
+			// File-upload Convert with review: prepare (build bundle + return mapping) → build (corrected).
+			add_action( 'wp_ajax_fw_sc_convert_prepare', array( $this, '_ajax_convert_prepare' ) );
+			add_action( 'wp_ajax_fw_sc_convert_build', array( $this, '_ajax_convert_build' ) );
 		}
 	}
 
@@ -183,8 +187,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			$this->run_scan_menus();
 		} elseif ( $step === 'import_bundle' ) {
 			$this->run_import_bundle();
-		} elseif ( $step === 'stitch_build' ) {
-			$this->run_stitch_build();
+		} elseif ( $step === 'convert_file' || $step === 'stitch_build' ) {
+			$this->run_convert_file();
 		} elseif ( $step === 'generate_theme' ) {
 			$this->run_generate_theme();
 		} else {
@@ -367,56 +371,59 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	}
 
 	/**
-	 * Google Stitch tool — turn a Stitch export (a `.zip` of `code.html`+`screen.png`, or a single
-	 * pasted `code.html`) into a convert-bundle and either IMPORT it now (Tier 1, no AI — child theme
-	 * tokens + pages + media + menus) or DOWNLOAD the draft `.zip` (Tier 2 — refine pages.json with
-	 * Claude, then re-upload via Convert bundle). Reuses FW_Site_Converter_Stitch + the bundle engine.
+	 * Convert from a FILE — the "From a file" method of the unified Convert flow. Takes an AI-builder
+	 * export (a `.zip`, or a single pasted `code.html`), **auto-detects the source** via
+	 * `FW_Site_Converter_Sources` (Google Stitch today; generic HTML fallback), builds the standard
+	 * bundle, and either IMPORTS it now — generating + activating a child theme so it's a one-step
+	 * "upload → done" — or DOWNLOADS the bundle `.zip` for AI refinement before re-importing.
 	 */
-	private function run_stitch_build() {
-		$action = ( isset( $_POST['fw_sc_stitch_action'] ) && $_POST['fw_sc_stitch_action'] === 'download' ) ? 'download' : 'import';
-		$html   = isset( $_POST['fw_sc_stitch_html'] ) ? (string) wp_unslash( $_POST['fw_sc_stitch_html'] ) : '';
-		$title  = isset( $_POST['fw_sc_stitch_title'] ) ? sanitize_text_field( wp_unslash( $_POST['fw_sc_stitch_title'] ) ) : 'Home';
+	private function run_convert_file() {
+		// New generic field names, with back-compat for the old `fw_sc_stitch_*` names.
+		$action = ( ( $_POST['fw_sc_convert_action'] ?? $_POST['fw_sc_stitch_action'] ?? '' ) === 'download' ) ? 'download' : 'import';
+		$html   = (string) wp_unslash( $_POST['fw_sc_file_html'] ?? $_POST['fw_sc_stitch_html'] ?? '' );
+		$title  = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? $_POST['fw_sc_stitch_title'] ?? 'Home' ) );
 		if ( $title === '' ) { $title = 'Home'; }
 
 		$bundle  = null;
 		$cleanup = '';
 
-		// A .zip upload (Stitch export) takes precedence over pasted HTML.
-		$file = isset( $_FILES['fw_sc_stitch_zip'] ) ? $_FILES['fw_sc_stitch_zip'] : null;
+		// A .zip upload takes precedence over pasted HTML.
+		$file = $_FILES['fw_sc_file'] ?? $_FILES['fw_sc_stitch_zip'] ?? null;
 		if ( $file && ! empty( $file['tmp_name'] ) && empty( $file['error'] ) && is_uploaded_file( $file['tmp_name'] ) ) {
 			$orig = isset( $file['name'] ) ? sanitize_file_name( $file['name'] ) : '';
 			if ( strtolower( (string) pathinfo( $orig, PATHINFO_EXTENSION ) ) !== 'zip' ) {
-				$this->stitch_fail( __( 'The Stitch export must be a .zip file.', 'fw' ) );
+				$this->convert_fail( __( 'The export must be a .zip file.', 'fw' ) );
 			}
 			require_once ABSPATH . 'wp-admin/includes/file.php';
-			if ( ! WP_Filesystem() ) { $this->stitch_fail( __( 'Could not access the filesystem to unzip the export.', 'fw' ) ); }
-			$tmp = trailingslashit( get_temp_dir() ) . 'fw-sc-stitch-in-' . wp_generate_password( 12, false );
-			if ( ! wp_mkdir_p( $tmp ) ) { $this->stitch_fail( __( 'Could not create a temp folder.', 'fw' ) ); }
+			if ( ! WP_Filesystem() ) { $this->convert_fail( __( 'Could not access the filesystem to unzip the export.', 'fw' ) ); }
+			$tmp = trailingslashit( get_temp_dir() ) . 'fw-sc-convert-in-' . wp_generate_password( 12, false );
+			if ( ! wp_mkdir_p( $tmp ) ) { $this->convert_fail( __( 'Could not create a temp folder.', 'fw' ) ); }
 			$unzip = unzip_file( $file['tmp_name'], $tmp );
 			if ( is_wp_error( $unzip ) ) {
 				global $wp_filesystem;
 				if ( $wp_filesystem ) { $wp_filesystem->delete( $tmp, true ); }
-				$this->stitch_fail( sprintf( __( 'Could not unzip the Stitch export: %s', 'fw' ), $unzip->get_error_message() ) );
+				$this->convert_fail( sprintf( __( 'Could not unzip the export: %s', 'fw' ), $unzip->get_error_message() ) );
 			}
-			$bundle  = FW_Site_Converter_Stitch::build_bundle( array( 'folder' => $tmp ) );
+			$bundle  = FW_Site_Converter_Sources::build_from_dir( $tmp ); // ← auto-detect + build
 			$cleanup = $tmp;
 		} elseif ( trim( $html ) !== '' ) {
-			$bundle = FW_Site_Converter_Stitch::build_bundle( array( 'html' => $html, 'title' => $title ) );
+			$bundle = FW_Site_Converter_Sources::build_from_html( $html, $title );
 		} else {
-			$this->stitch_fail( __( 'Upload a Stitch .zip export, or paste a screen’s code.html.', 'fw' ) );
+			$this->convert_fail( __( 'Upload an export .zip, or paste a screen’s code.html.', 'fw' ) );
 		}
 
-		$this->stitch_cleanup( $cleanup ); // input temp no longer needed once the bundle is built (in memory)
+		$this->convert_cleanup( $cleanup ); // input temp no longer needed once the bundle is built (in memory)
 		$cleanup = '';
 
 		if ( ! is_array( $bundle ) || ! empty( $bundle['error'] ) || empty( $bundle['files'] ) ) {
-			$this->stitch_fail( is_array( $bundle ) && $bundle['error'] !== '' ? $bundle['error'] : __( 'Nothing recognizable in the Stitch export.', 'fw' ) );
+			$this->convert_fail( is_array( $bundle ) && $bundle['error'] !== '' ? $bundle['error'] : __( 'Nothing recognizable in the export.', 'fw' ) );
 		}
+		$source_label = isset( $bundle['source']['label'] ) ? (string) $bundle['source']['label'] : __( 'HTML export', 'fw' );
 
 		if ( $action === 'download' ) {
-			$zip = FW_Site_Converter_Stitch::build_zip( $bundle, 'stitch-bundle' );
+			$zip = FW_Site_Converter_Stitch::build_zip( $bundle, 'convert-bundle' );
 			if ( $zip['error'] !== '' || empty( $zip['path'] ) || ! is_file( $zip['path'] ) ) {
-				$this->stitch_fail( $zip['error'] !== '' ? $zip['error'] : __( 'Could not build the draft bundle.', 'fw' ) );
+				$this->convert_fail( $zip['error'] !== '' ? $zip['error'] : __( 'Could not build the bundle.', 'fw' ) );
 			}
 			nocache_headers();
 			header( 'Content-Type: application/zip' );
@@ -429,26 +436,153 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		$result = FW_Site_Converter_Stitch::import_bundle( $bundle );
 		if ( ! empty( $result['error'] ) && empty( $result['sections'] ) ) {
-			$this->stitch_fail( $result['error'] );
+			$this->convert_fail( $result['error'] );
 		}
-		$result['stage']         = 'bundle_result';
-		$result['stitch_screens'] = isset( $bundle['screens'] ) ? (int) $bundle['screens'] : 1;
+
+		// One-step setup: ACTIVATE the freshly generated child theme so "upload → done" — the new theme
+		// carries the export's palette/fonts + header/footer, and its activation bootstrap builds the
+		// header/footer menus. (Theme switch is safe here — we're in an admin POST handler.)
+		if ( ! empty( $result['theme']['slug'] ) && empty( $result['theme']['error'] ) ) {
+			$slug = $result['theme']['slug'];
+			if ( wp_get_theme( $slug )->exists() ) {
+				switch_theme( $slug );
+				$result['theme']['activated'] = true;
+			}
+		}
+
+		$result['stage']           = 'bundle_result';
+		$result['convert_source']  = $source_label;
+		$result['stitch_screens']  = isset( $bundle['screens'] ) ? (int) $bundle['screens'] : 1;
 		set_transient( $this->results_transient_key(), $result, 5 * MINUTE_IN_SECONDS );
 		$this->redirect_back();
 	}
 
-	/** Delete a temp dir created while ingesting a Stitch export (no-op when empty). */
-	private function stitch_cleanup( $dir ) {
+	/** Delete a temp dir created while ingesting an uploaded export (no-op when empty). */
+	private function convert_cleanup( $dir ) {
 		if ( $dir === '' ) { return; }
 		global $wp_filesystem;
 		if ( ! $wp_filesystem ) { require_once ABSPATH . 'wp-admin/includes/file.php'; WP_Filesystem(); }
 		if ( $wp_filesystem ) { $wp_filesystem->delete( $dir, true ); }
 	}
 
-	/** Record a Stitch-tool error and PRG-redirect back to the Convert page. */
-	private function stitch_fail( $message ) {
+	/** Record a convert error and PRG-redirect back to the Convert page. */
+	private function convert_fail( $message ) {
 		set_transient( $this->results_transient_key(), array( 'error' => (string) $message ), 5 * MINUTE_IN_SECONDS );
 		$this->redirect_back();
+	}
+
+	/** Where the file-upload review flow stashes the built bundle's design (theme + media) between steps. */
+	private function convert_stash_key() {
+		return 'fw_site_converter_stash_' . get_current_user_id();
+	}
+
+	/**
+	 * @internal
+	 * File-upload Convert, step 1 (REVIEW): auto-detect + build the bundle, stash its design (theme +
+	 * media) so step 2 can apply it with the corrected pages, and return the role-annotated mapping +
+	 * the role choices for the in-page review editor. No pages are created yet.
+	 */
+	public function _ajax_convert_prepare() {
+		check_ajax_referer( self::NONCE );
+		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 ); }
+
+		$html  = (string) wp_unslash( $_POST['fw_sc_file_html'] ?? '' );
+		$title = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? 'Home' ) );
+		if ( $title === '' ) { $title = 'Home'; }
+
+		$bundle = null;
+		$file   = $_FILES['fw_sc_file'] ?? null;
+		if ( $file && ! empty( $file['tmp_name'] ) && empty( $file['error'] ) && is_uploaded_file( $file['tmp_name'] ) ) {
+			$orig = isset( $file['name'] ) ? sanitize_file_name( $file['name'] ) : '';
+			if ( strtolower( (string) pathinfo( $orig, PATHINFO_EXTENSION ) ) !== 'zip' ) { wp_send_json_error( array( 'message' => __( 'The export must be a .zip file.', 'fw' ) ) ); }
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+			if ( ! WP_Filesystem() ) { wp_send_json_error( array( 'message' => __( 'Could not access the filesystem.', 'fw' ) ) ); }
+			$tmp = trailingslashit( get_temp_dir() ) . 'fw-sc-convert-in-' . wp_generate_password( 12, false );
+			if ( ! wp_mkdir_p( $tmp ) ) { wp_send_json_error( array( 'message' => __( 'Could not create a temp folder.', 'fw' ) ) ); }
+			$unzip = unzip_file( $file['tmp_name'], $tmp );
+			if ( is_wp_error( $unzip ) ) { $this->convert_cleanup( $tmp ); wp_send_json_error( array( 'message' => $unzip->get_error_message() ) ); }
+			$bundle = FW_Site_Converter_Sources::build_from_dir( $tmp );
+			$this->convert_cleanup( $tmp );
+		} elseif ( trim( $html ) !== '' ) {
+			$bundle = FW_Site_Converter_Sources::build_from_html( $html, $title );
+		} else {
+			wp_send_json_error( array( 'message' => __( 'Upload an export .zip, or paste a screen’s code.html.', 'fw' ) ) );
+		}
+
+		if ( ! is_array( $bundle ) || ! empty( $bundle['error'] ) || empty( $bundle['files'] ) || empty( $bundle['mapping'] ) ) {
+			wp_send_json_error( array( 'message' => is_array( $bundle ) && $bundle['error'] !== '' ? $bundle['error'] : __( 'Nothing recognizable in the export.', 'fw' ) ) );
+		}
+
+		// Stash the design half (theme + media) — pages are rebuilt from the corrected mapping in step 2.
+		set_transient( $this->convert_stash_key(), array(
+			'bundle.json'       => $bundle['files']['bundle.json'] ?? null,
+			'media.json'        => $bundle['files']['media.json'] ?? null,
+			'theme-design.json' => $bundle['files']['theme-design.json'] ?? null,
+			'screens'           => $bundle['screens'] ?? 1,
+			'source'            => $bundle['source'] ?? null,
+		), 30 * MINUTE_IN_SECONDS );
+
+		wp_send_json_success( array(
+			'mapping' => $bundle['mapping'],
+			'roles'   => FW_Site_Converter_Mapper::roles(),
+			'source'  => isset( $bundle['source']['label'] ) ? $bundle['source']['label'] : __( 'HTML export', 'fw' ),
+			// The home markup — handed to the optional AI companion (browser → localhost) to refine the mapping.
+			'html'    => isset( $bundle['html'] ) ? (string) $bundle['html'] : '',
+		) );
+	}
+
+	/**
+	 * @internal
+	 * File-upload Convert, step 2 (BUILD): take the user's corrected mapping, rebuild the pages, fold
+	 * in the stashed design (theme + media), import everything, ACTIVATE the generated child theme, and
+	 * learn the corrections. PRG-redirects to the bundle-result view.
+	 */
+	public function _ajax_convert_build() {
+		check_ajax_referer( self::NONCE );
+		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 ); }
+
+		$raw     = wp_unslash( $_POST['mapping'] ?? '' );
+		$mapping = is_string( $raw ) ? json_decode( $raw, true ) : ( is_array( $raw ) ? $raw : null );
+		if ( ! is_array( $mapping ) || empty( $mapping['pages'] ) ) { wp_send_json_error( array( 'message' => __( 'No mapping was received.', 'fw' ) ) ); }
+
+		$stash = get_transient( $this->convert_stash_key() );
+		if ( ! is_array( $stash ) ) { wp_send_json_error( array( 'message' => __( 'The conversion session expired — please upload the file again.', 'fw' ) ) ); }
+
+		$pages = FW_Site_Converter_Mapper::build_pages( $mapping );
+
+		// Reassemble the bundle: corrected pages + the stashed design (theme + media).
+		$files = array();
+		if ( ! empty( $stash['bundle.json'] ) )       { $files['bundle.json'] = $stash['bundle.json']; }
+		if ( ! empty( $stash['media.json'] ) )        { $files['media.json'] = $stash['media.json']; }
+		if ( ! empty( $stash['theme-design.json'] ) ) { $files['theme-design.json'] = $stash['theme-design.json']; }
+		if ( $pages )                                 { $files['pages.json'] = array( 'pages' => $pages ); }
+
+		// AI companion CSS: fold the model-written stylesheet into the generated child theme's custom_css
+		// (this is the fidelity win — it styles the rebuilt shortcode markup to match the original look).
+		$ai_css = isset( $_POST['ai_css'] ) ? (string) wp_unslash( $_POST['ai_css'] ) : '';
+		if ( $ai_css !== '' && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {
+			$existing = isset( $files['theme-design.json']['custom_css'] ) ? (string) $files['theme-design.json']['custom_css'] : '';
+			$files['theme-design.json']['custom_css'] = trim( $existing . "\n\n/* --- AI companion --- */\n" . wp_strip_all_tags( $ai_css ) );
+		}
+
+		$result = FW_Site_Converter_Stitch::import_bundle( array( 'files' => $files, 'screens' => $stash['screens'] ?? 1, 'error' => '' ) );
+		if ( ! empty( $result['error'] ) && empty( $result['sections'] ) ) { wp_send_json_error( array( 'message' => $result['error'] ) ); }
+
+		if ( ! empty( $result['theme']['slug'] ) && empty( $result['theme']['error'] ) && wp_get_theme( $result['theme']['slug'] )->exists() ) {
+			switch_theme( $result['theme']['slug'] );
+			$result['theme']['activated'] = true;
+		}
+		$learned = FW_Site_Converter_Mapper::learn( $mapping );
+
+		$result['stage']          = 'bundle_result';
+		$result['convert_source'] = isset( $stash['source']['label'] ) ? $stash['source']['label'] : '';
+		delete_transient( $this->convert_stash_key() );
+		set_transient( $this->results_transient_key(), $result, 5 * MINUTE_IN_SECONDS );
+
+		wp_send_json_success( array(
+			'redirect' => add_query_arg( array( 'page' => self::PAGE_SLUG, 'fw-sc-done' => '1' ), admin_url( 'admin.php' ) ),
+			'learned'  => $learned,
+		) );
 	}
 
 	/**
@@ -929,7 +1063,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		<div class="wrap fw-ext-site-converter">
 			<h1 class="wp-heading-inline"><?php esc_html_e( 'Convert — AI Site Importer', 'fw' ); ?></h1>
 			<p class="description">
-				<?php esc_html_e( 'Bring an AI-generated site into WordPress. The Convert tab renders a site URL and converts it in one step. Manual tools holds the piece-by-piece importers (bundle .zip, header/footer theme, images, styling presets, theme settings, pages, menus) for when you want to run a single phase by hand. Diagnostics has the capture-service health check and the Theme Settings doctor.', 'fw' ); ?>
+				<?php esc_html_e( 'Bring an AI-generated site into WordPress. The Site Converter tab converts a whole site two ways — upload an export file (the builder is auto-detected) or point it at a live URL. Manual Tools holds the piece-by-piece importers (bundle .zip, header/footer theme, images, styling presets, theme settings, pages, menus) for running a single phase by hand. Diagnostics has the capture-service health check and the Theme Settings doctor.', 'fw' ); ?>
 			</p>
 
 			<?php
@@ -957,31 +1091,45 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			?>
 
 			<h2 class="nav-tab-wrapper fw-sc-tabs" style="margin:.4em 0 1.4em">
-				<a href="#convert"     class="nav-tab nav-tab-active" data-tab="convert"><?php esc_html_e( 'Convert', 'fw' ); ?></a>
-				<a href="#tools"       class="nav-tab"               data-tab="tools"><?php esc_html_e( 'Manual tools', 'fw' ); ?></a>
+				<a href="#convert"     class="nav-tab nav-tab-active" data-tab="convert"><?php esc_html_e( 'Site Converter', 'fw' ); ?></a>
+				<a href="#tools"       class="nav-tab"               data-tab="tools"><?php esc_html_e( 'Manual Tools', 'fw' ); ?></a>
 				<a href="#diagnostics" class="nav-tab"               data-tab="diagnostics"><?php esc_html_e( 'Diagnostics', 'fw' ); ?></a>
 			</h2>
 
 			<div class="fw-sc-panel is-active" id="panel-convert">
 
+			<p class="description" style="margin:0 0 1.2em">
+				<?php esc_html_e( 'Turn an AI-built site into a real, editable WordPress site — a child theme (colors, fonts, header &amp; footer) plus the pages, generated and activated for you. Two ways to convert: upload an export file, or point it at a live URL.', 'fw' ); ?>
+			</p>
+
+			<!-- ================= Capture service setup (shared — needed only for the URL method + the AI option) ================= -->
 			<details class="fw-sc-setup" open>
-				<summary><span class="dashicons dashicons-admin-tools"></span> <?php esc_html_e( 'Capture service — set up once (3 steps)', 'fw' ); ?></summary>
+				<summary><span class="dashicons dashicons-admin-tools"></span> <?php esc_html_e( 'Capture service — download &amp; set up once (4 steps)', 'fw' ); ?></summary>
 				<div class="fw-sc-setup-body">
+					<p style="margin:.2em 0 .6em;padding:.5em .7em;background:#fcf9e8;border:1px solid #f0e6a6;border-radius:4px">
+						<?php echo wp_kses_post( __( '<strong>Optional.</strong> You only need this for <strong>Convert from a URL</strong> below, and for the <strong>Use AI</strong> option. <strong>Convert from a file</strong> works on its own — no download, no Node.', 'fw' ) ); ?>
+					</p>
 					<div class="fw-sc-why">
 						<p style="margin:.2em 0 .5em"><strong><?php esc_html_e( 'Why does this need a small program running on my computer?', 'fw' ); ?></strong></p>
 						<p style="margin:.2em 0">
 							<?php esc_html_e( 'AI website builders (Lovable, v0, Bolt, and React / Vite apps) ship a nearly-empty HTML page and then build the real content in the browser with JavaScript. WordPress runs on PHP on the server — it can\'t open a browser — so on its own it would only ever see that empty shell, with no text, images, or styling to convert.', 'fw' ); ?>
 						</p>
 						<p style="margin:.4em 0 .2em">
-							<?php esc_html_e( 'The capture service is a tiny helper that opens the page in real Google Chrome on your own machine, waits for it to finish rendering, then hands the finished HTML + styles back to this page. It uses Node.js simply because that\'s what can drive Chrome locally.', 'fw' ); ?>
+							<?php esc_html_e( 'The capture service is a tiny helper that opens the page in real Google Chrome on your own machine, waits for it to finish rendering, then hands the finished HTML + styles back to this page. It also hosts the optional AI step. It uses Node.js simply because that\'s what can drive Chrome locally.', 'fw' ); ?>
 						</p>
 						<p style="margin:.4em 0 .2em;color:#1a7f37">
 							<span class="dashicons dashicons-lock" style="vertical-align:text-bottom"></span>
-							<?php esc_html_e( 'It runs entirely on your computer: your admin browser talks to it directly at localhost, and nothing about your site is ever sent to a third party.', 'fw' ); ?>
+							<?php esc_html_e( 'It runs entirely on your computer: your admin browser talks to it directly at localhost, and nothing about your site (or your API key) is ever sent to a third party.', 'fw' ); ?>
 						</p>
 					</div>
 					<style>.fw-sc-code{position:relative}.fw-sc-copy{position:absolute;top:.35em;right:.4em;border:0;background:transparent;cursor:pointer;color:#646970;padding:2px;line-height:1}.fw-sc-copy:hover{color:#2271b1}.fw-sc-copy .dashicons{font-size:18px;width:18px;height:18px}</style>
 					<ol style="margin:.6em 0 .4em 1.4em;padding:0">
+						<li style="margin-bottom:.9em">
+							<strong><?php esc_html_e( 'Download the capture service.', 'fw' ); ?></strong><br>
+							<span class="description"><?php echo wp_kses_post( __( 'Get it from GitHub — <a href="https://github.com/UnysonPlus/UnysonPlus-HTML-to-Wordpress-Conversion" target="_blank" rel="noopener">UnysonPlus/UnysonPlus-HTML-to-Wordpress-Conversion</a>. Clone it (recommended, so <code>git pull</code> updates it later):', 'fw' ) ); ?></span>
+							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-HTML-to-Wordpress-Conversion.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<span class="description"><?php echo wp_kses_post( __( '…or use the green <strong>Code → Download ZIP</strong> button on that page and unzip it.', 'fw' ) ); ?></span>
+						</li>
 						<li style="margin-bottom:.9em">
 							<strong><?php esc_html_e( 'Install the prerequisites.', 'fw' ); ?></strong><br>
 							<span class="description"><?php echo wp_kses_post( __( 'You need <a href="https://nodejs.org/" target="_blank" rel="noopener">Node.js 20 or newer</a> and <a href="https://www.google.com/chrome/" target="_blank" rel="noopener">Google Chrome</a> (the service uses your system Chrome to render). Confirm Node is installed:', 'fw' ) ); ?></span>
@@ -989,7 +1137,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						</li>
 						<li style="margin-bottom:.9em">
 							<strong><?php esc_html_e( 'Go to the service folder.', 'fw' ); ?></strong><br>
-							<span class="description"><?php echo wp_kses_post( __( 'In the <code>unysonplus-html-to-wordpress-conversion</code> folder, open a terminal and go to the service folder:', 'fw' ) ); ?></span>
+							<span class="description"><?php echo wp_kses_post( __( 'In the folder you just downloaded, open a terminal and go to the service folder:', 'fw' ) ); ?></span>
 							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">cd "tools\design-capture"</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							<span class="description"><?php echo wp_kses_post( __( '<strong>First time only</strong> — install its dependencies (run this once, in the same folder):', 'fw' ) ); ?></span>
 							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">npm install</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
@@ -998,18 +1146,251 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							<strong><?php esc_html_e( 'Start the service.', 'fw' ); ?></strong><br>
 							<span class="description"><?php esc_html_e( 'Start it and keep the terminal window open while you convert sites:', 'fw' ); ?></span>
 							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
-							<span class="description"><?php echo wp_kses_post( __( 'It serves <code>http://localhost:8787</code> and the status next to the Analyze button turns green once it is detected. Need a different port? Set a <code>PORT</code> environment variable before starting.', 'fw' ) ); ?></span>
+							<span class="description"><?php echo wp_kses_post( __( 'It serves <code>http://localhost:8787</code> and the status turns green once it is detected. Need a different port? Set a <code>PORT</code> environment variable before starting.', 'fw' ) ); ?></span>
+							<span class="description" style="display:block;margin-top:.4em"><?php echo wp_kses_post( __( '<strong>To also enable the AI option</strong> — either sign in to <strong>Claude Code</strong> (uses your subscription, no API key) then just run <code>node serve.mjs</code>, or start it with an Anthropic API key:', 'fw' ) ); ?></span>
+							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">ANTHROPIC_API_KEY=sk-ant-... node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 						</li>
 					</ol>
 					<script>(function(){document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest(".fw-sc-copy");if(!b)return;e.preventDefault();var pre=b.parentNode.querySelector("pre");if(!pre)return;var ok=function(){var i=b.querySelector(".dashicons");if(!i)return;var o=i.className;i.className="dashicons dashicons-yes";setTimeout(function(){i.className=o;},1200);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(pre.textContent.trim()).then(ok).catch(function(){});}else{var r=document.createRange();r.selectNode(pre);var sel=window.getSelection();sel.removeAllRanges();sel.addRange(r);try{document.execCommand("copy");ok();}catch(x){}sel.removeAllRanges();}});})();</script>
 					<p style="margin:.6em 0 .2em"><label><strong><?php esc_html_e( 'Service URL', 'fw' ); ?></strong> <input type="url" id="fw-sc-an-svcurl" class="regular-text" value="http://localhost:8787" style="width:18em"></label></p>
-					<p class="description"><?php esc_html_e( 'Tip: if the status shows “service not detected”, make sure the service from step 3 is still running and this URL matches its port. No Node? Use the manual .zip upload under the Manual tools tab.', 'fw' ); ?></p>
+					<p id="fw-sc-svc-info" class="description" style="margin:.3em 0 .2em"></p>
+					<script>
+					( function () {
+						var info = document.getElementById( 'fw-sc-svc-info' );
+						var urlEl = document.getElementById( 'fw-sc-an-svcurl' );
+						if ( ! info || ! urlEl ) { return; }
+						function escH( s ) { return String( s == null ? '' : s ).replace( /&/g, '&amp;' ).replace( /</g, '&lt;' ).replace( />/g, '&gt;' ); }
+						function svc() { return ( urlEl.value || 'http://localhost:8787' ).replace( /\/+$/, '' ); }
+						function check() {
+							info.textContent = '<?php echo esc_js( __( 'Checking the service…', 'fw' ) ); ?>';
+							fetch( svc() + '/health' ).then( function ( r ) { return r.json(); } ).then( function ( h ) {
+								if ( ! h || ! h.ok ) { info.innerHTML = '<span style="color:#646970"><?php echo esc_js( __( 'Service not detected — start it with the steps above.', 'fw' ) ); ?></span>'; return; }
+								var out = '<span style="color:#1a7f37">&#10003; <?php echo esc_js( __( 'Service running', 'fw' ) ); ?></span> — <strong>v' + escH( h.version || '?' ) + '</strong>';
+								if ( h.updateAvailable && h.latest ) {
+									out += ' <span style="background:#fcf0cd;color:#8a6d00;border-radius:9px;padding:1px 8px;font-size:11px">⬆ <?php echo esc_js( __( 'Update available', 'fw' ) ); ?> v' + escH( h.latest ) + '</span> — <?php echo esc_js( __( 'run', 'fw' ) ); ?> <code>git pull &amp;&amp; npm install</code> <?php echo esc_js( __( 'then restart the service', 'fw' ) ); ?>';
+								} else if ( h.latest ) {
+									out += ' <span style="color:#646970"><?php echo esc_js( __( '(up to date)', 'fw' ) ); ?></span>';
+								}
+								info.innerHTML = out;
+							} ).catch( function () { info.innerHTML = '<span style="color:#646970"><?php echo esc_js( __( 'Service not detected (offline or not started).', 'fw' ) ); ?></span>'; } );
+						}
+						urlEl.addEventListener( 'change', check );
+						check();
+					} )();
+					</script>
+					<p class="description"><?php esc_html_e( 'Tip: if the status shows “service not detected”, make sure the service is still running and this URL matches its port. No Node? Convert from a file above, or use the manual .zip upload under the Manual Tools tab.', 'fw' ); ?></p>
 				</div>
 			</details>
 
-			<h2><?php esc_html_e( 'Convert a site by URL (Site Analyzer)', 'fw' ); ?> <span style="font-size:11px;background:#2271b1;color:#fff;border-radius:9px;padding:1px 7px;vertical-align:middle">beta</span></h2>
+			<!-- ================= Method 1: From a file (auto-detected) ================= -->
+			<details class="fw-sc-card fw-sc-conv" open>
+				<summary><span class="dashicons dashicons-upload" style="color:#2271b1"></span> <?php esc_html_e( 'Convert from a file', 'fw' ); ?>
+					<span style="font-size:11px;background:#2271b1;color:#fff;border-radius:9px;padding:1px 7px;vertical-align:middle">beta</span>
+					<span style="font-size:11px;background:#1a7f37;color:#fff;border-radius:9px;padding:1px 7px;vertical-align:middle"><?php esc_html_e( 'no setup', 'fw' ); ?></span>
+				</summary>
+					<div class="fw-sc-card-body">
+				<p class="description">
+					<?php esc_html_e( 'Upload an export from your design tool and click Convert. The source is detected automatically — Google Stitch is fully supported today (export → .zip), and any other plain-HTML export converts too. Works offline; no Node, no capture service needed.', 'fw' ); ?>
+				</p>
+				<form method="post" action="" enctype="multipart/form-data">
+					<?php wp_nonce_field( self::NONCE ); ?>
+					<input type="hidden" name="fw_sc_step" value="convert_file">
+					<table class="form-table" role="presentation">
+						<tr>
+							<th scope="row"><?php esc_html_e( 'Export file (.zip)', 'fw' ); ?></th>
+							<td><input type="file" name="fw_sc_file" accept=".zip,application/zip">
+								<p class="description"><?php esc_html_e( 'e.g. a Google Stitch export. Both layouts work: a single exported frame, or a whole multi-screen project. The builder is auto-detected on upload.', 'fw' ); ?></p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row"><?php esc_html_e( 'AI assist', 'fw' ); ?></th>
+							<td>
+								<label><input type="checkbox" id="fw-sc-file-ai"> <strong><?php esc_html_e( 'Use AI to match the original design more closely', 'fw' ); ?></strong></label>
+								<span id="fw-sc-ai-status" class="description" style="margin-left:.5em"></span>
+								<p class="description">
+									<?php esc_html_e( 'Recommended for design-heavy pages — the AI corrects the section mapping and writes CSS so the result looks like the original. It runs in the capture service (set up at the top of this tab): sign in to Claude Code to use your subscription, or use an Anthropic API key. It stays on your machine, never in WordPress.', 'fw' ); ?>
+								</p>
+								<div class="fw-sc-code" style="position:relative;max-width:46em"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.3em 0;padding-right:2.6em">ANTHROPIC_API_KEY=sk-ant-... node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+								<p class="description" style="color:#1a7f37">
+									<span class="dashicons dashicons-lock" style="vertical-align:text-bottom"></span>
+									<?php esc_html_e( 'Your API key stays in the local service on your machine — it is never sent to or stored in WordPress.', 'fw' ); ?>
+									<label style="display:block;margin-top:.4em;color:#50575e"><?php esc_html_e( 'Service URL', 'fw' ); ?> <input type="url" id="fw-sc-ai-svcurl" class="regular-text" value="http://localhost:8787" style="width:15em"></label>
+								</p>
+							</td>
+						</tr>
+					</table>
+					<p class="submit" style="display:flex;gap:.6em;align-items:center;flex-wrap:wrap">
+						<button type="submit" class="button button-primary button-hero" name="fw_sc_convert_action" value="import"><?php esc_html_e( 'Convert to WordPress', 'fw' ); ?></button>
+						<button type="button" class="button button-secondary" id="fw-sc-file-review" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>"><?php esc_html_e( 'Review mapping first', 'fw' ); ?></button>
+						<span class="description"><?php esc_html_e( 'Convert builds it now; Review lets you correct each section’s element first.', 'fw' ); ?></span>
+					</p>
+					<div id="fw-sc-file-mapwrap" style="margin:.4em 0 0"></div>
+
+					<details class="fw-sc-convert-adv" style="margin-top:.6em">
+						<summary style="cursor:pointer;color:#646970"><?php esc_html_e( 'Advanced options', 'fw' ); ?></summary>
+						<div style="padding:.8em 0 0">
+							<p style="margin:0 0 .5em">
+								<label for="fw_sc_file_html" style="font-weight:600"><?php esc_html_e( 'Paste one screen’s code.html instead of a file', 'fw' ); ?></label><br>
+								<input type="text" name="fw_sc_file_title" class="regular-text" placeholder="<?php esc_attr_e( 'Page title (e.g. Home)', 'fw' ); ?>" style="margin:.4em 0">
+							</p>
+							<?php echo $this->json_editor_field( 'fw_sc_file_html', '<!DOCTYPE html> … the exported screen markup …', '', 8, 'fw_sc_file_html', '.html,text/html,text/plain' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+							<p class="description" style="margin-top:1em">
+								<?php esc_html_e( 'Want to fine-tune the result with AI before it goes live (testimonials sliders, accordions, exact layouts)? Download the bundle, refine pages.json with Claude, then re-upload it through “Convert from a bundle (.zip)” in Manual Tools. (A built-in AI option is coming.)', 'fw' ); ?>
+							</p>
+							<p>
+								<button type="submit" class="button button-secondary" name="fw_sc_convert_action" value="download"><?php esc_html_e( 'Download bundle (.zip) instead of converting', 'fw' ); ?></button>
+							</p>
+						</div>
+					</details>
+				</form>
+			</div></details>
+
+			<script>
+			( function () {
+				var reviewBtn = document.getElementById( 'fw-sc-file-review' );
+				if ( ! reviewBtn ) { return; }
+				var wrap = document.getElementById( 'fw-sc-file-mapwrap' );
+				var form = reviewBtn.closest( 'form' );
+				var nonce = reviewBtn.getAttribute( 'data-nonce' );
+				var aiChk = document.getElementById( 'fw-sc-file-ai' );
+				var aiStatus = document.getElementById( 'fw-sc-ai-status' );
+				var aiUrlEl = document.getElementById( 'fw-sc-ai-svcurl' );
+				var importBtn = form.querySelector( 'button[value="import"]' );
+				var aiCss = '';
+				function escH( s ) { return String( s == null ? '' : s ).replace( /&/g, '&amp;' ).replace( /</g, '&lt;' ).replace( />/g, '&gt;' ); }
+				function svc() { return ( ( aiUrlEl && aiUrlEl.value ) || 'http://localhost:8787' ).replace( /\/+$/, '' ); }
+				function aiOn() { return !! ( aiChk && aiChk.checked ); }
+				function pingAI() {
+					if ( ! aiStatus ) { return; }
+					fetch( svc() + '/health' ).then( function ( r ) { return r.json(); } ).then( function ( h ) {
+						if ( h && h.ok && h.aiReady ) { var be = h.aiBackend === 'claude-code' ? ' <?php echo esc_js( __( '(Claude Code subscription)', 'fw' ) ); ?>' : ( h.aiBackend === 'api' ? ' <?php echo esc_js( __( '(API key)', 'fw' ) ); ?>' : '' ); aiStatus.innerHTML = '<span style="color:#1a7f37">● <?php echo esc_js( __( 'AI ready', 'fw' ) ); ?>' + be + '</span>'; }
+						else if ( h && h.ok ) { aiStatus.innerHTML = '<span style="color:#b26200">● <?php echo esc_js( __( 'service running — no AI backend (set a key, or sign in to Claude Code)', 'fw' ) ); ?></span>'; }
+						else { aiStatus.textContent = ''; }
+					} ).catch( function () { aiStatus.innerHTML = '<span style="color:#646970">● <?php echo esc_js( __( 'service not detected', 'fw' ) ); ?></span>'; } );
+				}
+				if ( aiChk ) { aiChk.addEventListener( 'change', pingAI ); }
+				if ( aiUrlEl ) { aiUrlEl.addEventListener( 'change', pingAI ); }
+				pingAI();
+				function doBuild( mapping, btnEl ) {
+					if ( btnEl ) { btnEl.disabled = true; btnEl.textContent = '<?php echo esc_js( __( 'Building…', 'fw' ) ); ?>'; }
+					var fd = new FormData(); fd.append( 'action', 'fw_sc_convert_build' ); fd.append( '_wpnonce', nonce ); fd.append( 'mapping', JSON.stringify( mapping ) );
+					if ( aiCss ) { fd.append( 'ai_css', aiCss ); }
+					return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( r2 ) {
+						if ( r2 && r2.success && r2.data && r2.data.redirect ) { window.location.href = r2.data.redirect; return; }
+						throw new Error( ( r2 && r2.data && r2.data.message ) || '<?php echo esc_js( __( 'Build failed.', 'fw' ) ); ?>' );
+					} );
+				}
+				function prepare() {
+					var fileInput = form.querySelector( 'input[type=file]' );
+					var htmlInput = form.querySelector( '[name=fw_sc_file_html]' );
+					if ( ( ! fileInput || ! fileInput.files.length ) && ( ! htmlInput || ! htmlInput.value.trim() ) ) {
+						return Promise.reject( new Error( '<?php echo esc_js( __( 'Choose an export .zip (or paste code.html under Advanced options) first.', 'fw' ) ); ?>' ) );
+					}
+					var fd = new FormData( form ); fd.append( 'action', 'fw_sc_convert_prepare' ); fd.append( '_wpnonce', nonce );
+					return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( res ) {
+						if ( ! ( res && res.success ) ) { throw new Error( ( res && res.data && res.data.message ) || '<?php echo esc_js( __( 'Could not analyze the export.', 'fw' ) ); ?>' ); }
+						return res.data;
+					} );
+				}
+				function maybeAI( data ) {
+					if ( ! aiOn() ) { return Promise.resolve( { mapping: data.mapping || { pages: [] }, css: '', ai: false } ); }
+					wrap.innerHTML = '<p class="description"><span class="spinner is-active" style="float:none;margin:0 .4em 0 0"></span><?php echo esc_js( __( 'Asking the AI to refine the mapping &amp; styling… (this can take ~30s)', 'fw' ) ); ?></p>';
+					return fetch( svc() + '/ai-convert', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify( { html: data.html || '', mapping: data.mapping, source: data.source || '' } ) } )
+						.then( function ( r ) { return r.json(); } ).then( function ( a ) {
+							if ( a && a.ok && a.mapping ) { return { mapping: a.mapping, css: a.custom_css || '', ai: true }; }
+							throw new Error( ( a && a.error ) || '<?php echo esc_js( __( 'AI refine failed.', 'fw' ) ); ?>' );
+						} );
+				}
+				function preview( b ) {
+					if ( b.t === 'row' ) { return '<em>' + ( b.cols ? b.cols.length : 0 ) + ' <?php echo esc_js( __( 'columns', 'fw' ) ); ?></em>'; }
+					if ( b.t === 'button' ) { return '▭ ' + escH( b.label || '' ); }
+					if ( b.t === 'image' ) { return '🖼 <?php echo esc_js( __( 'image', 'fw' ) ); ?>'; }
+					if ( b.t === 'html' ) { return '<code style="font-size:11px;color:#777">' + escH( ( b.html || '' ).replace( /\s+/g, ' ' ).slice( 0, 70 ) ) + '…</code>'; }
+					return escH( ( b.text || '' ).slice( 0, 90 ) );
+				}
+				function render( mapping, roles, source, ai ) {
+					function sel( pi, si, bi, cur ) {
+						var o = ''; for ( var k in roles ) { o += '<option value="' + k + '"' + ( k === cur ? ' selected' : '' ) + '>' + escH( roles[ k ] ) + '</option>'; }
+						return '<select data-p="' + pi + '" data-s="' + si + '" data-b="' + bi + '" style="max-width:210px">' + o + '</select>';
+					}
+					var aiBadge = ai ? ' <span style="background:#6d28d9;color:#fff;border-radius:9px;padding:1px 7px;font-size:11px">✦ <?php echo esc_js( __( 'AI-refined', 'fw' ) ); ?></span>' : '';
+					var h = '<div class="notice notice-info" style="margin:.3em 0;padding:.7em .9em">'
+						+ '<p style="margin:.1em 0 .5em"><strong><?php echo esc_js( __( 'Detected:', 'fw' ) ); ?> ' + escH( source ) + '</strong>' + aiBadge + ' — <?php echo esc_js( __( 'review each element’s role (or uncheck / omit it), then build.', 'fw' ) ); ?></p>'
+						+ '<div id="fw-sc-file-map" style="max-height:520px;overflow:auto;border:1px solid #dcdcde;border-radius:6px;background:#fff">';
+					( mapping.pages || [] ).forEach( function ( pg, pi ) {
+						( pg.sections || [] ).forEach( function ( sc, si ) {
+							h += '<div class="fw-sc-sec" data-p="' + pi + '" data-s="' + si + '" style="border-top:2px solid #c3c4c7">'
+								+ '<div style="display:flex;flex-wrap:wrap;gap:.4em .9em;align-items:center;padding:.45em .7em;background:#eef0f2">'
+									+ '<strong><?php echo esc_js( __( 'Section', 'fw' ) ); ?> ' + ( si + 1 ) + '</strong>'
+									+ '<label style="font-size:12px"><?php echo esc_js( __( 'CSS ID', 'fw' ) ); ?> <input type="text" class="fw-sc-cssid" data-p="' + pi + '" data-s="' + si + '" value="' + escH( sc.css_id || '' ) + '" style="width:10em"></label>'
+									+ '<label style="font-size:12px;white-space:nowrap;color:#b32d2e"><input type="checkbox" class="fw-sc-omit" data-p="' + pi + '" data-s="' + si + '"' + ( sc.omit ? ' checked' : '' ) + '> <?php echo esc_js( __( 'Omit section', 'fw' ) ); ?></label>'
+								+ '</div><div class="fw-sc-rows">';
+							( sc.blocks || [] ).forEach( function ( b, bi ) {
+								h += '<div style="display:flex;gap:.6em;align-items:center;padding:.3em .7em;border-top:1px solid #f3f3f4">'
+									+ '<input type="checkbox" class="fw-sc-inc" data-p="' + pi + '" data-s="' + si + '" data-b="' + bi + '"' + ( b.include === false ? '' : ' checked' ) + '>'
+									+ '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + preview( b ) + '</div>'
+									+ '<div style="flex:0 0 auto">' + sel( pi, si, bi, b.role || 'code' ) + '</div></div>';
+							} );
+							h += '</div></div>';
+						} );
+					} );
+					h += '</div><p style="margin:.7em 0 0"><button type="button" class="button button-primary" id="fw-sc-file-build"><?php echo esc_js( __( 'Build the site from this mapping', 'fw' ) ); ?></button></p></div>';
+					wrap.innerHTML = h;
+					var map = document.getElementById( 'fw-sc-file-map' );
+					map.addEventListener( 'change', function ( e ) {
+						var t = e.target, p = +t.dataset.p, s = +t.dataset.s;
+						if ( isNaN( p ) || isNaN( s ) ) { return; }
+						var sec = mapping.pages[ p ].sections[ s ];
+						if ( t.classList.contains( 'fw-sc-cssid' ) ) { sec.css_id = t.value; return; }
+						if ( t.classList.contains( 'fw-sc-omit' ) ) {
+							sec.omit = t.checked;
+							var rows = t.closest( '.fw-sc-sec' ).querySelector( '.fw-sc-rows' );
+							if ( rows ) { rows.style.opacity = t.checked ? '.4' : '1'; rows.style.pointerEvents = t.checked ? 'none' : ''; }
+							return;
+						}
+						if ( t.classList.contains( 'fw-sc-inc' ) ) { sec.blocks[ +t.dataset.b ].include = t.checked; return; }
+						if ( t.tagName === 'SELECT' ) { sec.blocks[ +t.dataset.b ].role = t.value; return; }
+					} );
+					document.getElementById( 'fw-sc-file-build' ).addEventListener( 'click', function () {
+						var bb = this;
+						doBuild( mapping, bb ).catch( function ( e ) {
+							bb.disabled = false; bb.textContent = '<?php echo esc_js( __( 'Build the site from this mapping', 'fw' ) ); ?>';
+							wrap.insertAdjacentHTML( 'afterbegin', '<div class="notice notice-error"><p>' + escH( e.message ) + '</p></div>' );
+						} );
+					} );
+				}
+				reviewBtn.addEventListener( 'click', function () {
+					reviewBtn.disabled = true;
+					wrap.innerHTML = '<p class="description"><span class="spinner is-active" style="float:none;margin:0 .4em 0 0"></span><?php echo esc_js( __( 'Analyzing the export…', 'fw' ) ); ?></p>';
+					prepare().then( function ( data ) {
+						return maybeAI( data ).then( function ( r ) { aiCss = r.css || ''; render( r.mapping || { pages: [] }, data.roles || {}, data.source || '', r.ai ); } );
+					} ).catch( function ( e ) { wrap.innerHTML = '<div class="notice notice-error"><p>' + escH( e.message ) + '</p></div>'; } ).then( function () { reviewBtn.disabled = false; } );
+				} );
+				// When AI is on, the one-click "Convert to WordPress" routes through the AJAX AI path
+				// (prepare → AI refine → build); when off, it submits normally to the server.
+				if ( importBtn ) {
+					importBtn.addEventListener( 'click', function ( ev ) {
+						if ( ! aiOn() ) { return; }
+						ev.preventDefault();
+						importBtn.disabled = true;
+						wrap.innerHTML = '<p class="description"><span class="spinner is-active" style="float:none;margin:0 .4em 0 0"></span><?php echo esc_js( __( 'Converting with AI…', 'fw' ) ); ?></p>';
+						prepare().then( function ( data ) { return maybeAI( data ).then( function ( r ) { aiCss = r.css || ''; return doBuild( r.mapping || { pages: [] } ); } ); } )
+							.catch( function ( e ) { importBtn.disabled = false; wrap.innerHTML = '<div class="notice notice-error"><p>' + escH( e.message ) + '</p></div>'; } );
+					} );
+				}
+			} )();
+			</script>
+
+			<!-- ================= Method 2: From a URL (capture service) ================= -->
+			<details class="fw-sc-card fw-sc-conv" open><summary><span class="dashicons dashicons-admin-site-alt3" style="color:#2271b1"></span> <?php esc_html_e( 'Convert from a URL', 'fw' ); ?><span style="font-size:11px;background:#2271b1;color:#fff;border-radius:9px;padding:1px 7px;vertical-align:middle">beta</span></summary>
+				<div class="fw-sc-card-body">
+			<p class="description" style="margin:0 0 1em">
+				<?php esc_html_e( 'Point it at a live site and it is rendered + converted in one step. Best for AI builders that render in the browser (Lovable, v0, Bolt, React / Vite apps). This one needs the capture service running on your computer — set it up once at the top of this tab.', 'fw' ); ?>
+			</p>
+
+			<h3 style="margin-bottom:.2em"><?php esc_html_e( 'Enter the site URL', 'fw' ); ?></h3>
 			<p class="description">
-				<?php esc_html_e( 'Enter a site URL and it is rendered and converted in one step — theme, pages, menus and media. This uses the capture service you started above (your admin browser reaches it directly). Start it once and leave it running.', 'fw' ); ?>
+				<?php esc_html_e( 'Once the capture service above is running, paste a site URL and it is rendered and converted in one step — theme, pages, menus and media.', 'fw' ); ?>
 			</p>
 			<div class="fw-sc-analyze" style="margin:0 0 1em" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>">
 				<input type="url" id="fw-sc-an-url" class="regular-text" style="width:30em;max-width:100%" placeholder="https://your-site.lovable.app/">
@@ -1024,6 +1405,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				</p>
 				<div id="fw-sc-an-status" style="margin-top:.7em"></div>
 			</div>
+				</div></details>
 			<script>
 			( function () {
 				var nonce = document.querySelector( '.fw-sc-analyze' ).getAttribute( 'data-nonce' );
@@ -1268,46 +1650,6 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				<input type="hidden" name="fw_sc_step" value="import_bundle">
 				<input type="file" name="fw_sc_bundle" accept=".zip,application/zip">
 				<button type="submit" class="button button-primary"><?php esc_html_e( 'Import bundle', 'fw' ); ?></button>
-			</form>
-				</div>
-			</details>
-
-			<details class="fw-sc-card">
-				<summary><span class="dashicons dashicons-layout"></span> <?php esc_html_e( 'Convert a Google Stitch screen', 'fw' ); ?></summary>
-				<div class="fw-sc-card-body">
-			<p class="description">
-				<?php esc_html_e( 'Bring a Google Stitch design straight into WordPress. In Stitch, Export → .zip (or "Code to Clipboard" for one screen). Upload the .zip — both layouts work: a single exported frame (a flat folder with code.html) or a whole project (one subfolder per screen). The design tokens (colors / fonts / spacing from the tailwind.config + DESIGN.md) become the child-theme styling, each labelled section becomes the right element (heading → Special Heading, paragraph → Text Block, CTA → Button, feature/bento card → Icon Box, image → media), and the header/footer nav become menus.', 'fw' ); ?>
-			</p>
-			<p class="description" style="margin-top:-.4em">
-				<strong><?php esc_html_e( 'No AI required.', 'fw' ); ?></strong>
-				<?php esc_html_e( '“Build & import” converts deterministically and offline. Want higher-fidelity mapping (testimonials sliders, accordions, exact layouts)? Use “Download draft bundle”, refine pages.json with Claude, then re-upload it through “Convert from a bundle (.zip)” above.', 'fw' ); ?>
-			</p>
-			<form method="post" action="" enctype="multipart/form-data">
-				<?php wp_nonce_field( self::NONCE ); ?>
-				<input type="hidden" name="fw_sc_step" value="stitch_build">
-				<table class="form-table" role="presentation">
-					<tr>
-						<th scope="row"><?php esc_html_e( 'Stitch export (.zip)', 'fw' ); ?></th>
-						<td><input type="file" name="fw_sc_stitch_zip" accept=".zip,application/zip">
-							<p class="description"><?php esc_html_e( 'The export you downloaded from Stitch. Takes precedence over the paste box below.', 'fw' ); ?></p>
-						</td>
-					</tr>
-					<tr>
-						<th scope="row"><label for="fw_sc_stitch_html"><?php esc_html_e( '…or paste one screen’s code.html', 'fw' ); ?></label></th>
-						<td>
-							<p style="margin:0 0 .4em">
-								<input type="text" name="fw_sc_stitch_title" class="regular-text" placeholder="<?php esc_attr_e( 'Page title (e.g. Home)', 'fw' ); ?>">
-							</p>
-							<?php echo $this->json_editor_field( 'fw_sc_stitch_html', '<!DOCTYPE html> … the Stitch screen markup …', '', 10, 'fw_sc_stitch_html', '.html,text/html,text/plain' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
-							<p class="description"><?php esc_html_e( 'For a quick single-screen test (Stitch → Export → Code to Clipboard).', 'fw' ); ?></p>
-						</td>
-					</tr>
-				</table>
-				<p class="submit" style="display:flex;gap:.6em;align-items:center;flex-wrap:wrap">
-					<button type="submit" class="button button-primary" name="fw_sc_stitch_action" value="import"><?php esc_html_e( 'Build &amp; import', 'fw' ); ?></button>
-					<button type="submit" class="button" name="fw_sc_stitch_action" value="download"><?php esc_html_e( 'Download draft bundle (.zip)', 'fw' ); ?></button>
-					<span class="description"><?php esc_html_e( 'Import writes the child theme + pages now; download gives you the bundle .zip to refine and re-import.', 'fw' ); ?></span>
-				</p>
 			</form>
 				</div>
 			</details>
@@ -1975,9 +2317,21 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				: __( 'Menus — nothing built.', 'fw' );
 		}
 
-		$head = $source !== ''
-			? sprintf( __( 'Imported bundle (%s).', 'fw' ), $source )
-			: __( 'Imported bundle.', 'fw' );
+		// The file-upload "Convert" reports the auto-detected source + the generated/activated theme.
+		if ( ! empty( $data['convert_source'] ) ) {
+			$head = sprintf( __( 'Converted — detected source: %s.', 'fw' ), $data['convert_source'] );
+		} else {
+			$head = $source !== ''
+				? sprintf( __( 'Imported bundle (%s).', 'fw' ), $source )
+				: __( 'Imported bundle.', 'fw' );
+		}
+		if ( ! empty( $data['theme'] ) && is_array( $data['theme'] ) && empty( $data['theme']['error'] ) && ! empty( $data['theme']['slug'] ) ) {
+			$tname = ! empty( $data['theme']['name'] ) ? $data['theme']['name'] : $data['theme']['slug'];
+			array_unshift( $lines, ! empty( $data['theme']['activated'] )
+				? sprintf( __( 'Child theme “%s” was generated and activated.', 'fw' ), $tname )
+				: sprintf( __( 'Child theme “%s” was generated — activate it under Appearance → Themes.', 'fw' ), $tname )
+			);
+		}
 
 		echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html( $head ) . '</strong></p>';
 		if ( $lines ) {

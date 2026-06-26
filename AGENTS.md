@@ -31,8 +31,51 @@ site-converter/
     ├── class-fw-site-converter-pages.php          ← pages importer (builder trees → WP pages, static)
     ├── class-fw-site-converter-bundle.php         ← one-shot bundle orchestrator (static)
     ├── class-fw-site-converter-theme-generator.php ← header/footer → child|standalone theme (static)
-    └── class-fw-site-converter-stitch.php         ← Google Stitch ingest engine (static)
+    ├── class-fw-site-converter-stitch.php         ← Google Stitch ingest engine (static)
+    └── class-fw-site-converter-sources.php        ← file-upload source auto-detect + adapter registry
 ```
+
+## Unified Convert — two methods, auto-detect (`FW_Site_Converter_Sources`)
+
+The **Site Converter** tab converts a whole site **two ways**: **from a URL** (the capture service —
+renders JS apps) and **from a file** (upload an AI-builder export). The file path **auto-detects the
+source** and routes to the matching adapter, so the tool grows to "convert as many builders as possible"
+without a tab per builder. `class-fw-site-converter-sources.php` (`FW_Site_Converter_Sources`) is the
+registry: `adapters()` (filterable via `fw_site_converter_sources`) lists each builder with a
+`detect_dir`/`detect_html` confidence scorer (0..1) + a `build` callback; `identify_dir()`/`identify_html()`
+pick the highest-confidence match (≥ `MIN_CONFIDENCE` 0.5, else the **generic HTML** fallback);
+`build_from_dir()`/`build_from_html()` build the standard bundle and tag it with `source`. Today:
+**Google Stitch** (specialized — `FW_Site_Converter_Stitch::detect_dir/detect_html` fingerprint the inline
+`tailwind.config` + `aida-public` CDN + Material Symbols + a sibling `DESIGN.md`) and **generic HTML**
+(the Stitch engine doubles as a plain-HTML converter — it walks semantic sections regardless of source).
+Add a builder = one `adapters()` entry. Admin: the `convert_file` step (`run_convert_file()`) unzips →
+`FW_Site_Converter_Sources::build_from_dir()` → import + **activate the generated child theme**; the
+result notice reports the detected source. (Back-compat: the old `stitch_build` step + `fw_sc_stitch_*`
+field names still route here.)
+
+**Manual mapping review (file flow).** Beside "Convert to WordPress" the file form has **"Review mapping
+first"** — the same human-in-the-loop the URL flow has. Two AJAX steps: `_ajax_convert_prepare`
+(auto-detect + `build_bundle`, **stash** the design half — `theme-design.json` + `media.json` — in a
+per-user transient, return the role-annotated `mapping` + `FW_Site_Converter_Mapper::roles()` + the home
+`html`) → the in-page editor (per-section CSS ID / Omit, per-element include + role `<select>`, mutating
+the mapping client-side) → `_ajax_convert_build` (`Mapper::build_pages()` of the corrected mapping + the
+stashed design → `import_bundle()` → activate theme → `Mapper::learn()`). The review build reuses the SAME
+child-theme generation as the one-click path; only the page mapping is user-corrected.
+
+**AI companion (the fidelity tier).** An optional **"Use AI"** checkbox in the file form. The AI lives in
+the SAME local capture service (`unysonplus-html-to-wordpress-conversion/tools/design-capture`, package
+`unysonplus-site-capture`) — a new `POST /ai-convert` endpoint (`to-ai.mjs`) that calls Claude with the
+**Two backends, auto-detected** (`to-ai.mjs` `aiBackend()`): an **`ANTHROPIC_API_KEY`** (pay-per-use API)
+OR the **Claude Code CLI** (`claude -p` — uses the user's *subscription*, no key). Pick order:
+`AI_BACKEND` env → API key → `claude` on PATH → off. Both are held in the LOCAL service, NEVER in
+WordPress, and return a refined `mapping` + a global `custom_css`. The browser orchestrates (admin →
+localhost, like the capture flow): `_ajax_convert_prepare` → `POST <svc>/ai-convert {html, mapping, source}`
+→ the refined mapping feeds the review editor (or the one-click build) → `_ajax_convert_build` with an extra
+`ai_css` POST field, which is folded into the generated child theme's `custom_css`. `/health` reports
+`aiReady` + `aiBackend` so the UI shows "AI ready (Claude Code subscription)" / "(API key)" vs "no AI
+backend" vs "service not detected". The model works at the **mapping + CSS** level — the deterministic
+engine still produces the correct page-builder nodes — so the AI can't emit malformed builder JSON. AI off
+→ the flow is unchanged (deterministic + manual review).
 
 Mirrors the `post-types` extension's admin-page pattern: a submenu under `fw-extensions`
 (`PARENT_SLUG`), save/run handled on the page's `load-` hook before output (PRG redirect),
@@ -374,23 +417,31 @@ Stitch-aware parser maps confidently with no AI.
 - **Multi-screen** (Export → the whole project) — a parent folder with **one subfolder per screen**
   (`<screen>/code.html`) + top-level `<system>/DESIGN.md`. Each screen → one page (the first is the front page).
 
-**Pipeline (offline):** `parse_tokens()` (+ `merge_design_md()`) → `tokens_to_theme_settings()` writes the
-carried design CSS into **`misc_custom_css`** (object shape `{ custom_css }` — gotcha #2 — all rules scoped
-`body:not(.wp-admin)` — gotcha #3): a `:root` of CSS vars from the palette/spacing/radius, the Google-Fonts
-`@import` (Material Symbols dropped — its glyphs convert to Font Awesome; `&amp;` entities decoded), base
-canvas + the two type families, and a primary-`.btn` rule. `scan_images()` (reuses the media engine) →
-`media.json`. `html_to_mapping()` walks each `<section>`/`<footer>` into the **Mapper's** role-annotated
-mapping (pill → overline, `<h1..2>` → title, `<p>` → text, CTA `<button>`/`<a>` → button, a `grid` of cards
-with headings → a `columns` row of **icon_box**es at `col-span-N`/`grid-cols-K` widths, `<img>` → verbatim
-media) → `FW_Site_Converter_Mapper::build_pages()` → `pages.json`. `extract_menus()` → `menus.json` (header
-nav → primary, footer nav → footer). `build_bundle()` assembles the five files; `import_bundle()` runs them
-through `FW_Site_Converter_Bundle::import_dir()` (Tier 1, no AI) and `build_zip()` streams the draft for
-Claude refinement (Tier 2).
+**It generates + activates a CHILD THEME** (the plan's target — not just custom CSS on the active theme).
+`tokens_to_design_config()` maps the tokens + the screen's chrome to the theme generator's design-config:
+fonts (raw families, with a fallback parsed from the Google-Fonts URL), colors (ink/bg/accent — a
+near-neutral token accent is replaced by the most-saturated inline color via `scan_accent()`, e.g. a
+`from-[#FF416C]` gradient stop), header (`detect_header()` → pill vs bar, sticky, dark fill, the CTA
+button), footer, and component CSS (cards) under `custom_css`. That ships as **`theme-design.json`**, so
+the bundle's theme phase runs `FW_Site_Converter_Theme_Generator::install()` → a child theme carrying the
+Stitch palette/fonts + header/footer. The theme name is the brand from the HTML `<title>` (`title_from_html`
+keeps the part before " - / | "). **Menus are NOT a separate file** — the design-config's `header.menu` /
+`footer.menu` are built into real WP menus by the generated theme's activation bootstrap (avoids duplicate
+Header/Primary menus).
+
+**Rest of the pipeline (offline):** `scan_images()` (reuses the media engine) → `media.json`.
+`html_to_mapping()` walks each `<section>`/`<footer>` into the **Mapper's** role-annotated mapping (pill →
+overline, `<h1..2>` → title, `<p>` → text, CTA `<button>`/`<a>` → button, a `grid` of cards with headings →
+a `columns` row of **icon_box**es at `col-span-N`/`grid-cols-K` widths, `<img>` → verbatim media) →
+`FW_Site_Converter_Mapper::build_pages()` → `pages.json`. `tokens_to_theme_settings()` (the `misc_custom_css`
+"apply to the ACTIVE theme" path) is kept for reuse but the Stitch bundle no longer emits it.
 
 **Admin wiring:** the `stitch_build` step (a "Convert a Google Stitch screen" card in **Manual tools**).
-Upload the `.zip` (or paste one `code.html`) → **Build & import** (deterministic, offline) or **Download
-draft bundle (.zip)** (refine `pages.json` with Claude, then re-upload via Convert bundle). Reuses the
-bundle's `bundle_result` view.
+**One primary action** — upload the `.zip` → **Convert to WordPress**: builds + imports via
+`FW_Site_Converter_Bundle::import_dir()` AND **`switch_theme()` activates the generated child theme**, so
+it's a true one-step "upload .zip → done". Under *Advanced options*: paste one screen's `code.html`, or
+**Download bundle (.zip)** (`build_zip()`) to refine `pages.json` with Claude (Tier 2) and re-upload via
+Convert bundle. Reuses the bundle's `bundle_result` view.
 
 **Self-learning — LOCAL only, privacy-safe (NO telemetry; nothing leaves the machine).** `rules_get()` /
 `rules_put()` persist a per-install `signature → role` store (`fw_site_converter_stitch_rules` wp_option)
