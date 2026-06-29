@@ -23,6 +23,256 @@ class FW_Site_Converter_Mapper {
 
 	const RULES_OPTION = 'fw_site_converter_map_rules';
 
+	/* ---------------------------------------------------------------------- *
+	 * CSS Class Mapper for BOX columns — when a column's content is a card/box
+	 * (border / shadow / background / rounded), compile its source Tailwind
+	 * classes into ONE clean semantic class (`.box-1`) carrying the concatenated
+	 * CSS, applied via the column's Inner Wrapper Class. De-dup by declaration
+	 * set, so all identical cards share one `.box` class.
+	 * ---------------------------------------------------------------------- */
+	private static $style_cfg   = array();
+	private static $style_on    = false;
+	private static $style_key   = array(); // declset hash → class name
+	private static $style_css   = array(); // class name → CSS rule
+	private static $style_count = array(); // base name → count
+
+	/** Enable the box CSS Class Mapper for this build + reset its registry. Pass the parsed tailwind config. */
+	public static function set_style_config( $cfg ) {
+		self::$style_cfg   = is_array( $cfg ) ? $cfg : array();
+		self::$style_on    = class_exists( 'FW_Site_Converter_Tailwind' );
+		self::$style_key   = array();
+		self::$style_css   = array();
+		self::$style_count = array();
+	}
+
+	/** Does this class string read as a BOX container? (border / shadow / background / rounded.) */
+	private static function is_box_class( $cls ) {
+		$cls = ' ' . strtolower( (string) $cls ) . ' ';
+		if ( ! preg_match( '/\s(border|shadow[\w-]*|rounded[\w\[\]-]*|bg-)/', $cls ) ) { return false; }
+		// A bare "border-0 / border-none / shadow-none" alone doesn't make a box.
+		if ( preg_match( '/\s(border|shadow|rounded)/', $cls ) && ! preg_match( '/\s(bg-|border(?!-0|-none)|shadow(?!-none)|rounded(?!-none))/', $cls ) ) { return false; }
+		return true;
+	}
+
+	/** Visual computed properties applied to a converted BUTTON / BOX (from data-sc-cs). */
+	private static $cs_btn = array( 'background-color', 'color', 'border', 'border-radius', 'padding', 'font-weight', 'font-size', 'font-family', 'text-transform', 'letter-spacing' );
+	private static $cs_box = array( 'background-color', 'border', 'border-radius', 'box-shadow', 'padding' );
+
+	/** Does an element's RESOLVED computed style (data-sc-cs) read as a BOX? (fill / border / shadow / rounded.) */
+	private static function cs_is_box( $cs ) {
+		if ( '' === (string) $cs ) { return false; }
+		$d = self::cs_decls( $cs, array( 'background-color', 'border', 'box-shadow', 'border-radius' ) );
+		return ! empty( $d );
+	}
+
+	/** Parse a `data-sc-cs` value (prop:val;…) → assoc, synthesizing a `border` shorthand, filtered to $allow. */
+	private static function cs_decls( $cs, $allow ) {
+		$raw = array();
+		foreach ( explode( ';', (string) $cs ) as $d ) {
+			$d = trim( $d );
+			if ( '' === $d ) { continue; }
+			$cp = strpos( $d, ':' );
+			if ( false === $cp ) { continue; }
+			$raw[ trim( substr( $d, 0, $cp ) ) ] = trim( substr( $d, $cp + 1 ) );
+		}
+		// Computed styles expose per-edge longhands; synthesize one `border` shorthand from the top edge.
+		if ( isset( $raw['border-top-width'] ) && '0px' !== $raw['border-top-width'] ) {
+			$bs = ( isset( $raw['border-top-style'] ) && 'none' !== $raw['border-top-style'] ) ? $raw['border-top-style'] : 'solid';
+			$raw['border'] = $raw['border-top-width'] . ' ' . $bs . ' ' . ( isset( $raw['border-top-color'] ) ? $raw['border-top-color'] : 'currentColor' );
+		}
+		$out = array();
+		foreach ( $allow as $p ) {
+			if ( isset( $raw[ $p ] ) && '' !== $raw[ $p ] ) { $out[ $p ] = $raw[ $p ]; }
+		}
+		return $out;
+	}
+
+	/**
+	 * Compile an element's source classes → a de-duplicated semantic class name (registers its CSS rule).
+	 * Shared by the box-column mapper and the button-fill mapper.
+	 *
+	 * @param string $cls        the source class="" string
+	 * @param string $hint       base class name ('box', 'btn-fill', …)
+	 * @param bool   $border_box add box-sizing:border-box (boxes that combine padding + border + width)
+	 */
+	private static function register_style( $cls, $hint, $border_box = false, $btn_kind = '', $inline = array() ) {
+		if ( ! self::$style_on ) { return ''; }
+		$cls = trim( (string) $cls );
+		if ( $cls === '' && ! $inline ) { return ''; }
+		$cm = ( $cls !== '' ) ? FW_Site_Converter_Tailwind::compile_class_set( $cls, self::$style_cfg ) : array( 'base' => array(), 'hover' => array() );
+		// Phase 2: fold in the element's RESOLVED computed styles (from data-sc-cs) — the universal styling
+		// source that lets a NON-Tailwind site reproduce faithfully (resolved values win over compiled classes).
+		if ( $inline ) { $cm['base'] = array_merge( isset( $cm['base'] ) ? $cm['base'] : array(), $inline ); }
+		if ( empty( $cm['base'] ) && empty( $cm['hover'] ) ) { return ''; }
+		// Tailwind's `border` only sets border-WIDTH; border-style:solid comes from its preflight (scoped to
+		// .sc-tw, which doesn't reach this GLOBAL class). Make it self-contained so a border actually renders.
+		if ( isset( $cm['base']['border-width'] ) && ! isset( $cm['base']['border-style'] ) ) { $cm['base']['border-style'] = 'solid'; }
+		if ( $border_box && $cm['base'] ) { $cm['base']['box-sizing'] = 'border-box'; }
+		// Button self-containment: a converted button keeps the framework `.btn` BASE (display/line-height),
+		// so the compiled class must explicitly shed the chrome the SOURCE button doesn't have — otherwise the
+		// base `.btn`'s gray fill / border / padding bleed through. A `link` (no fill, no border) must read as
+		// a bare text link; an `outline` must have a transparent fill.
+		$has_bg = isset( $cm['base']['background-color'] ) || isset( $cm['base']['background'] );
+		if ( 'link' === $btn_kind ) {
+			if ( ! $has_bg ) { $cm['base']['background-color'] = 'transparent'; }
+			if ( ! isset( $cm['base']['border-width'] ) ) { $cm['base']['border-width'] = '0'; $cm['base']['border-style'] = 'none'; }
+			if ( ! isset( $cm['base']['padding'] ) && ! isset( $cm['base']['padding-left'] ) && ! isset( $cm['base']['padding-top'] ) ) { $cm['base']['padding'] = '0'; }
+		} elseif ( 'outline' === $btn_kind && ! $has_bg ) {
+			$cm['base']['background-color'] = 'transparent';
+		}
+		$key = md5( $hint . '|' . wp_json_encode( array( $cm['base'], $cm['hover'] ) ) );
+		if ( isset( self::$style_key[ $key ] ) ) { return self::$style_key[ $key ]; }
+		if ( isset( self::$style_count[ $hint ] ) ) { self::$style_count[ $hint ]++; $name = $hint . '-' . self::$style_count[ $hint ]; }
+		else { self::$style_count[ $hint ] = 1; $name = $hint; }
+		$css = '';
+		if ( $cm['base'] )  { $css .= '.' . $name . '{' . FW_Site_Converter_Tailwind::decl_string( $cm['base'] ) . '}'; }
+		if ( $cm['hover'] ) { $css .= '.' . $name . ':hover{' . FW_Site_Converter_Tailwind::decl_string( $cm['hover'] ) . '}'; }
+		self::$style_key[ $key ]  = $name;
+		self::$style_css[ $name ] = $css;
+		return $name;
+	}
+
+	/** A box container's classes (+ optional resolved computed styles) → a `.box` semantic class. */
+	private static function box_style_class( $cls, $cs = '' ) {
+		$inline = '' !== (string) $cs ? self::cs_decls( $cs, self::$cs_box ) : array();
+		return self::register_style( $cls, 'box', true, '', $inline );
+	}
+
+	/**
+	 * A button's source classes → a SEMANTIC class carrying its fill / text color / radius / padding. The
+	 * name is prefixed `sc-btn-` so it NEVER collides with the framework's own `.btn-primary` / `.btn-outline-*`
+	 * style presets (the converter leaves the button's `style` option on Default = the bare `.btn` base, and
+	 * lets this compiled class do the styling). Kinds: a solid `bg-primary`/`bg-*` → `sc-btn-primary`; a
+	 * light/white fill → `sc-btn-light`; a bordered ghost → `sc-btn-outline`; NO fill + NO border (a
+	 * `text-primary hover:underline` CTA) → `sc-btn-link` (rendered as a bare text link); else `sc-btn-fill`.
+	 */
+	private static function button_style_class( $cls, $cs = '' ) {
+		$inline = '' !== (string) $cs ? self::cs_decls( $cs, self::$cs_btn ) : array();
+		if ( $inline ) {
+			// Kind from the RESOLVED computed style (works for ANY site): an opaque fill → primary; a
+			// transparent fill with a border → outline; neither → a bare text link.
+			if ( isset( $inline['background-color'] ) ) { $kind = 'primary'; }
+			elseif ( isset( $inline['border'] ) )       { $kind = 'outline'; }
+			else                                        { $kind = 'link'; }
+		} else {
+			$c          = ' ' . strtolower( (string) $cls ) . ' ';
+			$has_bg     = (bool) preg_match( '/\sbg-(?!transparent)/', $c ); // a real (opaque) fill
+			$has_border = ( strpos( $c, ' border' ) !== false );
+			if ( strpos( $c, ' bg-primary' ) !== false || strpos( $c, ' bg-accent' ) !== false || strpos( $c, ' bg-brand' ) !== false ) {
+				$kind = 'primary';
+			} elseif ( strpos( $c, ' bg-white' ) !== false || strpos( $c, ' bg-surface' ) !== false ) {
+				$kind = 'light';
+			} elseif ( $has_border && ! $has_bg ) {
+				$kind = 'outline';
+			} elseif ( ! $has_bg ) {
+				$kind = 'link'; // no fill, no border → a text link, not a button
+			} else {
+				$kind = 'fill';
+			}
+		}
+		return self::register_style( $cls, 'sc-btn-' . $kind, false, $kind, $inline );
+	}
+
+	/** The `.btn-row` flex-row wrapper class (registers its CSS once) — for a side-by-side button group. */
+	private static function btn_row_class() {
+		if ( ! isset( self::$style_css['btn-row'] ) ) {
+			// The buttons render full-width/block inside a column, so without sizing them to content two
+			// would wrap and stack — flex:0 0 auto + width:auto keeps each at its content width, side-by-side.
+			self::$style_css['btn-row'] = '.btn-row{display:flex;gap:1rem;justify-content:center;align-items:center;flex-wrap:wrap;}'
+				. '.btn-row>.btn,.btn-row>a{flex:0 0 auto;width:auto;}';
+		}
+		return 'btn-row';
+	}
+
+	/** Compile the SOURCE button-container's flex styling (direction / gap / alignment / bottom margin) into a
+	 *  row class so a converted button row matches the source instead of hardcoded defaults. De-duped. */
+	private static function btn_group_class( $cls, $cs ) {
+		$c = ' ' . strtolower( (string) $cls ) . ' ';
+		$d = array( 'display' => 'flex', 'flex-wrap' => 'wrap', 'align-items' => 'center', 'justify-content' => 'center' );
+		if ( preg_match( '/\s(?:sm|md|lg|xl|2xl):flex-row\b/', $c ) || strpos( $c, ' flex-row ' ) !== false ) { $d['flex-direction'] = 'row'; }
+		elseif ( strpos( $c, ' flex-col ' ) !== false ) { $d['flex-direction'] = 'column'; }
+		if ( preg_match( '/\s(?:[a-z0-9]+:)?space-x-(\d+)/', $c, $m ) ) { $d['gap'] = ( (int) $m[1] * 0.25 ) . 'rem'; }
+		elseif ( preg_match( '/\s(?:[a-z0-9]+:)?gap-(\d+)/', $c, $m ) ) { $d['gap'] = ( (int) $m[1] * 0.25 ) . 'rem'; }
+		else { $d['gap'] = '1rem'; }
+		if ( strpos( $c, ' justify-start ' ) !== false ) { $d['justify-content'] = 'flex-start'; }
+		elseif ( strpos( $c, ' justify-between ' ) !== false ) { $d['justify-content'] = 'space-between'; }
+		if ( preg_match( '/\smb-(\d+)/', $c, $m ) ) { $d['margin-bottom'] = ( (int) $m[1] * 0.25 ) . 'rem'; }
+		if ( '' !== (string) $cs ) { $d = array_merge( $d, self::cs_decls( (string) $cs, array( 'gap', 'justify-content', 'align-items', 'flex-direction', 'margin-bottom' ) ) ); }
+		$key = md5( 'btngrp|' . wp_json_encode( $d ) );
+		if ( isset( self::$style_key[ $key ] ) ) { return self::$style_key[ $key ]; }
+		$name = 'sc-btn-row-' . substr( $key, 0, 6 );
+		$body = '';
+		foreach ( $d as $pr => $v ) { $body .= $pr . ':' . $v . ';'; }
+		self::$style_key[ $key ]  = $name;
+		self::$style_css[ $name ] = '.' . $name . '{' . $body . '}.' . $name . '>.btn,.' . $name . '>a{flex:0 0 auto;width:auto;}';
+		return $name;
+	}
+
+	/** Left-align an icon_box's title/content/icon (the `top-title` style hardcodes center) — for source
+	 *  cards whose text is left-aligned. Registers the rule once; returns the class to add. */
+	private static function ib_left_class() {
+		if ( ! isset( self::$style_css['sc-ib-left'] ) ) {
+			self::$style_css['sc-ib-left'] = '.icon-box.sc-ib-left,.icon-box.sc-ib-left .icon-box__title,.icon-box.sc-ib-left .icon-box__content,.icon-box.sc-ib-left .icon-box__icon-align{text-align:left !important;}';
+		}
+		return 'sc-ib-left';
+	}
+
+	/** Reproduce the source's gray icon "image" box (a fill + height + rounded around the icon) as a class
+	 *  on the icon_box, so the card matches the source instead of showing a bare icon. Registered + de-duped. */
+	private static function ib_iconbox_class( $cls, $cs ) {
+		if ( ! self::$style_on ) { return ''; }
+		$cm   = FW_Site_Converter_Tailwind::compile_class_set( (string) $cls, self::$style_cfg );
+		$base = ( is_array( $cm ) && isset( $cm['base'] ) && is_array( $cm['base'] ) ) ? $cm['base'] : array();
+		if ( '' !== (string) $cs ) { $base = array_merge( $base, self::cs_decls( (string) $cs, array( 'background-color', 'border-radius', 'height', 'min-height' ) ) ); }
+		$bg     = isset( $base['background-color'] ) ? $base['background-color'] : ( isset( $base['background'] ) ? $base['background'] : 'rgb(238,240,242)' );
+		$radius = isset( $base['border-radius'] ) ? $base['border-radius'] : '12px';
+		$h      = isset( $base['height'] ) ? $base['height'] : ( isset( $base['min-height'] ) ? $base['min-height'] : '160px' );
+		$key    = md5( 'ibx|' . $bg . '|' . $radius . '|' . $h );
+		if ( isset( self::$style_key[ $key ] ) ) { return self::$style_key[ $key ]; }
+		$name = 'sc-ib-box-' . substr( $key, 0, 6 );
+		self::$style_key[ $key ]  = $name;
+		self::$style_css[ $name ] = '.icon-box.' . $name . ' .icon-box__icon{background-color:' . $bg . ';border-radius:' . $radius . ';min-height:' . $h . ';width:100%;display:flex;align-items:center;justify-content:center;margin-bottom:1.5rem;}'
+			. '.icon-box.' . $name . ' .icon-box__icon i{font-size:2.25rem;}';
+		return $name;
+	}
+
+	/**
+	 * Group runs of 2+ consecutive buttons into a flex-row wrapper so they sit SIDE-BY-SIDE (a page-builder
+	 * column stacks its items vertically, so two buttons would otherwise stack). The group is a nested 1_1
+	 * column whose Inner Wrapper Class is `.btn-row` (display:flex; gap; justify-content:center).
+	 */
+	private static function group_buttons( array $items ) {
+		if ( ! self::$style_on ) { return $items; }
+		$out = array(); $run = array();
+		$strip = function ( $b ) { unset( $b['_group'] ); return $b; };
+		$flush = function () use ( &$run, &$out, $strip ) {
+			if ( count( $run ) >= 2 ) {
+				// Carry the SOURCE button container's flex styling onto the row, if we captured it.
+				$grp = isset( $run[0]['_group'] ) ? $run[0]['_group'] : array();
+				$cls = $grp ? self::btn_group_class( (string) ( $grp['cls'] ?? '' ), (string) ( $grp['cs'] ?? '' ) ) : self::btn_row_class();
+				$col = self::n_column( '1_1', array_map( $strip, $run ) );
+				$col['atts']['inner_class'] = $cls;
+				$out[] = $col;
+			} else {
+				foreach ( $run as $r ) { $out[] = $strip( $r ); }
+			}
+			$run = array();
+		};
+		foreach ( $items as $it ) {
+			if ( isset( $it['shortcode'] ) && $it['shortcode'] === 'button' ) { $run[] = $it; }
+			else { $flush(); $out[] = $it; }
+		}
+		$flush();
+		return $out;
+	}
+
+	/** All registered box-container rules (clean semantic classes), for the child theme stylesheet. */
+	public static function registered_css() {
+		$rules = array_values( array_filter( self::$style_css ) );
+		if ( ! $rules ) { return ''; }
+		return "/* ---- mapped box containers (clean semantic CSS from the source) ---- */\n" . implode( "\n", $rules );
+	}
+
 	/** Roles selectable in the editor (value => human label). */
 	public static function roles() {
 		return array(
@@ -278,17 +528,78 @@ class FW_Site_Converter_Mapper {
 		if ( $d < 1 || $d > 12 ) { return null; }
 		return array( 'width' => self::frac12( $d ) );
 	}
-	private static function n_text( $html ) {
-		return array( 'type' => 'simple', 'shortcode' => 'text_block', '_items' => array(), 'atts' => array(
+	private static function n_text( $html, $max_width = '' ) {
+		$atts = array(
 			'text' => self::map_accent_classes( (string) $html ), 'animation' => self::def_animation(),
 			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
-		) );
+		);
+		// Source max-width on the text (from a class, an inline style, OR a stylesheet rule — detected in
+		// the engine) → the Text Block's "Custom Max Width" option, so a constrained paragraph stays
+		// constrained + centered (matches the source measure).
+		$mw = self::max_width_att( (string) $max_width );
+		if ( $mw !== null ) { $atts['max_width'] = $mw; }
+		return array( 'type' => 'simple', 'shortcode' => 'text_block', '_items' => array(), 'atts' => $atts );
+	}
+
+	/** A CSS length ("620px", "42rem") → the text_block custom-max-width att. */
+	private static function max_width_att( $value ) {
+		$value = trim( (string) $value );
+		if ( $value === '' ) { return null; }
+		if ( preg_match( '/^([0-9.]+)(px|rem|em|%|ch|vw)$/', $value, $m ) ) {
+			return array( 'preset' => 'custom', 'custom' => array( 'custom_width' => array( 'value' => $m[1], 'unit' => $m[2] ) ) );
+		}
+		return null;
 	}
 	private static function n_code( $html ) {
 		return array( 'type' => 'simple', 'shortcode' => 'code_block', '_items' => array(), 'atts' => array(
 			'code' => (string) $html, 'animation' => self::def_animation(),
 			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		) );
+	}
+
+	/** Build the announcement_pill shortcode node from a recognized hero pill block (sub-tag + message +
+	 *  optional trailing icon + optional link). Full att shape so the editor opens it cleanly; colours stay
+	 *  neutral (user themes them). The trailing icon reuses icon_value() like buttons. */
+	private static function n_announcement_pill( array $b ) {
+		$none_icon  = array( 'type' => 'none', 'icon-class' => '', 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false );
+		$none_color = array( 'predefined' => '', 'custom' => '' );
+		$trail = trim( (string) ( $b['icon'] ?? '' ) );
+		$align = ( ( $b['align'] ?? '' ) === 'center' ) ? 'center' : ( in_array( ( $b['align'] ?? '' ), array( 'start', 'end' ), true ) ? $b['align'] : 'start' );
+		$atts = array(
+			'tag_text'      => (string) ( $b['tag_text'] ?? '' ),
+			'message'       => (string) ( $b['message'] ?? '' ),
+			'link'          => (string) ( $b['link'] ?? '' ),
+			'leading'       => 'none',
+			'leading_icon'  => $none_icon,
+			'trailing_icon' => $trail !== '' ? self::icon_value( $trail ) : $none_icon,
+			'style'         => 'soft',
+			'shape'         => 'pill',
+			'size'          => 'md',
+			'align'         => $align,
+			'tag_style'     => 'filled',
+			'hover'         => 'lift',
+			'pill_color'    => $none_color,
+			'text_color'    => $none_color,
+			'tag_color'     => $none_color,
+			'gradient_from' => $none_color,
+			'gradient_to'   => $none_color,
+			'spacing'       => self::def_spacing(),
+			'link_target'   => 'auto',
+			'rel_nofollow'  => 'no',
+			'rel_sponsored' => 'no',
+			'rel_ugc'       => 'no',
+			'aria_label'    => '',
+			'title_attr'    => '',
+			'dismissible'   => 'no',
+			'dismiss_id'    => '',
+			'schema_enable' => 'no',
+			'schema_name'   => '',
+			'schema_date'   => '',
+			'animation'     => self::def_animation(),
+			'unique_id'     => self::uid(),
+			'css_id'        => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
+		);
+		return array( 'type' => 'simple', 'shortcode' => 'announcement_pill', 'atts' => $atts, '_items' => array() );
 	}
 	/**
 	 * A Container layout band — renders its own `.fw-container` / `.fw-container-fluid` as a
@@ -409,7 +720,7 @@ class FW_Site_Converter_Mapper {
 			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		) );
 	}
-	private static function n_button( $label, $link, $cls = '', $icon = '', $icon_pos = 'after' ) {
+	private static function n_button( $label, $link, $cls = '', $icon = '', $icon_pos = 'after', $cs = '', $group_cls = '', $group_cs = '' ) {
 		// Converted buttons use the 'Default' style (value '') = the bare `.btn` base. The child
 		// theme carries the source's primary-button rules (rewritten onto `.btn` in page_css,
 		// base + :hover); the user can switch to a Color Preset later. Full att shape per the
@@ -429,14 +740,19 @@ class FW_Site_Converter_Mapper {
 			'spacing'         => self::def_spacing(),
 			'animation'       => self::def_animation(),
 			'unique_id'       => self::uid(),
-			'css_id'          => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
+			// Source button classes (bg / text color / radius / padding) → one semantic class on the button,
+			// so it gets the source's exact fill instead of the theme's default. The `#page a` link color
+			// the AI path emits doesn't exist on this path, so a single class loaded after the theme wins.
+			'css_id'          => '', 'css_class' => self::button_style_class( $cls, $cs ), 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		);
 		$icon = trim( (string) $icon );
 		if ( $icon !== '' ) {
 			$atts['icon']          = self::icon_value( $icon );
 			$atts['icon_position'] = in_array( $icon_pos, array( 'before', 'after' ), true ) ? $icon_pos : 'after';
 		}
-		return array( 'type' => 'simple', 'shortcode' => 'button', 'atts' => $atts, '_items' => array() );
+		$item = array( 'type' => 'simple', 'shortcode' => 'button', 'atts' => $atts, '_items' => array() );
+		if ( '' !== (string) $group_cls || '' !== (string) $group_cs ) { $item['_group'] = array( 'cls' => (string) $group_cls, 'cs' => (string) $group_cs ); } // the source button container's flex styling
+		return $item;
 	}
 
 	/**
@@ -568,11 +884,67 @@ class FW_Site_Converter_Mapper {
 			$atts['icon_color'] = array( 'predefined' => '', 'custom' => $ic );
 		}
 
-		$cls = self::keep_classes( (string) ( $card['cls'] ?? '' ) );
-		if ( $cls !== '' ) { $atts['css_class'] = $cls; }
+		// css_class = source ALIGNMENT (sc-ib-left unless the card is centered) + the gray icon "image" box
+		// (if the source had one). The cell's own box classes are NOT carried here — box styling lives on the
+		// column (with-button card) or is added separately (simple card), so this stays clean (no double border).
+		$ibcls = empty( $card['center'] ) ? self::ib_left_class() : '';
+		if ( ! empty( $card['iconBoxCls'] ) ) {
+			$ibx = self::ib_iconbox_class( (string) $card['iconBoxCls'], (string) ( $card['iconBoxCs'] ?? '' ) );
+			if ( '' !== $ibx ) { $ibcls = trim( $ibcls . ' ' . $ibx ); }
+		}
+		$atts['css_class'] = $ibcls;
 		$atts['unique_id'] = self::uid();
 
 		return array( 'type' => 'simple', 'shortcode' => 'icon_box', 'atts' => $atts, '_items' => array() );
+	}
+
+	/** A column's content rebuilt as the reviewer-chosen role (overrides the auto-detected shortcode). */
+	private static function cell_by_role( $role, array $c, $html ) {
+		$txt = trim( wp_strip_all_tags( (string) $html ) );
+		switch ( $role ) {
+			case 'code':
+			case 'image':
+				return array( self::n_code( (string) $html ) );
+			case 'text':
+				return array( self::n_text( $html !== '' ? (string) $html : '<p>' . esc_html( $txt ) . '</p>' ) );
+			case 'overline':
+				return array( self::n_heading( array( 'overline' => $txt, 'level' => 3 ) ) );
+			case 'title':
+				return array( self::n_heading( array( 'title' => $txt, 'level' => 2 ) ) );
+			case 'subtitle':
+				return array( self::n_heading( array( 'subtitle' => $txt, 'level' => 3 ) ) );
+			case 'heading':
+				return array( self::n_heading( array( 'title' => $txt, 'level' => 3 ) ) );
+			case 'button':
+				return array( self::n_button( $txt !== '' ? $txt : 'Button', '#' ) );
+			default:
+				if ( ! empty( $c['card'] ) ) { return array( self::n_icon_box( $c['card'] ) ); }
+				return array( self::n_code( (string) $html ) );
+		}
+	}
+
+	/** Flatten an icon-card to plain HTML (icon + heading + body) — used when a card is re-roled. */
+	private static function card_to_html( array $card ) {
+		$h = '';
+		if ( ! empty( $card['customIcon'] ) ) { $h .= (string) $card['customIcon']; }
+		elseif ( ! empty( $card['icon'] ) ) { $h .= '<i class="' . esc_attr( $card['icon'] ) . '"></i>'; }
+		if ( ! empty( $card['title'] ) ) {
+			$tag = ! empty( $card['titleTag'] ) ? preg_replace( '/[^a-z0-9]/', '', strtolower( $card['titleTag'] ) ) : 'h3';
+			if ( $tag === '' ) { $tag = 'h3'; }
+			$h .= '<' . $tag . '>' . esc_html( $card['title'] ) . '</' . $tag . '>';
+		}
+		if ( ! empty( $card['text'] ) ) { $h .= (string) $card['text']; }
+		return $h;
+	}
+
+	/** Flatten a text-cell structure {overline,title,subtitle,paras} to plain HTML — for re-roling. */
+	private static function text_cell_to_html( array $t ) {
+		$h = '';
+		if ( ! empty( $t['overline'] ) ) { $h .= '<p>' . esc_html( $t['overline'] ) . '</p>'; }
+		if ( ! empty( $t['title'] ) ) { $h .= '<h2>' . esc_html( $t['title'] ) . '</h2>'; }
+		if ( ! empty( $t['subtitle'] ) ) { $h .= '<p>' . esc_html( $t['subtitle'] ) . '</p>'; }
+		foreach ( ( isset( $t['paras'] ) && is_array( $t['paras'] ) ? $t['paras'] : array() ) as $p ) { $h .= '<p>' . (string) $p . '</p>'; }
+		return $h;
 	}
 	/** Keep meaningful source classes (utilities like text-uppercase/mb-3), drop animation noise. */
 	private static function keep_classes( $cls ) {
@@ -887,6 +1259,7 @@ class FW_Site_Converter_Mapper {
 				$node = self::build_section( $sec );
 				if ( $node ) { $builder[] = $node; }
 			}
+			if ( ! empty( $page['mainClass'] ) ) { self::main_style( (string) $page['mainClass'] ); } // carry the source <main>'s vertical padding
 			$slug = isset( $page['slug'] ) ? sanitize_title( (string) $page['slug'] ) : '';
 			$out[] = array(
 				'title'      => isset( $page['title'] ) && $page['title'] !== '' ? (string) $page['title'] : ( $slug !== '' ? ucwords( str_replace( '-', ' ', $slug ) ) : 'Home' ),
@@ -1118,6 +1491,149 @@ class FW_Site_Converter_Mapper {
 		return trim( $css );
 	}
 
+	/**
+	 * Block-builder REGISTRY — the second half of the expandable pipeline (the recognizer registry in
+	 * class-fw-site-converter-stitch.php is the first). Maps a standalone block's role to the page-builder
+	 * shortcode it becomes. Built-ins cover heading / text / button / code; teach the converter a NEW
+	 * UnysonPlus shortcode by calling register_builder( $role, build($block)->item, $full_width ) — no core
+	 * edits. $full_width = true gives the shortcode its OWN 1/1 column (flush the stack first) instead of
+	 * stacking it. `code` is the universal fallback for any unmapped block.
+	 */
+	private static $builders = array();
+
+	/** Register a block→shortcode builder. */
+	public static function register_builder( $role, $build, $full_width = false ) {
+		self::$builders[ $role ] = array( 'build' => $build, 'full_width' => (bool) $full_width );
+	}
+
+	/** The builder set (registers the built-ins on first use). */
+	private static function builders() {
+		if ( ! self::$builders ) { self::register_builtin_builders(); }
+		return self::$builders;
+	}
+
+	/** How many block→shortcode builders are registered (proves the builder registry loaded). */
+	public static function builder_count() {
+		return count( self::builders() );
+	}
+
+	/** The built-in block→shortcode builders (the original elseif chain, now table-driven + extensible). */
+	private static function register_builtin_builders() {
+		self::register_builder( 'heading', function ( $b ) {
+			return self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
+		} );
+		self::register_builder( 'text', function ( $b ) {
+			return self::n_text( (string) ( $b['html'] ?? $b['text'] ?? '' ), (string) ( $b['maxWidth'] ?? '' ) );
+		} );
+		self::register_builder( 'button', function ( $b ) {
+			return self::n_button( (string) ( $b['label'] ?? $b['text'] ?? 'Button' ), (string) ( $b['href'] ?? '#' ), (string) ( $b['srcCls'] ?? $b['cls'] ?? '' ), (string) ( $b['icon'] ?? '' ), (string) ( $b['iconPos'] ?? 'after' ), (string) ( $b['srcCs'] ?? $b['cs'] ?? '' ), (string) ( $b['groupCls'] ?? '' ), (string) ( $b['groupCs'] ?? '' ) );
+		} );
+		self::register_builder( 'code', function ( $b ) {
+			return self::n_code( (string) ( $b['html'] ?? '' ) );
+		} );
+		self::register_builder( 'announcement_pill', function ( $b ) {
+			return self::n_announcement_pill( $b );
+		} );
+	}
+
+	/** A Tailwind spacing token → pixels: `[150px]`/`[5rem]` (arbitrary) or a scale step (12 → 48px). */
+	private static function tw_len_px( $tok ) {
+		if ( '' === $tok ) { return 0.0; }
+		if ( '[' === $tok[0] ) {
+			$v = trim( $tok, '[]' );
+			if ( preg_match( '/^([0-9.]+)px$/', $v, $m ) ) { return (float) $m[1]; }
+			if ( preg_match( '/^([0-9.]+)rem$/', $v, $m ) ) { return (float) $m[1] * 16.0; }
+			return 0.0;
+		}
+		return (float) $tok * 4.0; // Tailwind scale: 1 = 0.25rem = 4px
+	}
+
+	/** Sum a section's vertical rhythm utilities (pt/pb/py + mt/mb/my) → top/bottom pixels, so the builder
+	 *  section can reproduce the source's spacing (decompose sections otherwise have zero vertical spacing). */
+	/** Carry the source <main>'s vertical padding (pt-32 pb-32 …) onto the theme's #main wrapper via a
+	 *  scoped rule, the same container-styling mechanism as sections. Clean DOM (no class on <main>). */
+	private static function main_style( $cls ) {
+		if ( ! self::$style_on ) { return; }
+		$vs = self::section_vspace( (string) $cls );
+		$d = array();
+		if ( $vs['pt'] > 0 ) { $d['padding-top']    = round( $vs['pt'] ) . 'px'; }
+		if ( $vs['pb'] > 0 ) { $d['padding-bottom'] = round( $vs['pb'] ) . 'px'; }
+		if ( ! $d ) { return; }
+		$body = '';
+		foreach ( $d as $pr => $v ) { $body .= $pr . ':' . $v . ' !important;'; }
+		self::$style_css['sc-main'] = '#main.site-main,main#main{' . $body . '}';
+	}
+
+	private static function section_vspace( $cls ) {
+		$r = array( 'pt' => 0.0, 'pb' => 0.0, 'mt' => 0.0, 'mb' => 0.0 );
+		if ( preg_match_all( '/(?:^|\s)([mp])([tby])-(\[[^\]]+\]|\d+(?:\.\d+)?)/', ' ' . (string) $cls . ' ', $ms, PREG_SET_ORDER ) ) {
+			foreach ( $ms as $m ) {
+				$v   = self::tw_len_px( $m[3] );
+				$pre = ( 'p' === $m[1] ) ? 'p' : 'm';
+				if ( 't' === $m[2] || 'y' === $m[2] ) { $r[ $pre . 't' ] += $v; }
+				if ( 'b' === $m[2] || 'y' === $m[2] ) { $r[ $pre . 'b' ] += $v; }
+			}
+		}
+		return $r;
+	}
+
+	/**
+	 * UNIFIED ELEMENT STYLER — per-role STYLE PROFILES. Each entry says WHICH output selector carries the
+	 * source style and WHICH curated properties to keep. This is the expandable table: add a role, a tag, a
+	 * property, or a new selector here and it is picked up with NO other code change. `{h}` is replaced by the
+	 * block's heading level (h1…h6). Prose tags are styled SECTION-SCOPED (`#hero h1`, `#hero .text-block`) so
+	 * the tag itself stays class-free (clean DOM); distinctive elements (buttons/cards) keep their own class.
+	 */
+	private static function style_profiles() {
+		return array(
+			'title'    => array( 'sel' => '{h}',                        'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-transform', 'max-width' ) ),
+			'heading'  => array( 'sel' => '{h}',                        'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-transform' ) ),
+			'subtitle' => array( 'sel' => '.special-heading__subtitle', 'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'color', 'max-width' ) ),
+			'overline' => array( 'sel' => '.special-heading__overline', 'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-transform' ) ),
+			'text'     => array( 'sel' => '.text-block',                'props' => array( 'font-family', 'font-size', 'line-height', 'color', 'max-width' ) ),
+		);
+	}
+
+	/** Compile a source element's classes (+ computed styles) → a declaration map filtered to $props. */
+	private static function el_style_decls( $cls, $cs, array $props ) {
+		$base = array();
+		if ( '' !== (string) $cls && self::$style_on ) {
+			$cm = FW_Site_Converter_Tailwind::compile_class_set( (string) $cls, self::$style_cfg );
+			if ( is_array( $cm ) && isset( $cm['base'] ) && is_array( $cm['base'] ) ) { $base = $cm['base']; }
+		}
+		if ( '' !== (string) $cs ) { $base = array_merge( $base, self::cs_decls( (string) $cs, $props ) ); }
+		$out = array();
+		foreach ( $props as $pr ) { if ( isset( $base[ $pr ] ) && '' !== $base[ $pr ] ) { $out[ $pr ] = $base[ $pr ]; } }
+		return $out;
+	}
+
+	/** Register a SECTION-SCOPED style rule (`#css_id selector { … }`) into the global stylesheet, de-duped. */
+	private static function register_section_rule( $css_id, $selector, array $decls ) {
+		if ( '' === (string) $css_id || ! $decls ) { return; }
+		$sel  = '#' . $css_id . ( '' !== (string) $selector ? ' ' . $selector : '' );
+		$body = '';
+		foreach ( $decls as $pr => $v ) { $body .= $pr . ':' . $v . ' !important;'; }
+		$key = md5( $sel . '|' . $body );
+		if ( isset( self::$style_key[ $key ] ) ) { return; }
+		self::$style_key[ $key ] = $sel;
+		self::$style_css[ 'sec-' . substr( $key, 0, 8 ) ] = $sel . '{' . $body . '}';
+	}
+
+	/** Collect the section-scoped style rule for ONE prose block, driven by the expandable profile table. */
+	private static function collect_section_style( $css_id, array $b ) {
+		if ( '' === (string) $css_id ) { return; }
+		$role     = isset( $b['role'] ) ? (string) $b['role'] : '';
+		$profiles = self::style_profiles();
+		if ( ! isset( $profiles[ $role ] ) ) { return; }
+		$sel = $profiles[ $role ]['sel'];
+		if ( false !== strpos( $sel, '{h}' ) ) {
+			$lvl = max( 1, min( 6, (int) ( isset( $b['level'] ) ? $b['level'] : 2 ) ) );
+			$sel = str_replace( '{h}', 'h' . $lvl, $sel );
+		}
+		$decls = self::el_style_decls( (string) ( isset( $b['cls'] ) ? $b['cls'] : '' ), (string) ( isset( $b['cs'] ) ? $b['cs'] : '' ), $profiles[ $role ]['props'] );
+		self::register_section_rule( $css_id, $sel, $decls );
+	}
+
 	/** Build one section node from its role-annotated blocks. */
 	private static function build_section( array $sec ) {
 		if ( ! empty( $sec['omit'] ) ) { return null; } // user dropped the whole section
@@ -1128,6 +1644,7 @@ class FW_Site_Converter_Mapper {
 		} ) );
 		$src_cls_str = implode( ' ', $src_cls );
 		$css_id      = isset( $sec['css_id'] ) ? sanitize_html_class( (string) $sec['css_id'] ) : '';
+		if ( '' === $css_id ) { $css_id = 'sc-sec-' . substr( md5( wp_json_encode( isset( $sec['blocks'] ) ? $sec['blocks'] : $sec ) ), 0, 6 ); } // generated id so the unified styler can scope rules
 		$css         = (string) ( $sec['css'] ?? '' );
 
 		// "As one code-block": keep the section verbatim. The source's own .container is inside
@@ -1169,15 +1686,21 @@ class FW_Site_Converter_Mapper {
 		// so the capture hands us its class as innerWrapClass; replay it onto the column's inner wrapper.
 		$inner_wrap = self::keep_classes( (string) ( $sec['innerWrapClass'] ?? '' ) );
 
+		// The source section centers its content (flex items-center / text-center) → the builder column
+		// centers its content horizontally, so the heading, text and buttons all sit centered like the source.
+		$center = ! empty( $sec['align'] ) && $sec['align'] === 'center';
+
 		$flush_head = function () use ( &$head, &$buf ) {
 			if ( $head !== null ) { $buf[] = self::n_heading( $head ); $head = null; }
 		};
-		$flush_buf = function () use ( &$buf, &$items, &$flush_head, $col_lay, $inner_wrap ) {
+		$flush_buf = function () use ( &$buf, &$items, &$flush_head, $col_lay, $inner_wrap, $center ) {
 			$flush_head();
 			if ( $buf ) {
+				$buf = self::group_buttons( $buf ); // consecutive buttons → one side-by-side flex-row group
 				$w = ( $col_lay !== null ) ? $col_lay['width'] : '1_1';
 				$col = self::n_column( $w, $buf, '', $col_lay !== null ? $col_lay : array() );
 				if ( $inner_wrap !== '' ) { $col['atts']['inner_class'] = $inner_wrap; }
+				if ( $center ) { $col['atts']['content_h'] = 'center'; }
 				$items[] = $col;
 				$buf = array();
 			}
@@ -1187,6 +1710,7 @@ class FW_Site_Converter_Mapper {
 			if ( isset( $b['include'] ) && ! $b['include'] ) { continue; } // unchecked → omit
 			$role = isset( $b['role'] ) ? $b['role'] : 'code';
 			if ( $role === 'skip' ) { continue; }
+			self::collect_section_style( $css_id, $b ); // unified element styler: section-scoped prose styling
 
 			// A gallery grid (de-cloned image-card carousel, source `.container-fluid`) is full-width,
 			// so it gets its OWN 1_1 column instead of inheriting the intro column's col-* width (which
@@ -1237,10 +1761,20 @@ class FW_Site_Converter_Mapper {
 				// Vertical Align. Skipped on the grid column (the height-definer where it's redundant).
 				$row_valign = isset( $b['valign'] ) && in_array( $b['valign'], array( 'start', 'center', 'end' ), true ) ? $b['valign'] : '';
 				foreach ( $b['cols'] as $c ) {
+					$box_on_column = ''; // box class for this column's Inner Wrapper Class (box card WITH a button)
 					// Cell content: a nested card-grid → a CSS-grid column of icon_boxes; a text cell
 					// → special_heading (+ text); a single icon card → icon_box; else the verbatim
 					// HTML as a code-block.
-					if ( isset( $c['grid'] ) && is_array( $c['grid'] ) && ! empty( $c['grid']['cells'] ) ) {
+					// A reviewer-chosen role for this column's content overrides the auto-detected shortcode
+					// (e.g. force a card to a plain Text Block or a verbatim Code Block).
+					$crole = isset( $c['role'] ) ? (string) $c['role'] : '';
+					if ( $crole !== '' && ! in_array( $crole, array( 'columns', 'skip' ), true ) ) {
+						$chtml = '';
+						if ( ! empty( $c['card'] ) ) { $chtml = self::card_to_html( $c['card'] ); }
+						elseif ( isset( $c['text'] ) ) { $chtml = is_array( $c['text'] ) ? self::text_cell_to_html( $c['text'] ) : (string) $c['text']; }
+						else { $chtml = (string) ( $c['html'] ?? '' ); }
+						$inner_items = self::cell_by_role( $crole, $c, $chtml );
+					} elseif ( isset( $c['grid'] ) && is_array( $c['grid'] ) && ! empty( $c['grid']['cells'] ) ) {
 						// Nested card-grid -> NESTED COLUMNS (one per card, at the nested cell's width). Unyson+
 						// nests columns natively: a column whose _items are columns wraps as a row.
 						$inner_items = array();
@@ -1261,31 +1795,60 @@ class FW_Site_Converter_Mapper {
 					} elseif ( isset( $c['text'] ) && is_array( $c['text'] ) ) {
 						$inner_items = self::n_text_cell( $c['text'] );
 					} elseif ( isset( $c['card'] ) && is_array( $c['card'] ) ) {
-						$inner_items = array( self::n_icon_box( $c['card'] ) );
+						$card = $c['card'];
+						$cc   = (string) ( $card['cls'] ?? '' );
+						$ccs  = (string) ( $card['cs'] ?? '' ); // the card container's resolved computed style (data-sc-cs)
+						$ib   = self::n_icon_box( $card );
+						$is_box = self::is_box_class( $cc ) || self::cs_is_box( $ccs );
+						if ( $is_box && empty( $card['button'] ) ) {
+							// Simple box card (ONLY icon + title + content — fits the icon_box) → the box
+							// styling goes on the ICON_BOX itself (css_class).
+							$ib['atts']['css_class'] = trim( $ib['atts']['css_class'] . ' ' . self::box_style_class( $cc, $ccs ) );
+							$inner_items = array( $ib );
+						} elseif ( $is_box && ! empty( $card['button'] ) ) {
+							// Box card WITH a button (the icon_box has no button slot) → render icon_box +
+							// button in the column, and move the box styling to the COLUMN's Inner Wrapper
+							// Class so it wraps BOTH. (See the CSS-class-mapper rule in CLAUDE.md.) n_icon_box already
+							// set a CLEAN css_class (alignment + gray icon box, no cell box classes), so nothing to reset.
+							$bt = $card['button'];
+							$inner_items = array( $ib, self::n_button( (string) ( $bt['label'] ?? 'Button' ), (string) ( $bt['href'] ?? '#' ), (string) ( $bt['cls'] ?? '' ), (string) ( $bt['icon'] ?? '' ), 'after', (string) ( $bt['cs'] ?? '' ) ) );
+							$box_on_column = self::box_style_class( $cc, $ccs );
+						} else {
+							$inner_items = array( $ib );
+						}
 					} else {
 						$inner_items = array( self::n_code( (string) ( $c['html'] ?? '' ) ) );
 					}
 					// Column widths → the column's responsive width controls (outer grid, no nested div):
 					// Bootstrap col-* first; else framework-agnostic measured widths (Tailwind/custom);
 					// else even division across the row.
-					$lay = self::col_layout( (string) ( $c['cls'] ?? '' ) );
-					if ( $lay === null ) { $lay = self::geom_layout( isset( $c['wResp'] ) ? $c['wResp'] : null ); }
-					$width = ( $lay !== null ) ? $lay['width'] : self::cell_width( $c['width'] ?? '1_3' );
+					if ( ! empty( $c['width'] ) && preg_match( '/^\d+_\d+$/', (string) $c['width'] ) ) {
+						$width = (string) $c['width']; // reviewer-chosen column width wins
+					} else {
+						$lay = self::col_layout( (string) ( $c['cls'] ?? '' ) );
+						if ( $lay === null ) { $lay = self::geom_layout( isset( $c['wResp'] ) ? $c['wResp'] : null ); }
+						$width = ( $lay !== null ) ? $lay['width'] : self::cell_width( $c['width'] ?? '1_3' );
+					}
 					$col   = self::n_column( $width, $inner_items );
+					// Box card WITH a button → the box styling is on the COLUMN's Inner Wrapper Class so it
+					// wraps the icon_box AND the button (a simple box card put it on the icon_box instead).
+					if ( $box_on_column !== '' ) { $col['atts']['inner_class'] = trim( $col['atts']['inner_class'] . ' ' . $box_on_column ); }
 					if ( $row_valign !== '' && empty( $c['grid'] ) ) { $col['atts']['content_v'] = $row_valign; }
 					// Counter cells center their content via the column's own alignment (the source
 					// `.counter-item text-center`), instead of carrying a text-center wrapper class.
 					if ( ! empty( $c['counter'] ) ) { $col['atts']['content_h'] = 'center'; }
 					$items[] = $col;
 				}
-			} elseif ( $role === 'heading' ) {
-				$buf[] = self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
-			} elseif ( $role === 'text' ) {
-				$buf[] = self::n_text( (string) ( $b['html'] ?? $b['text'] ?? '' ) );
-			} elseif ( $role === 'button' ) {
-				$buf[] = self::n_button( (string) ( $b['label'] ?? $b['text'] ?? 'Button' ), (string) ( $b['href'] ?? '#' ), (string) ( $b['cls'] ?? '' ), (string) ( $b['icon'] ?? '' ), (string) ( $b['iconPos'] ?? 'after' ) );
-			} else { // image | code | fallback
-				$buf[] = self::n_code( (string) ( $b['html'] ?? '' ) );
+			} else {
+				// Standalone block -> the block-builder REGISTRY (heading / text / button / code, plus any
+				// shortcode added via register_builder). 'code' is the universal fallback for unmapped roles.
+				$builders = self::builders();
+				$bld      = isset( $builders[ $role ] ) ? $builders[ $role ] : $builders['code'];
+				$item     = call_user_func( $bld['build'], $b );
+				if ( $item !== null ) {
+					if ( ! empty( $bld['full_width'] ) ) { $flush_buf(); $items[] = self::n_column( '1_1', array( $item ) ); }
+					else { $buf[] = $item; }
+				}
 			}
 		}
 		$flush_buf();
@@ -1295,7 +1858,19 @@ class FW_Site_Converter_Mapper {
 		// centered `.fw-container` (is_fullwidth = false) to match the source's `.container`.
 		// NOT `sc-mirror` (whose reset would nuke the container back to full width). The section
 		// element is still full-width, so a section background still spans edge to edge.
-		return self::n_section( $src_cls_str, $css_id, $css, $items, false );
+		$sec_node = self::n_section( $src_cls_str, $css_id, $css, $items, false );
+		// Carry the source section's VERTICAL rhythm (mt/mb/pt/pb/py) onto the builder section's padding —
+		// without it, decompose sections have zero vertical spacing (jammed together; the hero clips under
+		// the header). Uses the ORIGINAL section classes (pre-filter) so the spacing utilities survive.
+		// Container styling: carry the source section's vertical rhythm onto the SECTION element via a scoped
+		// rule (#hero{…}) — NOT the padding_top att, which the section renders into its class attribute. Padding
+		// is set explicitly (even 0) to override the theme default; margin only when the source has it.
+		$vs = self::section_vspace( (string) ( isset( $sec['sectionRawClass'] ) ? $sec['sectionRawClass'] : '' ) );
+		$sv = array( 'padding-top' => round( $vs['pt'] ) . 'px', 'padding-bottom' => round( $vs['pb'] ) . 'px' );
+		if ( $vs['mt'] > 0 ) { $sv['margin-top']    = round( $vs['mt'] ) . 'px'; }
+		if ( $vs['mb'] > 0 ) { $sv['margin-bottom'] = round( $vs['mb'] ) . 'px'; }
+		self::register_section_rule( $css_id, '', $sv );
+		return $sec_node;
 	}
 
 	/* ---------------------------------------------------------------------- *
@@ -1303,8 +1878,10 @@ class FW_Site_Converter_Mapper {
 	 * ---------------------------------------------------------------------- */
 
 	public static function get_rules() {
-		$r = get_option( self::RULES_OPTION, array() );
-		return is_array( $r ) ? $r : array();
+		// ONE canonical store, shared with the converter's decompose + the AI distillation in
+		// FW_Site_Converter_Stitch (previously these corrections went to a separate option the converter
+		// never read, so they were silently ignored). Delegating keeps a single source of truth.
+		return FW_Site_Converter_Stitch::rules_get();
 	}
 
 	/**
@@ -1331,7 +1908,7 @@ class FW_Site_Converter_Mapper {
 				}
 			}
 		}
-		if ( $n ) { update_option( self::RULES_OPTION, $rules, false ); }
+		if ( $n ) { FW_Site_Converter_Stitch::rules_put( $rules ); }
 		return $n;
 	}
 }

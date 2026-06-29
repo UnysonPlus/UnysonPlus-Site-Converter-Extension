@@ -328,6 +328,30 @@ class FW_Site_Converter_Bundle {
 	 * @param string $dir
 	 * @return string
 	 */
+	/**
+	 * Is this unzipped folder a pre-built CONVERT BUNDLE (the capture service's convert-bundle.zip, or a
+	 * "Download bundle" output: bundle.json + pages.json + theme-design.json …) rather than a RAW builder
+	 * export (a Stitch code.html)? Lets the upload flow import it directly via import_dir() instead of
+	 * routing it through the raw-source auto-detect — which would treat it as a Stitch export, find no
+	 * code.html, and fail with "No Stitch code.html found to convert."
+	 *
+	 * @param string $dir
+	 * @return bool
+	 */
+	public static function looks_like_bundle( $dir ) {
+		if ( ! is_string( $dir ) || ! is_dir( $dir ) ) {
+			return false;
+		}
+		$root    = self::locate_root( $dir );
+		$markers = array_merge( self::FILE_MANIFEST, self::FILE_PAGES, self::FILE_THEME_DESIGN );
+		foreach ( $markers as $m ) {
+			if ( is_file( trailingslashit( $root ) . $m ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private static function locate_root( $dir ) {
 		$markers = array_merge( self::FILE_MANIFEST, self::FILE_MEDIA, self::FILE_PRESETS, self::FILE_THEME_SETTINGS, self::FILE_THEME_DESIGN, self::FILE_PAGES, self::FILE_MENUS );
 		foreach ( $markers as $m ) {

@@ -160,6 +160,24 @@ class FW_Site_Converter_Theme_Generator {
 				),
 			),
 			'custom_css' => isset( $c['custom_css'] ) ? (string) $c['custom_css'] : '',
+			// AI-authored design: a complete self-contained stylesheet (lands in `custom_css`) PLUS the
+			// header/footer markup with placeholders. When `ai_authored`, the generator drops its own
+			// deterministic palette/font/header CSS and lets the AI stylesheet own the whole look, and
+			// builds the chrome parts from `ai_header_html` / `ai_footer_html`.
+			'ai_authored'    => ! empty( $c['ai_authored'] ),
+			'ai_header_html' => isset( $c['ai_header_html'] ) ? (string) $c['ai_header_html'] : '',
+			'ai_footer_html' => isset( $c['ai_footer_html'] ) ? (string) $c['ai_footer_html'] : '',
+			// "Capture header/footer" off → the generated child theme renders no chrome there.
+			'skip_header'    => ! empty( $c['skip_header'] ),
+			'skip_footer'    => ! empty( $c['skip_footer'] ),
+			// Faithful-mirror theme: the page content carries the source's WHOLE body verbatim (header +
+			// sections + footer) + its reproduced CSS, so the theme renders only the document shell.
+			'mirror'         => ! empty( $c['mirror'] ),
+			'font_links'     => ( isset( $c['font_links'] ) && is_array( $c['font_links'] ) ) ? array_values( array_filter( array_map( 'strval', $c['font_links'] ) ) ) : array(),
+			// Faithful-mirror chrome: the source's <header>/<footer> markup verbatim, rendered STATIC in
+			// header.php/footer.php (wrapped in .sc-tw so the reproduced CSS styles them exactly).
+			'mirror_header_html' => isset( $c['mirror_header_html'] ) ? self::localize_media( (string) $c['mirror_header_html'] ) : '',
+			'mirror_footer_html' => isset( $c['mirror_footer_html'] ) ? self::localize_media( (string) $c['mirror_footer_html'] ) : '',
 			// Verbatim header/footer HTML + the matching CSS captured from the source. When
 			// present these override the rebuilt template parts so the chrome is reproduced
 			// pixel-for-pixel (the "grab the static HTML + CSS" path).
@@ -944,11 +962,20 @@ class FW_Site_Converter_Theme_Generator {
 		$files = array(
 			'style.css'                         => self::style_css( $cfg ),
 			'functions.php'                     => self::functions_php( $cfg ),
+			// The child owns its OWN header.php / footer.php — overriding the parent's outright. The
+			// parent now routes header/footer through the Theme Builder (its presets are reserved for
+			// the distributable demos), so a converted site bypasses that entirely: get_header() loads
+			// THIS header.php directly, which renders the source chrome (no Theme Builder / Theme
+			// Settings indirection). The chrome markup itself lives in the two template parts below.
+			'header.php'                        => self::header_php( $cfg ),
+			'footer.php'                        => self::footer_php( $cfg ),
 			// The child overrides BOTH chrome template parts with a "dynamic mirror": the source's
 			// own markup + classes (so the carried source CSS styles it = identical look), with the
 			// logo / menu / footer columns swapped to live WordPress output. Theme Settings deferred.
-			'template-parts/header-builder.php' => self::header_part( $cfg ),
-			'template-parts/footer-builder.php' => self::footer_part( $cfg ),
+			// "Capture header/footer" off (the convert panel option) → keep header.php/footer.php as the
+			// document wrappers but render NO chrome there, so the page is just the converted body.
+			'template-parts/header-builder.php' => empty( $cfg['skip_header'] ) ? self::header_part( $cfg ) : "<?php if ( ! defined( 'ABSPATH' ) ) { die; } /* header capture disabled */\n",
+			'template-parts/footer-builder.php' => empty( $cfg['skip_footer'] ) ? self::footer_part( $cfg ) : "<?php if ( ! defined( 'ABSPATH' ) ) { die; } /* footer capture disabled */\n",
 		);
 		// Raw-chrome (verbatim mirror) sites ship a small interactivity script that re-hydrates
 		// the captured markup — mobile nav toggle, smooth-scroll, animated counters & progress
@@ -1110,9 +1137,30 @@ JS;
 			. "Text Domain: {$textdom}\n"
 			. "*/\n\n";
 
-		// Order: theme header → authored + base + utilities + header CSS (chrome_css) →
-		// the per-section styles (SECTIONS block, filled on Build) → footer CSS, last.
-		return $head . self::chrome_css( $cfg ) . self::sections_block( '' ) . self::footer_block( $cfg );
+		// Order: theme header → authored + base + utilities + header CSS (chrome_css) → WP admin-bar
+		// compatibility → the per-section styles (SECTIONS block, filled on Build) → footer CSS, last.
+		$body = self::chrome_css( $cfg ) . self::admin_bar_css() . self::sections_block( '' ) . self::footer_block( $cfg );
+		// `@import` rules are only valid at the TOP of a stylesheet — hoist any (Google-Fonts imports
+		// folded into custom_css) to right after the theme header so the fonts actually load.
+		$imports = '';
+		// Match the WHOLE @import url(...) — the font URL itself can contain ';' (e.g. Inter:wght@400;500;600).
+		$body = preg_replace_callback( '/@import\s+url\([^)]*\)\s*;[\t ]*\n?/', function ( $m ) use ( &$imports ) {
+			$imports .= trim( $m[0] ) . "\n";
+			return '';
+		}, $body );
+		return $head . $imports . $body;
+	}
+
+	/**
+	 * When logged in, WordPress shows a fixed 32px admin bar at the top of the page. A fixed/sticky
+	 * site header would sit underneath it — so push the header down to clear it (46px on the ≤782px
+	 * mobile bar). Just spacing; nothing else needed (the theme stylesheet doesn't load in wp-admin,
+	 * and element resets are scoped so they don't touch the admin bar).
+	 */
+	private static function admin_bar_css() {
+		return "\n/* Keep a fixed header below the logged-in admin bar */\n"
+			. ".admin-bar .sc-header,.admin-bar #masthead,.admin-bar header[role=\"banner\"]{top:32px;}\n"
+			. "@media screen and (max-width:782px){.admin-bar .sc-header,.admin-bar #masthead,.admin-bar header[role=\"banner\"]{top:46px;}}\n";
 	}
 
 	/** The merge markers + (optional) per-section CSS. The Build step replaces the body. */
@@ -1221,25 +1269,25 @@ JS;
 		$out = "/* ---- Design tokens & typography (self-contained — independent of the parent\n"
 			. "   theme's Theme Settings typography) ---- */\n";
 		if ( ! empty( $col['bg'] ) ) {
-			$out .= "body:not(.wp-admin) { background-color:{$col['bg']} !important; }\n";
+			$out .= "body { background-color:{$col['bg']} !important; }\n";
 		}
 		// Content container width from the source (.container / max-w-* / centered wrapper) → the
 		// builder's .fw-container, overriding the frontend-grid default.
 		$cmax = isset( $cfg['layout']['container_max'] ) ? trim( (string) $cfg['layout']['container_max'] ) : '';
 		if ( $cmax !== '' ) {
-			$out .= "body:not(.wp-admin) .fw-container { max-width:{$cmax} !important; }\n";
+			$out .= ".fw-container { max-width:{$cmax} !important; }\n";
 		}
 		// Clip horizontal bleed from full-bleed source sections (sliders, negative-margin rows). The
 		// source relies on `html { overflow-x:hidden }`; we scope it to the converted content so it
 		// can't widen the page (which would push the header/banner and leave a white gap). `clip`
 		// keeps vertical flow intact and — unlike `hidden` — doesn't create a scroll container.
-		$out .= "body:not(.wp-admin) .fw-page-builder-content { overflow-x:clip; }\n";
+		$out .= ".fw-page-builder-content { overflow-x:clip; }\n";
 		if ( $fh !== '' || $fb !== '' ) {
-			$out .= ":root, body:not(.wp-admin) {\n";
+			$out .= ":root, body {\n";
 			if ( $fb !== '' ) { $out .= "\t--font-body:{$body_stack};\n"; }
 			if ( $fh !== '' ) { $out .= "\t--font-heading:{$head_stack};\n"; }
 			$out .= "}\n";
-			if ( $fb !== '' ) { $out .= "body:not(.wp-admin) { font-family:{$body_stack} !important; }\n"; }
+			if ( $fb !== '' ) { $out .= "body { font-family:{$body_stack} !important; }\n"; }
 			// Headings: font-family forced + base font-weight re-asserted at a higher specificity
 			// than component classes (e.g. .icon-box__title) — but WITHOUT !important on weight, so
 			// ID-based section overrides (#banner h1, #counter h2…) still win.
@@ -1249,12 +1297,12 @@ JS;
 				$hd = '';
 				if ( $fh !== '' )  { $hd .= "font-family:{$head_stack} !important;"; }
 				if ( $hwt !== '' ) { $hd .= "font-weight:{$hwt};"; }
-				$out .= "body:not(.wp-admin) :is(h1,h2,h3,h4,h5,h6) { {$hd} }\n";
+				$out .= ":is(h1,h2,h3,h4,h5,h6) { {$hd} }\n";
 			}
 			// Heading color is emitted as a PLAIN element-selector rule (specificity 0,0,1) so it acts
 			// only as the default — any component/section rule that sets a heading color (e.g. a dark
 			// footer's `.widget h4 { color:#fff }`, `.logo h3`) wins. A high-specificity color here
-			// (the old `body:not(.wp-admin) :is(h…)`, 0,1,2) wrongly forced footer headings dark.
+			// (the old `:is(h…)`, 0,1,2) wrongly forced footer headings dark.
 			if ( $hcl !== '' ) {
 				$out .= "h1,h2,h3,h4,h5,h6 { color:{$hcl}; }\n";
 			}
@@ -1296,7 +1344,7 @@ JS;
 
 	/**
 	 * The chrome CSS — parameterized version of the proven SmartRoute stylesheet.
-	 * All global rules are scoped `body:not(.wp-admin)` so the asset optimizer can't
+	 * All global rules are scoped `body` so the asset optimizer can't
 	 * bleed them into wp-admin (a lesson learned the hard way with misc_custom_css).
 	 *
 	 * @param array $cfg
@@ -1340,7 +1388,28 @@ JS;
 		return self::pretty_css( $css );
 	}
 
+	/**
+	 * The design layer for an AI-authored theme: a tiny structural reset (so the parent's #page /
+	 * #content / #colophon wrappers don't box the authored chrome) + the AI's complete stylesheet.
+	 * NO deterministic palette/font/header CSS — the AI stylesheet owns the entire look, so nothing
+	 * fights it (the old generic base, with its !important colors/fonts, is exactly what made every
+	 * conversion look the same).
+	 */
+	private static function ai_chrome_css( array $cfg ) {
+		$reset = "/* Site Converter — AI-authored design. Structural reset so the parent wrappers don't\n"
+			. "   box the authored chrome; the stylesheet below owns the entire look. */\n"
+			. "#page,#content,.site-content{max-width:none;margin:0;padding:0;}\n"
+			. "#colophon{margin:0;padding:0;background:none;border:0;max-width:none;}\n\n";
+		$css = self::clean_carried( (string) $cfg['custom_css'] );
+		return $reset . "/* ============ AI-authored stylesheet ============ */\n" . $css . "\n";
+	}
+
 	public static function chrome_css( array $cfg ) {
+		// AI-authored design, or a faithful MIRROR (reproduced Tailwind CSS) — emit only the structural
+		// reset + the carried stylesheet; no deterministic .sc-header/.sc-footer chrome CSS to fight it.
+		if ( ! empty( $cfg['ai_authored'] ) || ! empty( $cfg['mirror'] ) ) {
+			return self::ai_chrome_css( $cfg );
+		}
 		// Raw-chrome mirror: serve the CSS captured from the source verbatim. We only add a
 		// tiny reset so the parent theme's wrappers (#page / #content / the #colophon that
 		// wraps the footer template part) don't add their own padding/background around the
@@ -1350,7 +1419,11 @@ JS;
 				. "#page,#content,#primary,.site-content{max-width:none;margin:0;padding:0;}\n"
 				. "#colophon{margin:0;padding:0;background:none;border:0;max-width:none;}\n"
 				// Body sections are mirrored verbatim inside a .sc-mirror builder section; zero the
-				// builder's container/column gutters so the source markup renders edge-to-edge.
+				// builder's container/column gutters AND its own vertical padding so the source
+				// markup renders edge-to-edge and the SOURCE section owns 100% of the spacing (the
+				// builder section's default 64px top/bottom otherwise stacks on the source's own
+				// margins → the whole page grows too tall).
+				. ".sc-mirror{padding-top:0 !important;padding-bottom:0 !important;}\n"
 				. ".sc-mirror>.fw-container,.sc-mirror>.fw-container-fluid{max-width:none;margin:0;padding:0;width:100%;}\n"
 				. ".sc-mirror .fw-row{margin:0;}\n"
 				. ".sc-mirror [class*=\"fw-col-\"],.sc-mirror .fw-col{padding:0;}\n"
@@ -1403,7 +1476,7 @@ JS;
 		// Dotted canvas backdrop (optional) — a texture on top of the base color.
 		if ( ! empty( $bg['dotted'] ) ) {
 			$css .= "/* Canvas texture */\n"
-				. "body:not(.wp-admin) {\n"
+				. "body {\n"
 				. "\tbackground-image:radial-gradient({$bg['dot_color']} 1.2px, transparent 1.2px) !important;\n"
 				. "\tbackground-size:26px 26px !important;\n}\n\n";
 		}
@@ -1738,7 +1811,148 @@ JS;
 	}
 
 	/** template-parts/header-builder.php — logo (site) | menu | optional CTA. */
+	/**
+	 * header.php — the child theme's OWN document head + opening chrome, overriding the parent's. It
+	 * mirrors the parent's wrapper structure (#page → header → #content) so page templates and the
+	 * footer line up, but it renders the converted header directly via the child's header-builder
+	 * template part — never routing through the parent's Theme Builder header resolver.
+	 */
+	private static function header_php( array $cfg ) {
+		$slug = $cfg['theme']['slug'];
+		$out  = "<?php\n";
+		$out .= "/**\n";
+		$out .= " * Converted site header — generated by the Unyson+ Site Converter.\n";
+		$out .= " * The child theme owns header.php outright so the source's chrome renders directly,\n";
+		$out .= " * with no Theme Builder / Theme Settings indirection. Edit the markup in\n";
+		$out .= " * template-parts/header-builder.php.\n";
+		$out .= " */\n";
+		$out .= "if ( ! defined( 'ABSPATH' ) ) { die( 'Direct access forbidden.' ); }\n";
+		$out .= "?><!DOCTYPE html>\n";
+		$out .= "<html <?php language_attributes(); ?>>\n";
+		$out .= "<head>\n";
+		$out .= "\t<meta charset=\"<?php bloginfo( 'charset' ); ?>\">\n";
+		$out .= "\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n";
+		// Mirror theme: load the source's web fonts via <link> in the head (an @import in style.css loads
+		// an icon font too late, leaving its ligature NAME showing as text).
+		if ( ! empty( $cfg['mirror'] ) && ! empty( $cfg['font_links'] ) ) {
+			$out .= "\t<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n";
+			$out .= "\t<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n";
+			foreach ( $cfg['font_links'] as $href ) {
+				$out .= "\t<link rel=\"stylesheet\" href=\"" . esc_url( $href ) . "\">\n";
+			}
+		}
+		$out .= "\t<?php wp_head(); ?>\n";
+		$out .= "</head>\n\n";
+		$out .= "<body <?php body_class(); ?>>\n";
+		$out .= "<?php wp_body_open(); ?>\n";
+		$out .= "<div id=\"page\" class=\"site\">\n";
+		if ( ! empty( $cfg['mirror'] ) ) {
+			// Mirror theme: render the source's <header> verbatim (STATIC) inside a .sc-tw wrapper so the
+			// reproduced Tailwind CSS styles it exactly, then open the content area for the body sections.
+			if ( ! empty( $cfg['mirror_header_html'] ) ) {
+				$out .= "\t<div class=\"sc-tw\">\n" . $cfg['mirror_header_html'] . "\n\t</div>\n";
+			}
+			$out .= "\t<div id=\"content\" class=\"site-content\">\n";
+			return $out;
+		}
+		$out .= "\t<a class=\"skip-link screen-reader-text\" href=\"#content\"><?php esc_html_e( 'Skip to content', '{$slug}' ); ?></a>\n";
+		$out .= "\t<?php do_action( 'unysonplus_before_header' ); ?>\n";
+		$out .= "\t<?php get_template_part( 'template-parts/header', 'builder' ); ?>\n";
+		$out .= "\t<?php do_action( 'unysonplus_after_header' ); ?>\n";
+		$out .= "\t<div id=\"content\" class=\"site-content\">\n";
+		return $out;
+	}
+
+	/**
+	 * footer.php — the child theme's OWN closing chrome, overriding the parent's. Closes the wrappers
+	 * header.php opened (#content → #page), renders the converted footer via the child's footer-builder
+	 * template part inside <footer id="colophon">, then wp_footer(). Bypasses the Theme Builder footer
+	 * resolver entirely.
+	 */
+	private static function footer_php( array $cfg ) {
+		$out  = "<?php if ( ! defined( 'ABSPATH' ) ) { die( 'Direct access forbidden.' ); } ?>\n";
+		$out .= "\t</div><!-- #content -->\n";
+		if ( empty( $cfg['mirror'] ) ) {
+			$out .= "\t<?php do_action( 'unysonplus_before_footer' ); ?>\n";
+			// A MIRRORED source footer (raw-chrome capture) owns its OWN colors/layout via the carried
+			// source CSS, so DON'T tag the wrapper `.footer` — the theme's `.footer a { color:white }`
+			// rule would clobber the mirrored links (they're white-on-light = invisible). Use a neutral
+			// id-only wrapper class for raw chrome; keep `.footer` for the theme's own builder footer.
+			$raw_footer = self::has_raw_chrome( $cfg ) && ! empty( $cfg['raw_chrome']['footer_html'] );
+			$colo_cls   = $raw_footer ? 'sc-raw-footer' : 'footer';
+			$out .= "\t<footer id=\"colophon\" class=\"" . $colo_cls . "\" role=\"contentinfo\">\n";
+			$out .= "\t\t<?php get_template_part( 'template-parts/footer', 'builder' ); ?>\n";
+			$out .= "\t</footer><!-- #colophon -->\n";
+			$out .= "\t<?php do_action( 'unysonplus_after_footer' ); ?>\n";
+		} elseif ( ! empty( $cfg['mirror_footer_html'] ) ) {
+			// Mirror theme: the source's <footer> verbatim (STATIC), in a .sc-tw wrapper for the CSS.
+			$out .= "\t<div class=\"sc-tw\">\n" . $cfg['mirror_footer_html'] . "\n\t</div>\n";
+		}
+		$out .= "</div><!-- #page -->\n";
+		$out .= "<?php do_action( 'unysonplus_after' ); ?>\n";
+		$out .= "<?php wp_footer(); ?>\n";
+		$out .= "</body>\n";
+		$out .= "</html>\n";
+		return $out;
+	}
+
+	/**
+	 * Build a chrome template part from AI-authored markup. The markup uses semantic classes (styled by
+	 * the AI stylesheet) + placeholders we swap for live WordPress output. The model markup is sanitized
+	 * (no <script>/<style>/<?php/on* can ride in) BEFORE the swaps inject their PHP, so nothing the
+	 * model wrote is ever executed.
+	 *
+	 * @param string $which 'header' | 'footer'
+	 */
+	private static function ai_chrome_part( $which, $html, array $cfg ) {
+		$loc = $cfg['header']['menu_location'];
+
+		$logo = '<a class="sc-logo" href="<?php echo esc_url( home_url( \'/\' ) ); ?>">'
+			. '<?php if ( function_exists( "has_custom_logo" ) && has_custom_logo() ) { the_custom_logo(); } else { echo esc_html( get_bloginfo( "name" ) ); } ?></a>';
+		$nav  = '<?php wp_nav_menu( array( "theme_location" => "' . $loc . '", "container" => false, "menu_class" => "sc-nav-menu", "depth" => 3, "fallback_cb" => false ) ); ?>';
+		$cta  = '';
+		if ( ! empty( $cfg['header']['cta']['enabled'] ) ) {
+			$c    = $cfg['header']['cta'];
+			$href = preg_match( '#^https?://#i', $c['href'] )
+				? "'" . esc_url_raw( $c['href'] ) . "'"
+				: "home_url( '" . self::esc_php( $c['href'] === '' ? '/' : $c['href'] ) . "' )";
+			$cta  = '<a class="sc-cta" href="<?php echo esc_url( ' . $href . ' ); ?>"><?php esc_html_e( \'' . self::esc_php( $c['label'] ) . "', '{$cfg['theme']['slug']}' ); ?></a>";
+		}
+		$copy = '&copy; <?php echo esc_html( gmdate( "Y" ) ); ?> <?php echo esc_html( get_bloginfo( "name" ) ); ?>';
+
+		$safe = self::kses_chrome( $html );
+		$safe = str_replace(
+			array( '{{LOGO}}', '{{NAV}}', '{{CTA}}', '{{COPYRIGHT}}' ),
+			array( $logo, $nav, $cta, $copy ),
+			$safe
+		);
+
+		$out  = "<?php if ( ! defined( 'ABSPATH' ) ) { die( 'Direct access forbidden.' ); } ?>\n";
+		$out .= "<?php /* Converted {$which} — AI-authored markup; styled by the theme's style.css. */ ?>\n";
+		$out .= $safe . "\n";
+		return $out;
+	}
+
+	/** Whitelist chrome markup from the model: strip executable content, then wp_kses to safe tags/attrs. */
+	private static function kses_chrome( $html ) {
+		$html = (string) $html;
+		$html = preg_replace( '#<\?.*?\?>#s', '', $html );                       // any PHP
+		$html = preg_replace( '#<(script|style)\b[^>]*>.*?</\1>#is', '', $html ); // script/style blocks
+		$attr = array( 'class' => true, 'id' => true, 'href' => true, 'src' => true, 'alt' => true,
+			'role' => true, 'aria-label' => true, 'aria-hidden' => true, 'target' => true, 'rel' => true, 'title' => true );
+		$allowed = array();
+		foreach ( array( 'header','footer','nav','div','section','span','a','ul','ol','li','p',
+			'h1','h2','h3','h4','h5','h6','img','button','strong','em','b','i','br','small','figure','figcaption' ) as $t ) {
+			$allowed[ $t ] = $attr;
+		}
+		return function_exists( 'wp_kses' ) ? wp_kses( $html, $allowed ) : strip_tags( $html, '<header><footer><nav><div><section><span><a><ul><ol><li><p><h1><h2><h3><h4><h5><h6><img><button><strong><em><b><i><br><small><figure><figcaption>' );
+	}
+
 	private static function header_part( array $cfg ) {
+		// AI-authored header markup (semantic classes styled by the AI stylesheet).
+		if ( ! empty( $cfg['ai_header_html'] ) ) {
+			return self::ai_chrome_part( 'header', (string) $cfg['ai_header_html'], $cfg );
+		}
 		$loc  = $cfg['header']['menu_location'];
 
 		// Source-header clone with the two dynamic swaps: the brand logo → the site's own logo
@@ -1856,6 +2070,10 @@ JS;
 	}
 
 	private static function footer_part( array $cfg ) {
+		// AI-authored footer markup (semantic classes styled by the AI stylesheet).
+		if ( ! empty( $cfg['ai_footer_html'] ) ) {
+			return self::ai_chrome_part( 'footer', (string) $cfg['ai_footer_html'], $cfg );
+		}
 		// Source-footer clone with the columns + copyright made DYNAMIC: each column's content was
 		// marked <!--SC_FCOL_i--> and the copyright <!--SC_FCOPY-->; swap them for dynamic_sidebar()
 		// so the content comes from the parent's footer-N widget areas + the child copyright area

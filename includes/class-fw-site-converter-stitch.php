@@ -170,7 +170,7 @@ class FW_Site_Converter_Stitch {
 	 * Build the carried design CSS from tokens: a `:root` block of CSS variables, the Google-Fonts
 	 * @import, and a few base/component rules so the converted page reads like the Stitch screen
 	 * (dark canvas, the two type families, primary button). EVERYTHING is scoped to
-	 * `body:not(.wp-admin)` — `misc_custom_css` is absorbed into a combined bundle that also loads in
+	 * `body` — `misc_custom_css` is absorbed into a combined bundle that also loads in
 	 * wp-admin, so bare globals would restyle the dashboard (bundle gotcha #3).
 	 *
 	 * @param array $tokens
@@ -217,7 +217,7 @@ class FW_Site_Converter_Stitch {
 			$lines[] = 'body:not(.wp-admin){' . implode( '', $base ) . '}';
 		}
 		if ( $head_font !== '' ) {
-			$lines[] = 'body:not(.wp-admin) h1,body:not(.wp-admin) h2,body:not(.wp-admin) h3,body:not(.wp-admin) h4,body:not(.wp-admin) h5,body:not(.wp-admin) h6{font-family:' . $head_font . ';}';
+			$lines[] = 'body:not(.wp-admin) :is(h1,h2,h3,h4,h5,h6){font-family:' . $head_font . ';}';
 		}
 
 		// Primary button → the source's solid-fill look (Style: Default = bare `.btn`).
@@ -271,12 +271,17 @@ class FW_Site_Converter_Stitch {
 
 		$ink    = self::token_color( $tokens, array( 'text', 'on-background', 'on-surface' ) );
 		$bg     = self::token_color( $tokens, array( 'page-bg', 'background', 'surface', 'white-soft' ) );
-		$accent = self::token_color( $tokens, array( 'accent', 'secondary-container', 'secondary', 'tertiary-container' ) );
-		// A token accent that's missing or near-neutral isn't a real brand color — scan the markup's
-		// inline colors for a vivid one (Stitch puts the accent in gradients like `from-[#FF416C]`).
-		if ( $accent === '' || self::is_neutral_hex( $accent ) ) {
-			$scanned = self::scan_accent( (string) $html );
-			$accent  = $scanned !== '' ? $scanned : ( $accent !== '' ? $accent : '#FF4B2B' );
+		// The brand / ACTION color (the button fill, nav-hover, heading accent). Both Stitch and
+		// Material-3 put it in `primary`; the `*-container` fills and the `error` red are NOT it.
+		$accent = self::token_color( $tokens, array( 'accent', 'primary', 'brand', 'cta' ) );
+		// No explicit brand color? Look for a vivid one in the markup (Stitch sometimes hides the
+		// accent in a gradient like `from-[#FF416C]`); failing that, fall to the design's own dark
+		// tone. A MONOCHROME design (e.g. a neutral Material export with black CTAs) is valid — never
+		// force a vivid accent onto it the way the old `#FF4B2B` fallback did.
+		if ( $accent === '' ) {
+			$accent = self::scan_accent( (string) $html );
+			if ( $accent === '' ) { $accent = self::token_color( $tokens, array( 'tertiary', 'secondary', 'on-surface', 'on-background' ) ); }
+			if ( $accent === '' ) { $accent = $ink !== '' ? $ink : '#141414'; }
 		}
 		$line   = self::token_color( $tokens, array( 'line', 'outline-variant', 'outline' ) );
 		$dark   = self::token_color( $tokens, array( 'deep-black', 'black', 'surface-container-lowest' ) );
@@ -321,11 +326,41 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** Detect the Stitch header's chrome: pill vs bar, sticky, dark fill, and the CTA button. */
+	/**
+	 * The header root element: a real <header>, or — for the many modern landing pages (Stitch
+	 * outputs included) that use a bare top-level sticky/fixed <nav> as the site bar instead of a
+	 * <header> — that <nav>. A <nav> nested inside <main>/<section>/<footer> is in-content, not the
+	 * header, so it's skipped. Falls back to the first top-level <nav> when none is explicitly sticky.
+	 *
+	 * @param DOMDocument $dom
+	 * @return DOMElement|null
+	 */
+	private static function header_root( $dom ) {
+		$header = $dom->getElementsByTagName( 'header' )->item( 0 );
+		if ( $header ) { return $header; }
+		$body = $dom->getElementsByTagName( 'body' )->item( 0 );
+		if ( ! $body ) { return null; }
+		$first = null;
+		foreach ( $body->getElementsByTagName( 'nav' ) as $nav ) {
+			if ( self::has_ancestor_tag( $nav, 'main', $body )
+				|| self::has_ancestor_tag( $nav, 'section', $body )
+				|| self::has_ancestor_tag( $nav, 'footer', $body ) ) {
+				continue;
+			}
+			$c = self::cls( $nav );
+			if ( strpos( $c, 'fixed' ) !== false || strpos( $c, 'sticky' ) !== false || strpos( $c, 'top-0' ) !== false ) {
+				return $nav;
+			}
+			if ( $first === null ) { $first = $nav; }
+		}
+		return $first;
+	}
+
 	private static function detect_header( $html ) {
 		$out = array( 'style' => 'bar', 'sticky' => false, 'dark' => false, 'cta' => array( 'label' => '', 'href' => '' ) );
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return $out; }
-		$header = $dom->getElementsByTagName( 'header' )->item( 0 );
+		$header = self::header_root( $dom );
 		if ( ! $header ) { return $out; }
 		$hcls = self::cls( $header );
 		if ( strpos( $hcls, 'sticky' ) !== false || strpos( $hcls, 'fixed' ) !== false ) { $out['sticky'] = true; }
@@ -371,10 +406,12 @@ class FW_Site_Converter_Stitch {
 		$line    = $line !== '' ? $line : '#ececec';
 		$muted   = $muted !== '' ? $muted : '#8a8a8a';
 		$out = array();
-		$out[] = "body:not(.wp-admin) .icon-box{background:$surface;border:1px solid $line;border-radius:$radius;padding:32px;height:100%;box-shadow:0 16px 38px -26px rgba(20,20,20,.18);}";
-		$out[] = "body:not(.wp-admin) .icon-box__title{font-weight:700;margin-bottom:8px;}";
-		$out[] = "body:not(.wp-admin) .icon-box__content{color:$muted;line-height:1.6;}";
-		$out[] = "body:not(.wp-admin) section img,body:not(.wp-admin) .fw-main-row img{border-radius:$radius;max-width:100%;}";
+		$out[] = ".icon-box{background:$surface;border:1px solid $line;border-radius:$radius;padding:32px;height:100%;box-shadow:0 16px 38px -26px rgba(20,20,20,.18);}";
+		$out[] = ".icon-box__title{font-weight:700;margin-bottom:8px;}";
+		$out[] = ".icon-box__content{color:$muted;line-height:1.6;}";
+		// Content images render block + centered so a converted <img> never flows INLINE next to
+		// inline-block buttons (which baseline-aligned them to the bottom of a tall hero image).
+		$out[] = "section img,.fw-main-row img{border-radius:$radius;max-width:100%;display:block;margin-left:auto;margin-right:auto;height:auto;}";
 		return implode( "\n", $out );
 	}
 
@@ -430,25 +467,118 @@ class FW_Site_Converter_Stitch {
 	 * @param bool   $front front page?
 	 * @return array mapping with exactly one page
 	 */
+	/** Parsed `<style>` rules that set max-width: [ { selector, value }, … ] — for non-Tailwind sources. */
+	private static $mw_rules = array();
+
+	/** Collect `selector { … max-width:VAL … }` rules from the source's <style> blocks. */
+	private static function parse_style_max_width( $html ) {
+		$out = array();
+		if ( ! preg_match_all( '/<style[^>]*>(.*?)<\/style>/is', (string) $html, $sm ) ) { return $out; }
+		$css = implode( "\n", $sm[1] );
+		$css = preg_replace( '#/\*.*?\*/#s', '', $css ); // strip comments
+		if ( preg_match_all( '/([^{}]+)\{([^{}]*)\}/s', $css, $rm, PREG_SET_ORDER ) ) {
+			foreach ( $rm as $r ) {
+				if ( ! preg_match( '/(?:^|;|\s)max-width\s*:\s*([0-9.]+(?:px|rem|em|%|ch|vw))/i', $r[2], $mw ) ) { continue; }
+				foreach ( explode( ',', $r[1] ) as $sel ) {
+					$sel = trim( $sel );
+					if ( $sel !== '' && strpos( $sel, '@' ) === false ) { $out[] = array( 'selector' => $sel, 'value' => $mw[1] ); }
+				}
+			}
+		}
+		return $out;
+	}
+
+	/** Tailwind named max-w-* → its CSS length (so max-w-2xl etc. resolve like an arbitrary value). */
+	private static function tw_max_w_named( $name ) {
+		static $scale = array( 'xs' => '20rem', 'sm' => '24rem', 'md' => '28rem', 'lg' => '32rem', 'xl' => '36rem', '2xl' => '42rem', '3xl' => '48rem', '4xl' => '56rem', '5xl' => '64rem', '6xl' => '72rem', '7xl' => '80rem', 'prose' => '65ch' );
+		return isset( $scale[ $name ] ) ? $scale[ $name ] : '';
+	}
+
+	/**
+	 * The max-width applied to an element, from ANY source (not just a Tailwind class): an inline
+	 * `style="max-width:…"`, a Tailwind `max-w-[…]` / `max-w-2xl`, or a matching `<style>` rule. Returns
+	 * a CSS length ("620px", "42rem") or '' when none.
+	 *
+	 * @param DOMElement $el
+	 */
+	private static function element_max_width( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		// 1. Inline style.
+		$style = $el->getAttribute( 'style' );
+		if ( $style !== '' && preg_match( '/(?:^|;|\s)max-width\s*:\s*([0-9.]+(?:px|rem|em|%|ch|vw))/i', $style, $m ) ) { return $m[1]; }
+		// 2. Tailwind class (arbitrary, then named).
+		$cls = self::cls( $el );
+		if ( preg_match( '/(?:^|\s)max-w-\[(\d+(?:\.\d+)?(?:px|rem|em|%|ch|vw))\]/', $cls, $m ) ) { return $m[1]; }
+		if ( preg_match( '/(?:^|\s)max-w-([a-z0-9]+)(?:\s|$)/', $cls, $m ) ) { $v = self::tw_max_w_named( $m[1] ); if ( $v !== '' ) { return $v; } }
+		// 3. A <style> rule whose selector matches this element.
+		foreach ( self::$mw_rules as $rule ) {
+			if ( self::selector_matches_el( (string) $rule['selector'], $el, $cls ) ) { return (string) $rule['value']; }
+		}
+		return '';
+	}
+
+	/** Does a CSS selector's RIGHTMOST compound (tag / .class / #id) match this element? (No ancestors.) */
+	private static function selector_matches_el( $selector, $el, $cls ) {
+		$parts = preg_split( '/\s*[>+~]\s*|\s+/', trim( $selector ) );
+		$last  = end( $parts );
+		if ( $last === '' || strpos( $last, ':' ) !== false ) { return false; } // skip pseudo-classes
+		$classes = array_filter( preg_split( '/\s+/', strtolower( (string) $cls ) ) );
+		$id      = $el->getAttribute( 'id' );
+		$tag     = strtolower( $el->tagName );
+		if ( ! preg_match_all( '/[.#]?[\w-]+/', $last, $tok ) ) { return false; }
+		foreach ( $tok[0] as $t ) {
+			if ( $t[0] === '.' ) { if ( ! in_array( strtolower( substr( $t, 1 ) ), $classes, true ) ) { return false; } }
+			elseif ( $t[0] === '#' ) { if ( $id !== substr( $t, 1 ) ) { return false; } }
+			else { if ( $t !== '*' && $tag !== strtolower( $t ) ) { return false; } }
+		}
+		return true;
+	}
+
 	public static function html_to_mapping( $html, $title = 'Home', $slug = '', $front = true ) {
 		$rules = self::rules_get();
 		$dom   = self::load_dom( (string) $html );
 		$sections = array();
+		$main_cls = '';
+		// Parse any `<style>` rules that set max-width (a non-Tailwind source may set it in CSS, not a
+		// class) so element_max_width() can match an element against them.
+		self::$mw_rules = self::parse_style_max_width( (string) $html );
 
 		if ( $dom ) {
 			$body = $dom->getElementsByTagName( 'body' )->item( 0 );
 			$roots = $body ? self::section_roots( $body ) : array();
+			if ( $body ) { foreach ( $body->getElementsByTagName( 'main' ) as $mm ) { $main_cls = self::cls( $mm ); break; } }
 			$idx = 0;
 			foreach ( $roots as $node ) {
 				$blocks = array();
 				self::collect_blocks( $node, $blocks, $rules );
 				$blocks = array_values( array_filter( $blocks ) );
 				if ( ! $blocks ) { continue; }
+				// NOTE on fidelity / verbatim sections: the capture-service (JS) path keeps media-bearing
+				// sections VERBATIM because it CARRIES the page's real used CSS, so the source markup
+				// renders pixel-faithfully. This upload path instead REPRODUCES Tailwind offline (under
+				// .sc-tw), which is incomplete (missing h-*/object-fit/aspect/arbitrary values), so a
+				// whole-section verbatim would render wrong (giant un-sized images, ballooned height).
+				// Here, DECOMPOSING into shortcodes (which render reliably without the reproducer) is the
+				// safer choice — so we deliberately do NOT mirror the JS `preferVerbatim` guard. The
+				// existing per-element recognizers (image_overlay / logo_strip) cover the critical media.
+				// For high-fidelity design-heavy conversions, the capture service is the recommended path.
+				// Section centered (flex items-center / text-center) → center its heading/text/buttons.
+				$align = self::section_center( $node ) ? 'center' : '';
+				if ( $align === 'center' ) {
+					foreach ( $blocks as &$bk ) {
+						if ( in_array( $bk['role'] ?? '', array( 'title', 'heading', 'overline', 'subtitle', 'announcement_pill' ), true ) && empty( $bk['align'] ) ) {
+							$bk['align'] = 'center';
+						}
+					}
+					unset( $bk );
+				}
 				$sections[] = array(
 					'sectionClass' => '',
+					'sectionRawClass' => self::cls( $node ), // the section's RAW classes (mt/mb/py …) → vertical-spacing carry, without polluting css_class
 					'css_id'       => self::section_id( $node, $idx ),
 					'omit'         => false,
 					'verbatim'     => false,
+					'align'        => $align,
 					'blocks'       => $blocks,
 				);
 				$idx++;
@@ -463,18 +593,40 @@ class FW_Site_Converter_Stitch {
 					'slug'       => (string) $slug,
 					'front_page' => (bool) $front,
 					'sections'   => $sections,
+					'mainClass'  => $main_cls, // the source <main>'s padding (pt-32 …) → carried onto #main
 				),
 			),
 		);
 	}
 
 	/**
-	 * The top-level "section" nodes to convert: every <section>, plus a <footer> (rendered as a
-	 * trailing section). <header> is handled by the menu extractor, not as content.
+	 * The top-level "section" nodes to convert: every <section>. The <header> AND <footer> are site
+	 * CHROME — reproduced by the generated child theme (header/footer template parts + the menus from
+	 * the design-config), NOT page content — so they are deliberately excluded here. (Putting the
+	 * footer in the page body duplicated it with the theme footer and looked wrong inside the builder.)
 	 *
 	 * @param DOMElement $body
 	 * @return DOMElement[]
 	 */
+	/**
+	 * Does this section center its content? True when the section root (or an immediate content wrapper)
+	 * uses `text-center` or `flex … items-center` — the source's way of centering a hero / centered band.
+	 *
+	 * @param DOMElement $node
+	 */
+	private static function section_center( $node ) {
+		$c = self::cls( $node );
+		if ( strpos( $c, 'text-center' ) !== false ) { return true; }
+		if ( strpos( $c, 'items-center' ) !== false && ( strpos( $c, 'flex-col' ) !== false || strpos( $c, 'flex' ) !== false ) ) { return true; }
+		// one level down (a content wrapper inside the section)
+		foreach ( $node->childNodes as $ch ) {
+			if ( $ch->nodeType !== XML_ELEMENT_NODE ) { continue; }
+			$cc = self::cls( $ch );
+			if ( strpos( $cc, 'text-center' ) !== false || ( strpos( $cc, 'items-center' ) !== false && strpos( $cc, 'flex' ) !== false ) ) { return true; }
+		}
+		return false;
+	}
+
 	private static function section_roots( $body ) {
 		$out = array();
 		$main = null;
@@ -484,81 +636,138 @@ class FW_Site_Converter_Stitch {
 			// Only top-level sections (not a <section> nested inside another we'll already emit).
 			if ( ! self::has_ancestor_tag( $s, 'section', $scope ) ) { $out[] = $s; }
 		}
-		foreach ( $body->getElementsByTagName( 'footer' ) as $f ) { $out[] = $f; break; }
 		return $out;
 	}
 
 	/**
-	 * Walk a section, emitting role-annotated blocks in document order. Recognized composites
-	 * (a grid-of-cards, a pill, a button, an icon-card) are emitted as a unit and NOT descended.
+	 * Element-recognizer REGISTRY — the expandable heart of the converter. Each recognizer CLAIMS a DOM
+	 * element (so the walker won't descend into it) and turns it into a block. Built-ins cover headings,
+	 * paragraphs, buttons, images, card grids and custom widgets; teach the converter a NEW UnysonPlus
+	 * shortcode by calling register_recognizer() with a `match` + `build` callable — no core edits. Highest
+	 * priority runs first; build() may return one block, a list of blocks, or null (claimed, nothing emitted).
 	 *
-	 * @param DOMElement $node
-	 * @param array      $blocks (by ref)
-	 * @param array      $rules  learned local rules
+	 *   match( DOMElement $el, string $tag, array $rules ) : bool
+	 *   build( DOMElement $el, string $tag, array $rules ) : array|null   // a {t,role,…} block, a list, or null
+	 */
+	private static $recognizers        = array();
+	private static $recognizers_sorted = false;
+
+	/** Register an element recognizer (priority: higher runs first; the built-ins span 25–90). */
+	public static function register_recognizer( $id, $priority, $match, $build ) {
+		self::$recognizers[ $id ]   = array( 'id' => $id, 'priority' => (int) $priority, 'match' => $match, 'build' => $build );
+		self::$recognizers_sorted   = false;
+	}
+
+	/** The recognizer set, highest-priority first (registers the built-ins on first use). */
+	private static function recognizers() {
+		if ( ! self::$recognizers ) { self::register_builtin_recognizers(); }
+		if ( ! self::$recognizers_sorted ) {
+			uasort( self::$recognizers, function ( $a, $b ) { return $b['priority'] - $a['priority']; } );
+			self::$recognizers_sorted = true;
+		}
+		return self::$recognizers;
+	}
+
+	/** The built-in recognizers (the original hardcoded chain, now table-driven + extensible). */
+	private static function register_builtin_recognizers() {
+		// A grid/flex of uniform cards → one "columns" row (each cell → icon_box / text / code).
+		self::register_recognizer( 'card_grid', 90,
+			function ( $el ) { return self::is_card_grid( $el ); },
+			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => '', 'cols' => $cols ) : null; }
+		);
+		// Headings h1–h6.
+		self::register_recognizer( 'heading', 80,
+			function ( $el, $tag ) { return (bool) preg_match( '/^h[1-6]$/', $tag ); },
+			function ( $el, $tag, $rules ) {
+				$level = (int) substr( $tag, 1 );
+				return array( 't' => 'heading', 'role' => self::rule_role( $rules, $el, $level <= 2 ? 'title' : 'heading' ), 'level' => $level, 'cls' => self::cls( $el ), 'cs' => (string) $el->getAttribute( 'data-sc-cs' ), 'text' => self::text( $el ), 'html' => self::clean_inline_html( $el ) );
+			}
+		);
+		// Pill / eyebrow label → overline.
+		// A hero badge PILL (rounded chip with a "New" tag) — carry verbatim so the pill look survives.
+		self::register_recognizer( 'announcement_pill', 76,
+			function ( $el ) { return self::is_announcement_pill( $el ); },
+			function ( $el ) { $p = self::pill_parts( $el ); return array( 't' => 'pill', 'role' => 'announcement_pill', 'tag_text' => $p['tag_text'], 'message' => $p['message'], 'icon' => $p['icon'], 'link' => $p['link'], 'align' => '' ); }
+		);
+		self::register_recognizer( 'badge', 75,
+			function ( $el ) { return self::is_badge( $el ); },
+			function ( $el ) { $doc = $el->ownerDocument; $v = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) ) : ''; return '' !== $v ? array( 't' => 'html', 'role' => 'code', 'html' => '<div class="sc-tw">' . $v . '</div>' ) : null; }
+		);
+		self::register_recognizer( 'pill', 70,
+			function ( $el ) { return self::is_pill( $el ); },
+			function ( $el, $tag, $rules ) { return array( 't' => 'text', 'role' => self::rule_role( $rules, $el, 'overline' ), 'cls' => 'text-uppercase', 'text' => self::text( $el ) ); }
+		);
+		// Buttons / CTA links.
+		self::register_recognizer( 'button', 60,
+			function ( $el ) { return self::is_button( $el ); },
+			function ( $el, $tag, $rules ) { return self::button_block( $el, $rules ); }
+		);
+		// Paragraph.
+		self::register_recognizer( 'paragraph', 50,
+			function ( $el, $tag ) { return 'p' === $tag; },
+			function ( $el, $tag, $rules ) {
+				$txt = self::text( $el );
+				if ( '' === $txt ) { return null; }
+				return array( 't' => 'text', 'role' => self::rule_role( $rules, $el, 'text' ), 'cls' => self::cls( $el ), 'cs' => (string) $el->getAttribute( 'data-sc-cs' ), 'maxWidth' => self::element_max_width( $el ), 'text' => $txt, 'html' => '<p>' . self::clean_inline_html( $el ) . '</p>' );
+			}
+		);
+		// Standalone <img>.
+		self::register_recognizer( 'image', 40,
+			function ( $el, $tag ) { return 'img' === $tag; },
+			function ( $el ) { return array( 't' => 'image', 'role' => 'image', 'html' => self::img_html( $el ) ); }
+		);
+		// A wrapper holding a lone image → emit just the image (skip the chrome).
+		self::register_recognizer( 'image_wrapper', 35,
+			function ( $el ) { return self::is_image_wrapper( $el ); },
+			function ( $el ) { $img = $el->getElementsByTagName( 'img' )->item( 0 ); return $img ? array( 't' => 'image', 'role' => 'image', 'html' => self::img_html( $img ) ) : null; }
+		);
+		// An image with an OVERLAID UI (player/caption/controls) → whole widget verbatim in a code block.
+		self::register_recognizer( 'image_overlay', 30,
+			function ( $el ) { return self::is_image_with_overlay( $el ); },
+			function ( $el ) { $doc = $el->ownerDocument; $v = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) ) : ''; return '' !== $v ? array( 't' => 'html', 'role' => 'code', 'html' => '<div class="sc-tw">' . $v . '</div>' ) : null; }
+		);
+		// A logo / "trusted by" strip (several images, no headings) → whole flex row verbatim in a code block.
+		self::register_recognizer( 'logo_strip', 25,
+			function ( $el ) { return self::is_logo_strip( $el ); },
+			function ( $el ) { $doc = $el->ownerDocument; $v = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) ) : ''; return '' !== $v ? array( 't' => 'html', 'role' => 'code', 'html' => '<div class="sc-tw">' . $v . '</div>' ) : null; }
+		);
+
+		// Framework-agnostic (computed-style) recognizers — for sites with NO Tailwind classes (Bootstrap,
+		// plain CSS, CSS-in-JS, …). They sit just below the Tailwind-specific ones, so a Tailwind site keeps
+		// using the precise class-based recognizers and any-other-framework site falls through to these.
+		self::register_recognizer( 'card_grid_cs', 85,
+			function ( $el ) { return self::cs_is_card_grid( $el ); },
+			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => '', 'cols' => $cols ) : null; }
+		);
+		self::register_recognizer( 'button_cs', 55,
+			function ( $el ) { return self::cs_is_button( $el ); },
+			function ( $el, $tag, $rules ) { return self::button_block( $el, $rules ); }
+		);
+	}
+
+	/**
+	 * Walk a section, emitting role-annotated blocks in document order. Each child is offered to the
+	 * recognizer registry (highest priority first); the FIRST match claims it (no descent), and its build()
+	 * appends a block / list / nothing. Unclaimed elements are descended into (hero text wrappers, button
+	 * rows, intro blocks, …) — exactly the original behavior, now table-driven.
 	 */
 	private static function collect_blocks( $node, array &$blocks, array $rules ) {
+		$recognizers = self::recognizers();
 		foreach ( $node->childNodes as $child ) {
-			if ( $child->nodeType !== XML_ELEMENT_NODE ) { continue; }
-			$tag = strtolower( $child->tagName );
-			$cls = self::cls( $child );
-
-			// A card-grid → one "columns" block (each cell → an icon_box / text / code cell).
-			if ( self::is_card_grid( $child ) ) {
-				$cols = self::grid_cols( $child );
-				if ( $cols ) { $blocks[] = array( 't' => 'row', 'role' => 'columns', 'valign' => '', 'cols' => $cols ); }
-				continue;
-			}
-
-			// Headings.
-			if ( preg_match( '/^h([1-6])$/', $tag, $hm ) ) {
-				$level = (int) $hm[1];
-				$blocks[] = array(
-					't'     => 'heading',
-					'role'  => self::rule_role( $rules, $child, $level <= 2 ? 'title' : 'heading' ),
-					'level' => $level,
-					'cls'   => '',
-					'text'  => self::text( $child ),
-					'html'  => self::clean_inline_html( $child ),
-				);
-				continue;
-			}
-
-			// Pill / eyebrow → overline.
-			if ( self::is_pill( $child ) ) {
-				$blocks[] = array( 't' => 'text', 'role' => self::rule_role( $rules, $child, 'overline' ), 'cls' => 'text-uppercase', 'text' => self::text( $child ) );
-				continue;
-			}
-
-			// Buttons / CTA links.
-			if ( self::is_button( $child ) ) {
-				$blocks[] = self::button_block( $child, $rules );
-				continue;
-			}
-
-			// Paragraph.
-			if ( $tag === 'p' ) {
-				$txt = self::text( $child );
-				if ( $txt !== '' ) {
-					$blocks[] = array( 't' => 'text', 'role' => self::rule_role( $rules, $child, 'text' ), 'cls' => '', 'text' => $txt, 'html' => '<p>' . self::clean_inline_html( $child ) . '</p>' );
+			if ( XML_ELEMENT_NODE !== $child->nodeType ) { continue; }
+			$tag     = strtolower( $child->tagName );
+			$claimed = false;
+			foreach ( $recognizers as $r ) {
+				if ( ! call_user_func( $r['match'], $child, $tag, $rules ) ) { continue; }
+				$out = call_user_func( $r['build'], $child, $tag, $rules );
+				if ( is_array( $out ) ) {
+					if ( isset( $out['t'] ) ) { $blocks[] = $out; }                                                 // one block
+					else { foreach ( $out as $blk ) { if ( is_array( $blk ) && isset( $blk['t'] ) ) { $blocks[] = $blk; } } } // a list
 				}
-				continue;
+				$claimed = true;
+				break;
 			}
-
-			// Standalone image (a showcase/illustration) → verbatim <img> code block.
-			if ( $tag === 'img' ) {
-				$blocks[] = array( 't' => 'image', 'role' => 'image', 'html' => self::img_html( $child ) );
-				continue;
-			}
-
-			// A wrapper that directly holds a lone image → emit the image (skip the Tailwind chrome).
-			if ( self::is_image_wrapper( $child ) ) {
-				$img = $child->getElementsByTagName( 'img' )->item( 0 );
-				if ( $img ) { $blocks[] = array( 't' => 'image', 'role' => 'image', 'html' => self::img_html( $img ) ); }
-				continue;
-			}
-
-			// Otherwise descend (hero text wrappers, button rows, intro blocks, etc.).
-			self::collect_blocks( $child, $blocks, $rules );
+			if ( ! $claimed ) { self::collect_blocks( $child, $blocks, $rules ); }
 		}
 	}
 
@@ -573,6 +782,28 @@ class FW_Site_Converter_Stitch {
 			if ( self::is_card_cell( $k ) ) { $cards++; }
 		}
 		return $cards >= 2;
+	}
+
+	/** Computed-style card-grid test — framework-agnostic (data-sc-cs): a flex/grid container with >=2 card
+	 *  cells (each carrying a heading). Catches plain-CSS / Bootstrap card rows that have no Tailwind class. */
+	private static function cs_is_card_grid( $el ) {
+		$cs = $el->getAttribute( 'data-sc-cs' );
+		if ( strpos( $cs, 'display:flex' ) === false && strpos( $cs, 'display:grid' ) === false && strpos( $cs, 'display:inline-flex' ) === false ) { return false; }
+		$kids = self::el_children( $el );
+		if ( count( $kids ) < 2 ) { return false; }
+		$cards = 0;
+		foreach ( $kids as $k ) { if ( self::is_card_cell( $k ) ) { $cards++; } }
+		return $cards >= 2;
+	}
+
+	/** A container that's just a strip of images (≥2 imgs, no headings/cards) — a logo / "trusted by" row. */
+	private static function is_logo_strip( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		if ( $el->getElementsByTagName( 'img' )->length < 2 ) { return false; }
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
+			if ( $el->getElementsByTagName( $h )->length > 0 ) { return false; }
+		}
+		return true;
 	}
 
 	/**
@@ -637,10 +868,20 @@ class FW_Site_Converter_Stitch {
 		if ( ! $heading ) { return null; } // no title → not an icon-card
 
 		// Icon: first material-symbol span, else first <svg>.
-		$icon = ''; $custom_icon = '';
+		$icon = ''; $custom_icon = ''; $icon_box_cls = ''; $icon_box_cs = '';
 		foreach ( $cell->getElementsByTagName( 'span' ) as $sp ) {
 			if ( strpos( self::cls( $sp ), 'material-symbols' ) !== false ) {
 				$icon = self::material_to_fa( trim( $sp->textContent ) );
+				// The icon's WRAPPER is often a gray "image" placeholder box (a fill + a fixed height + rounded).
+				// Capture it so the icon_box reproduces that box instead of showing a bare icon.
+				$par = $sp->parentNode;
+				if ( $par && XML_ELEMENT_NODE === $par->nodeType ) {
+					$pcls = self::cls( $par );
+					if ( strpos( $pcls, 'bg-' ) !== false && preg_match( '/(?:^|\s)(h-\d|min-h-|aspect-)/', $pcls ) ) {
+						$icon_box_cls = $pcls;
+						$icon_box_cs  = (string) $par->getAttribute( 'data-sc-cs' );
+					}
+				}
 				break;
 			}
 		}
@@ -655,13 +896,36 @@ class FW_Site_Converter_Stitch {
 		$ul = $cell->getElementsByTagName( 'ul' )->item( 0 );
 		if ( $ul ) { $body .= self::clean_list_html( $ul ); }
 
+		// A CTA link/button inside the card (e.g. "Explore TTS →"). The icon_box shortcode has no button
+		// slot, so it's captured separately: a box card WITH a button is rendered as icon_box + button in
+		// the column, and the box styling moves to the column's Inner Wrapper Class.
+		$button = null;
+		foreach ( $cell->getElementsByTagName( 'a' ) as $a ) {
+			$label = self::text_no_icons( $a );
+			if ( $label === '' ) { continue; }
+			$bicon = '';
+			foreach ( $a->getElementsByTagName( 'span' ) as $sp ) {
+				if ( strpos( self::cls( $sp ), 'material-symbols' ) !== false ) { $bicon = self::material_to_fa( trim( $sp->textContent ) ); break; }
+			}
+			$href = $a->getAttribute( 'href' );
+			$button = array( 'label' => $label, 'href' => $href !== '' ? $href : '#', 'icon' => $bicon, 'cls' => self::cls( $a ), 'cs' => $a->getAttribute( 'data-sc-cs' ) );
+			break;
+		}
+
 		return array(
 			'icon'       => $icon,
 			'customIcon' => $custom_icon,
 			'title'      => self::text( $heading ),
 			'titleTag'   => $htag,
 			'text'       => $body,
-			'cls'        => '',
+			'button'     => $button, // a CTA inside the card (null when none) — see the column-build rule
+			'iconBoxCls'  => $icon_box_cls, // the source's gray icon container classes (if any) → reproduced as a box
+			'iconBoxCs'   => $icon_box_cs,
+			// Is the source card CENTERED? (a text-center class, or computed text-align:center.) Drives the
+			// icon_box left/center alignment so it matches the source instead of the shortcode's centered default.
+			'center'     => ( strpos( self::cls( $cell ), 'text-center' ) !== false ) || ( strpos( (string) $cell->getAttribute( 'data-sc-cs' ), 'text-align:center' ) !== false ),
+			'cls'        => self::cls( $cell ),               // the card container's classes → CSS Class Mapper (box styling)
+			'cs'         => $cell->getAttribute( 'data-sc-cs' ), // its RESOLVED computed style → styling for non-Tailwind sites
 			'iconLayout' => 'top-title',
 		);
 	}
@@ -685,12 +949,24 @@ class FW_Site_Converter_Stitch {
 		}
 		// Primary (solid) vs ghost — recorded as a brand class so page_css can carry the look later.
 		$cls = ( strpos( self::cls( $el ), 'bg-primary' ) !== false || strpos( self::cls( $el ), 'bg-white' ) !== false ) ? 'btn-primary' : '';
+		// The button's CONTAINER (a flex row of 2+ buttons): its flex styling is carried onto the button row.
+		$grp_cls = ''; $grp_cs = '';
+		$par = $el->parentNode;
+		if ( $par && XML_ELEMENT_NODE === $par->nodeType && ( strpos( self::cls( $par ), 'flex' ) !== false ) ) {
+			$nb = 0;
+			foreach ( self::el_children( $par ) as $k ) { if ( self::is_button( $k ) || self::cs_is_button( $k ) ) { $nb++; } }
+			if ( $nb >= 2 ) { $grp_cls = self::cls( $par ); $grp_cs = (string) $par->getAttribute( 'data-sc-cs' ); }
+		}
 		return array(
 			't'      => 'button',
 			'role'   => self::rule_role( $rules, $el, 'button' ),
 			'label'  => $label !== '' ? $label : 'Button',
 			'href'   => $href,
 			'cls'    => $cls,
+			'srcCls' => self::cls( $el ),                  // the button's full source classes → CSS Class Mapper (fill/text/radius)
+			'srcCs'  => $el->getAttribute( 'data-sc-cs' ), // its RESOLVED computed style → styling for non-Tailwind sites
+			'groupCls' => $grp_cls, // the source button-row container's flex classes
+			'groupCs'  => $grp_cs,
 			'icon'   => $icon,
 			'iconPos'=> $icon_pos,
 		);
@@ -712,8 +988,8 @@ class FW_Site_Converter_Stitch {
 		$menus = array();
 		if ( ! $dom ) { return array( 'menus' => $menus ); }
 
-		$header = $dom->getElementsByTagName( 'header' )->item( 0 );
-		$primary = $header ? self::links_in( $header ) : array();
+		$header = self::header_root( $dom );
+		$primary = $header ? self::links_in( $header, true ) : array();
 		// Drop CTA-ish trailing links (Sign In / Get Started) — keep the real nav anchors.
 		if ( $primary ) {
 			$menus[] = array( 'name' => 'Primary', 'location' => 'primary', 'items' => $primary );
@@ -727,13 +1003,25 @@ class FW_Site_Converter_Stitch {
 		return array( 'menus' => $menus );
 	}
 
-	/** Flat list of {label,url} for the <nav> (or all anchors) inside $scope. */
-	private static function links_in( $scope ) {
+	/**
+	 * Flat list of {label,url} for the <nav> (or all anchors) inside $scope. When $drop_buttons is
+	 * set (header nav), button-styled anchors are skipped — they're the CTA ("Get Started"), captured
+	 * separately by detect_header(), not real nav links.
+	 */
+	private static function links_in( $scope, $drop_buttons = false ) {
 		$nav = $scope->getElementsByTagName( 'nav' )->item( 0 );
 		$host = $nav ? $nav : $scope;
+		if ( $drop_buttons ) {
+			// Prefer the nav's links GROUP (the densest <ul>/<div> of anchors), so a standalone
+			// brand/logo link sitting outside it (e.g. Stitch's `<!-- Brand --><a>Auralis</a>`) is
+			// excluded — the brand becomes the site's own logo, not a menu item.
+			$group = self::densest_link_group( $host );
+			if ( $group ) { $host = $group; }
+		}
 		$out = array();
 		$seen = array();
 		foreach ( $host->getElementsByTagName( 'a' ) as $a ) {
+			if ( $drop_buttons && self::is_button( $a ) ) { continue; } // CTA / button-styled, not a nav link
 			$label = trim( preg_replace( '/\s+/', ' ', $a->textContent ) );
 			if ( $label === '' ) { continue; } // icon-only
 			$url = $a->getAttribute( 'href' );
@@ -744,6 +1032,21 @@ class FW_Site_Converter_Stitch {
 			$out[] = array( 'label' => $label, 'url' => $url );
 		}
 		return $out;
+	}
+
+	/** The descendant <ul>/<div> with the most DIRECT anchor children (≥2) — the nav's links group. */
+	private static function densest_link_group( $host ) {
+		$best = null; $best_n = 1;
+		foreach ( array( 'ul', 'div' ) as $tag ) {
+			foreach ( $host->getElementsByTagName( $tag ) as $el ) {
+				$n = 0;
+				foreach ( $el->childNodes as $ch ) {
+					if ( $ch instanceof DOMElement && strtolower( $ch->nodeName ) === 'a' ) { $n++; }
+				}
+				if ( $n > $best_n ) { $best_n = $n; $best = $el; }
+			}
+		}
+		return $best;
 	}
 
 	/* ---------------------------------------------------------------------- *
@@ -791,14 +1094,29 @@ class FW_Site_Converter_Stitch {
 		$pages = array();
 		$mapping_all = array( 'include_animations' => false, 'pages' => array() );
 
+		// MIRROR mode (the "grab the source's real CSS" path): carry each screen's body VERBATIM and
+		// reproduce its compiled Tailwind CSS offline, instead of decomposing into shortcodes. Pixel-
+		// faithful, no AI, no capture service.
+		$mirror = ! empty( $input['mirror'] );
 		foreach ( $screens as $sc ) {
 			$urls = array_merge( $urls, self::scan_images( $sc['html'] ) );
-			$map  = self::html_to_mapping( $sc['html'], $sc['title'], $sc['slug'], $sc['front'] );
+			// Always DECOMPOSE the body into real page-builder elements (special_heading / text_block /
+			// button / icon_box / columns / media_image), with code_block as the fallback for custom or
+			// unmapped blocks — the converter's original design. In mirror mode the <header>/<footer> are
+			// carried verbatim into the theme (mirror_design) and the reproduced Tailwind CSS keeps the
+			// decomposed elements looking like the source.
+			$map = self::html_to_mapping( $sc['html'], $sc['title'], $sc['slug'], $sc['front'] );
 			$mapping_all['pages'] = array_merge( $mapping_all['pages'], $map['pages'] );
 		}
 		$urls = array_values( array_unique( array_filter( $urls ) ) );
 
 		$out['mapping'] = $mapping_all;
+		// Enable the box CSS Class Mapper: card/box columns get their border/bg/shadow/rounded compiled
+		// into one clean `.box` class on the column's Inner Wrapper Class (populated during build_pages,
+		// emitted into the child stylesheet below).
+		if ( $mirror && class_exists( 'FW_Site_Converter_Tailwind' ) && class_exists( 'FW_Site_Converter_Mapper' ) ) {
+			FW_Site_Converter_Mapper::set_style_config( FW_Site_Converter_Tailwind::parse_config( $screens[0]['html'] ) );
+		}
 		$pages = class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::build_pages( $mapping_all ) : array();
 
 		// Assemble the bundle files (only non-empty ones).
@@ -811,11 +1129,199 @@ class FW_Site_Converter_Stitch {
 		// generated theme's activation bootstrap — so we DON'T also emit menus.json (that would create
 		// duplicate Header/Primary menus).
 		$files['theme-design.json'] = self::tokens_to_design_config( $tokens, $screens[0]['html'], $screens[0]['title'] );
+		if ( $mirror ) {
+			$files['theme-design.json'] = self::mirror_design( $files['theme-design.json'], $screens[0]['html'] );
+			// Append the box-container semantic rules to the child theme stylesheet.
+			if ( class_exists( 'FW_Site_Converter_Mapper' ) ) {
+				$boxcss = FW_Site_Converter_Mapper::registered_css();
+				if ( $boxcss !== '' ) {
+					$cc = isset( $files['theme-design.json']['custom_css'] ) ? (string) $files['theme-design.json']['custom_css'] : '';
+					$files['theme-design.json']['custom_css'] = trim( $cc . "\n\n" . $boxcss );
+				}
+			}
+		}
 		if ( $pages ) { $files['pages.json'] = array( 'pages' => $pages ); }
 
 		$out['files']   = $files;
 		$out['screens'] = count( $screens );
 		return $out;
+	}
+
+	/* ---------------------------------------------------------------------- *
+	 * Faithful mirror (carry source markup + reproduce its Tailwind CSS)
+	 * ---------------------------------------------------------------------- */
+
+	/**
+	 * Split the source body into verbatim parts: the <header> and <footer> (→ the child theme's
+	 * header.php / footer.php, STATIC, exactly as the source) and the body content blocks in between
+	 * (→ one page-builder section each, so the homepage is laid out as editable builder sections).
+	 * Scripts are dropped (the reproduced CSS replaces the Tailwind runtime). Nothing is lost: every
+	 * top-level content child of <main> (or <body>) becomes a block, whether a <section> or a loose div.
+	 *
+	 * @return array{header:string,footer:string,sections:string[]}
+	 */
+	private static function mirror_split( $html ) {
+		$res = array( 'header' => '', 'footer' => '', 'sections' => array() );
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return $res; }
+		$body = $dom->getElementsByTagName( 'body' )->item( 0 );
+		if ( ! $body ) { return $res; }
+
+		// Drop runtime scripts.
+		$drop = array();
+		foreach ( $body->getElementsByTagName( 'script' ) as $s ) { $drop[] = $s; }
+		foreach ( $drop as $s ) { if ( $s->parentNode ) { $s->parentNode->removeChild( $s ); } }
+
+		// Capture + REMOVE the chrome so it can't also land in a body block (no duplication, no loss).
+		$header = self::header_root( $dom );
+		if ( $header ) {
+			$res['header'] = self::mirror_minify( $dom->saveHTML( $header ) );
+			if ( $header->parentNode ) { $header->parentNode->removeChild( $header ); }
+		}
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( $footer ) {
+			$res['footer'] = self::mirror_minify( $dom->saveHTML( $footer ) );
+			if ( $footer->parentNode ) { $footer->parentNode->removeChild( $footer ); }
+		}
+
+		// Content scope = <main> if present, else <body>. Each top-level element child → one block.
+		$main = null;
+		foreach ( $body->getElementsByTagName( 'main' ) as $m ) { $main = $m; break; }
+		$scope = $main ? $main : $body;
+		foreach ( $scope->childNodes as $ch ) {
+			if ( $ch->nodeType !== XML_ELEMENT_NODE ) { continue; }
+			if ( strtolower( $ch->tagName ) === 'script' ) { continue; }
+			$piece = self::mirror_minify( $dom->saveHTML( $ch ) );
+			if ( $piece !== '' ) { $res['sections'][] = $piece; }
+		}
+		return $res;
+	}
+
+	/**
+	 * Collapse the insignificant whitespace BETWEEN tags so WordPress's wpautop can't turn the source's
+	 * pretty-printed newlines into stray <br>/<p> (which, inside a CSS grid/flex row, become extra grid
+	 * items and shatter the layout — the #1 cause of a "messed up" mirror). Text inside elements is
+	 * preserved; only whitespace-only gaps between tags are removed. <pre>/<textarea> are protected.
+	 */
+	private static function mirror_minify( $html ) {
+		$html = (string) $html;
+		// Protect <pre>/<textarea> content from collapsing.
+		$keep = array();
+		$html = preg_replace_callback( '#<(pre|textarea)\b[^>]*>.*?</\1>#is', function ( $m ) use ( &$keep ) {
+			$k = '%%SCKEEP' . count( $keep ) . '%%'; $keep[ $k ] = $m[0]; return $k;
+		}, $html );
+		$html = preg_replace( '/>\s+</', '><', $html );          // drop whitespace-only gaps between tags
+		$html = str_replace( array( "\r\n", "\r", "\n", "\t" ), ' ', $html ); // any remaining newlines → space
+		$html = preg_replace( '/ {2,}/', ' ', $html );           // collapse runs of spaces
+		if ( $keep ) { $html = strtr( $html, $keep ); }
+		return self::strip_cs( trim( $html ) );
+	}
+
+	/**
+	 * Faithful-split mapping: the homepage body becomes ONE page-builder section per source content
+	 * block (each carried verbatim in a code_block, wrapped in `.sc-tw` so the reproduced CSS styles it).
+	 * The <header>/<footer> are handled separately (mirror_design → the theme's header.php/footer.php).
+	 */
+	private static function mirror_mapping( $html, $title, $slug, $front ) {
+		$split    = self::mirror_split( $html );
+		$sections = array();
+		foreach ( $split['sections'] as $i => $shtml ) {
+			$sections[] = array(
+				'css_id' => 'mirror-' . ( $i + 1 ),
+				'omit'   => false,
+				'blocks' => array(
+					array( 't' => 'html', 'role' => 'code', 'html' => '<div class="sc-tw">' . $shtml . '</div>' ),
+				),
+			);
+		}
+		if ( ! $sections ) { // nothing recognized — carry the whole body as one block
+			$sections[] = array( 'css_id' => 'mirror', 'omit' => false, 'blocks' => array(
+				array( 't' => 'html', 'role' => 'code', 'html' => '<div class="sc-tw">' . self::strip_cs( (string) $html ) . '</div>' ),
+			) );
+		}
+		return array( 'pages' => array( array(
+			'title'      => $title,
+			'slug'       => $slug,
+			'front_page' => (bool) $front,
+			'sections'   => $sections,
+		) ) );
+	}
+
+	/** Swap the design CSS for the reproduced Tailwind CSS + the source's fonts/inline style; flag the theme. */
+	private static function mirror_design( array $design, $html ) {
+		$tw = '';
+		$base_font = 'Inter';
+		if ( class_exists( 'FW_Site_Converter_Tailwind' ) ) {
+			$cfg = FW_Site_Converter_Tailwind::parse_config( $html );
+			$tw  = FW_Site_Converter_Tailwind::compile( $html, $cfg, '.sc-tw' );
+			if ( ! empty( $cfg['fontFamily']['body'] ) ) { $base_font = $cfg['fontFamily']['body']; }
+			elseif ( ! empty( $cfg['fontFamily']['sans'] ) ) { $base_font = $cfg['fontFamily']['sans']; }
+		}
+		// Base font on the wrapper so any element without its own font class still reads right.
+		$base = ".sc-tw{font-family:'" . trim( $base_font, "'\"" ) . "',system-ui,-apple-system,sans-serif;}\n";
+		$tw   = $base . $tw;
+		$design['font_links'] = self::mirror_font_links( $html ); // loaded via <link> in <head> (NOT @import —
+		// an @import-loaded icon font renders its ligatures too late, so the icon NAME stays as text).
+		$inline = self::mirror_inline_css( $html );
+		// Google's css2 ships only the @font-face for Material Symbols, not the helper class that turns
+		// the icon NAME text into a glyph (font-family + the `liga` feature). Add it so icons render.
+		$ms = ".sc-tw .material-symbols-outlined{font-family:'Material Symbols Outlined';font-weight:normal;"
+			. "font-style:normal;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;"
+			. "white-space:nowrap;word-wrap:normal;direction:ltr;-webkit-font-feature-settings:'liga';font-feature-settings:'liga';-webkit-font-smoothing:antialiased;}\n";
+		// A source sticky/fixed header sits at top:0 — nudge it below the WP admin bar for logged-in users
+		// (the public site is unaffected; the admin bar isn't rendered there).
+		$adminbar = ".admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:32px !important;}\n"
+			. "@media screen and (max-width:782px){.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:46px !important;}}\n";
+		// Each body block sits in a page-builder section whose .fw-container caps content at ~1140px and
+		// adds gutters. The source sections carry their OWN width (max-w-[…] mx-auto) + padding (px-…), so
+		// neutralize the builder container/row/column for the mirror — let the source control its width.
+		$fullwidth = ".sc-mirror{padding-top:0 !important;padding-bottom:0 !important;}\n"
+			. ".sc-mirror .fw-container{max-width:none !important;width:100% !important;padding-left:0 !important;padding-right:0 !important;}\n"
+			. ".sc-mirror .fw-row{margin-left:0 !important;margin-right:0 !important;}\n"
+			. ".sc-mirror .fw-row > .fw-col-12{padding-left:0 !important;padding-right:0 !important;}\n";
+		$adminbar .= $fullwidth;
+		$design['custom_css'] = trim( $inline . "\n" . $ms . $adminbar . "/* ---- reproduced Tailwind CSS (offline) ---- */\n" . $tw );
+		$design['mirror']     = true;
+		// The source's <header>/<footer> verbatim → the theme's header.php/footer.php (STATIC, exact).
+		// The body sections are page content (mirror_mapping); the chrome is theme files.
+		$split = self::mirror_split( $html );
+		$design['mirror_header_html'] = $split['header'];
+		$design['mirror_footer_html'] = $split['footer'];
+		return $design;
+	}
+
+	/** The source's Google-Fonts URLs (deduped) — loaded via <link> in <head> so icon ligatures render. */
+	private static function mirror_font_links( $html ) {
+		$out = array(); $seen = array();
+		if ( preg_match_all( '/<link[^>]+href="(https:\/\/fonts\.googleapis\.com\/[^"]+)"/i', (string) $html, $m ) ) {
+			foreach ( $m[1] as $href ) {
+				$href = html_entity_decode( $href );
+				// An icon font on display:swap flashes its ligature NAME as text and can stay stuck on it;
+				// force display:block so it's hidden until the glyph is ready.
+				if ( stripos( $href, 'Material+Symbols' ) !== false || stripos( $href, 'Material+Icons' ) !== false ) {
+					$href = preg_replace( '/([?&])display=swap/', '$1display=block', $href );
+					if ( strpos( $href, 'display=' ) === false ) { $href .= '&display=block'; }
+				}
+				if ( isset( $seen[ $href ] ) ) { continue; }
+				$seen[ $href ] = true;
+				$out[] = $href;
+			}
+		}
+		return $out;
+	}
+
+	/** The source's own inline <style> (font-smoothing, material-symbol settings) — scoped to `.sc-tw`. */
+	private static function mirror_inline_css( $html ) {
+		if ( ! preg_match_all( '/<style[^>]*>(.*?)<\/style>/s', (string) $html, $m ) ) { return ''; }
+		$css = implode( "\n", $m[1] );
+		return (string) preg_replace_callback( '/([^{}@]+)\{/', function ( $mm ) {
+			$sels = array_map( function ( $s ) {
+				$s = trim( $s );
+				if ( $s === '' ) { return ''; }
+				return $s === 'body' ? '.sc-tw' : '.sc-tw ' . $s;
+			}, explode( ',', $mm[1] ) );
+			return implode( ',', array_filter( $sels ) ) . '{';
+		}, $css );
 	}
 
 	/**
@@ -880,7 +1386,18 @@ class FW_Site_Converter_Stitch {
 	/** Local learned rules: `signature => role`. Stored only in this install's wp_options. */
 	public static function rules_get() {
 		$r = get_option( self::RULES_OPTION, array() );
-		return is_array( $r ) ? $r : array();
+		$r = is_array( $r ) ? $r : array();
+		// One-time migration: an earlier build kept the review-editor's corrections in a SEPARATE option
+		// ('fw_site_converter_map_rules') that the converter never read — so those corrections were silently
+		// ignored. Fold them into THIS canonical store (used by decompose + AI distillation) so they finally
+		// take effect, then drop the legacy option.
+		$legacy = get_option( 'fw_site_converter_map_rules', null );
+		if ( is_array( $legacy ) && $legacy ) {
+			$r = array_merge( $legacy, $r ); // the canonical store wins on a conflicting signature
+			update_option( self::RULES_OPTION, $r, false );
+			delete_option( 'fw_site_converter_map_rules' );
+		}
+		return $r;
 	}
 
 	/** Persist the local rules map (never transmitted). */
@@ -891,6 +1408,68 @@ class FW_Site_Converter_Stitch {
 	/** Export the local rules as a JSON string (so the maintainer can fold them into a release). */
 	public static function rules_export() {
 		return wp_json_encode( self::rules_get(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
+	}
+
+	/**
+	 * Merge an exported rules map back into the local store (import from another install, or a curated set
+	 * the maintainer ships). Accepts a bare `{signature: role}` map. Returns the number of NEW/changed rules.
+	 */
+	public static function rules_import( $map ) {
+		if ( is_string( $map ) ) { $map = json_decode( $map, true ); }
+		if ( ! is_array( $map ) ) { return 0; }
+		$rules = self::rules_get();
+		$n     = 0;
+		foreach ( $map as $sig => $role ) {
+			if ( ! is_string( $sig ) || ! is_string( $role ) || '' === $sig || '' === $role ) { continue; }
+			if ( ! isset( $rules[ $sig ] ) || $rules[ $sig ] !== $role ) { $rules[ $sig ] = $role; $n++; }
+		}
+		if ( $n ) { self::rules_put( $rules ); }
+		return $n;
+	}
+
+	/** How many element recognizers are registered (proves the recognizer registry loaded). */
+	public static function recognizer_count() {
+		return count( self::recognizers() );
+	}
+
+	/**
+	 * Server-side self-test of the deterministic engine: convert a built-in sample and report which
+	 * capabilities are ACTIVE in the currently-loaded code. Lets a diagnostic tell "the engine is fine, your
+	 * browser/opcache is stale" apart from "the engine is genuinely broken" — no browser involved.
+	 */
+	public static function self_test() {
+		$html = '<!DOCTYPE html><html><head>'
+			. "<script>tailwind.config = { theme: { extend: { colors: { primary: '#000000', 'on-primary': '#ffffff', surface: '#ffffff', 'outline-variant': '#cccccc' } } } }</script>"
+			. '</head><body><section class="max-w-[1100px] mx-auto px-6 py-16 text-center">'
+			. '<h1 class="text-4xl">Self Test</h1>'
+			. '<p class="max-w-[620px] mx-auto">Diagnostic sample.</p>'
+			. '<a href="#" class="bg-primary text-on-primary px-8 py-4 rounded-full">Primary</a>'
+			. '<a href="#" class="bg-transparent border border-outline-variant px-8 py-4 rounded-full">Outline</a>'
+			. '<div class="grid grid-cols-3 gap-6">'
+			. '<div class="bg-surface border rounded-2xl p-8"><h3>One</h3><p>a</p></div>'
+			. '<div class="bg-surface border rounded-2xl p-8"><h3>Two</h3><p>b</p></div>'
+			. '<div class="bg-surface border rounded-2xl p-8"><h3>Three</h3><p>c</p></div>'
+			. '</div></section></body></html>';
+		$bundle = self::build_bundle( array( 'html' => $html, 'title' => 'Self Test', 'mirror' => true ) );
+		$secs   = isset( $bundle['mapping']['pages'][0]['sections'] ) ? $bundle['mapping']['pages'][0]['sections'] : array();
+		$btns   = 0; $rows = 0;
+		foreach ( $secs as $s ) {
+			foreach ( ( isset( $s['blocks'] ) ? $s['blocks'] : array() ) as $b ) {
+				if ( isset( $b['t'] ) && 'button' === $b['t'] ) { $btns++; }
+				if ( isset( $b['role'] ) && 'columns' === $b['role'] ) { $rows++; }
+			}
+		}
+		$css = class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::registered_css() : '';
+		return array(
+			'sections'    => count( $secs ),
+			'buttons'     => $btns,                                   // expect 2 → recognizers working
+			'card_rows'   => $rows,                                   // expect 1 → card-grid recognizer working
+			'sc_btn_css'  => ( false !== strpos( $css, 'sc-btn-' ) ), // button-styling mapper present
+			'box_css'     => ( false !== strpos( $css, '.box' ) ),    // box mapper present
+			'recognizers' => self::recognizer_count(),
+			'builders'    => class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::builder_count() : 0,
+			'rules'       => count( self::rules_get() ),
+		);
 	}
 
 	/**
@@ -1024,6 +1603,70 @@ class FW_Site_Converter_Stitch {
 		return (bool) $looks_pill;
 	}
 
+	/** A small inline rounded-full CHIP with a border/fill + a sub-tag (e.g. "New · v2.0 is now live") — a
+	 *  hero badge. Carried VERBATIM so its pill look (colored tag, border, arrow) survives, unlike an overline. */
+	private static function is_badge( $el ) {
+		$tag = strtolower( $el->tagName );
+		if ( ! in_array( $tag, array( 'div', 'span' ), true ) ) { return false; }
+		$cls = self::cls( $el );
+		if ( strpos( $cls, 'rounded-full' ) === false ) { return false; }
+		if ( strpos( $cls, 'inline-flex' ) === false && strpos( $cls, 'inline-block' ) === false ) { return false; }
+		if ( strpos( $cls, 'border' ) === false && strpos( $cls, 'bg-' ) === false ) { return false; }
+		$txt = self::text( $el );
+		if ( $txt === '' || mb_strlen( $txt ) > 60 ) { return false; }
+		return $el->getElementsByTagName( 'span' )->length >= 1; // has the inner "New" tag
+	}
+
+	/** A hero "announcement pill": a rounded-full inline chip (sub-tag + message + optional icon) that maps
+	 *  to the announcement_pill shortcode. Stricter than is_badge (rejects images, which would be lost);
+	 *  also accepts a linked <a> pill. When this returns false the verbatim `badge` recognizer takes over. */
+	private static function is_announcement_pill( $el ) {
+		$tag = strtolower( $el->tagName );
+		if ( ! in_array( $tag, array( 'div', 'span', 'a' ), true ) ) { return false; }
+		$cls = self::cls( $el );
+		if ( strpos( $cls, 'rounded-full' ) === false ) { return false; }
+		if ( strpos( $cls, 'inline-flex' ) === false && strpos( $cls, 'inline-block' ) === false && strpos( $cls, 'inline' ) === false ) { return false; }
+		if ( strpos( $cls, 'border' ) === false && strpos( $cls, 'bg-' ) === false ) { return false; }
+		if ( $el->getElementsByTagName( 'img' )->length > 0 ) { return false; }
+		$txt = self::text( $el );
+		if ( $txt === '' || mb_strlen( $txt ) > 70 ) { return false; }
+		return $el->getElementsByTagName( 'span' )->length >= 1;
+	}
+
+	/** Pull a pill apart into { tag_text, message, icon (fa class), link }. The first short, badge-like inner
+	 *  span (rounded-full / uppercase / bg-*) is the sub-tag; a material-symbols / <i> span is the icon; the
+	 *  remaining text is the message. */
+	private static function pill_parts( $el ) {
+		$tag_text = ''; $icon = ''; $link = ''; $msg = array();
+		if ( strtolower( $el->tagName ) === 'a' ) { $link = (string) $el->getAttribute( 'href' ); }
+		$nspan = $el->getElementsByTagName( 'span' )->length;
+		foreach ( $el->childNodes as $ch ) {
+			if ( XML_ELEMENT_NODE !== $ch->nodeType ) {
+				$t = trim( (string) $ch->textContent );
+				if ( $t !== '' ) { $msg[] = $t; }
+				continue;
+			}
+			$ctag = strtolower( $ch->tagName );
+			$ccls = self::cls( $ch );
+			$ctxt = trim( self::text( $ch ) );
+			if ( $ctag === 'a' && $link === '' ) { $link = (string) $ch->getAttribute( 'href' ); }
+			if ( strpos( $ccls, 'material-symbols' ) !== false ) { if ( $icon === '' ) { $icon = self::material_to_fa( $ctxt ); } continue; }
+			if ( $ctag === 'i' ) { if ( $icon === '' ) { $icon = trim( $ccls ); } continue; }
+			if ( $tag_text === '' && $ctxt !== '' && mb_strlen( $ctxt ) <= 18 && $nspan >= 2
+				&& ( strpos( $ccls, 'rounded-full' ) !== false || strpos( $ccls, 'uppercase' ) !== false || strpos( $ccls, 'bg-' ) !== false ) ) {
+				$tag_text = $ctxt; continue;
+			}
+			if ( $ctxt !== '' ) { $msg[] = $ctxt; }
+		}
+		$message = trim( implode( ' ', $msg ) );
+		if ( $message === '' ) {
+			$message = trim( self::text( $el ) );
+			if ( $message !== '' && $tag_text !== '' && strpos( $message, $tag_text ) === 0 ) { $message = trim( substr( $message, strlen( $tag_text ) ) ); }
+		}
+		if ( $message === '' && $tag_text !== '' ) { $message = $tag_text; $tag_text = ''; }
+		return array( 'tag_text' => $tag_text, 'message' => $message, 'icon' => $icon, 'link' => $link );
+	}
+
 	/** A button or a button-styled link. */
 	private static function is_button( $el ) {
 		$tag = strtolower( $el->tagName );
@@ -1032,6 +1675,18 @@ class FW_Site_Converter_Stitch {
 		$cls = self::cls( $el );
 		// A CTA link: pill/box padding + a fill/border that reads as a button (not a nav link).
 		return ( strpos( $cls, 'rounded' ) !== false && ( strpos( $cls, 'bg-' ) !== false || strpos( $cls, 'border' ) !== false ) && strpos( $cls, 'px-' ) !== false );
+	}
+
+	/** Computed-style button test — framework-agnostic (data-sc-cs): a <button>, or an <a> whose RESOLVED
+	 *  style reads like a button (padding + a fill / border / rounded), not a bare nav/text link. Lets the
+	 *  converter recognize buttons on Bootstrap / plain-CSS / any-framework sites, not just Tailwind. */
+	private static function cs_is_button( $el ) {
+		$tag = strtolower( $el->tagName );
+		if ( 'button' === $tag ) { return true; }
+		if ( 'a' !== $tag ) { return false; }
+		$cs = $el->getAttribute( 'data-sc-cs' );
+		if ( '' === $cs || strpos( $cs, 'padding:' ) === false ) { return false; } // capture omits 0 padding → a link has none
+		return ( strpos( $cs, 'background-color:' ) !== false || strpos( $cs, 'border-top-width:' ) !== false || strpos( $cs, 'border-radius:' ) !== false );
 	}
 
 	/** A thin wrapper whose only meaningful content is one image. */
@@ -1043,6 +1698,16 @@ class FW_Site_Converter_Stitch {
 			if ( $el->getElementsByTagName( $t )->length > 0 ) { return false; }
 		}
 		return true;
+	}
+
+	/** One image with an absolute-positioned OVERLAY on top (a player/caption/controls layer over a frame). */
+	private static function is_image_with_overlay( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		if ( $el->getElementsByTagName( 'img' )->length !== 1 ) { return false; }
+		foreach ( $el->getElementsByTagName( 'div' ) as $d ) {
+			if ( strpos( self::cls( $d ), 'absolute' ) !== false ) { return true; }
+		}
+		return false;
 	}
 
 	private static function img_html( $img ) {
@@ -1059,7 +1724,12 @@ class FW_Site_Converter_Stitch {
 		self::scrub( $clone );
 		$h = '';
 		foreach ( $clone->childNodes as $c ) { $h .= $clone->ownerDocument->saveHTML( $c ); }
-		return trim( $h );
+		return self::strip_cs( trim( $h ) );
+	}
+
+	/** Remove the Phase-2 `data-sc-cs` computed-style attribute from any HTML carried verbatim into output. */
+	private static function strip_cs( $html ) {
+		return preg_replace( '/\s+data-sc-cs="[^"]*"/i', '', (string) $html );
 	}
 
 	/** Whole-element clean HTML (a cell that didn't match a card → keep its markup, scrubbed). */
@@ -1105,10 +1775,16 @@ class FW_Site_Converter_Stitch {
 	/** grid-cols-N → N (count of columns); 0 when absent. */
 	private static function grid_col_count( $grid ) {
 		$cls = self::cls( $grid );
-		// Prefer the responsive (md:) count, else the base.
-		if ( preg_match( '/(?:md|lg):grid-cols-(\d{1,2})/', $cls, $m ) ) { return (int) $m[1]; }
-		if ( preg_match( '/grid-cols-(\d{1,2})/', $cls, $m ) ) { return (int) $m[1]; }
-		return 0;
+		// The DESKTOP layout uses the LARGEST breakpoint present (lg:grid-cols-3 beats md:grid-cols-2), so
+		// check widest → narrowest (the old code matched the first of md|lg, wrongly returning 2 → 1/2 cols).
+		foreach ( array( '2xl', 'xl', 'lg', 'md', 'sm' ) as $bp ) {
+			if ( preg_match( '/' . $bp . ':grid-cols-(\d{1,2})/', $cls, $m ) ) { return (int) $m[1]; }
+		}
+		if ( preg_match( '/(?:^|\s)grid-cols-(\d{1,2})/', $cls, $m ) ) { return (int) $m[1]; }
+		// Non-Tailwind fallback: a plain flex/grid row of N card cells → N columns (each gets 12/N width).
+		$n = 0;
+		foreach ( self::el_children( $grid ) as $k ) { if ( self::is_card_cell( $k ) ) { $n++; } }
+		return $n >= 2 ? $n : 0;
 	}
 
 	/** Does the icon span lead the button (appears before the label text)? */
@@ -1150,6 +1826,11 @@ class FW_Site_Converter_Stitch {
 			'palette' => 'paint-brush', 'dashboard' => 'th-large', 'layers' => 'clone', 'hub' => 'sitemap',
 			'mail' => 'envelope', 'email' => 'envelope', 'schedule' => 'clock-o', 'timer' => 'clock-o',
 			'visibility' => 'eye', 'auto_awesome' => 'magic', 'workspace_premium' => 'trophy',
+			'record_voice_over' => 'microphone', 'mic' => 'microphone', 'microphone' => 'microphone', 'keyboard_voice' => 'microphone',
+			'graphic_eq' => 'signal', 'equalizer' => 'signal', 'waveform' => 'signal', 'volume_up' => 'volume-up', 'headphones' => 'headphones', 'headset' => 'headphones',
+			'content_copy' => 'clone', 'copy' => 'clone', 'file_copy' => 'clone', 'difference' => 'clone',
+			'language' => 'globe', 'translate' => 'globe', 'public' => 'globe', 'chat' => 'comment', 'forum' => 'comments', 'sms' => 'comment', 'menu' => 'bars',
+			'edit' => 'pencil', 'description' => 'file-text-o', 'article' => 'file-text-o', 'psychology' => 'lightbulb-o', 'lightbulb' => 'lightbulb-o', 'auto_fix_high' => 'magic',
 		);
 		$fa = isset( $map[ $name ] ) ? $map[ $name ] : 'star';
 		return 'fa fa-' . $fa;

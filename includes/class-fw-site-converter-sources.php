@@ -99,9 +99,9 @@ class FW_Site_Converter_Sources {
 	 * @param string $dir
 	 * @return array bundle (build_bundle() shape) with `source` => the identity.
 	 */
-	public static function build_from_dir( $dir ) {
+	public static function build_from_dir( $dir, array $opts = array() ) {
 		$id     = self::identify_dir( $dir );
-		$bundle = call_user_func( self::builder_for( $id['key'] ), array( 'folder' => $dir ) );
+		$bundle = call_user_func( self::builder_for( $id['key'] ), array_merge( array( 'folder' => $dir ), $opts ) );
 		if ( is_array( $bundle ) ) { $bundle['source'] = $id; }
 		return $bundle;
 	}
@@ -113,9 +113,9 @@ class FW_Site_Converter_Sources {
 	 * @param string $title
 	 * @return array bundle with `source` => the identity.
 	 */
-	public static function build_from_html( $html, $title = 'Home' ) {
+	public static function build_from_html( $html, $title = 'Home', array $opts = array() ) {
 		$id     = self::identify_html( $html );
-		$bundle = call_user_func( self::builder_for( $id['key'] ), array( 'html' => $html, 'title' => $title ) );
+		$bundle = call_user_func( self::builder_for( $id['key'] ), array_merge( array( 'html' => $html, 'title' => $title ), $opts ) );
 		if ( is_array( $bundle ) ) { $bundle['source'] = $id; }
 		return $bundle;
 	}

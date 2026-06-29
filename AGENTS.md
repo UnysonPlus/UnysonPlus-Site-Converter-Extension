@@ -310,8 +310,29 @@ the source's brand text.
 
 | Mode | What ships | `style.css` header |
 |---|---|---|
-| `child` (default, recommended) | 4 files: `style.css`, `functions.php`, `template-parts/header-builder.php`, `footer-builder.php` | has `Template: unysonplus-theme` |
+| `child` (default, recommended) | 6 files: `style.css`, `functions.php`, **`header.php`, `footer.php`**, `template-parts/header-builder.php`, `footer-builder.php` | has `Template: unysonplus-theme` |
 | `standalone` | a **copy of the parent tree**, de-parented, chrome overlaid; generated functions become `inc/site-converter-chrome.php` + a `require` appended to the copied `functions.php`; `style.css` = parent style body (header stripped/rewritten) + generated chrome appended | **no** `Template:` line |
+
+**Why the child generates its OWN `header.php` + `footer.php` (not just the template parts).** The parent
+theme's `header.php`/`footer.php` now route header/footer through the **Theme Builder** resolver
+(`unysonplus_get_active_header_render()` → `fw_ext_hfbuilder_render()`); when no `up_header`/`up_footer`
+preset matches, it falls back to **Theme Settings slots**, NOT to a child template part — so a converted
+site that creates no Theme Builder preset would render the parent's empty slot header instead of its own
+chrome. The Theme Builder + its presets are reserved for the **distributable demo themes**; the converter
+deliberately stays out of it. So the child ships its own `header.php`/`footer.php` (`header_php()` /
+`footer_php()`) that mirror the parent's wrapper structure (`#page → header → #content`, then
+`#content → footer → #page` + `wp_footer()`) but load the converted chrome via the child's
+`template-parts/header-builder.php` / `footer-builder.php` directly — `get_header()`/`get_footer()` resolve
+the child's copies first (stylesheet dir wins), so the source chrome renders with zero Theme Builder / Theme
+Settings indirection.
+
+**Header detection tolerates a bare `<nav>` bar.** `detect_header()` and `extract_menus()` resolve the
+header via `header_root()`: a real `<header>`, or — for the many landing pages (Stitch outputs included)
+that use a top-level sticky/fixed `<nav class="fixed top-0 …">` as the site bar with NO `<header>` —
+that `<nav>`. The header nav links come from `links_in($root, $drop_buttons=true)`, which prefers the
+**densest `<ul>`/`<div>` link group** (so a standalone brand/logo `<a>` outside it is excluded → becomes
+the site's own logo, not a menu item) and skips button-styled anchors (the CTA, captured separately).
+Without this, a `<nav>`-bar header yielded an empty primary menu (the header rendered bare).
 
 Both still use the Unyson+ plugin + page builder — standalone just has the other files needed to stand
 on its own.
