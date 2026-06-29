@@ -1859,17 +1859,55 @@ class FW_Site_Converter_Mapper {
 		// NOT `sc-mirror` (whose reset would nuke the container back to full width). The section
 		// element is still full-width, so a section background still spans edge to edge.
 		$sec_node = self::n_section( $src_cls_str, $css_id, $css, $items, false );
-		// Carry the source section's VERTICAL rhythm (mt/mb/pt/pb/py) onto the builder section's padding —
-		// without it, decompose sections have zero vertical spacing (jammed together; the hero clips under
-		// the header). Uses the ORIGINAL section classes (pre-filter) so the spacing utilities survive.
-		// Container styling: carry the source section's vertical rhythm onto the SECTION element via a scoped
-		// rule (#hero{…}) — NOT the padding_top att, which the section renders into its class attribute. Padding
-		// is set explicitly (even 0) to override the theme default; margin only when the source has it.
-		$vs = self::section_vspace( (string) ( isset( $sec['sectionRawClass'] ) ? $sec['sectionRawClass'] : '' ) );
-		$sv = array( 'padding-top' => round( $vs['pt'] ) . 'px', 'padding-bottom' => round( $vs['pb'] ) . 'px' );
-		if ( $vs['mt'] > 0 ) { $sv['margin-top']    = round( $vs['mt'] ) . 'px'; }
-		if ( $vs['mb'] > 0 ) { $sv['margin-bottom'] = round( $vs['mb'] ) . 'px'; }
-		self::register_section_rule( $css_id, '', $sv );
+		// Reproduce the source section's FULL container styling — not just vertical rhythm. Its Tailwind
+		// classes (`max-w-[..] mx-auto px-.. py-.. border-y border-<color> rounded-.. bg-..`) describe a
+		// centered, bordered, padded BOX, which maps onto the builder's centered `.fw-container`; the
+		// section's vertical MARGIN (the gap between sections) maps onto the section element. Without this
+		// the decompose path dropped borders / max-width / horizontal padding (only py/mb survived) — e.g.
+		// the Stitch "trusted by" strip lost its `border-y` + `max-w-[1280px]`.
+		$raw_cls = (string) ( isset( $sec['sectionRawClass'] ) ? $sec['sectionRawClass'] : '' );
+		$base    = array();
+		if ( '' !== $raw_cls && self::$style_on && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
+			$cm   = FW_Site_Converter_Tailwind::compile_class_set( $raw_cls, self::$style_cfg );
+			$base = ( isset( $cm['base'] ) && is_array( $cm['base'] ) ) ? $cm['base'] : array();
+		}
+		// A border-WIDTH with no border-STYLE renders invisible (Tailwind's preflight is scoped to .sc-tw
+		// and isn't carried into these global #id rules) — add solid so the border actually shows.
+		$has_bw = false;
+		foreach ( array( 'border-width', 'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width' ) as $bw ) {
+			if ( isset( $base[ $bw ] ) ) { $has_bw = true; break; }
+		}
+		if ( $has_bw && ! isset( $base['border-style'] ) ) { $base['border-style'] = 'solid'; }
+		// Split: the BOX props (width / padding / border / bg / radius, + carried --tw-* vars) → the centered
+		// `.fw-container`; vertical MARGIN → the section element. Layout utilities (flex/grid/gap/text-align…)
+		// are intentionally NOT carried — the builder's row/column structure owns layout.
+		$box_props = array(
+			'max-width', 'margin-left', 'margin-right',
+			'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+			'border-width', 'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+			'border-style', 'border-color',
+			'border-radius', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-left-radius', 'border-bottom-right-radius',
+			'background', 'background-color', 'background-image',
+		);
+		$cont = array();
+		$secd = array();
+		foreach ( $base as $p => $v ) {
+			if ( in_array( $p, $box_props, true ) || 0 === strpos( (string) $p, '--' ) ) { $cont[ $p ] = $v; }
+			elseif ( 'margin-top' === $p || 'margin-bottom' === $p )                      { $secd[ $p ] = $v; }
+		}
+		if ( $cont ) { $cont['box-sizing'] = 'border-box'; }
+
+		if ( $cont || $secd ) {
+			if ( $secd ) { self::register_section_rule( $css_id, '', $secd ); }
+			if ( $cont ) { self::register_section_rule( $css_id, '.fw-container', $cont ); }
+		} else {
+			// Fallback (non-Tailwind source / mapper off): vertical-rhythm only, as before.
+			$vs = self::section_vspace( $raw_cls );
+			$sv = array( 'padding-top' => round( $vs['pt'] ) . 'px', 'padding-bottom' => round( $vs['pb'] ) . 'px' );
+			if ( $vs['mt'] > 0 ) { $sv['margin-top']    = round( $vs['mt'] ) . 'px'; }
+			if ( $vs['mb'] > 0 ) { $sv['margin-bottom'] = round( $vs['mb'] ) . 'px'; }
+			self::register_section_rule( $css_id, '', $sv );
+		}
 		return $sec_node;
 	}
 
