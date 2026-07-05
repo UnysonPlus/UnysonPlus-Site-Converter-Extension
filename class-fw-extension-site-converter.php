@@ -501,7 +501,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	private function run_convert_file() {
 		// New generic field names, with back-compat for the old `fw_sc_stitch_*` names.
 		$action = ( ( $_POST['fw_sc_convert_action'] ?? $_POST['fw_sc_stitch_action'] ?? '' ) === 'download' ) ? 'download' : 'import';
-		$opts   = array( 'mirror' => true ); // file conversions are always a faithful mirror (reproduced source CSS)
+		$opts   = array( 'dynamic_chrome' => true ); // faithful source look + EDITABLE chrome (logo/menu/footer widgets)
 		$html   = (string) wp_unslash( $_POST['fw_sc_file_html'] ?? $_POST['fw_sc_stitch_html'] ?? '' );
 		$title  = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? $_POST['fw_sc_stitch_title'] ?? 'Home' ) );
 		if ( $title === '' ) { $title = 'Home'; }
@@ -705,7 +705,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$html  = (string) wp_unslash( $_POST['fw_sc_file_html'] ?? '' );
 		$title = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? 'Home' ) );
 		if ( $title === '' ) { $title = 'Home'; }
-		$opts  = array( 'mirror' => true ); // faithful-mirror conversion (same as the direct submit path)
+		$opts  = array( 'dynamic_chrome' => true ); // faithful source look + EDITABLE chrome (same as the direct submit path)
 
 		$bundle = null;
 		$file   = $_FILES['fw_sc_file'] ?? null;
@@ -1334,12 +1334,28 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				<?php endif; ?>
 			</tbody>
 		</table>
-		<form method="post" action="" onsubmit="return confirm('<?php echo esc_js( __( 'Reset ALL theme settings to defaults? This deletes the stored settings option. You can re-import a design file afterwards.', 'fw' ) ); ?>');">
+		<form id="fw-sc-reset-ts" method="post" action="">
 			<?php wp_nonce_field( self::NONCE ); ?>
 			<input type="hidden" name="fw_sc_step" value="reset_theme_settings">
 			<button type="submit" class="button button-secondary" style="color:#b32d2e;border-color:#b32d2e"><?php esc_html_e( 'Reset theme settings to defaults', 'fw' ); ?></button>
 			<span class="description" style="margin-left:.5em"><?php esc_html_e( 'Deletes the stored option; the page falls back to defaults.', 'fw' ); ?></span>
 		</form>
+		<script>
+		( function () {
+			var f = document.getElementById( 'fw-sc-reset-ts' );
+			if ( ! f ) { return; }
+			var msg = <?php echo wp_json_encode( __( 'Reset ALL theme settings to defaults? This deletes the stored settings option. You can re-import a design file afterwards.', 'fw' ) ); ?>;
+			f.addEventListener( 'submit', function ( e ) {
+				if ( f.dataset.fwConfirmed ) { return; } // confirmed → let it submit
+				e.preventDefault();
+				if ( window.fw && fw.confirm ) {
+					fw.confirm( msg, function () { f.dataset.fwConfirmed = '1'; f.submit(); }, { severity: 'warning' } );
+				} else if ( window.confirm( msg ) ) {
+					f.dataset.fwConfirmed = '1'; f.submit();
+				}
+			} );
+		} )();
+		</script>
 		<?php
 	}
 
@@ -2219,12 +2235,12 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					ex.addEventListener( 'click', function () {
 						var fd = new FormData(); fd.append( 'action', 'fw_sc_export_rules' ); fd.append( '_wpnonce', nonce );
 						fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( res ) {
-							if ( ! ( res && res.success ) ) { alert( ( res && res.data && res.data.message ) || 'Export failed.' ); return; }
+							if ( ! ( res && res.success ) ) { var em = ( res && res.data && res.data.message ) || 'Export failed.'; ( window.fw && fw.notify ) ? fw.notify( em, 'error' ) : alert( em ); return; }
 							var blob = new Blob( [ JSON.stringify( res.data, null, 2 ) ], { type: 'application/json' } );
 							var a = document.createElement( 'a' ); a.href = URL.createObjectURL( blob );
 							a.download = 'unysonplus-learned-rules-' + new Date().toISOString().slice( 0, 10 ) + '.json';
 							document.body.appendChild( a ); a.click(); a.remove();
-						} ).catch( function () { alert( 'Export failed.' ); } );
+						} ).catch( function () { ( window.fw && fw.notify ) ? fw.notify( 'Export failed.', 'error' ) : alert( 'Export failed.' ); } );
 					} );
 					var imp = document.getElementById( 'fw-sc-import-rules' );
 					imp.addEventListener( 'click', function () {
