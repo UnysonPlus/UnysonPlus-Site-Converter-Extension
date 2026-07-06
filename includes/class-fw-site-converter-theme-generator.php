@@ -1963,9 +1963,14 @@ JS;
 			$html = (string) $cfg['raw_chrome']['header_html'];
 			$logo = '<?php if ( function_exists( "has_custom_logo" ) && has_custom_logo() ) { the_custom_logo(); } else { echo esc_html( get_bloginfo( "name" ) ); } ?>';
 			$html = preg_replace( '/<img\b[^>]*>/i', $logo, $html, 1 );
+			// TEXT brand: <!--SC_LOGO--> sits INSIDE the source brand link, so render just the logo IMAGE
+			// (no wrapping <a>) or the Site Title text -> keeps the source's brand styling, editable in
+			// Customizer -> Site Identity.
+			$logo_in = '<?php if ( function_exists( "has_custom_logo" ) && has_custom_logo() && ( $sc_lid = get_theme_mod( "custom_logo" ) ) ) { echo wp_get_attachment_image( (int) $sc_lid, "full", false, array( "class" => "custom-logo" ) ); } else { echo esc_html( get_bloginfo( "name" ) ); } ?>';
+			$html = str_replace( '<!--SC_LOGO-->', $logo_in, $html );
 			$menu = '<?php wp_nav_menu( array( "theme_location" => "' . $loc . '", "container" => false, "menu_class" => "sc-menu", "depth" => 3, "fallback_cb" => false ) ); ?>';
 			$html = str_replace( '<!--SC_NAV-->', $menu, $html );
-			return self::raw_part( 'header', $html );
+			return self::raw_part( 'header', '<div class="sc-tw">' . $html . '</div>' );
 		}
 
 		$slug = $cfg['theme']['slug'];
@@ -2085,7 +2090,7 @@ JS;
 				$html = str_replace( '<!--SC_FCOL_' . $i . '-->', '<?php if ( is_active_sidebar( "footer-' . ( (int) $i + 1 ) . '" ) ) { dynamic_sidebar( "footer-' . ( (int) $i + 1 ) . '" ); } ?>', $html );
 			}
 			$html = str_replace( '<!--SC_FCOPY-->', '<?php if ( is_active_sidebar( "sc-footer-copyright" ) ) { dynamic_sidebar( "sc-footer-copyright" ); } ?>', $html );
-			return self::raw_part( 'footer', $html );
+			return self::raw_part( 'footer', '<div class="sc-tw">' . $html . '</div>' );
 		}
 
 		$slug   = $cfg['theme']['slug'];

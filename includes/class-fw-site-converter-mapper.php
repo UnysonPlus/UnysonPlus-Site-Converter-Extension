@@ -80,6 +80,16 @@ class FW_Site_Converter_Mapper {
 			$bs = ( isset( $raw['border-top-style'] ) && 'none' !== $raw['border-top-style'] ) ? $raw['border-top-style'] : 'solid';
 			$raw['border'] = $raw['border-top-width'] . ' ' . $bs . ' ' . ( isset( $raw['border-top-color'] ) ? $raw['border-top-color'] : 'currentColor' );
 		}
+		// Expand the `margin` / `padding` shorthand (data-sc-cs stamps the shorthand, not per-edge) into
+		// longhands so a profile asking for margin-top / margin-bottom (etc.) can match.
+		foreach ( array( 'margin', 'padding' ) as $bx ) {
+			if ( ! isset( $raw[ $bx ] ) || '' === $raw[ $bx ] || false !== strpos( $raw[ $bx ], 'var(' ) ) { continue; }
+			$pp = preg_split( '/\s+/', trim( $raw[ $bx ] ) );
+			$n  = count( $pp );
+			if ( $n < 1 || $n > 4 ) { continue; }
+			$edges = array( '-top' => $pp[0], '-right' => ( $n >= 2 ? $pp[1] : $pp[0] ), '-bottom' => ( $n >= 3 ? $pp[2] : $pp[0] ), '-left' => ( $n >= 4 ? $pp[3] : ( $n >= 2 ? $pp[1] : $pp[0] ) ) );
+			foreach ( $edges as $sfx => $vv ) { if ( ! isset( $raw[ $bx . $sfx ] ) ) { $raw[ $bx . $sfx ] = $vv; } }
+		}
 		$out = array();
 		foreach ( $allow as $p ) {
 			if ( isset( $raw[ $p ] ) && '' !== $raw[ $p ] ) { $out[ $p ] = $raw[ $p ]; }
@@ -599,6 +609,29 @@ class FW_Site_Converter_Mapper {
 			'unique_id'     => self::uid(),
 			'css_id'        => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		);
+		// Reproduce the source pill's colors so it's VISIBLE — an empty pill renders as a near-invisible soft
+		// tint on a light hero. Resolve the container's fill/border, the message text color and the tag fill
+		// from their Tailwind classes (config-aware), and pick the bordered `outline` style when the source
+		// pill has a border (its most distinctive, visible feature).
+		if ( self::$style_on && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
+			$clean = function ( $c ) { return trim( preg_replace( '/\s*\/\s*var\([^)]*\)/', '', (string) $c ) ); };
+			$col   = function ( $cls, $prop ) use ( $clean ) {
+				if ( '' === (string) $cls ) { return ''; }
+				$cm = FW_Site_Converter_Tailwind::compile_class_set( (string) $cls, self::$style_cfg );
+				return ! empty( $cm['base'][ $prop ] ) ? $clean( $cm['base'][ $prop ] ) : '';
+			};
+			$border = $col( isset( $b['pillCls'] ) ? $b['pillCls'] : '', 'border-color' );
+			$fill   = $col( isset( $b['pillCls'] ) ? $b['pillCls'] : '', 'background-color' );
+			if ( '' !== $border )   { $atts['style'] = 'outline'; $atts['pill_color'] = array( 'predefined' => '', 'custom' => $border ); }
+			elseif ( '' !== $fill ) { $atts['style'] = 'subtle';  $atts['pill_color'] = array( 'predefined' => '', 'custom' => $fill ); }
+			$txt = $col( isset( $b['msgCls'] ) ? $b['msgCls'] : '', 'color' );
+			if ( '' !== $txt )   { $atts['text_color'] = array( 'predefined' => '', 'custom' => $txt ); }
+			// Only override the tag color when it resolves to a REAL color — a pure-black result means the
+			// source token (e.g. bg-tertiary) isn't in the parsed config, and black would replace the pill's
+			// pleasant default tag color with an ugly black chip.
+			$tagbg = $col( isset( $b['tagCls'] ) ? $b['tagCls'] : '', 'background-color' );
+			if ( '' !== $tagbg && 'rgb(0 0 0)' !== $tagbg ) { $atts['tag_color'] = array( 'predefined' => '', 'custom' => $tagbg ); }
+		}
 		return array( 'type' => 'simple', 'shortcode' => 'announcement_pill', 'atts' => $atts, '_items' => array() );
 	}
 	/**
@@ -882,6 +915,16 @@ class FW_Site_Converter_Mapper {
 		$ic = isset( $card['iconColor'] ) ? trim( (string) $card['iconColor'] ) : '';
 		if ( $ic !== '' && preg_match( '/^#[0-9a-f]{3,8}$/i', $ic ) ) {
 			$atts['icon_color'] = array( 'predefined' => '', 'custom' => $ic );
+		} elseif ( ! empty( $card['iconCls'] ) && self::$style_on && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
+			// The source icon's color is usually a Tailwind TOKEN class (e.g. `text-outline`), not a hex —
+			// resolve it via the config so the icon matches the source instead of the shortcode's default
+			// (green) preset. compile_class_set's `base` is the REST state, so a `group-hover:text-primary`
+			// hover green is correctly ignored. Strip the opacity var() for a clean color value.
+			$cm = FW_Site_Converter_Tailwind::compile_class_set( (string) $card['iconCls'], self::$style_cfg );
+			if ( ! empty( $cm['base']['color'] ) ) {
+				$col = preg_replace( '/\s*\/\s*var\([^)]*\)/', '', (string) $cm['base']['color'] );
+				$atts['icon_color'] = array( 'predefined' => '', 'custom' => trim( $col ) );
+			}
 		}
 
 		// css_class = source ALIGNMENT (sc-ib-left unless the card is centered) + the gray icon "image" box
@@ -1590,7 +1633,8 @@ class FW_Site_Converter_Mapper {
 			'heading'  => array( 'sel' => '{h}',                        'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-transform' ) ),
 			'subtitle' => array( 'sel' => '.special-heading__subtitle', 'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'color', 'max-width' ) ),
 			'overline' => array( 'sel' => '.special-heading__overline', 'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-transform' ) ),
-			'text'     => array( 'sel' => '.text-block',                'props' => array( 'font-family', 'font-size', 'line-height', 'color', 'max-width' ) ),
+			'text'     => array( 'sel' => '.text-block',                'props' => array( 'font-family', 'font-size', 'line-height', 'color', 'max-width', 'margin-top', 'margin-bottom' ) ),
+			'announcement_pill' => array( 'sel' => '.fw-announce',       'props' => array( 'margin-top', 'margin-bottom' ) ),
 		);
 	}
 
@@ -1620,6 +1664,16 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/** Collect the section-scoped style rule for ONE prose block, driven by the expandable profile table. */
+	/** Parse a CSS length ('32px' / '2rem' / '32') to a px float (0 when unparseable). */
+	private static function px_of( $v ) {
+		$v = trim( (string) $v );
+		if ( '' === $v ) { return 0.0; }
+		if ( preg_match( '/^(-?\d+(?:\.\d+)?)rem$/', $v, $m ) ) { return (float) $m[1] * 16; }
+		if ( preg_match( '/^(-?\d+(?:\.\d+)?)px$/', $v, $m ) ) { return (float) $m[1]; }
+		if ( preg_match( '/^(-?\d+(?:\.\d+)?)$/', $v, $m ) ) { return (float) $m[1]; }
+		return 0.0;
+	}
+
 	private static function collect_section_style( $css_id, array $b ) {
 		if ( '' === (string) $css_id ) { return; }
 		$role     = isset( $b['role'] ) ? (string) $b['role'] : '';
@@ -1630,7 +1684,11 @@ class FW_Site_Converter_Mapper {
 			$lvl = max( 1, min( 6, (int) ( isset( $b['level'] ) ? $b['level'] : 2 ) ) );
 			$sel = str_replace( '{h}', 'h' . $lvl, $sel );
 		}
-		$decls = self::el_style_decls( (string) ( isset( $b['cls'] ) ? $b['cls'] : '' ), (string) ( isset( $b['cs'] ) ? $b['cs'] : '' ), $profiles[ $role ]['props'] );
+		$cls   = (string) ( isset( $b['cls'] ) ? $b['cls'] : ( isset( $b['pillCls'] ) ? $b['pillCls'] : '' ) );
+		$decls = self::el_style_decls( $cls, (string) ( isset( $b['cs'] ) ? $b['cs'] : '' ), $profiles[ $role ]['props'] );
+		// Carried wrapper margin: a flattened grouping wrapper's mb/mt lands on its boundary block (px).
+		if ( ! empty( $b['mbAdd'] ) ) { $decls['margin-bottom'] = round( max( self::px_of( isset( $decls['margin-bottom'] ) ? $decls['margin-bottom'] : '' ), (float) $b['mbAdd'] ) ) . 'px'; }
+		if ( ! empty( $b['mtAdd'] ) ) { $decls['margin-top']    = round( max( self::px_of( isset( $decls['margin-top'] ) ? $decls['margin-top'] : '' ), (float) $b['mtAdd'] ) ) . 'px'; }
 		self::register_section_rule( $css_id, $sel, $decls );
 	}
 
@@ -1711,6 +1769,23 @@ class FW_Site_Converter_Mapper {
 			$role = isset( $b['role'] ) ? $b['role'] : 'code';
 			if ( $role === 'skip' ) { continue; }
 			self::collect_section_style( $css_id, $b ); // unified element styler: section-scoped prose styling
+
+			// A WIDE media widget (image_overlay player / hero graphic — source `w-full max-w-[…]`) → its
+			// OWN full-width column, centered. In the shared intro column of a CENTERED section the flex
+			// centering shrinks the content row to the buttons' width, which squeezes the media (its
+			// max-width can't expand). A dedicated 1_1 column lets the source max-width fill + center.
+			if ( ! empty( $b['wide'] ) ) {
+				$flush_buf();
+				// Center the media (source max-w-[…]) at full available width, in its OWN 1_1 column. Make
+				// the sc-tw wrapper a flex-center container so its card is the DIRECT flex child: the card's
+				// w-full then fills the column and its max-width caps + centers it. (A plain block leaves the
+				// card left-aligned; content_h:center or an extra flex WRAPPER shrinks the intermediate
+				// sc-tw div to content width instead — the card stayed ~514px.)
+				$html = (string) ( $b['html'] ?? '' );
+				$html = preg_replace( '/<div class="sc-tw">/', '<div class="sc-tw" style="display:flex;justify-content:center;width:100%;">', $html, 1 );
+				$items[] = self::n_column( '1_1', array( self::n_code( $html ) ) );
+				continue;
+			}
 
 			// A gallery grid (de-cloned image-card carousel, source `.container-fluid`) is full-width,
 			// so it gets its OWN 1_1 column instead of inheriting the intro column's col-* width (which
@@ -1872,12 +1947,18 @@ class FW_Site_Converter_Mapper {
 			$base = ( isset( $cm['base'] ) && is_array( $cm['base'] ) ) ? $cm['base'] : array();
 		}
 		// A border-WIDTH with no border-STYLE renders invisible (Tailwind's preflight is scoped to .sc-tw
-		// and isn't carried into these global #id rules) — add solid so the border actually shows.
-		$has_bw = false;
-		foreach ( array( 'border-width', 'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width' ) as $bw ) {
-			if ( isset( $base[ $bw ] ) ) { $has_bw = true; break; }
+		// and isn't carried into these global #id rules) — add solid so the border shows. But add it ONLY
+		// for the sides that actually HAVE a width: a bare `border-style:solid` would make the unset sides
+		// render at the CSS default `medium` width, so `border-y` (top+bottom only) would draw all four.
+		if ( isset( $base['border-width'] ) ) {
+			if ( ! isset( $base['border-style'] ) ) { $base['border-style'] = 'solid'; }
+		} else {
+			foreach ( array( 'top', 'right', 'bottom', 'left' ) as $side ) {
+				if ( isset( $base[ 'border-' . $side . '-width' ] ) && ! isset( $base[ 'border-' . $side . '-style' ] ) ) {
+					$base[ 'border-' . $side . '-style' ] = 'solid';
+				}
+			}
 		}
-		if ( $has_bw && ! isset( $base['border-style'] ) ) { $base['border-style'] = 'solid'; }
 		// Split: the BOX props (width / padding / border / bg / radius, + carried --tw-* vars) → the centered
 		// `.fw-container`; vertical MARGIN → the section element. Layout utilities (flex/grid/gap/text-align…)
 		// are intentionally NOT carried — the builder's row/column structure owns layout.
@@ -1885,7 +1966,7 @@ class FW_Site_Converter_Mapper {
 			'max-width', 'margin-left', 'margin-right',
 			'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
 			'border-width', 'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
-			'border-style', 'border-color',
+			'border-style', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'border-color',
 			'border-radius', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-left-radius', 'border-bottom-right-radius',
 			'background', 'background-color', 'background-image',
 		);

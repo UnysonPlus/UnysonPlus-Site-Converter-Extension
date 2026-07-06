@@ -687,7 +687,7 @@ class FW_Site_Converter_Stitch {
 		// A hero badge PILL (rounded chip with a "New" tag) — carry verbatim so the pill look survives.
 		self::register_recognizer( 'announcement_pill', 76,
 			function ( $el ) { return self::is_announcement_pill( $el ); },
-			function ( $el ) { $p = self::pill_parts( $el ); return array( 't' => 'pill', 'role' => 'announcement_pill', 'tag_text' => $p['tag_text'], 'message' => $p['message'], 'icon' => $p['icon'], 'link' => $p['link'], 'align' => '' ); }
+			function ( $el ) { $p = self::pill_parts( $el ); return array( 't' => 'pill', 'role' => 'announcement_pill', 'tag_text' => $p['tag_text'], 'message' => $p['message'], 'icon' => $p['icon'], 'link' => $p['link'], 'align' => '', 'pillCls' => $p['pillCls'], 'tagCls' => $p['tagCls'], 'msgCls' => $p['msgCls'] ); }
 		);
 		self::register_recognizer( 'badge', 75,
 			function ( $el ) { return self::is_badge( $el ); },
@@ -724,7 +724,7 @@ class FW_Site_Converter_Stitch {
 		// An image with an OVERLAID UI (player/caption/controls) → whole widget verbatim in a code block.
 		self::register_recognizer( 'image_overlay', 30,
 			function ( $el ) { return self::is_image_with_overlay( $el ); },
-			function ( $el ) { $doc = $el->ownerDocument; $v = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) ) : ''; return '' !== $v ? array( 't' => 'html', 'role' => 'code', 'html' => '<div class="sc-tw">' . $v . '</div>' ) : null; }
+			function ( $el ) { $doc = $el->ownerDocument; $v = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) ) : ''; return '' !== $v ? array( 't' => 'html', 'role' => 'code', 'wide' => true, 'html' => '<div class="sc-tw">' . $v . '</div>' ) : null; }
 		);
 		// A logo / "trusted by" strip (several images, no headings) → whole flex row verbatim in a code block.
 		self::register_recognizer( 'logo_strip', 25,
@@ -751,6 +751,39 @@ class FW_Site_Converter_Stitch {
 	 * appends a block / list / nothing. Unclaimed elements are descended into (hero text wrappers, button
 	 * rows, intro blocks, …) — exactly the original behavior, now table-driven.
 	 */
+	/** Parse a CSS length ('64px' / '4rem') to a px float. */
+	private static function px_num( $v ) {
+		$v = trim( (string) $v );
+		if ( preg_match( '/^(-?\d+(?:\.\d+)?)rem$/', $v, $m ) ) { return (float) $m[1] * 16; }
+		if ( preg_match( '/^(-?\d+(?:\.\d+)?)px$/', $v, $m ) ) { return (float) $m[1]; }
+		return 0.0;
+	}
+
+	/** An element's own vertical margin in px, from Tailwind classes (mt/mb/my, incl. arbitrary
+	 *  `mb-[64px]`) with a data-sc-cs `margin` shorthand fallback. */
+	private static function el_margin( $el ) {
+		$r   = array( 'top' => 0.0, 'bottom' => 0.0 );
+		$cls = self::cls( $el );
+		if ( preg_match_all( '/(?:^|\s)m([tby])-(\[[^\]]+\]|-?\d+(?:\.\d+)?)/', ' ' . $cls . ' ', $ms, PREG_SET_ORDER ) ) {
+			foreach ( $ms as $m ) {
+				$tok = $m[2];
+				$v   = ( '[' === $tok[0] ) ? self::px_num( trim( $tok, '[]' ) ) : ( (float) $tok * 4 );
+				if ( 't' === $m[1] || 'y' === $m[1] ) { $r['top']    += $v; }
+				if ( 'b' === $m[1] || 'y' === $m[1] ) { $r['bottom'] += $v; }
+			}
+		}
+		if ( $r['top'] <= 0 || $r['bottom'] <= 0 ) {
+			$cs = (string) $el->getAttribute( 'data-sc-cs' );
+			if ( '' !== $cs && preg_match( '/(?:^|;)\s*margin:\s*([^;]+)/', $cs, $mm ) ) {
+				$pp = preg_split( '/\s+/', trim( $mm[1] ) ); $n = count( $pp );
+				$top = self::px_num( $pp[0] ); $bot = $n >= 3 ? self::px_num( $pp[2] ) : $top;
+				if ( $r['top'] <= 0 )    { $r['top'] = $top; }
+				if ( $r['bottom'] <= 0 ) { $r['bottom'] = $bot; }
+			}
+		}
+		return $r;
+	}
+
 	private static function collect_blocks( $node, array &$blocks, array $rules ) {
 		$recognizers = self::recognizers();
 		foreach ( $node->childNodes as $child ) {
@@ -767,7 +800,17 @@ class FW_Site_Converter_Stitch {
 				$claimed = true;
 				break;
 			}
-			if ( ! $claimed ) { self::collect_blocks( $child, $blocks, $rules ); }
+			if ( ! $claimed ) {
+				$before = count( $blocks );
+				self::collect_blocks( $child, $blocks, $rules );
+				// A plain grouping wrapper (e.g. <div class="text-center mb-16">) is flattened; carry its OWN
+				// vertical margin onto the boundary blocks it produced so the group's spacing survives.
+				if ( count( $blocks ) > $before ) {
+					$wm = self::el_margin( $child );
+					if ( $wm['bottom'] > 0 ) { $li = count( $blocks ) - 1; $blocks[ $li ]['mbAdd'] = max( (float) ( isset( $blocks[ $li ]['mbAdd'] ) ? $blocks[ $li ]['mbAdd'] : 0 ), $wm['bottom'] ); }
+					if ( $wm['top'] > 0 )    { $blocks[ $before ]['mtAdd'] = max( (float) ( isset( $blocks[ $before ]['mtAdd'] ) ? $blocks[ $before ]['mtAdd'] : 0 ), $wm['top'] ); }
+				}
+			}
 		}
 	}
 
@@ -868,10 +911,11 @@ class FW_Site_Converter_Stitch {
 		if ( ! $heading ) { return null; } // no title → not an icon-card
 
 		// Icon: first material-symbol span, else first <svg>.
-		$icon = ''; $custom_icon = ''; $icon_box_cls = ''; $icon_box_cs = '';
+		$icon = ''; $custom_icon = ''; $icon_box_cls = ''; $icon_box_cs = ''; $icon_cls = '';
 		foreach ( $cell->getElementsByTagName( 'span' ) as $sp ) {
 			if ( strpos( self::cls( $sp ), 'material-symbols' ) !== false ) {
-				$icon = self::material_to_fa( trim( $sp->textContent ) );
+				$icon     = self::material_to_fa( trim( $sp->textContent ) );
+				$icon_cls = self::cls( $sp ); // the icon's source classes (text-<token>…) → resolve its REST color in n_icon_box
 				// The icon's WRAPPER is often a gray "image" placeholder box (a fill + a fixed height + rounded).
 				// Capture it so the icon_box reproduces that box instead of showing a bare icon.
 				$par = $sp->parentNode;
@@ -914,6 +958,7 @@ class FW_Site_Converter_Stitch {
 
 		return array(
 			'icon'       => $icon,
+			'iconCls'    => $icon_cls,
 			'customIcon' => $custom_icon,
 			'title'      => self::text( $heading ),
 			'titleTag'   => $htag,
@@ -1098,6 +1143,7 @@ class FW_Site_Converter_Stitch {
 		// reproduce its compiled Tailwind CSS offline, instead of decomposing into shortcodes. Pixel-
 		// faithful, no AI, no capture service.
 		$mirror = ! empty( $input['mirror'] );
+		$dyn    = ! empty( $input['dynamic_chrome'] ); // faithful + EDITABLE chrome (raw-chrome swaps)
 		foreach ( $screens as $sc ) {
 			$urls = array_merge( $urls, self::scan_images( $sc['html'] ) );
 			// Always DECOMPOSE the body into real page-builder elements (special_heading / text_block /
@@ -1114,7 +1160,7 @@ class FW_Site_Converter_Stitch {
 		// Enable the box CSS Class Mapper: card/box columns get their border/bg/shadow/rounded compiled
 		// into one clean `.box` class on the column's Inner Wrapper Class (populated during build_pages,
 		// emitted into the child stylesheet below).
-		if ( $mirror && class_exists( 'FW_Site_Converter_Tailwind' ) && class_exists( 'FW_Site_Converter_Mapper' ) ) {
+		if ( ( $mirror || $dyn ) && class_exists( 'FW_Site_Converter_Tailwind' ) && class_exists( 'FW_Site_Converter_Mapper' ) ) {
 			FW_Site_Converter_Mapper::set_style_config( FW_Site_Converter_Tailwind::parse_config( $screens[0]['html'] ) );
 		}
 		$pages = class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::build_pages( $mapping_all ) : array();
@@ -1129,15 +1175,17 @@ class FW_Site_Converter_Stitch {
 		// generated theme's activation bootstrap — so we DON'T also emit menus.json (that would create
 		// duplicate Header/Primary menus).
 		$files['theme-design.json'] = self::tokens_to_design_config( $tokens, $screens[0]['html'], $screens[0]['title'] );
-		if ( $mirror ) {
+		if ( $dyn ) {
+			$files['theme-design.json'] = self::raw_chrome_design( $files['theme-design.json'], $screens[0]['html'] );
+		} elseif ( $mirror ) {
 			$files['theme-design.json'] = self::mirror_design( $files['theme-design.json'], $screens[0]['html'] );
-			// Append the box-container semantic rules to the child theme stylesheet.
-			if ( class_exists( 'FW_Site_Converter_Mapper' ) ) {
-				$boxcss = FW_Site_Converter_Mapper::registered_css();
-				if ( $boxcss !== '' ) {
-					$cc = isset( $files['theme-design.json']['custom_css'] ) ? (string) $files['theme-design.json']['custom_css'] : '';
-					$files['theme-design.json']['custom_css'] = trim( $cc . "\n\n" . $boxcss );
-				}
+		}
+		// Append the box-container semantic rules to the child theme stylesheet (both faithful modes).
+		if ( ( $mirror || $dyn ) && class_exists( 'FW_Site_Converter_Mapper' ) ) {
+			$boxcss = FW_Site_Converter_Mapper::registered_css();
+			if ( $boxcss !== '' ) {
+				$cc = isset( $files['theme-design.json']['custom_css'] ) ? (string) $files['theme-design.json']['custom_css'] : '';
+				$files['theme-design.json']['custom_css'] = trim( $cc . "\n\n" . $boxcss );
 			}
 		}
 		if ( $pages ) { $files['pages.json'] = array( 'pages' => $pages ); }
@@ -1160,6 +1208,139 @@ class FW_Site_Converter_Stitch {
 	 *
 	 * @return array{header:string,footer:string,sections:string[]}
 	 */
+	/** The descendant container (div/ul/section) with the most DIRECT element children (>=2) — e.g. a
+	 *  footer's column ROW. */
+	private static function densest_child_group( $host ) {
+		$best = null; $best_n = 1;
+		foreach ( array( 'div', 'ul', 'section' ) as $tag ) {
+			foreach ( $host->getElementsByTagName( $tag ) as $el ) {
+				$n = 0;
+				foreach ( $el->childNodes as $ch ) { if ( $ch instanceof DOMElement ) { $n++; } }
+				if ( $n > $best_n ) { $best_n = $n; $best = $el; }
+			}
+		}
+		return $best;
+	}
+
+	/** Inner HTML of an element (its children serialized). */
+	private static function inner_html( $el ) {
+		$doc = $el->ownerDocument; $html = '';
+		foreach ( $el->childNodes as $ch ) { $html .= $doc->saveHTML( $ch ); }
+		return $html;
+	}
+
+	/** The tightest footer element holding the copyright line (a year / "copyright" / the (c) glyph),
+	 *  preferring the wrapper with the FEWEST child elements so social icons etc. stay out of it. */
+	private static function footer_copyright_el( $footer ) {
+		$best = null; $best_kids = PHP_INT_MAX; $copy = chr( 0xC2 ) . chr( 0xA9 );
+		foreach ( array( 'div', 'p', 'span' ) as $tag ) {
+			foreach ( $footer->getElementsByTagName( $tag ) as $el ) {
+				$t = trim( $el->textContent );
+				if ( $t === '' || mb_strlen( $t ) > 200 ) { continue; }
+				if ( ! preg_match( '/(?:19|20)\d{2}/', $t ) && stripos( $t, 'copyright' ) === false && strpos( $t, $copy ) === false ) { continue; }
+				$kids = $el->getElementsByTagName( '*' )->length;
+				if ( $kids < $best_kids ) { $best_kids = $kids; $best = $el; }
+			}
+		}
+		return $best;
+	}
+
+	/** Faithful-DYNAMIC chrome: keep the source header/footer markup but inject the swap markers
+	 *  (<!--SC_NAV-->, <!--SC_FCOL_i-->, <!--SC_FCOPY-->) + extract the nav tree + footer columns, so the
+	 *  generator renders wp_nav_menu / the_custom_logo / footer widgets over the EXACT source look. This
+	 *  is the PHP twin of the capture service's chrome extraction (keeps the two paths in sync). */
+	/** Derive the .sc-menu look (color / size / weight / gap) from a source nav's link classes, so the
+	 *  injected wp_nav_menu matches the source instead of falling back to bare bulleted links. */
+	private static function nav_style_from( $group, $html ) {
+		$ns = array();
+		$a  = null;
+		foreach ( $group->getElementsByTagName( 'a' ) as $el ) { if ( trim( $el->textContent ) !== '' ) { $a = $el; break; } }
+		if ( $a && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
+			$cfg  = FW_Site_Converter_Tailwind::parse_config( (string) $html );
+			$cm   = FW_Site_Converter_Tailwind::compile_class_set( self::cls( $a ), $cfg );
+			$base = ( is_array( $cm ) && isset( $cm['base'] ) && is_array( $cm['base'] ) ) ? $cm['base'] : array();
+			$map  = array( 'color' => 'color', 'font-size' => 'fontSize', 'font-weight' => 'fontWeight', 'letter-spacing' => 'letterSpacing', 'text-transform' => 'textTransform', 'font-family' => 'fontFamily' );
+			foreach ( $map as $prop => $key ) { if ( ! empty( $base[ $prop ] ) ) { $ns[ $key ] = $base[ $prop ]; } }
+		}
+		$gcls = self::cls( $group );
+		if ( preg_match( '/(?:^|\s)(?:gap|space)-x?-(\d+(?:\.\d+)?)/', ' ' . $gcls . ' ', $m ) ) { $ns['gap'] = ( (float) $m[1] * 0.25 ) . 'rem'; }
+		if ( empty( $ns['gap'] ) ) { $ns['gap'] = '2rem'; } // ensure non-empty so sc_menu_css emits the flex layout
+		return $ns;
+	}
+
+	private static function raw_chrome_split( $html ) {
+		$res = array( 'header_html' => '', 'footer_html' => '', 'nav_tree' => array(), 'nav_style' => array(), 'footer_cols' => array(), 'footer_copyright' => '' );
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return $res; }
+		$body = $dom->getElementsByTagName( 'body' )->item( 0 );
+		if ( ! $body ) { return $res; }
+		$drop = array();
+		foreach ( $body->getElementsByTagName( 'script' ) as $sc ) { $drop[] = $sc; }
+		foreach ( $drop as $sc ) { if ( $sc->parentNode ) { $sc->parentNode->removeChild( $sc ); } }
+
+		// HEADER: the nav's link group -> <!--SC_NAV-->; the nav tree feeds the WP-menu bootstrap.
+		$header = self::header_root( $dom );
+		if ( $header ) {
+			$nav   = $header->getElementsByTagName( 'nav' )->item( 0 );
+			$scope = $nav ? $nav : $header;
+			$group = self::densest_link_group( $scope );
+			if ( $group ) {
+				$res['nav_style'] = self::nav_style_from( $group, (string) $html ); // capture the look BEFORE removing the group
+				if ( $group->parentNode ) { $group->parentNode->replaceChild( $dom->createComment( 'SC_NAV' ), $group ); }
+			}
+			// LOGO: with no <img> brand, make the source's TEXT brand link editable (Customizer logo /
+			// Site Title) by marking its inner content -> header_part swaps it. Runs AFTER the nav group is
+			// removed so a nav link is never mistaken for the brand.
+			if ( 0 === $header->getElementsByTagName( 'img' )->length ) {
+				foreach ( $header->getElementsByTagName( 'a' ) as $ba ) {
+					if ( trim( $ba->textContent ) === '' || self::is_button( $ba ) ) { continue; }
+					while ( $ba->firstChild ) { $ba->removeChild( $ba->firstChild ); }
+					$ba->appendChild( $dom->createComment( 'SC_LOGO' ) );
+					break;
+				}
+			}
+			$res['header_html'] = self::mirror_minify( $dom->saveHTML( $header ) );
+			$nav_items = array();
+			foreach ( self::design_menu( (string) $html, 'primary' ) as $it ) {
+				$nav_items[] = array( 'label' => $it['label'], 'url' => $it['url'], 'href' => $it['url'], 'children' => array() );
+			}
+			$res['nav_tree'] = $nav_items;
+		}
+
+		// FOOTER: each column of the densest row -> <!--SC_FCOL_i-->; the copyright -> <!--SC_FCOPY-->.
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( $footer ) {
+			$copy      = self::footer_copyright_el( $footer ); // grab BEFORE column marking
+			$copy_html = $copy ? self::mirror_minify( self::inner_html( $copy ) ) : '';
+			$row  = self::densest_child_group( $footer );
+			$cols = array();
+			if ( $row ) {
+				$children = array();
+				foreach ( $row->childNodes as $ch ) { if ( $ch instanceof DOMElement ) { $children[] = $ch; } }
+				foreach ( $children as $i => $col ) {
+					$cols[] = self::mirror_minify( self::inner_html( $col ) );
+					if ( $col->parentNode ) { $col->parentNode->replaceChild( $dom->createComment( 'SC_FCOL_' . $i ), $col ); }
+				}
+			}
+			if ( $copy && $copy->parentNode ) {
+				$res['footer_copyright'] = $copy_html;
+				$copy->parentNode->replaceChild( $dom->createComment( 'SC_FCOPY' ), $copy );
+			}
+			$res['footer_cols'] = $cols;
+			$res['footer_html'] = self::mirror_minify( $dom->saveHTML( $footer ) );
+		}
+		return $res;
+	}
+
+	/** Like mirror_design (reproduced offline CSS + fonts) but the header/footer are DYNAMIC + faithful
+	 *  (raw-chrome swaps) instead of static verbatim. */
+	private static function raw_chrome_design( array $design, $html ) {
+		$design = self::mirror_design( $design, $html );
+		unset( $design['mirror'], $design['mirror_header_html'], $design['mirror_footer_html'] );
+		$design['raw_chrome'] = self::raw_chrome_split( $html );
+		return $design;
+	}
+
 	private static function mirror_split( $html ) {
 		$res = array( 'header' => '', 'footer' => '', 'sections' => array() );
 		$dom = self::load_dom( (string) $html );
@@ -1280,7 +1461,9 @@ class FW_Site_Converter_Stitch {
 			. ".sc-mirror .fw-row{margin-left:0 !important;margin-right:0 !important;}\n"
 			. ".sc-mirror .fw-row > .fw-col-12{padding-left:0 !important;padding-right:0 !important;}\n";
 		$adminbar .= $fullwidth;
-		$design['custom_css'] = trim( $inline . "\n" . $ms . $adminbar . "/* ---- reproduced Tailwind CSS (offline) ---- */\n" . $tw );
+		$logo_css = ".sc-tw .custom-logo{max-height:2.4rem;width:auto;height:auto;display:inline-block;vertical-align:middle;}
+";
+		$design['custom_css'] = trim( $inline . "\n" . $ms . $logo_css . $adminbar . "/* ---- reproduced Tailwind CSS (offline) ---- */\n" . $tw );
 		$design['mirror']     = true;
 		// The source's <header>/<footer> verbatim → the theme's header.php/footer.php (STATIC, exact).
 		// The body sections are page content (mirror_mapping); the chrome is theme files.
@@ -1638,6 +1821,7 @@ class FW_Site_Converter_Stitch {
 	 *  remaining text is the message. */
 	private static function pill_parts( $el ) {
 		$tag_text = ''; $icon = ''; $link = ''; $msg = array();
+		$pill_cls = self::cls( $el ); $tag_cls = ''; $msg_cls = ''; // source classes → color reproduction in n_announcement_pill
 		if ( strtolower( $el->tagName ) === 'a' ) { $link = (string) $el->getAttribute( 'href' ); }
 		$nspan = $el->getElementsByTagName( 'span' )->length;
 		foreach ( $el->childNodes as $ch ) {
@@ -1654,9 +1838,9 @@ class FW_Site_Converter_Stitch {
 			if ( $ctag === 'i' ) { if ( $icon === '' ) { $icon = trim( $ccls ); } continue; }
 			if ( $tag_text === '' && $ctxt !== '' && mb_strlen( $ctxt ) <= 18 && $nspan >= 2
 				&& ( strpos( $ccls, 'rounded-full' ) !== false || strpos( $ccls, 'uppercase' ) !== false || strpos( $ccls, 'bg-' ) !== false ) ) {
-				$tag_text = $ctxt; continue;
+				$tag_text = $ctxt; $tag_cls = $ccls; continue;
 			}
-			if ( $ctxt !== '' ) { $msg[] = $ctxt; }
+			if ( $ctxt !== '' ) { if ( $msg_cls === '' ) { $msg_cls = $ccls; } $msg[] = $ctxt; }
 		}
 		$message = trim( implode( ' ', $msg ) );
 		if ( $message === '' ) {
@@ -1664,7 +1848,8 @@ class FW_Site_Converter_Stitch {
 			if ( $message !== '' && $tag_text !== '' && strpos( $message, $tag_text ) === 0 ) { $message = trim( substr( $message, strlen( $tag_text ) ) ); }
 		}
 		if ( $message === '' && $tag_text !== '' ) { $message = $tag_text; $tag_text = ''; }
-		return array( 'tag_text' => $tag_text, 'message' => $message, 'icon' => $icon, 'link' => $link );
+		return array( 'tag_text' => $tag_text, 'message' => $message, 'icon' => $icon, 'link' => $link,
+			'pillCls' => $pill_cls, 'tagCls' => $tag_cls, 'msgCls' => $msg_cls );
 	}
 
 	/** A button or a button-styled link. */
