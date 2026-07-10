@@ -187,8 +187,15 @@ with zero child CSS.
 
 The source's content bands (`mx-auto max-w-7xl` = 1280px) are WIDER than the theme's default boxed
 container (1170px), so the demo reads narrower. This is the GLOBAL **Container Width** (General →
-Layout → Container Width, responsive Phone/Tablet/Desktop) → set Desktop to **1280px**; it drives
-`--container-max-desktop` consumed by every `.fw-container`. (The hero's narrower `max-w-4xl` content
+Layout → Container Width, responsive Phone/Tablet/Desktop) → drives `--container-max-desktop` consumed
+by every `.fw-container`.
+> **Gutter math (the source's `max-w-N` is CONTENT width; UnysonPlus's is OUTER).** Tailwind puts the
+> gutter OUTSIDE the max-width (`<section class="px-6"><div class="mx-auto max-w-7xl">`), so `max-w-7xl`
+> is a TRUE 1280px of content. But `.fw-container` is **border-box** and bundles max-width **+** a 24px
+> gutter each side, so a 1280px setting yields only **1232px** of content. To reproduce a true 1280px
+> content width (while keeping the gutter on narrow screens), set Container Width = **source max-width
+> + 2×gutter = 1280 + 48 = 1328px**. Verify at a viewport WIDER than the container (a viewport-clipped
+> measurement lies). (The hero's narrower `max-w-4xl` content
 is per-element, above — not the container.) **Two write gotchas bit us here:**
 
 > **1. Theme-option GROUP write.** `layout_container_width` lives INSIDE the `general_layout` group
@@ -497,6 +504,16 @@ gets its own `max_width` + Muted colour + `text_align:center`.
 cards are **LEFT-aligned** (icon circle top-left, title + body left). Set all three to `left` (the
 factory's `align` param) — a centred card when the source is left is a fidelity miss the computed-style
 diff catches (`getComputedStyle(title).textAlign`).
+
+**icon_box inside a card — double padding.** `.icon-box__wrapper` carries a baked-in `padding: 1.5rem 0`
+(24px top/bottom). Inside a Box-Preset card (which already provides `p-8`/`p-card` padding) that
+DOUBLES the vertical inset and the card reads too tall. Zero it via the icon_box's Custom CSS.
+> **Scope-class-on-the-BEM-wrapper gotcha:** icon_box puts its `.u{hash}` scope class ON the
+> `.icon-box__wrapper` element itself (`class="icon-box uXXXX icon-box__wrapper …"`), so
+> `selector .icon-box__wrapper` (DESCENDANT) matches nothing — use **`selector.icon-box__wrapper{padding:0}`**
+> (compound, same element). General rule: some shortcodes stamp the scope class on their root BEM
+> element, so a `selector .foo` may need to be `selector.foo` (or just `selector`). Check the rendered
+> markup for where `.u{hash}` lands.
 
 ### Spacing component — improvement candidates (framework)
 
