@@ -590,6 +590,24 @@ Adobe simple-icons marks, Show Names on, White Logo Color, grayscale, height 22,
 
 ---
 
+## Component robustness gotchas (gallery crop, btn-link)
+
+- **Gallery crop vs a theme `img{height:auto}` reset.** The gallery's cropped designs (`grid` with a
+  ratio, `metro`, …) size each cell with `aspect-ratio` + `overflow:hidden`, and the `<img>` fills it
+  via `object-fit:cover; height:100%`. A theme's ubiquitous `#content img { height:auto }` (ID
+  specificity 1,0,1) BEATS the gallery's `.fw-gallery__media img` (0,1,1), collapsing the height so
+  a LANDSCAPE image letterboxes (short, empty space) instead of filling the square. Fixed
+  framework-side with `height:100% !important` on the cropped img (shortcodes 1.10.80). **For a
+  gallery, use the CLOSEST design — don't pixel-match the source.** The source's 4-col grid with one
+  `col-span-2` reads fine as a uniform **`grid`** (square ratio `1-1`) + rounded + hover-zoom; the
+  exact one-wide-cell span isn't worth chasing (`metro` is the option if you do).
+- **btn-link hardcodes underline + a blue hover.** `.btn-link { text-decoration:underline }` +
+  `.btn-link:hover { color:#0a58ca }` are baked into the button CSS; a Link Button-Colour preset
+  re-points the base colour but NOT those. For a source text-CTA link (no underline, brand colour,
+  hover-lighter), override in the button's **Custom CSS**: `selector{text-decoration:none}
+  selector:hover{color:var(--color-primary-light)}` — or set the Link preset's hover state +
+  a `{{SELECTOR}}{text-decoration:none}` preset Custom CSS (tier-1, all links at once).
+
 ## Framework capabilities added while building demos (use them; don't rebuild them)
 
 Each demo tends to surface a missing framework capability — when a COMMON need has no home, BUILD it
