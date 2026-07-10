@@ -4,6 +4,14 @@ The deterministic (**no‑AI**) converter — the logic that turns a source desi
 **child theme + page‑builder pages** *without* calling an LLM — exists **TWICE**, once per input path.
 **If you change one, you MUST change the other** so the two paths produce consistent results.
 
+> **📘 Manual procedure + hard-won learnings — read before a demo OR a launch-site conversion.**
+> The human-followed process these converters AUTOMATE, and every gotcha from building demos
+> (Theme-Settings-first mapping, Text Styles, the 3-tier Custom CSS escape hatch, logo strips /
+> inline SVG, `mask-image` background fades, the fidelity + computed-style diff gate, …) lives in the
+> **Demo Conversion Playbook**: `framework/extensions/site-converter/docs/demo-conversion-playbook.md`
+> (in the plugin / `UnysonPlus-Site-Converter-Extension` repo). The converters' north star is to EMIT
+> what that playbook builds by hand — keep them converging on it.
+
 | Path | Lives in | Files |
 |---|---|---|
 | **File upload** (this extension) | `framework/extensions/site-converter/includes/` (PHP) | `class-fw-site-converter-stitch.php`, `class-fw-site-converter-mapper.php`, `class-fw-site-converter-theme-generator.php` |
