@@ -494,6 +494,20 @@ best built as a **special_heading (title only) + a separate text_block (subtitle
 exact Spacing-Scale value (heading `mb-6`=1.5rem, block `mb-20`=5rem) instead of the special_heading's
 coarse `element_spacing` presets (tight/normal/relaxed = 0.25/0.5/1rem — none hit 1.5rem). Subtitle
 gets its own `max_width` + Muted colour + `text_align:center`.
+
+**Header ROW — heading-block LEFT + link/button RIGHT (`flex justify-between items-end`).** A source
+header with a title-block on the left and a "View all →" link on the right is done in **ONE column,
+natively — no child CSS**: set the column's **Content Direction = Row** (`content_direction:'row'`,
+lays elements inline), **Content Alignment = Space Between** (`content_h:'between'` → `justify-content:
+space-between`), and **Content Vertical Alignment = Bottom** (`content_v:'end'` → `align-items:flex-end`).
+Put the heading (special_heading title+subtitle) + the link (a `btn-link` button with an `arrow-right`
+icon) in that column. The column also exposes **Gap** (`content_gap`) + a bottom margin.
+> **special_heading grouping gotcha:** in a Row column, the heading + link must each be ONE flex item.
+> But a special_heading only wraps its title+subtitle in a `.heading` container when
+> `sc_needs_wrapper` fires — otherwise it renders them as BARE siblings, so the row's space-between
+> spreads THREE items (title / subtitle / link) instead of two. Force the wrapper by giving the
+> special_heading a **CSS Class** (a class/id always produces the wrapper), so its title+subtitle stay
+> a single left-hand block.
 > **special_heading title-margin gotcha:** even title-only, the `.heading-title` carries a built-in
 > ~8px bottom margin (from `element_spacing`), which ADDS to the element's own bottom margin. So to
 > land a 24px (`mb-6`) heading→subtitle gap, use **`mb-3` (16px) + the 8px = 24px**, not `mb-4` (24px,
