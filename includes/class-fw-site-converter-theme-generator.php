@@ -82,6 +82,11 @@ class FW_Site_Converter_Theme_Generator {
 					: sprintf( 'Converted theme for %s — header/footer design reproduced by the Unyson+ Site Converter.', $name ),
 				'version'     => isset( $theme['version'] ) && $theme['version'] !== '' ? (string) $theme['version'] : '1.0.0',
 			),
+			// CHROME via Theme Settings: when the bundle emits a theme-settings.json chrome payload
+			// (playbook's "chrome = theme, not page content"), the child theme must NOT bake its own
+			// header.php/footer.php — it stays NEAR-EMPTY so get_header()/get_footer() fall back to
+			// the PARENT theme's templates, which render the Header/Footer Theme Settings we wrote.
+			'chrome_via_settings' => ! empty( $c['chrome_via_settings'] ),
 			'layout' => array(
 				// Source content-container width (Bootstrap .container / Tailwind max-w-* / any
 				// centered wrapper) → applied to .fw-container. Validated to a CSS length.
@@ -962,21 +967,29 @@ class FW_Site_Converter_Theme_Generator {
 		$files = array(
 			'style.css'                         => self::style_css( $cfg ),
 			'functions.php'                     => self::functions_php( $cfg ),
+		);
+
+		// CHROME via Theme Settings → NEAR-EMPTY child theme: skip baking header.php/footer.php +
+		// the chrome template parts entirely, so get_header()/get_footer() fall back to the PARENT
+		// theme's chrome, which is driven by the Header/Footer Theme Settings the bundle wrote.
+		// (The playbook's Theme-Settings-first model; anything else the theme can't express rides
+		// misc_custom_css.) Otherwise the child owns its OWN chrome (the verbatim/baked mirror).
+		if ( empty( $cfg['chrome_via_settings'] ) ) {
 			// The child owns its OWN header.php / footer.php — overriding the parent's outright. The
 			// parent now routes header/footer through the Theme Builder (its presets are reserved for
 			// the distributable demos), so a converted site bypasses that entirely: get_header() loads
 			// THIS header.php directly, which renders the source chrome (no Theme Builder / Theme
 			// Settings indirection). The chrome markup itself lives in the two template parts below.
-			'header.php'                        => self::header_php( $cfg ),
-			'footer.php'                        => self::footer_php( $cfg ),
+			$files['header.php'] = self::header_php( $cfg );
+			$files['footer.php'] = self::footer_php( $cfg );
 			// The child overrides BOTH chrome template parts with a "dynamic mirror": the source's
 			// own markup + classes (so the carried source CSS styles it = identical look), with the
 			// logo / menu / footer columns swapped to live WordPress output. Theme Settings deferred.
 			// "Capture header/footer" off (the convert panel option) → keep header.php/footer.php as the
 			// document wrappers but render NO chrome there, so the page is just the converted body.
-			'template-parts/header-builder.php' => empty( $cfg['skip_header'] ) ? self::header_part( $cfg ) : "<?php if ( ! defined( 'ABSPATH' ) ) { die; } /* header capture disabled */\n",
-			'template-parts/footer-builder.php' => empty( $cfg['skip_footer'] ) ? self::footer_part( $cfg ) : "<?php if ( ! defined( 'ABSPATH' ) ) { die; } /* footer capture disabled */\n",
-		);
+			$files['template-parts/header-builder.php'] = empty( $cfg['skip_header'] ) ? self::header_part( $cfg ) : "<?php if ( ! defined( 'ABSPATH' ) ) { die; } /* header capture disabled */\n";
+			$files['template-parts/footer-builder.php'] = empty( $cfg['skip_footer'] ) ? self::footer_part( $cfg ) : "<?php if ( ! defined( 'ABSPATH' ) ) { die; } /* footer capture disabled */\n";
+		}
 		// Raw-chrome (verbatim mirror) sites ship a small interactivity script that re-hydrates
 		// the captured markup — mobile nav toggle, smooth-scroll, animated counters & progress
 		// bars, AOS reveal — since the source's own JS was stripped at capture.

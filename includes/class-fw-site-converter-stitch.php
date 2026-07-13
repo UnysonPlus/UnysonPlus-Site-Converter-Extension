@@ -248,6 +248,334 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/**
+	 * CHROME → parent-theme Theme Settings (the playbook's "chrome = theme, not page content"
+	 * approach — see site-converter/docs/demo-conversion-playbook.md → Site chrome). Emits the
+	 * source header/footer as native Header/Footer Theme-Settings values so the converted site
+	 * runs on a NEAR-EMPTY child theme (Template: unysonplus-theme, no header.php/footer.php)
+	 * instead of a baked one. Consumed by FW_Site_Converter_Theme_Settings::import() (writes each
+	 * id via fw_set_db_settings_option); the importer accepts arbitrary keys and overlays them.
+	 *
+	 * Value shapes mirror the gold reference (Senkei's anime-header-footer.php):
+	 *   header_logo   = { site_title, title_weight, color:{predefined,custom}, tagline,
+	 *                     logo_icon:{type,svg-source,svg-id}, logo_icon_position, logo_icon_color }
+	 *   header_main   = { main_left|center|right:[ element_type nodes ], main_custom_styling }
+	 *   header_menu   = { menu_link_color, menu_link_hover_color, menu_link_font_size:{value,unit} }
+	 *   header_layout = { header_mode, header_behavior, header_glass, bg_color, min_height, … }
+	 *   footer_background = background-pro { color:{ value:{predefined,custom} } }  (NOT compact color)
+	 *   copyright_settings = { enabled, yes:{ copyright_columns:{ count, '2':{ split, cols } } } }
+	 *
+	 * @param array  $tokens design tokens (palette/fonts)
+	 * @param string $html   home-screen markup (for header/footer/menu/logo detection)
+	 * @param string $title  site name (logo fallback)
+	 * @return array{ values: array } theme-settings.json payload
+	 */
+	public static function tokens_to_theme_settings_chrome( array $tokens, $html, $title ) {
+		$el  = function ( $type, $settings = null ) {
+			$et = array( 'element' => $type );
+			if ( is_array( $settings ) ) { $et[ $type ] = $settings; }
+			return array( 'element_type' => $et );
+		};
+		$hex = function ( $h ) { return array( 'predefined' => '', 'custom' => (string) $h ); };
+
+		$hdr   = self::detect_header( (string) $html );
+		$logo  = self::detect_logo( (string) $html, (string) $title );
+		$menu  = self::design_menu( (string) $html, 'primary' );
+
+		// Palette-derived chrome colors (fall back to sensible neutrals).
+		$ink        = self::token_color( $tokens, array( 'text', 'on-background', 'on-surface' ) );
+		$accent     = self::token_color( $tokens, array( 'accent', 'primary', 'brand', 'cta' ) );
+		$dark       = self::token_color( $tokens, array( 'deep-black', 'black', 'surface-container-lowest' ) );
+		if ( $dark === '' ) { $dark = '#141414'; }
+		$muted      = self::token_color( $tokens, array( 'muted', 'on-surface-variant' ) );
+		$link_col   = $muted !== '' ? $muted : ( $ink !== '' ? $ink : '#94a3b8' );
+		$header_bg  = $hdr['dark'] ? $dark : ( $ink !== '' ? '#ffffff' : '#ffffff' );
+
+		$values = array();
+
+		/* --- header_logo (wordmark + optional icon) --- */
+		$hl = array(
+			'site_title'   => $logo['text'] !== '' ? $logo['text'] : ( trim( (string) $title ) !== '' ? trim( (string) $title ) : 'Site' ),
+			'title_weight' => '600',
+			'color'        => $hex( $hdr['dark'] ? '#ffffff' : ( $ink !== '' ? $ink : '#111111' ) ),
+			'tagline'      => ' d-none', // hide-tagline switch stores a hiding class
+		);
+		if ( $logo['icon'] !== '' ) {
+			$hl['logo_icon']          = array( 'type' => 'svg', 'svg-source' => 'library', 'svg-id' => $logo['icon'] );
+			$hl['logo_icon_position'] = 'before';
+			$hl['logo_icon_color']    = $accent !== '' ? array( 'predefined' => 'text-primary', 'custom' => '' ) : $hex( $ink !== '' ? $ink : '#111111' );
+		}
+		$values['header_logo'] = $hl;
+
+		/* --- header_main: logo · menu · CTA --- */
+		$right = array();
+		if ( $hdr['cta']['label'] !== '' ) {
+			$right[] = array( 'element_type' => array(
+				'element'    => 'cta_button',
+				'cta_button' => array(
+					'cta_text'  => $hdr['cta']['label'],
+					'cta_link'  => $hdr['cta']['href'] !== '' ? $hdr['cta']['href'] : '#',
+					'cta_style' => 'btn-primary',
+					'cta_size'  => 'btn-md',
+				),
+			) );
+		}
+		$values['header_main'] = array(
+			'main_left'   => array( $el( 'logo' ) ),
+			'main_center' => array( $el( 'menu_area', array( 'menu_location' => 'primary' ) ) ),
+			'main_right'  => $right,
+		);
+
+		/* --- header_menu --- */
+		$values['header_menu'] = array(
+			'menu_link_color'       => $hex( $link_col ),
+			'menu_link_hover_color' => $hex( $hdr['dark'] ? '#ffffff' : ( $accent !== '' ? $accent : $ink ) ),
+		);
+
+		/* --- header_layout --- */
+		$values['header_layout'] = array(
+			'header_mode'          => array( 'mode' => 'top', 'top' => array( 'header_design' => array( 'design' => 'classic' ) ) ),
+			'header_behavior'      => $hdr['sticky'] ? 'sticky' : 'default',
+			'header_glass'         => 'no',
+			'header_shadow'        => 'no',
+			'header_border'        => 'no',
+			'header_uppercase_nav' => 'no',
+			'bg_color'             => $hex( $header_bg ),
+		);
+
+		/* --- footer colors (background-pro shape for the fill) --- */
+		$footer_bg   = $dark;
+		$footer_text = '#94a3b8';
+		$values['footer_background'] = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => $footer_bg ) ) );
+		$values['footer_text_color'] = $hex( $footer_text );
+		$values['footer_link_color'] = $hex( $footer_text );
+
+		/* --- social_profiles (brand column) — footer social links → Lucide icons --- */
+		$social = self::detect_footer_social( (string) $html );
+		if ( $social ) { $values['social_profiles'] = $social; }
+
+		/* --- main_footer_columns: brand col + link columns (source footer grid) --- */
+		$fcols = self::detect_footer_columns( (string) $html );
+		if ( $fcols ) {
+			// A brand column (logo + description + social) leads, then the link columns.
+			$brand_col = array( $el( 'logo' ) );
+			$fdesc     = self::detect_footer_tagline( (string) $html );
+			if ( $fdesc !== '' ) {
+				$brand_col[] = array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<p>' . esc_html( $fdesc ) . '</p>' ) ) );
+			}
+			if ( $social ) { $brand_col[] = $el( 'social_icons' ); }
+
+			$cols  = array( $brand_col );
+			foreach ( $fcols as $group ) {
+				$html_col = '<h4>' . esc_html( $group['title'] ) . '</h4><ul>';
+				foreach ( $group['links'] as $l ) { $html_col .= '<li><a href="' . esc_url( $l['href'] !== '' ? $l['href'] : '#' ) . '">' . esc_html( $l['label'] ) . '</a></li>'; }
+				$html_col .= '</ul>';
+				$cols[] = array( array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $html_col ) ) ) );
+			}
+			$cols  = array_slice( $cols, 0, 5 ); // footer builder supports up to a 5-col row
+			$count = count( $cols );
+			$mfc   = array();
+			for ( $i = 0; $i < $count; $i++ ) { $mfc[ 'main_footer_col_' . ( $i + 1 ) ] = $cols[ $i ]; }
+			// A 4-column footer whose FIRST (brand) column is visually wider → the fifths
+			// "2/5 + 1/5 + 1/5 + 1/5" layout (the source's common "brand spans 2" grid).
+			if ( 4 === $count ) { $mfc['main_footer_layout'] = 'f5-2-1-1-1'; $count_key = '5'; }
+			else { $count_key = (string) $count; }
+			$values['main_footer_columns'] = array( 'count' => $count_key, $count_key => $mfc );
+		}
+
+		/* --- copyright bar --- */
+		$copy = self::detect_footer_copyright( (string) $html );
+		if ( $copy === '' ) { $copy = '&copy; {{current_year}} ' . esc_html( $hl['site_title'] ) . '. All rights reserved.'; }
+		$values['copyright_settings'] = array(
+			'enabled' => 'yes',
+			'yes'     => array(
+				'copyright_columns' => array(
+					'count' => '1',
+					'1'     => array(
+						'copyright_col_1' => array(
+							array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $copy ) ) ),
+						),
+					),
+				),
+			),
+		);
+
+		return array( 'values' => $values );
+	}
+
+	/**
+	 * Detect the brand LOGO: its wordmark text and (if an inline icon precedes the text) a Lucide
+	 * icon id to reproduce as the native Logo Icon. Returns { text, icon, image }.
+	 *   - text  = the wordmark string (empty for a pure image logo)
+	 *   - icon  = a 'lucide/<name>' id when an <svg>/icon element sits before the text, else ''
+	 *   - image = the logo <img> src for an image logo, else ''
+	 * Heuristic + conservative: only emits an icon id we can confidently map (data-lucide / a
+	 * lucide-* class / an iconify lucide:<name>); otherwise leaves icon empty (wordmark only).
+	 */
+	private static function detect_logo( $html, $title ) {
+		$out = array( 'text' => '', 'icon' => '', 'image' => '' );
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return $out; }
+		$header = self::header_root( $dom );
+		if ( ! $header ) { return $out; }
+
+		// Prefer an explicit brand link/element: the first <a> whose href is '/', '#', or home.
+		$brand = null;
+		foreach ( $header->getElementsByTagName( 'a' ) as $a ) {
+			$href = trim( (string) $a->getAttribute( 'href' ) );
+			if ( $href === '' || $href === '#' || $href === '/' || preg_match( '~^https?://[^/]+/?$~', $href ) ) {
+				if ( ! self::is_button( $a ) ) { $brand = $a; break; }
+			}
+		}
+		if ( $brand === null ) { $brand = $header; }
+
+		// Image logo?
+		foreach ( $brand->getElementsByTagName( 'img' ) as $img ) {
+			$src = trim( (string) $img->getAttribute( 'src' ) );
+			if ( $src !== '' && strpos( $src, 'data:' ) !== 0 ) { $out['image'] = $src; }
+			break;
+		}
+
+		// Wordmark text (icons stripped).
+		$txt = self::text_no_icons( $brand );
+		$txt = trim( preg_replace( '/\s+/', ' ', (string) $txt ) );
+		// Guard against grabbing the whole nav: a brand wordmark is short (<= 4 words).
+		if ( $txt !== '' && str_word_count( $txt ) <= 4 ) { $out['text'] = $txt; }
+
+		// Icon before the wordmark → a Lucide id.
+		$out['icon'] = self::detect_lucide_in( $brand );
+		return $out;
+	}
+
+	/** Sniff a Lucide icon id ('lucide/<name>') from data-lucide / class lucide-<name> / iconify lucide:<name>. */
+	private static function detect_lucide_in( $node ) {
+		// data-lucide="wind" (Lucide's own web-component / data attr)
+		foreach ( $node->getElementsByTagName( 'i' ) as $i ) {
+			$dl = trim( (string) $i->getAttribute( 'data-lucide' ) );
+			if ( $dl !== '' ) { return 'lucide/' . sanitize_title( $dl ); }
+			$cls = self::cls( $i );
+			if ( preg_match( '/\blucide-([a-z0-9-]+)/', $cls, $m ) ) { return 'lucide/' . $m[1]; }
+		}
+		// iconify-icon icon="lucide:wind"
+		foreach ( $node->getElementsByTagName( '*' ) as $any ) {
+			$ic = trim( (string) $any->getAttribute( 'icon' ) );
+			if ( preg_match( '/^lucide:([a-z0-9-]+)$/', $ic, $m ) ) { return 'lucide/' . $m[1]; }
+			$dl = trim( (string) $any->getAttribute( 'data-lucide' ) );
+			if ( $dl !== '' ) { return 'lucide/' . sanitize_title( $dl ); }
+		}
+		return '';
+	}
+
+	/** The footer's copyright line (a © / "rights reserved" text node), or '' if none. */
+	private static function detect_footer_copyright( $html ) {
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return ''; }
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( ! $footer ) { return ''; }
+		$best = '';
+		foreach ( $footer->getElementsByTagName( 'p' ) as $p ) {
+			$t = trim( (string) $p->textContent );
+			if ( $t !== '' && ( strpos( $t, '©' ) !== false || stripos( $t, 'rights reserved' ) !== false || stripos( $t, 'copyright' ) !== false ) ) {
+				$best = $t;
+				break;
+			}
+		}
+		if ( $best !== '' ) {
+			// Normalize a year to the live token so it stays current.
+			$best = preg_replace( '/\b(19|20)\d{2}\b/', '{{current_year}}', $best, 1 );
+			$best = esc_html( $best );
+		}
+		return $best;
+	}
+
+	/** Map a social URL's host to a Lucide icon id ('lucide/<name>'), or '' if not a known network. */
+	private static function social_lucide( $url ) {
+		$host = strtolower( (string) parse_url( (string) $url, PHP_URL_HOST ) );
+		$map  = array(
+			'twitter'   => 'lucide/twitter',  'x.com'      => 'lucide/twitter',
+			'facebook'  => 'lucide/facebook', 'instagram'  => 'lucide/instagram',
+			'linkedin'  => 'lucide/linkedin', 'youtube'    => 'lucide/youtube',
+			'github'    => 'lucide/github',   'discord'    => 'lucide/message-circle',
+			'dribbble'  => 'lucide/dribbble', 'twitch'     => 'lucide/twitch',
+			'tiktok'    => 'lucide/music',    'pinterest'  => 'lucide/image',
+			'telegram'  => 'lucide/send',     't.me'       => 'lucide/send',
+			'whatsapp'  => 'lucide/message-circle', 'slack'  => 'lucide/slack',
+			'mastodon'  => 'lucide/at-sign',
+		);
+		foreach ( $map as $needle => $id ) { if ( $host !== '' && strpos( $host, $needle ) !== false ) { return $id; } }
+		return '';
+	}
+
+	/** Footer social links → social_profiles [{ name, link, new_tab, icon }]. Deduped by network. */
+	private static function detect_footer_social( $html ) {
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return array(); }
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( ! $footer ) { return array(); }
+		$out = array();
+		$seen = array();
+		foreach ( $footer->getElementsByTagName( 'a' ) as $a ) {
+			$href = trim( (string) $a->getAttribute( 'href' ) );
+			$icon = self::social_lucide( $href );
+			if ( $icon === '' || isset( $seen[ $icon ] ) ) { continue; }
+			$seen[ $icon ] = true;
+			// Name from the host's brand word (discord.gg → Discord), not the icon id.
+			$host = strtolower( (string) parse_url( $href, PHP_URL_HOST ) );
+			$host = preg_replace( '/^www\./', '', $host );
+			$word = ( $host !== '' && preg_match( '/([a-z0-9-]+)\.[a-z.]+$/', $host, $m ) ) ? $m[1] : str_replace( 'lucide/', '', $icon );
+			$name = ucfirst( $word === 'x' ? 'twitter' : $word );
+			$out[] = array( 'name' => $name, 'link' => $href, 'new_tab' => 'yes',
+				'icon' => array( 'type' => 'svg', 'svg-source' => 'library', 'svg-id' => $icon ) );
+			if ( count( $out ) >= 6 ) { break; }
+		}
+		return $out;
+	}
+
+	/** Footer link COLUMNS → [{ title, links:[{label,href}] }]. A heading (h3-h6/strong) + its link list. */
+	private static function detect_footer_columns( $html ) {
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return array(); }
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( ! $footer ) { return array(); }
+		$out = array();
+		foreach ( array( 'h3', 'h4', 'h5', 'h6' ) as $htag ) {
+			foreach ( $footer->getElementsByTagName( $htag ) as $h ) {
+				$title = trim( preg_replace( '/\s+/', ' ', (string) $h->textContent ) );
+				if ( $title === '' || str_word_count( $title ) > 4 ) { continue; }
+				// Collect the links that follow this heading within its column wrapper.
+				$links  = array();
+				$parent = $h->parentNode;
+				if ( $parent instanceof DOMElement ) {
+					foreach ( $parent->getElementsByTagName( 'a' ) as $a ) {
+						$lbl = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $a ) ) );
+						$hrf = trim( (string) $a->getAttribute( 'href' ) );
+						if ( $lbl !== '' && self::social_lucide( $hrf ) === '' ) { $links[] = array( 'label' => $lbl, 'href' => $hrf ); }
+						if ( count( $links ) >= 8 ) { break; }
+					}
+				}
+				if ( count( $links ) >= 2 ) { $out[] = array( 'title' => $title, 'links' => $links ); }
+				if ( count( $out ) >= 4 ) { break 2; }
+			}
+		}
+		return $out;
+	}
+
+	/** The footer brand description (a substantial <p> that is NOT the copyright line), or ''. */
+	private static function detect_footer_tagline( $html ) {
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return ''; }
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( ! $footer ) { return ''; }
+		foreach ( $footer->getElementsByTagName( 'p' ) as $p ) {
+			$t = trim( preg_replace( '/\s+/', ' ', (string) $p->textContent ) );
+			if ( $t !== '' && strlen( $t ) >= 40
+				&& strpos( $t, '©' ) === false && stripos( $t, 'rights reserved' ) === false && stripos( $t, 'copyright' ) === false ) {
+				return $t;
+			}
+		}
+		return '';
+	}
+
+	/**
 	 * The theme-design.json payload — the **design-config** the bundle's theme phase feeds to
 	 * `FW_Site_Converter_Theme_Generator::install()` to generate a **child theme** (the plan's target).
 	 * Maps the Stitch tokens + the screen's chrome to the generator's config shape: fonts, colors,
@@ -1189,6 +1517,18 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 		if ( $pages ) { $files['pages.json'] = array( 'pages' => $pages ); }
+
+		// CHROME → parent-theme Theme Settings (playbook: chrome = theme, not page content). Emit the
+		// source header/footer as native Header/Footer Theme-Settings values so the converted site runs
+		// on a NEAR-EMPTY child theme instead of a baked header.php/footer.php. The flag tells the
+		// theme-generator to skip baking chrome (Theme Settings drives it), avoiding a double header.
+		$chrome = self::tokens_to_theme_settings_chrome( $tokens, $screens[0]['html'], $screens[0]['title'] );
+		if ( ! empty( $chrome['values'] ) ) {
+			$files['theme-settings.json'] = $chrome;
+			if ( isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {
+				$files['theme-design.json']['chrome_via_settings'] = true;
+			}
+		}
 
 		$out['files']   = $files;
 		$out['screens'] = count( $screens );

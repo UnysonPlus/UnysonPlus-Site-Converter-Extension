@@ -17,9 +17,25 @@ Root `CLAUDE.md` points here — read this before starting any demo conversion.
 ## Inputs — source files live in `demo-pages\<slug>\`
 
 The user downloads each source into `d:\Web Dev\demo-pages\<slug>\` (e.g. the page source
-`page.tsx`/HTML, the real `video.mp4` + images, and a full-page reference screenshot).
-ALWAYS use these:
+`page.tsx`/HTML, a **`view-source.html`** dump, the real `video.mp4` + images, and a full-page
+reference screenshot). ALWAYS use these:
 
+- **`view-source.html` is the single most valuable input — ASK FOR IT if it's not there.** Its
+  embedded `<style>` block is the AUTHOR'S CSS with exact values, and it hands you — in one grep —
+  everything a live computed-style walk misses or must work for: **pseudo-elements** (`body::before`,
+  `.organic-shell::before`), **hover states** (`.dew:hover{transform:translateY(-5px) scale(1.02)}`),
+  **`@keyframes` + who uses them** (`.float-core`=drift, `.wind-sway`, `.pulse-react`, `.bloom`
+  scroll-reveal, `.scroll-grow` scroll-timeline), and the **named premium classes verbatim**
+  (`.liquid-panel`, `.dew`, `.telemetry`, `.light-river`). Grep it for `body`, `::before`, `::after`,
+  `:hover`, `@keyframes`, `mask`, `filter`, `backdrop`, and each named class so nothing hides.
+  **Caveat — it's complementary, not a replacement:** it only contains INLINE CSS (`<style>` + inline
+  styles), so external `.css` files aren't in it (openhero `page.tsx` templates are all-inline, so
+  near-complete; other sites still need the external CSS); and it's AUTHORED, not RESOLVED, so
+  Tailwind utilities (`px-8`, `text-[12px]`) still need computed styles to resolve to px. **Ideal =
+  view-source (authored CSS, structure, hover/animation/pseudo — nothing hidden) + Playwright
+  computed capture (resolved px, external CSS).** Reactive Forest's view-source caught three misses
+  the screenshots hadn't: the atom shell is an organic BLOB (`border-radius:44% 56% 58% 42%/…`) not a
+  circle, the atom FLOATS (`.float-core` drift), and `.light-river` is a faded 1px gradient hairline.
 - Read the **declared design tokens** from the source for exact values (Tailwind config
   `colors`/`fontFamily`/`fontSize`, CSS custom properties, `@font-face`).
 - **Sideload** the real video/images into the demo's Media Library. NEVER bloat the
@@ -35,6 +51,58 @@ ALWAYS use these:
 - **Diff** the rebuild against the reference screenshot at every step.
 
 If a slug's folder isn't there yet, ask the user to drop the source in.
+
+## Match the source's COMPUTED styles — measure, never guess (REQUIRED)
+
+The demo must look **exactly** like the source, and the only reliable source of truth is the
+source's **computed** styles — not a guess, not "it's probably a pill", not "close enough". Every
+time a demo ended up looking like "a generic Bootstrap site", it was because a value was
+*approximated* instead of *read*: the button was guessed as a full pill (`border-radius:999px`)
+when the source's computed radius is `32px`; the section heading was left as the default sans when
+the source uses the serif; the video was reproduced as a flat box when the source composites it
+with `filter`/`mix-blend-mode`/`mask-image`. **Read the value, don't invent it.**
+
+**The audit workflow (run it, don't wait to be told a thing is wrong).** After building — and
+whenever a section looks even slightly off — open BOTH the source and the demo in a headless
+browser (Playwright, viewport 1600px) and **diff `getComputedStyle` for every element**, matched by
+visible text or class. Capture, per element: `font-family / font-size / font-weight /
+letter-spacing / text-transform / color / line-height / background / border-radius / box-shadow /
+filter / backdrop-filter / mix-blend-mode / padding`. Print source vs demo side by side and fix
+every mismatch. Gotchas that bit us:
+
+- **Climb to the styled ancestor** when matching by text (the text node's own element often has no
+  background/border) — walk up ≤5 parents to the first with a bg/shadow/radius/border/filter.
+- **Query the REAL element, not a stray namesake.** `document.querySelector('.btn-primary')` grabbed
+  a hidden parent-theme `.btn-primary` (Arial/6px), not the hero button. Find the hero button by its
+  TEXT ("Launch Ecosystem"), then read *its* classes + computed style.
+- **A size utility can beat your base rule.** The buttons carried the right `.btn`/`.dew` classes and
+  the correct glow, but the framework's `.btn-lg` size class overrode plain `.btn`, so font-size /
+  radius / padding came out 20px / 8px / 8-16 instead of 12px / 32px / 20-32. Pin the source geometry
+  with `!important` (or a higher-specificity selector) so the source values win.
+- **Headings may be the display serif too.** Reactive Forest uses the Iowan serif for the hero H1
+  **and** the section H2 **and** the feature-card titles — I'd only set H1. Read each heading's
+  computed `font-family`; don't assume only H1 is special.
+- **Capture `body` / `html` AND their pseudo-elements — an element-walk misses the premium ambiance.**
+  The site's mood often lives OUTSIDE the DOM elements: a multi-layer radial-glow stack on **`body`**
+  and a masked grid/noise overlay on **`body::before`**. `getComputedStyle(el)` skips pseudo-elements
+  unless you pass the second arg, and a `querySelectorAll` walk never visits `body::before` at all —
+  so read them explicitly: `getComputedStyle(document.body)`, `getComputedStyle(document.body,
+  '::before')`, `'::after'`, and the same for `document.documentElement`. Capture `background(-image)`,
+  `background-size`, `mask-image`, `filter`, `opacity`, `position`, `z-index`. **Translation is two
+  parts, and the second is the one that bites:** (1) the base color → a Theme Settings background /
+  palette; the gradient stack + masked `::before` → global CSS (Misc → Custom CSS on a live site, or
+  the child theme `style.css` for a demo — no option can express a multi-layer gradient + a masked
+  pseudo-element). (2) **Make the page SECTIONS transparent** — the source sections are
+  `rgba(0,0,0,0)` so the body ambiance shows through; if your section `css_class` paints an opaque
+  bg (even the same near-black), it COVERS the ambiance and the page looks flat. Reactive Forest:
+  `body` = 3 radial glows + `#05070b`, `body::before` = a 110px grid masked `radial 30%→78%` at
+  `opacity .45`, and `.rfi-hero`/`.rfi-eco` had to switch from opaque `--rfi-bg` to `transparent`.
+  (If this ambient backdrop recurs across sources, it's a candidate to promote to a Theme Settings
+  "Background Effects" option rather than hand-CSS each time.)
+
+This is a MEASUREMENT step, not a judgement call — if the numbers differ, the demo is wrong, full
+stop. Reactive Forest's final audit brought buttons to an exact `size=12px radius=32px pad=20px 32px
+ls=2.88px` match with the source, and the eco heading/card titles to the correct Iowan serif.
 
 ## Method
 
@@ -174,6 +242,51 @@ also paint a section background-image** — leave `background.image.src` **empty
 video's `poster` for the pre-load frame (so the masked-out area reveals the dark section/body, not the
 image). *(In the tree factory: `image.src = (imgUrl && !videoUrl) ? {…} : []`.)*
 
+### Video/media role — ELEMENT vs BACKGROUND (classify it, don't assume)
+
+A striking hero visual (a looping atom, a product render) is often a **content element** in a layout
+cell, NOT a section background. Getting this wrong is very visible: a background **fills-and-crops**
+and sits behind the copy (zoomed, clipped, full-bleed), whereas the source frames the video in a cell
+(a fixed-aspect, rounded box beside the text). **Classify every source `<video>`/media before placing
+it** (Reactive Forest Intelligence bit us here — I wired the atom as a `background-pro` video; the
+source is a `<video>` element in the hero grid's right cell):
+
+> **Role algorithm.** For each source `<video>` (measure at a wide viewport):
+> - `position: fixed/absolute` **AND** its box covers ≥~85% of a section **AND** it's `z-index`ed
+>   behind the content → **BACKGROUND** → emit as the Section's `background-pro` video (full-cover).
+> - `position: static/relative`, sitting in a **grid/flex cell** with a sibling content cell, box
+>   **smaller than the section** (`coversSection:false`) → **ELEMENT** → emit as a real `<video>` in
+>   the matching page-builder column, carrying the source wrapper's **aspect-ratio + `object-fit`**.
+>
+> Reactive Forest → hero is a 2-col grid `596px | 700px`; the video is `position:static` in an
+> `aspect-[.95]` `object-fit:cover` wrapper, `coversSection:false` → **element**. Rebuilt as a 2-column
+> hero (content LEFT, a `<video autoplay muted loop playsinline>` element RIGHT). The video is a lean
+> `<video>` inside a `text_block` (markers `__RFI_VIDEO__`/`__RFI_ATOM__` resolved on import by a
+> **string** replace, since the URL now lives in element HTML, not a `url` node).
+
+> **Translate the video's COMPOSITING, not just its box** (this is what makes a clip read as
+> "integrated" vs a boxed rectangle — grab the `<video>`'s + its wrapper's computed `filter`,
+> `mix-blend-mode`, `mask-image`, `drop-shadow` and reproduce them). Reactive Forest's atom:
+> - `filter: brightness(.9) contrast(1.08) saturate(1.2)` on the video (crisper, punchier).
+> - **`mix-blend-mode: screen`** — the clip's BLACK background blends into the dark section so only the
+>   bright subject shows (the atom "floats", no hard edges). The single biggest effect; a plain boxed
+>   video looks generic without it.
+> - **`mask-image: radial-gradient(circle,#000 42%,transparent 74%)`** — fades the edges to transparent
+>   (soft vignette, no rectangle).
+> - `drop-shadow(0 0 80px rgba(97,218,251,.18))` glow + an `::before` blurred cyan bloom behind it;
+>   `isolation:isolate` on the wrapper so the screen-blend composites within the atom group.
+>
+> All of that rides the child theme (`.rfi-hero-media` + `.rfi-hero-media video`) — it's per-element
+> compositing that presets can't express. **Lesson: when a demo "looks generic", diff the source's
+> computed `filter`/`mix-blend-mode`/`mask-image` against yours — those are usually what's missing.**
+
+> **Layout note — nested rows for a 2-col hero.** The left cell stacks (badge/H1/subtitle) but the
+> button + stat rows are horizontal. Sections never nest, but a **column CAN nest columns** (the
+> builder wraps a column's child columns in an `fw_inner_row`). So the left column holds nested `1_1`
+> columns; the button/stat rows are `1_1` with `content_direction:'row'`. Gotcha: the row's
+> `.flex-wrap` utility is `!important`, so force single-line with `flex-wrap:nowrap !important` when
+> tracked buttons sit ~1px over the cell width (measure — ours were 617px in a 633px cell → wrapped).
+
 ### Hero heading width (source `max-w-4xl`)
 
 A page-builder **column has no max-width option**, so DON'T scope `.fw-col-*` in child CSS. Each
@@ -183,12 +296,30 @@ Width** (multi-picker; custom = `{preset:'custom',custom:{custom_width:{value,un
 paragraph. Since a hero is text-centered, per-element max-widths read identically to one wrapper —
 with zero child CSS.
 
-### Section container width (source `max-w-7xl`)
+### Section container width (source `max-w-7xl` / `max-w-[1600px]`)
 
-The source's content bands (`mx-auto max-w-7xl` = 1280px) are WIDER than the theme's default boxed
-container (1170px), so the demo reads narrower. This is the GLOBAL **Container Width** (General →
-Layout → Container Width, responsive Phone/Tablet/Desktop) → drives `--container-max-desktop` consumed
-by every `.fw-container`.
+The source's content bands (`mx-auto max-w-7xl` = 1280px, or an arbitrary `max-w-[1600px]`) set the
+GLOBAL **Container Width** (General → Layout → Container Width, responsive Phone/Tablet/Desktop) →
+drives `--container-max-desktop` consumed by every `.fw-container`. Getting this wrong makes the whole
+demo read narrower/wider than the source, so **MEASURE it, don't guess** — via this algorithm:
+
+> **Container-width algorithm** (implemented in the capture service, `capture-extract.mjs` →
+> `containerMax`; mirror it if you measure by hand). The old approach (look for a Bootstrap `.container`
+> class, take the first hit) missed Tailwind `max-w-[…]` and picked stray wrappers. The robust version:
+> 1. Walk every `div/section/header/footer/main/article/nav` and keep the ones with an **explicit
+>    `max-width` in a sane range (600–2400px)** that are actually **rendered wide (≥480px)**.
+> 2. Require the box to be **horizontally SYMMETRIC on the viewport** (`|left-gap − right-gap|` small).
+>    Test the *rendered box*, NOT the margin value — `getComputedStyle` resolves `margin:auto` to
+>    `0px`, so a `margin === 'auto'` test never matches. Symmetry holds whether the container fills the
+>    viewport (both gaps ~0) or is inset by auto margins (both gaps equal); a left-aligned sidebar
+>    (asymmetric) is rejected.
+> 3. **Bucket by max-width and weight each bucket by the content AREA it wraps.** The site container
+>    (header bar + hero + every section share one max-width) dominates a one-off centered card. The
+>    winner's max-width IS the container width. (Reading computed `max-width` is viewport-independent,
+>    so it's reliable even when the capture viewport is narrower than the container.)
+>
+> Reactive Forest Intelligence → `max-w-[1600px]` (header pill-bar + hero + sections all share it) →
+> Container Width **1600px**. Wired by `rfi-layout.php`; verified `--container-max-desktop:1600px`.
 > **Gutter math (the source's `max-w-N` is CONTENT width; UnysonPlus's is OUTER).** Tailwind puts the
 > gutter OUTSIDE the max-width (`<section class="px-6"><div class="mx-auto max-w-7xl">`), so `max-w-7xl`
 > is a TRUE 1280px of content. But `.fw-container` is **border-box** and bundles max-width **+** a 24px
@@ -209,6 +340,47 @@ is per-element, above — not the container.) **Two write gotchas bit us here:**
 > `uploads/…/unysonplus-generated.css` (which carries `--container-max-*`, colours, spacers, …) won't
 > rebuild — call **`unysonplus_hf_regenerate_css()`** after writing. (Same family as the Google-fonts
 > `_action_theme_process_google_fonts()` gotcha.)
+
+### Element (heading / text) max-widths — a DIFFERENT thing from the container
+
+A **container** max-width bands a whole section; an **element** max-width is a per-block readability
+"measure" (a `max-w-xl` on a paragraph so lines don't run too long). Detect them separately:
+
+> **Element max-width algorithm.** For each heading/paragraph read `getComputedStyle(el).maxWidth`:
+> 1. **Definite px** (not `none`) → that's the cap. Tailwind: `max-w-sm`=384, `max-w-md`=448,
+>    `max-w-lg`=512, `max-w-xl`=**576**, `max-w-2xl`=672, `max-w-3xl`=768, `max-w-prose`≈576 (65ch),
+>    `max-w-[Npx]`=N.
+> 2. **`none`** → measure `getBoundingClientRect().width` vs the parent's content width. `render ≈
+>    parent` → NO cap (a HEADLINE fills its column and breaks by font-size — e.g. "Reactive / Forest
+>    Logic"); `render < parent` consistently → an effective wrapper/inline-block constraint to chase.
+> 3. **MEASURE THE RIGHT ELEMENT.** The cap sits on the block WRAPPER, so the inner `<p>` reads
+>    `maxWidth:none` while rendering at the capped width — read the wrapper (or the render width), not
+>    the `<p>`, or you'll wrongly conclude "no cap".
+>
+> **Translate:** `text_block` carries a native **`max_width`** option (`{preset:'custom',
+> custom:{custom_width:{value,unit}}}`) → renders `max-width` on the `.text-block` wrapper; use it. For
+> a shortcode without one, a one-line scoped rule on the block's CSS Class (`.rfi-lead{max-width:576px}`)
+> is the smallest lever. Reactive Forest: **H1 = `none`** (fills its column) but **subtitle + eco body =
+> `max-w-xl` (576px)** — verified the `text_block` wrapper renders `max-width:576px`, `<p>` at 576px.
+
+### Translating a Tailwind flex container → a page-builder row (don't hand-write flex CSS)
+
+A class string like **`flex flex-col gap-8 lg:flex-row lg:items-stretch`** is the *signature of a
+page-builder row* — the row/column grid IS that container, so map it, never reproduce the flex in CSS:
+
+| Tailwind on the container | Page-builder equivalent | Cost |
+|---|---|---|
+| `flex flex-col` (mobile) + `lg:flex-row` (desktop) | a **row**'s built-in responsive stack→row behavior | **free** |
+| `gap-8` (2rem/32px) | the column **gutter** | set gutter |
+| `lg:items-stretch` (equal-height children) | the row's **default** `align-items:stretch` | **free** — pair with the box preset `height:100%` so the *card* (not just the column) fills (see the equal-height algorithm) |
+| child rendered widths, e.g. **937 : 492 ≈ 2 : 1** | column twelfths from the ratio → **`2_3` + `1_3`** | pick nearest twelfths (fifths `1_5` also available) |
+
+> **Ratio, not absolute px.** Read the children's `getBoundingClientRect().width`, take the RATIO, and
+> snap to twelfths (937:492 = 1.9:1 → 8:4 → `2_3`+`1_3`). Your container is usually wider than the
+> source's, so the absolute px won't match (1051:525 vs 937:492) — the **ratio** is what must match.
+> `items-stretch` is also the tell that the children are MEANT to be equal-height (why the box
+> `height:100%` matters). Reactive Forest's eco band was first built `1_2`+`1_2` (6/6) and corrected to
+> `2_3`+`1_3` (8/4) once measured.
 
 ---
 
@@ -266,10 +438,28 @@ as **Components → Font Sizes** — see below.) Tokens emit into `:root` as `--
 
 Procedure:
 
-1. **Get the source's font families** (from `page.tsx`'s Tailwind `fontFamily` / CSS `font-family`
-   / `@font-face`, or computed). Set **Body Font** + **Heading Font** families. A Google font
-   auto-enqueues on save **only if it's in `fw_get_google_fonts()`** — check first; if absent,
-   register it self-hosted via **General → Typography → Custom Fonts** (`custom_fonts`).
+1. **Detect the source's REAL font families — read the computed stack, don't guess.** For each
+   distinct text role (body, heading, label/overline, button) read
+   `getComputedStyle(el).fontFamily` on the LIVE source; the **first quoted family** is the real
+   font (`"PP Neue Montreal", sans-serif` → `PP Neue Montreal`). If the first entry is a
+   system/generic (`-apple-system`, `Arial`, `sans-serif`, `Segoe UI`), the element is on a
+   fallback — keep reading siblings. Then **classify** each family:
+   - **Google Font** — in `fw_get_google_fonts()` (or a `fonts.googleapis.com` `<link>` is in the
+     source `<head>`)? → set it as a Google family; it auto-enqueues on save.
+   - **NOT on Google Fonts** (PP Neue Montreal, Iowan Old Style, most foundry fonts) → it MUST be
+     **self-hosted** as a Custom Font (sideload woff2 → `custom_fonts` → the picker filter registers
+     it → set the family with `google_font:false`). **Do NOT silently substitute a look-alike Google
+     font** (Inter for PP Neue Montreal). If you can't obtain the woff2, **STOP and tell the user the
+     exact family name so they can download it** — a substituted font is a wrong font.
+   - **OTF/TTF → woff2:** the user's download is often OTF (e.g. `cufonfonts`). Convert to woff2 with
+     fonttools (`f = TTFont(src); f.flavor='woff2'; f.save(dst)` — has native woff2 support) before
+     sideloading; woff2 is ~half the size and is what the `@font-face` generator emits. Map the OTF
+     weight names → numeric weights (book=400, medium=500, semibold=600, bold=700; `*italic` → the
+     italic face). A weight the download lacks (e.g. no true 600) resolves to the nearest face —
+     note it rather than faking it.
+   Reactive Forest: the source is **PP Neue Montreal** (body/UI/labels/buttons/stat-numbers) +
+   **Iowan Old Style** (H1/H2/card titles) — neither is on Google Fonts, so BOTH are self-hosted;
+   the first build wrongly substituted Inter/Inter Tight until the user supplied the real PP woff2.
 2. **Map the source heading sizes to the h1–h6 scale** (px — the framework shrinks them on
    mobile): hero display → h1, section headings → h2, card titles → h3, etc. Set size / weight /
    line-height / letter-spacing per heading; set base body size + line-height.
@@ -399,8 +589,23 @@ Building a card (the glass card is the reference):
    `!important` is needed because the base rule emits `border:1px solid currentColor !important` when
    the colour field is empty).
 3. **Wire it**: set each card column's `border_preset` = `boxp-{slug}`; **strip** the card CSS from the
-   child theme. Equal-height stays as a tiny layout rule (`.boxp-{slug}{height:100%}`) — that's layout,
-   not a preset property.
+   child theme.
+
+> **Equal-height cards — the algorithm (a card row where every card is the same height regardless of
+> content).** Two layers, and BOTH are needed:
+> 1. **Columns auto-stretch (free).** A page-builder row is `display:flex; align-items:stretch`, so the
+>    column ELEMENTS in a row are already equal height (the tallest column). You get this for nothing.
+> 2. **The card must fill its column.** The visible card is the Box Preset on the column's INNER
+>    wrapper, and that wrapper is **content-height** by default — so a shorter card leaves a gap in its
+>    (stretched) column and the cards look UNEQUAL even though the columns match. Fix: give the box
+>    preset **`height:100%`** so the card fills the stretched column. Put it IN the preset's Custom CSS
+>    (`{{SELECTOR}}{height:100%}`) so every `.boxp-{slug}` card is equal-height everywhere, or as a
+>    scoped `.boxp-{slug}{height:100%}` rule.
+>
+> **Diagnose by MEASURING** the card heights (`getBoundingClientRect().height`) against the source's —
+> Reactive Forest's eco cards were `[192, 230]` (unequal) vs the source's `[295, 295]`; after
+> `height:100%` they were `[230, 230]`. (For content INSIDE a taller card to distribute — e.g. pin a
+> button to the bottom — make the card a flex-column; filling is enough when the content is top-aligned.)
 4. **Re-point the default box presets** too — Card/Outline/Hover Lift reference `light-gray`/`indigo`,
    which a curated palette drops (same interdependency as buttons). Re-point to live slugs.
 
@@ -430,6 +635,76 @@ WP-blue header — the palette's third orphan after buttons and boxes.
   section). Walk the preset tree and swap `{predefined:'',custom:'#hex'}` → `{predefined:'<slug>'}`. It's
   demo data (travels in `settings.json`); no framework change. (Senkei: 50 fields re-pointed; a table
   now renders light-on-dark with `line` borders.)
+
+## Section Styles standard (`.section--{slug}` skins)
+
+Section Styles (`section_style_presets`, Theme Settings → Components → **Section Styles**, an
+`addable-box`) → a `.section--{slug}` class the user picks on a Section (**Layout → Section Variant**).
+The three defaults **Alt / Light / Dark** reproduce the old hardcoded section variants exactly, so a
+section that stored `variant: dark` renders identically with zero migration. Each preset carries a
+Background-Pro fill, Text/Heading/Link colours (compact preset), a **combined Border**, a Border
+Radius, and a Padding (spacing scale). `css-tokens.php` turns each into one `.section--{slug}` rule
+(no `!important`, so a section's own one-off Background / Spacing still wins).
+
+**Use a Section Style when the source has a repeated section "skin"** (an alternating band, a dark
+CTA band, a bordered callout) — define it ONCE as a preset and apply the variant, instead of
+per-section Custom CSS. Colours reference palette slugs, so a re-tint of the palette re-tints every
+band.
+
+### The combined Border control (shared `multi-inline` primitive)
+
+Both Section Styles AND the header/footer Custom Styling now express a border as **three coordinated
+controls**, built on the `multi-inline` option type (see below):
+
+1. **`border` (multi-inline row)** — `{ width:{value,unit}, style, color:{predefined,custom} }` laid
+   out **Width · Style · Color** on one line (the CSS-shorthand order `1px solid #000`). Style choices
+   include a `''` = **None** (Section Styles) / solid·dashed·dotted·double (chrome). Color is the
+   palette-linked compact preset. A border shows only when a style is chosen and a width+colour set.
+2. **`border_sides`** — a **multi-select image-picker** (`multiple => true`, data-URI edge tiles);
+   value is an ARRAY subset of `['top','right','bottom','left']`, default **all four** (= the legacy
+   all-around border). `css-tokens` maps it to per-edge `border-{edge}` declarations.
+3. **`border_extent`** — an inline multi-picker `{ mode: 'full'|'container'|'custom' }` (`custom`
+   reveals a unit-input width). Governs how far the **top/bottom** border runs: `full` = edge-to-edge
+   (a real `border-top/bottom`); `container` / `custom` render as a **centered `::before`/`::after`
+   pseudo-element** capped at a max-width (`margin-inline:auto`). Left/right are always real vertical
+   borders, unaffected by extent.
+
+**Legacy safety (copy this pattern for any "combine scattered leaves into one control" change):**
+- A **normalizer** (`unysonplus_section_style_normalize_border()` / `unysonplus_hf_normalize_sides()`)
+  folds the old flat leaves (`border_style`/`border_width`/`border_color`, or a `'top'|'both'` string)
+  into the combined shape on read — a no-op once already combined — so the CSS consumer only reads the
+  new shape.
+- The **consumer tolerates both shapes** as a belt-and-suspenders (reads the combined row, falls back
+  to the flat leaves).
+- A **one-time migration** rewrites the stored blob so the *editor* reflects the value and a re-save
+  doesn't drop it: Section Styles `unysonplus_migrate_section_style_border_row()` (init pri 21, flag
+  `upw_section_border_row_migrated`); chrome `unysonplus_hf_migrate_border_sides()` (admin_init pri 20)
+  + `_array()` (pri 21). Each gated by its own `get_option` flag. Missing `border_sides` defaults to
+  all four so old saves render unchanged.
+
+### The `multi-inline` option type (the primitive)
+
+`core/includes/option-types/multi-inline/` — renders **N child controls side-by-side on ONE row**,
+each with its caption **below** (muted italic, matched to `typography-v2`'s `.fw-inner`), stacking
+**vertically at ≤782px** (WP admin's mobile breakpoint). This is the canonical successor to the
+off-convention `fw-multi-inline` (which still works; call sites migrate one-by-one). Reach for it
+whenever several small fields read better as one line (Width·Style·Color, T·R·B·L, a min/max pair).
+
+- **Child types:** `short-text`, `text`, `color` (→ color-picker), `rgbacolor` (→ rgba-color-picker),
+  `short-select`, `select`, **`unit-input`** (passes `units/separate/min/max/step`), and
+  **`predefined-colors-color-picker-compact`** / `compact-color` (passes `picker`/`choices`, so a
+  colour child stays palette-linked). Extend the `view.php` switch to add more.
+- **Config / value shape:** the option's `fw_multi_options` map holds each child's `{type, title, …}`;
+  the saved value is an assoc array keyed by child key, each value in that child's own native shape
+  (unit-input `{value,unit}`, compact color `{predefined,custom}`, select scalar).
+- **Two save-correctness fixes are baked in — replicate them in any composite control:** `view.php`
+  routes each child through its OWN option type's `render()` (so nested `unit-input`/compact-color
+  enqueue their own JS/CSS — else the unit dropdown never saves), and the value comes back through
+  each child's own `get_value_from_input` (else a nested value is stored as a raw JSON string). A
+  hand-rolled `<input>` grid would hit both bugs.
+- **CSS layout gotcha:** the stylesheet is namespaced `.fw-backend-option-type-multi-inline`
+  (derived from the option-type id). When you clone an option type, the copied CSS still targets the
+  OLD id and silently no-ops (the "why are my inline fields stacking?" bug) — rename the selectors.
 
 ## Spacing standard
 
@@ -598,15 +873,115 @@ Adobe simple-icons marks, Show Names on, White Logo Color, grayscale, height 22,
   specificity 1,0,1) BEATS the gallery's `.fw-gallery__media img` (0,1,1), collapsing the height so
   a LANDSCAPE image letterboxes (short, empty space) instead of filling the square. Fixed
   framework-side with `height:100% !important` on the cropped img (shortcodes 1.10.80). **For a
-  gallery, use the CLOSEST design — don't pixel-match the source.** The source's 4-col grid with one
-  `col-span-2` reads fine as a uniform **`grid`** (square ratio `1-1`) + rounded + hover-zoom; the
-  exact one-wide-cell span isn't worth chasing (`metro` is the option if you do).
+  gallery, use the CLOSEST design — don't pixel-match the source.**
+- **Featured / dominant tile → the Grid design's `Column Ratio (Desktop)` control (shortcodes
+  1.10.82), NOT `metro` or scoped CSS.** A source gallery with one bigger, dominant image (a
+  `col-span-2` cell, a hero-tile-plus-thumbnails layout) maps to the **`grid`** design with an
+  UNEQUAL Column Ratio split-slider (e.g. `1 : 2 : 1` = middle tile twice as wide). Internals:
+  the template emits `--gal-tpl` (fr-unit `grid-template-columns`) only when the split is
+  meaningfully unequal (>2% spread — an even split falls back to `--gal-cols`); the widest tile
+  keeps its `aspect-ratio` to define the row height, and the narrower tiles get
+  `fw-gallery__media--fill` so they stretch to that same height (portrait crop, no dead space
+  under a square side-tile). The `metro` design gives a fixed, non-adjustable featured cell — the
+  Column Ratio control is the tunable, source-matching route.
 - **btn-link hardcodes underline + a blue hover.** `.btn-link { text-decoration:underline }` +
   `.btn-link:hover { color:#0a58ca }` are baked into the button CSS; a Link Button-Colour preset
   re-points the base colour but NOT those. For a source text-CTA link (no underline, brand colour,
   hover-lighter), override in the button's **Custom CSS**: `selector{text-decoration:none}
   selector:hover{color:var(--color-primary-light)}` — or set the Link preset's hover state +
   a `{{SELECTOR}}{text-decoration:none}` preset Custom CSS (tier-1, all links at once).
+
+## Site chrome — header + footer via Theme Settings (REQUIRED, and I kept missing details)
+
+The header + footer are **site chrome** = the parent theme's **Header/Footer Theme Settings**, NOT a
+child `header.php`/`footer.php` and NOT page-builder content. Configure them on the (sub)site with
+`fw_set_db_settings_option()` (see `wordpress/demos/anime-header-footer.php` — the canonical recipe),
+then **delete the child `header.php`/`footer.php`** and their dead `.sk-nav`/`.sk-foot` CSS/JS so the
+parent renders the chrome. Building the Senkei nav I re-missed the SAME kind of detail over and over
+(font size, exact link colour, the CTA style, the header tint) — so the rule is:
+
+> **EXTRACT every chrome sub-element's computed style from the source and set it explicitly — never
+> assume the theme default matches.** For the nav that means, per element: font-size, colour (exact
+> hex, not "muted-ish"), hover colour, weight, and whether a control is a *link* or a *button* and
+> *outline* vs *solid*. A quick DevTools/computed-style read of the source nav catches all of it.
+
+**Header conversion checklist (map source → Theme Settings):**
+- **Behavior / background.** A fixed bar that *overlays* the hero → `header_layout.header_behavior =
+  'transparent-overlay'` (+ `header_glass='yes'` for `backdrop-blur`). **Gotcha:** transparent-overlay
+  forces the outer `.site-header` transparent at the top, so a solid `bg_color` only shows once stuck.
+  The source's *translucent tint at the top* (e.g. `bg-[#020617]/40`) is the **Main Header Background**
+  (`header_main.main_custom_styling` → `main_background`, an rgba) — it renders on the inner
+  `.header-main` (full-width block) so it shows even under transparent-overlay. **Keep
+  `main_container='container'`** — `'full'` makes the *content* full-bleed and jams the logo to the
+  edge (the background is full-width regardless of the container).
+- **FLOATING GLASS PILL header — neutralise the parent theme's STUCK background (REQUIRED for pill
+  designs).** When the source header is a floating rounded pill (a translucent glass bar inset from
+  the edges, page showing around it), the parent theme's **glass sticky mode** fights it: once the
+  header sticks, the theme paints **`.site-header` ITSELF** full-width (≈`rgba(bg,.95)` + its own
+  `backdrop-filter`). That's TWO bugs from one cause — (1) a full-width bar appears OUTSIDE the pill,
+  and (2) it sits directly behind the pill, so the pill's own `backdrop-filter` blurs *that near-solid
+  bar* instead of the page and the pill reads as **solid, glass gone**. **Fix:** in the chrome CSS,
+  force `.site-header` transparent in EVERY stuck/scrolled state so only the pill container is glass
+  (blurring the page): `.site-header,.site-header.is-stuck,.site-header.sticky,.site-header.is-scrolled,
+  .site-header.scrolled{background:transparent!important;backdrop-filter:none!important;box-shadow:none
+  !important;border:0!important}`. Note the real stuck class is **`.is-stuck`/`.sticky`**, NOT
+  `.is-scrolled` — target both. Then give the STUCK pill a touch more tint than at the top so the nav
+  stays legible over scrolling content. **Debugging tell:** scroll the demo, read `getComputedStyle`
+  of `.site-header` — a non-transparent `backgroundColor` (or a `backdrop-filter`) on the OUTER header
+  = the full-width bar; the pill (`.header-main .fw-container`) should be the only glass surface.
+- **Logo.** Icon + wordmark → the native **Logo Icon** (`header_logo.logo_icon` icon-v2 +
+  `logo_icon_position`/`_color`/`_size`) beside `site_title` — do NOT bake text into an SVG. Set
+  `title_weight`, `color`, and hide the tagline with `header_logo.tagline = ' d-none'` (the "Hide
+  Tagline" switch stores that class, not `'yes'`). Uppercase/tracking wordmark → `misc_custom_css`
+  (`.site-title{text-transform:uppercase;letter-spacing:…}`).
+- **Menu.** WP menu (custom links → `#anchors`) on the `primary` location. Colour EXACTLY (source
+  `text-slate-300` = `#cbd5e1` near-white, NOT slate-400 `#94a3b8`) via `header_menu.menu_link_color`
+  + `menu_link_hover_color`. **Font size:** `header_menu.menu_link_font_size` (theme default is a small
+  12px; source `text-sm` = `0.875rem`/14px — set it).
+- **Header CTAs** (`header_main.main_right`). Each is a `cta_button` element whose `cta_style` = a
+  button preset (`btn-primary`/`btn-link`/…). A text "Sign in" link → a `btn-link` **button-link**
+  (not an `icon_text` element); style it muted→white for a dark header. A pill/outline CTA (source
+  `border-white rounded-full … hover:bg-brand`) has **no white-outline preset and no shape control on
+  the header CTA**, so ride a scoped rule on its own class: `.site-header .header-cta-btn.btn-primary{
+  background:transparent;border:1.5px solid #fff;border-radius:999px}` + `:hover{background:var(
+  --color-primary)}`. Distinguish the two CTAs by their style class (`.header-cta-btn.btn-primary` vs
+  `.header-cta-btn.btn-link`), and note `element_css_class` does NOT reach the header CTA's `<a>`.
+- **Hover underlines.** The theme USED to underline every link on hover (a global
+  `a:hover{text-decoration:underline}`) — over-broad, it hit nav/footer/social/buttons. Removed in
+  theme 2.3.59: nothing underlines on hover by default. CONTENT/prose links get their hover underline
+  from the dedicated **Body Link Underline** system (`--body-link-decoration-hover`, Typography → Body
+  Link, default `underline`; scoped to `.entry-content a:not([class])`); chrome + buttons signal hover
+  by colour/fill. Source sites almost never underline chrome on hover, so this is now the default — no
+  per-site override needed.
+- **Non-destructive setup script.** Seed the menu ONLY when empty (preserve hand-added items), and
+  MERGE `header_main`/`header_logo`/`header_menu` (read-modify-write) — a full replace wipes the
+  user's Main Header Background / added elements (this bit me twice).
+
+**Footer:** dark bg via `footer_background` — **it's a `background-pro` (color/gradient/image layers),
+NOT the compact color shape**: set `array('color'=>array('value'=>array('custom'=>'#020617')))` or it
+falls back to the theme's `--footer-bg` default (`#1a1a1a`). `footer_text_color`/`footer_link_color`
+ARE compact colours. Copyright columns render as Bootstrap `.fw-col-md-*` — right-align the last
+column (`.footer-section--copyright .fw-col-md-6:last-child{text-align:right}`) for a left-copyright /
+right-status bar. A simple strip =
+the **copyright** section (`copyright_settings.enabled='yes'`, `copyright_columns` count 1, a `text`
+element with `&copy; {{current_year}} …` + credit `<a>`). Center it via `misc_custom_css`
+(`.footer-section--copyright{text-align:center}`). Richer footers use `main_footer_columns` (the
+footer-columns multi-picker + split-slider). **Fifths footer (source "5-col grid, brand spans 2"):**
+the twelfths split-slider snaps `40/20/20/20` → `[4,3,3,2]` (33/25/25/17), so use the **5-column
+choice's fifths image-picker** — `main_footer_layout` = `f5-2-1-1-1` (2/5 + 1/5 + 1/5 + 1/5). It maps
+to `fw-col-sm-25` + three `fw-col-sm-15` and the render sets the real column count (4) from the
+composition. Set `count: '5'` + the `_layout` key + only the columns you fill.
+
+**Converter TODO (wire into the no-AI path — PHP `Mapper` + JS `to-pages`):** detect the source
+`<header>`/`<nav>` and EMIT these settings (behavior, glass, main-header tint, logo icon+text, menu
+colour+size, CTA outline-vs-solid) instead of leaving the theme defaults — and the source `<footer>`
+→ `footer_*` + `copyright_settings`. The checklist above IS the mapping spec.
+
+**Per-bar/section borders** (a hairline under the header, a rule above the footer, an edge on any
+Custom-Styling section) use the **combined Border control** — one `multi-inline` Width·Style·Color
+row + `border_sides` (which edges) + `border_extent` (how far top/bottom run). See *Section Styles
+standard → The combined Border control* above; the chrome fields are the same trio via
+`unysonplus_hf_border_row_field` / `_sides_field` / `_extent_field`, grouped under `_grp_borders`.
 
 ## Framework capabilities added while building demos (use them; don't rebuild them)
 
@@ -615,6 +990,14 @@ into the framework rather than hardcoding child CSS (that's the whole point). Bu
 
 | Capability | Where | Version |
 |---|---|---|
+| **`multi-inline` option type** (N child controls on ONE horizontal row — e.g. Width · Style · Color — captions BELOW each, stacking vertically ≤782px). Child types: short-text/text/color/rgbacolor/short-select/select/**unit-input**/**compact color preset**. Value = assoc array keyed per child, each in its own native shape. Config in `fw_multi_options`. The shared primitive under every combined "border" row below. Supersedes the off-convention `fw-multi-inline`. | core `includes/option-types/multi-inline/` | core 2.15.5 |
+| **Section Styles — combined Border** (the `border` multi-inline row `{width,style,color}` + **`border_sides`** multi-edge image-picker + **`border_extent`** full/container/custom). Replaces the flat `border_style`/`_width`/`_color` leaves; `border_extent` renders top/bottom as a centered `::before`/`::after` when not full-width. Legacy-fold normalizer + init-pri-21 migration keep old presets rendering. | shortcodes components-section-styles + core section-style-presets + css-tokens | core 2.15.5 / shortcodes 1.10.94 |
+| **Header/Footer Custom-Styling Border** (same trio — `unysonplus_hf_border_row_field` + `unysonplus_hf_border_sides_field` + `unysonplus_hf_border_extent_field`, grouped in `_grp_borders` for header main/topbar/bottombar AND footer sections + Footer Layout). `unysonplus_hf_normalize_sides` + two admin_init migrations fold legacy per-side/string shapes. | theme header-footer-option-helpers + hf-custom-css | theme 2.3.74 |
+| **`medium-select` option type** (select sized between full `select` and `short-select` — `fw-option-width-medium`, 50% / min 300px) | core `includes/option-types/simple.php` | core 2.14.93 |
+| **Footer fifths ratio** (5-column footer → image-picker of fifth compositions: `1/5×5`, `2/5+1/5+1/5+1/5`, `3/5+1/5+1/5`, … via `fw-col-sm-15/25/35/45`). Lets a source "5-col grid, brand spans 2" (`2/5+1/5+1/5+1/5`) render EXACTLY — the twelfths split-slider can't. The render sets the real column count from the composition's parts. | theme footer-builder + header-footer-option-helpers | theme 2.3.61 |
+| **Logo Icon** (native icon + wordmark — `logo_icon`/position/color/size on Header → Identity; inline-SVG mark via `sc_icon_render` beside the real text title). The modern AI-site "icon + text" logo WITHOUT baking text into an SVG — keeps the wordmark editable/accessible. Converter should emit this for `<icon> + <text>` logos. | theme header-identity + `unysonplus_logo()` | theme 2.3.56 |
+| **Menu Font Size** (`header_menu.menu_link_font_size` → `--menu-link-font-size`; the nav had colour/padding but no size control — theme default was a small 12px) | theme header-menu + theme-vars + style.css | theme 2.3.57 |
+| **Gallery Columns** (single "Columns" control; grid = footer-style multi-picker → locked N-pane ratio slider for a featured tile; tablet/phone auto-derived) | gallery (grid design) | shortcodes 1.10.83 |
 | **Text Styles** (weight/lh/tracking/transform, size-optional) — Components → Text Styles (was Font Sizes) | shortcodes + core css-tokens | shortcodes 1.10.74 / core 2.14.82 |
 | **Display-size weight preservation** (Display sizes change size only) | special-heading CSS | shortcodes 1.10.73 |
 | **sc_needs_wrapper honors custom_css** (element-only Custom CSS renders its wrapper) | shortcode-styling-helper | shortcodes 1.10.72 |
