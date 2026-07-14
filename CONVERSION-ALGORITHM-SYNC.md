@@ -8,7 +8,7 @@ The deterministic (**no‑AI**) converter — the logic that turns a source desi
 > The human-followed process these converters AUTOMATE, and every gotcha from building demos
 > (Theme-Settings-first mapping, Text Styles, the 3-tier Custom CSS escape hatch, logo strips /
 > inline SVG, `mask-image` background fades, the fidelity + computed-style diff gate, …) lives in the
-> **Demo Conversion Playbook**: `framework/extensions/site-converter/docs/demo-conversion-playbook.md`
+> **Site Conversion Playbook**: `framework/extensions/site-converter/docs/site-conversion-playbook.md`
 > (in the plugin / `UnysonPlus-Site-Converter-Extension` repo). The converters' north star is to EMIT
 > what that playbook builds by hand — keep them converging on it.
 

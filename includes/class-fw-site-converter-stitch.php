@@ -249,7 +249,7 @@ class FW_Site_Converter_Stitch {
 
 	/**
 	 * CHROME → parent-theme Theme Settings (the playbook's "chrome = theme, not page content"
-	 * approach — see site-converter/docs/demo-conversion-playbook.md → Site chrome). Emits the
+	 * approach — see site-converter/docs/site-conversion-playbook.md → Site chrome). Emits the
 	 * source header/footer as native Header/Footer Theme-Settings values so the converted site
 	 * runs on a NEAR-EMPTY child theme (Template: unysonplus-theme, no header.php/footer.php)
 	 * instead of a baked one. Consumed by FW_Site_Converter_Theme_Settings::import() (writes each

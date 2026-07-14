@@ -1,8 +1,13 @@
-# Demo Conversion Playbook — source site → Theme-Settings-driven UnysonPlus demo
+# Site Conversion Playbook — source site → Theme-Settings-driven UnysonPlus site
 
-How to turn a source website (e.g. an [openhero.art](https://openhero.art/) hero) into a
-UnysonPlus **demo** whose design is reproduced **from Theme Settings + shortcode options**,
-with a **near-empty child theme** — NOT a child theme full of scoped CSS.
+How to turn a source website (a real live site, or a template like an
+[openhero.art](https://openhero.art/) hero) into a UnysonPlus **site** whose design is
+reproduced **from Theme Settings + shortcode options**, with a **near-empty child theme** —
+NOT a child theme full of scoped CSS.
+
+This applies to **any** conversion — a demo for the demos network OR a real client/live site.
+The word "demo" below refers only to the specific demos-network mechanics (subsites, the demos
+home, the demo bar); everything else is the general site-conversion process.
 
 This is both the manual process to follow AND the north star for the automated converters
 (the Site Converter PHP `Mapper`/`Theme_Generator` and the JS capture service): today they
@@ -10,7 +15,7 @@ emit mostly a CSS child theme + only a color palette preset; the goal is for a c
 emit **colors + typography + buttons + boxes + spacing as Theme Settings presets** and have
 shortcodes **reference** them. Improving the converters toward that is the standing target.
 
-Root `CLAUDE.md` points here — read this before starting any demo conversion.
+Root `CLAUDE.md` points here — read this before starting any site conversion.
 
 ---
 
@@ -255,14 +260,42 @@ source is a `<video>` element in the hero grid's right cell):
 > - `position: fixed/absolute` **AND** its box covers ≥~85% of a section **AND** it's `z-index`ed
 >   behind the content → **BACKGROUND** → emit as the Section's `background-pro` video (full-cover).
 > - `position: static/relative`, sitting in a **grid/flex cell** with a sibling content cell, box
->   **smaller than the section** (`coversSection:false`) → **ELEMENT** → emit as a real `<video>` in
->   the matching page-builder column, carrying the source wrapper's **aspect-ratio + `object-fit`**.
+>   **smaller than the section** (`coversSection:false`) → **ELEMENT** → emit as the **native
+>   `media_video` shortcode** in the matching page-builder column, carrying the source wrapper's
+>   **aspect-ratio + `object-fit`** (via `ratio` + `object_fit`).
+>
+> **Use the native `media_video` element — NEVER a raw `<video>` in a `text_block`** (that was the
+> first Reactive Forest build; it bloats the DOM and undercuts the clean-markup pitch). Both converters
+> now do this automatically: a source `<video>` → `media_video` **self-hosted** mode (file + poster +
+> autoplay/muted/loop/controls/playsinline flags carried through); a provider `<iframe>`
+> (YouTube/Vimeo/…) → **embed** mode (the iframe `src` is normalized back to an oEmbed page URL). See
+> the algorithm below.
 >
 > Reactive Forest → hero is a 2-col grid `596px | 700px`; the video is `position:static` in an
 > `aspect-[.95]` `object-fit:cover` wrapper, `coversSection:false` → **element**. Rebuilt as a 2-column
-> hero (content LEFT, a `<video autoplay muted loop playsinline>` element RIGHT). The video is a lean
-> `<video>` inside a `text_block` (markers `__RFI_VIDEO__`/`__RFI_ATOM__` resolved on import by a
-> **string** replace, since the URL now lives in element HTML, not a `url` node).
+> hero (content LEFT, a **`media_video` self-hosted** element RIGHT: `autoplay/muted/loop/playsinline`,
+> `object_fit:cover`, `ratio:1x1`, css_class `rfi-hero-media`). Markers `__RFI_VIDEO__`/`__RFI_ATOM__`
+> land in the `source_type.self_hosted.video_file.url` / `poster.url` fields and are resolved on import
+> by a **string** replace.
+>
+> > **`media_video` gotchas (these bit us — see the shortcode's `AGENTS.md`):**
+> > 1. **`.ratio` collapse.** The element wraps the video in a `.ratio` box where the `<video>` is
+> >    `position:absolute` — so in a **shrink-to-fit / centered flex column** the wrapper collapses to
+> >    **0×0** and the video vanishes. The element ships `.video-wrapper{width:100%}` to prevent it; if
+> >    a demo's video is invisible, check the wrapper's rendered width first.
+> > 2. **Aspect var is `--fw-aspect-ratio`, NOT `--bs-aspect-ratio`.** To fine-tune a child-theme
+> >    aspect (e.g. a ≈0.95 near-square), override `--fw-aspect-ratio` on `.<cls> .ratio` (`105%`).
+> > 3. **Headless Chromium can't decode H.264** — a self-hosted `.mp4` won't *play* in Playwright
+> >    (`readyState:0`), but the **poster renders**, which is enough to verify layout. A real browser
+> >    plays it. Don't chase it as a bug.
+>
+> **Converter implementation (BOTH paths — keep in sync).** PHP: a `video` recognizer (priority 45,
+> above `<img>`) in `class-fw-site-converter-stitch.php` emits a `{t:'video', mode, src, webm, poster,
+> …flags}` block; `Mapper::n_video()` builds the `media_video` node (full `source_type` shape);
+> `Mapper::embed_to_page_url()` normalizes a provider `/embed/` src → a watch/page URL for oEmbed. JS:
+> `videoBlockOf()` in `capture-extract.mjs` (runs *before* the `SKIP_TAGS` filter so a provider
+> `<iframe>` is caught — a bare iframe stays skipped) + `videoNode()`/`embedToPageUrl()` in
+> `to-pages.mjs`. A `video` block reports as `video → media_video`, not a `code_block` fallback.
 
 > **Translate the video's COMPOSITING, not just its box** (this is what makes a clip read as
 > "integrated" vs a boxed rectangle — grab the `<video>`'s + its wrapper's computed `filter`,
@@ -1006,6 +1039,73 @@ into the framework rather than hardcoding child CSS (that's the whole point). Bu
 | **Responsive section spacing** (Top/Bottom/Gap per-device) | section | shortcodes 1.10.64 |
 | **Logo Grid inline SVG + Show Names + Logo Color + no_label + auto-column gaps** + viewBox/max-width sanitizer fixes | logo-grid + `sc_icon_sanitize_svg` | shortcodes 1.10.76–79 |
 | **Spacing scale steps** added per demo (Section / Section Large / Card / Block) | Components → Spacing | (demo data) |
+| **Icon Size** (unit-input px/rem/em on the **Icon**, **Feature List** + **Icon Box** shortcodes' Styling tab; scales font icons AND inline SVGs — the SVG wrapper is normalised to 1em). The picker had colour but no size; a fixed inline SVG was stuck at 24px. Converter should emit it whenever a source icon has an explicit size (`text-4xl`, `w-8 h-8`, …). | icon / feature-list / icon-box | shortcodes 1.11.32 |
+| **Scroll Indicator** shortcode (Content Elements) — the hero "scroll to descend" cue: label + animated chevron (bounce/pulse/nudge) that smooth-scrolls to a target `#section` (or one screen down). Options: text, icon, target, layout, animation, colours, Icon Size. Converter should map a bottom-of-hero `animate-bounce` label+chevron to this. | scroll-indicator | shortcodes 1.11.34 |
+| **Section Container Width** (Layout tab multi-picker: Inherit / Narrow 768 / Medium 896 / Wide 1024 / Custom) — constrain ONE section's content band narrower than the global Container Width. Replaces faking per-section `max-w-*` with per-element max-widths or child CSS. Converter should read each section's `mx-auto max-w-{3xl..6xl}` and set this instead of the global. | section | shortcodes 1.11.36 |
+| **Footer section divider → `--footer-section-divider` var** (the hardcoded faint-white body↔copyright divider is now a CSS var; default unchanged, but a child theme can recolor/`none` it without a specificity fight). Set it (or a per-section border) instead of overriding the theme rule. | theme footer style.css | theme 2.3.85 |
+| **Footer column resolver defensive fallback** (an unknown/legacy footer layout key returned a single `fw-col-md-12` → broken grid; now falls back to equal columns when the class count ≠ column count). Footer column widths: valid keys are the `f5-*` fifth-compositions OR the split-slider (`{prefix}_split`) — there is NO `f4-*`; use split for 4 equal. | theme footer-builder | theme 2.3.84 |
+| **Footer generic social icons** (`globe`/`website`/`link`/`rss` → solid FA icons; the map was brand-networks only, so a footer "website" link fell back to a raw text label) | theme header-builder social map | theme 2.3.83 |
+| **Feature List canvas preview icons** (the builder `title_template` now renders each item's marker — per-item SVG/font icon, check/cross/number/bullet — not a plain bullet list) | feature-list config.php | shortcodes 1.11.33 |
 
 Before hand-rolling a control or child CSS for a COMMON need, check this table + the sections above —
 it may already exist, or belong as a small framework addition.
+
+## Element selection vs effect addition (the "don't overdo" line)
+
+Two different decisions — only one is ever proactive:
+
+- **Element selection** — pick the PURPOSE-BUILT native element for a content pattern. ALWAYS do this;
+  it's about *what the content is*, and the resting state matches the source exactly:
+  - a big **KPI / stat number** → **`counter`** (Animated Counter; counts up on scroll, resting = source)
+  - an **icon-led list / checklist** → **`feature_list`** (design `icon` = per-item icons), NOT stacked `icon_box`es
+  - a **single image** → **`media_image`**, NOT `gallery` (galleries are for multiple images) and NOT a code_block
+  - a **video** (self-hosted or provider iframe) → **`media_video`**
+  - a **hero scroll cue** (label + animated chevron) → **`scroll_indicator`**
+- **Effect addition** — motion the source does NOT have (parallax, scroll reveals, entrance animations,
+  extra hover flourishes). **NEVER add proactively — only when the user asks "add animations."**
+
+The `counter`'s count-up is *element-selection* (intrinsic to the element), not effect-addition — so it's
+allowed. That's the whole distinction: right element for the content = yes; decorative motion = only on request.
+
+## Per-section container width (source `max-w-{3xl..6xl}` bands)
+
+The GLOBAL Container Width (General → Layout) maps the site's widest band (usually `max-w-7xl` = 1280px
+content → set 1328px = 1280 + 2×24px gutter). But individual sections are often NARROWER — a CTA at
+`max-w-4xl` (896px), a hero at `max-w-5xl` (1024px), prose at `max-w-3xl` (768px). Read each section's
+`mx-auto max-w-*` and set the **Section → Container Width** option (Narrow 768 / Medium 896 / Wide 1024 /
+Custom) — do NOT fake it with per-element max-widths (that's what bit the CTA: a guessed 40rem subtitle
+cap when the source subtitle has NO max-width, it just fills the 896px band). One exception stays
+per-element: a paragraph that IS narrower than its section band (e.g. a hero subtitle at `max-w-2xl` inside
+a `max-w-5xl` hero) keeps its own text_block Max Width.
+
+## Hover overlays (`group-hover:opacity-100` sheens)
+
+When translating a card/box, ENUMERATE its children for hover overlays — an `absolute inset-0` element
+with `opacity-0` + `group-hover:opacity-100` (or a parent `hover:`/`transition`) is a fade-in sheen
+(gradient tint, glow, border). They're easy to miss because they're a separate, invisible-by-default
+child. Reproduce each as a `::before`/`::after` on the wrapper (cleaner DOM than an extra div) — e.g. the
+Planetary cards' `from-cyan/5 to-transparent` sheen → `.card .icon-box__wrapper::before { … opacity:0 }`
++ `:hover::before { opacity:1 }`. Also capture the plain `hover:border-*` border change alongside it.
+
+## Background-image opacity (`opacity-30 mix-blend-screen`)
+
+A source `<img>` with `opacity-30` (often `mix-blend-screen`) behind a section becomes a section
+**background-image** in UnysonPlus — and a background-image can't be opacity'd or blended directly. Dim it
+with a flat overlay (`::after { background: rgba(canvas, 0.7) }` ≈ 30% image). The true screen-blend only
+works if the image is a real element/layer, not a section background — an acceptable fidelity trade for the
+"faint texture" look.
+
+## View-source is authoritative over `page.tsx` (REQUIRED)
+
+For any per-element font/style decision, the **`view-source.html` (rendered DOM) WINS over `page.tsx`** —
+the `.tsx` can be an earlier/variant of the template. Planetary's nav is `font-mono` (Space Mono) in the
+view-source but plain sans in the `.tsx`; trusting the `.tsx` put the menu on the wrong font. Cross-check
+the view-source for computed styles; that's why it's provided.
+
+## Run the COMPLETE preset set — not a subset (REQUIRED)
+
+The demo pipeline has a FULL preset run: **colors → typography → buttons → boxes → spacing → LAYOUT
+(container width) → textstyles → header/footer**. Skipping any silently falls back to a theme default:
+skipping `spacing` left the named scale (block/card/section/sectionlarge) undefined so every `mb-block`
+collapsed to 0; skipping `layout` left the container at the 1170px default instead of the source's 1280px.
+Always run — and verify — every preset from the source's tokens, don't cherry-pick.

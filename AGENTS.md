@@ -17,7 +17,7 @@ Built incrementally. **All five phases now ship:** the Media tool, the Styling P
 Theme-settings importer, the Pages importer, and the Menu importer — plus the one-shot **Convert
 bundle** that runs all of them from a single `.zip`. The conversion pipeline is feature-complete.
 
-> **Demo-conversion playbook →** [`docs/demo-conversion-playbook.md`](docs/demo-conversion-playbook.md).
+> **Demo-conversion playbook →** [`docs/site-conversion-playbook.md`](docs/site-conversion-playbook.md).
 > How to turn a source site into a **Theme-Settings-driven** UnysonPlus demo (design reproduced
 > from color/typography/button/box/spacing presets that shortcodes consume, near-empty child theme)
 > — the manual process AND the north star for making THIS converter emit presets rather than a CSS
