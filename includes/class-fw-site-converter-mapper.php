@@ -293,6 +293,7 @@ class FW_Site_Converter_Mapper {
 			'text'     => __( 'Text Block', 'fw' ),
 			'button'   => __( 'Button', 'fw' ),
 			'image'    => __( 'Image / Media', 'fw' ),
+			'video'    => __( 'Video (Media)', 'fw' ),
 			'columns'  => __( 'Columns (grid)', 'fw' ),
 			'code'     => __( 'Code Block (verbatim)', 'fw' ),
 			'skip'     => __( 'Skip (remove)', 'fw' ),
@@ -332,6 +333,7 @@ class FW_Site_Converter_Mapper {
 		$txt = trim( isset( $b['text'] ) ? (string) $b['text'] : '' );
 
 		if ( $t === 'button' ) { return 'button'; }
+		if ( $t === 'video' ) { return 'video'; }
 		if ( $t === 'row' ) { return 'columns'; }
 		if ( $t === 'html' ) { return 'code'; }
 		if ( $t === 'heading' ) {
@@ -565,6 +567,103 @@ class FW_Site_Converter_Mapper {
 			'code' => (string) $html, 'animation' => self::def_animation(),
 			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		) );
+	}
+
+	/**
+	 * A standalone <img> → the NATIVE media_image shortcode (NOT a gallery — that's for multiple
+	 * images — and NOT a code_block). Pulls the src/alt out of the img markup; the importer sideloads
+	 * the URL. Falls back to a code_block only when there's no resolvable src.
+	 */
+	private static function n_media_image( $html ) {
+		$html = (string) $html;
+		$src  = '';
+		$alt  = '';
+		if ( preg_match( '/<img\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) { $src = trim( $m[1] ); }
+		if ( preg_match( '/<img\b[^>]*\balt\s*=\s*["\']([^"\']*)["\']/i', $html, $m ) ) { $alt = trim( $m[1] ); }
+		if ( $src === '' ) { return self::n_code( $html ); }
+		return array( 'type' => 'simple', 'shortcode' => 'media_image', '_items' => array(), 'atts' => array(
+			'image'         => array( 'attachment_id' => '', 'url' => $src, 'alt' => $alt ),
+			'width'         => array( 'value' => '', 'unit' => 'px' ),
+			'height'        => array( 'value' => '', 'unit' => 'px' ),
+			'fetchpriority' => 'auto',
+			'link'          => '',
+			'target'        => '_self',
+			'bg_color'      => self::empty_color(),
+			'spacing'       => self::def_spacing(),
+			'animation'     => self::def_animation(),
+			'unique_id'     => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
+		) );
+	}
+
+	/**
+	 * A source `<video>` / provider `<iframe>` block → the NATIVE `media_video` shortcode
+	 * (self-hosted file or oEmbed URL) — NOT a raw `<video>` in a text_block and NOT a code_block.
+	 * A muted/looping/autoplaying background clip is only reproducible with the self-hosted branch,
+	 * so we carry those playback flags through. Emits the full `source_type` multi-picker shape
+	 * (both branches populated) so the builder corrector accepts the node unchanged.
+	 *
+	 * @param array $b { mode:'self_hosted'|'embed', src, webm, poster, embedUrl, autoplay, muted, loop, controls, playsinline }
+	 */
+	private static function n_video( array $b ) {
+		$mode   = ( isset( $b['mode'] ) && $b['mode'] === 'embed' ) ? 'embed' : 'self_hosted';
+		$src    = isset( $b['src'] ) ? trim( (string) $b['src'] ) : '';
+		$webm   = isset( $b['webm'] ) ? trim( (string) $b['webm'] ) : '';
+		$poster = isset( $b['poster'] ) ? trim( (string) $b['poster'] ) : '';
+		$embed  = isset( $b['embedUrl'] ) ? self::embed_to_page_url( (string) $b['embedUrl'] ) : '';
+
+		// A self-hosted branch with no file at all is really an embed we couldn't classify → flip it.
+		if ( $mode === 'self_hosted' && $src === '' && $webm === '' ) {
+			$mode = 'embed';
+			if ( $embed === '' && $src !== '' ) { $embed = $src; }
+		}
+
+		$up = function ( $url ) { return $url !== '' ? array( 'attachment_id' => '', 'url' => $url ) : array(); };
+
+		$source_type = array(
+			'source' => $mode,
+			'embed'  => array(
+				'url'              => $embed,
+				'youtube_nocookie' => 'no',
+				'lazy_facade'      => 'no',
+				'poster'           => $up( $mode === 'embed' ? $poster : '' ),
+			),
+			'self_hosted' => array(
+				'video_file'  => $up( $src ),
+				'video_webm'  => $up( $webm ),
+				'video_url'   => '',
+				'poster'      => $up( $mode === 'self_hosted' ? $poster : '' ),
+				'autoplay'    => isset( $b['autoplay'] ) ? (string) $b['autoplay'] : 'no',
+				'muted'       => isset( $b['muted'] ) ? (string) $b['muted'] : 'no',
+				'loop'        => isset( $b['loop'] ) ? (string) $b['loop'] : 'no',
+				'controls'    => isset( $b['controls'] ) ? (string) $b['controls'] : 'yes',
+				'playsinline' => isset( $b['playsinline'] ) ? (string) $b['playsinline'] : 'yes',
+				'preload'     => 'metadata',
+				'object_fit'  => 'contain',
+			),
+		);
+		// Autoplay implies muted (browser policy) — mirror view.php so the atts stay coherent.
+		if ( $source_type['self_hosted']['autoplay'] === 'yes' ) { $source_type['self_hosted']['muted'] = 'yes'; }
+
+		return array( 'type' => 'simple', 'shortcode' => 'media_video', '_items' => array(), 'atts' => array(
+			'source_type' => $source_type,
+			'width'       => array( 'value' => 600, 'unit' => 'px' ),
+			'ratio'       => '16x9',
+			'bg_color'    => self::empty_color(),
+			'spacing'     => self::def_spacing(),
+			'animation'   => self::def_animation(),
+			'unique_id'   => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
+		) );
+	}
+
+	/** Normalize a provider embed iframe src → an oEmbed-friendly PAGE url (WP oEmbed needs the page
+	 *  URL, not the `/embed/` iframe src). Unknown hosts pass through unchanged. */
+	private static function embed_to_page_url( $src ) {
+		$src = trim( (string) $src );
+		if ( $src === '' ) { return ''; }
+		if ( preg_match( '#youtube(?:-nocookie)?\.com/embed/([\w-]+)#', $src, $m ) ) { return 'https://www.youtube.com/watch?v=' . $m[1]; }
+		if ( preg_match( '#player\.vimeo\.com/video/(\d+)#', $src, $m ) )            { return 'https://vimeo.com/' . $m[1]; }
+		if ( preg_match( '#dailymotion\.com/embed/video/([\w]+)#', $src, $m ) )      { return 'https://www.dailymotion.com/video/' . $m[1]; }
+		return $src;
 	}
 
 	/** Build the announcement_pill shortcode node from a recognized hero pill block (sub-tag + message +
@@ -946,8 +1045,13 @@ class FW_Site_Converter_Mapper {
 		$txt = trim( wp_strip_all_tags( (string) $html ) );
 		switch ( $role ) {
 			case 'code':
-			case 'image':
 				return array( self::n_code( (string) $html ) );
+			case 'image':
+				return array( self::n_media_image( (string) $html ) );
+			case 'video':
+				// Re-roled to video: use the cell's captured video block if present, else an empty
+				// media_video the user fills in (never fall back to a raw <video> in a text/code block).
+				return array( self::n_video( isset( $c['video'] ) && is_array( $c['video'] ) ? $c['video'] : array( 'mode' => 'embed' ) ) );
 			case 'text':
 				return array( self::n_text( $html !== '' ? (string) $html : '<p>' . esc_html( $txt ) . '</p>' ) );
 			case 'overline':
@@ -1573,6 +1677,12 @@ class FW_Site_Converter_Mapper {
 		} );
 		self::register_builder( 'code', function ( $b ) {
 			return self::n_code( (string) ( $b['html'] ?? '' ) );
+		} );
+		self::register_builder( 'video', function ( $b ) {
+			return self::n_video( $b );
+		} );
+		self::register_builder( 'image', function ( $b ) {
+			return self::n_media_image( (string) ( $b['html'] ?? '' ) );
 		} );
 		self::register_builder( 'announcement_pill', function ( $b ) {
 			return self::n_announcement_pill( $b );

@@ -1039,6 +1039,45 @@ class FW_Site_Converter_Stitch {
 				return array( 't' => 'text', 'role' => self::rule_role( $rules, $el, 'text' ), 'cls' => self::cls( $el ), 'cs' => (string) $el->getAttribute( 'data-sc-cs' ), 'maxWidth' => self::element_max_width( $el ), 'text' => $txt, 'html' => '<p>' . self::clean_inline_html( $el ) . '</p>' );
 			}
 		);
+		// A self-hosted <video> OR a provider <iframe> (YouTube/Vimeo/…) → the native media_video
+		// shortcode (self-hosted file OR oEmbed URL) — NOT a raw <video> in a text/code block. Muted /
+		// looping / autoplaying background clips are only reproducible via the self-hosted branch, so
+		// carry those flags through. Sits above <img> so a lone <video> wins over any image fallback.
+		self::register_recognizer( 'video', 45,
+			function ( $el, $tag ) {
+				if ( 'video' === $tag ) { return true; }
+				if ( 'iframe' === $tag ) {
+					$src = strtolower( (string) $el->getAttribute( 'src' ) );
+					return (bool) preg_match( '#(youtube\.com|youtu\.be|youtube-nocookie\.com|player\.vimeo\.com|vimeo\.com/\d|dailymotion\.com/embed|wistia\.(net|com)|player\.twitch\.tv)#', $src );
+				}
+				return false;
+			},
+			function ( $el, $tag ) {
+				if ( 'iframe' === $tag ) {
+					return array( 't' => 'video', 'role' => 'video', 'mode' => 'embed', 'embedUrl' => (string) $el->getAttribute( 'src' ) );
+				}
+				// <video>: prefer a direct src, else the first mp4/webm <source>.
+				$src  = (string) $el->getAttribute( 'src' );
+				$webm = '';
+				foreach ( $el->getElementsByTagName( 'source' ) as $s ) {
+					$ssrc  = (string) $s->getAttribute( 'src' );
+					$stype = strtolower( (string) $s->getAttribute( 'type' ) );
+					if ( $ssrc === '' ) { continue; }
+					if ( $webm === '' && ( $stype === 'video/webm' || preg_match( '/\.webm(\?|$)/i', $ssrc ) ) ) { $webm = $ssrc; }
+					if ( $src === ''  && ( $stype === 'video/mp4'  || preg_match( '/\.mp4(\?|$)/i',  $ssrc ) ) ) { $src  = $ssrc; }
+				}
+				if ( $src === '' && $webm === '' ) { return null; }
+				return array(
+					't' => 'video', 'role' => 'video', 'mode' => 'self_hosted',
+					'src' => $src, 'webm' => $webm, 'poster' => (string) $el->getAttribute( 'poster' ),
+					'autoplay'    => $el->hasAttribute( 'autoplay' )    ? 'yes' : 'no',
+					'muted'       => $el->hasAttribute( 'muted' )       ? 'yes' : 'no',
+					'loop'        => $el->hasAttribute( 'loop' )        ? 'yes' : 'no',
+					'controls'    => $el->hasAttribute( 'controls' )    ? 'yes' : 'no',
+					'playsinline' => $el->hasAttribute( 'playsinline' ) ? 'yes' : 'no',
+				);
+			}
+		);
 		// Standalone <img>.
 		self::register_recognizer( 'image', 40,
 			function ( $el, $tag ) { return 'img' === $tag; },
@@ -2063,7 +2102,7 @@ class FW_Site_Converter_Stitch {
 
 	/** Map a shortcode tag back to an editor role (for the rules store). */
 	private static function shortcode_to_role( $tag ) {
-		$map = array( 'special_heading' => 'title', 'text_block' => 'text', 'button' => 'button', 'code_block' => 'code', 'media_image' => 'image' );
+		$map = array( 'special_heading' => 'title', 'text_block' => 'text', 'button' => 'button', 'code_block' => 'code', 'media_image' => 'image', 'media_video' => 'video' );
 		return isset( $map[ $tag ] ) ? $map[ $tag ] : '';
 	}
 
