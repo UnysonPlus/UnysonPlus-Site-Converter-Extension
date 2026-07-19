@@ -837,6 +837,11 @@ class FW_Site_Converter_Stitch {
 	/** Parsed `<style>` rules that set max-width: [ { selector, value }, … ] — for non-Tailwind sources. */
 	private static $mw_rules = array();
 
+	/** Section skip flags — mirror the capture service's --skip-sections / --only-sections. 0-based
+	 *  s_index (the section number shown in the conversion report). Set by the Convert handler. */
+	public static $skip_sections = array();
+	public static $only_sections = array();
+
 	/** Collect `selector { … max-width:VAL … }` rules from the source's <style> blocks. */
 	private static function parse_style_max_width( $html ) {
 		$out = array();
@@ -913,6 +918,20 @@ class FW_Site_Converter_Stitch {
 		if ( $dom ) {
 			$body = $dom->getElementsByTagName( 'body' )->item( 0 );
 			$roots = $body ? self::section_roots( $body ) : array();
+			// Section skip flags (parity with the capture service): drop skipped body bands / keep only
+			// the chosen ones, by 0-based position (= the s_index in the conversion report), so a
+			// re-convert preserves the bands already accepted.
+			if ( $roots && ( self::$skip_sections || self::$only_sections ) ) {
+				$kept = array();
+				foreach ( $roots as $ri => $node ) {
+					if ( self::$only_sections ) {
+						if ( in_array( $ri, self::$only_sections, true ) ) { $kept[] = $node; }
+					} elseif ( ! in_array( $ri, self::$skip_sections, true ) ) {
+						$kept[] = $node;
+					}
+				}
+				$roots = $kept;
+			}
 			if ( $body ) { foreach ( $body->getElementsByTagName( 'main' ) as $mm ) { $main_cls = self::cls( $mm ); break; } }
 			$idx = 0;
 			foreach ( $roots as $node ) {

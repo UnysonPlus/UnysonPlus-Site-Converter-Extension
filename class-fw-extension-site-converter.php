@@ -507,6 +507,13 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$title  = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? $_POST['fw_sc_stitch_title'] ?? 'Home' ) );
 		if ( $title === '' ) { $title = 'Home'; }
 
+		// Section skip flags (parity with the capture service's --skip-sections / --only-sections):
+		// preserve QA'd body bands on a re-convert. 0-based s_index = the section # in the report.
+		if ( class_exists( 'FW_Site_Converter_Stitch' ) ) {
+			FW_Site_Converter_Stitch::$skip_sections = self::sc_int_list( wp_unslash( $_POST['fw_sc_skip_sections'] ?? '' ) );
+			FW_Site_Converter_Stitch::$only_sections = self::sc_int_list( wp_unslash( $_POST['fw_sc_only_sections'] ?? '' ) );
+		}
+
 		$bundle  = null;
 		$cleanup = '';
 
@@ -1101,6 +1108,15 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	/** Per-user transient key holding the sideloaded "Attach media" map for the current conversion. */
 	private function assets_key() {
 		return 'fw_sc_assets_' . get_current_user_id();
+	}
+
+	/** Parse a comma/space list of non-negative ints ("0, 2 3" → [0,2,3]). Empty → []. */
+	private static function sc_int_list( $raw ) {
+		$out = array();
+		foreach ( preg_split( '/[\s,]+/', trim( (string) $raw ) ) as $t ) {
+			if ( '' !== $t && ctype_digit( $t ) ) { $out[] = (int) $t; }
+		}
+		return $out;
 	}
 
 	/**
@@ -1779,6 +1795,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<details class="fw-sc-convert-adv" style="margin-top:.6em">
 						<summary style="cursor:pointer;color:#646970"><?php esc_html_e( 'Advanced options', 'fw' ); ?></summary>
 						<div style="padding:.8em 0 0">
+							<p style="margin:0 0 .3em;font-weight:600"><?php esc_html_e( 'Skip / keep sections', 'fw' ); ?> <span class="description" style="font-weight:400">(<?php esc_html_e( 'optional — by the # in the conversion report; preserves QA’d bands on a re-convert', 'fw' ); ?>)</span></p>
+							<p style="margin:0 0 .6em"><input type="text" name="fw_sc_skip_sections" class="regular-text" placeholder="<?php esc_attr_e( 'Skip sections, e.g. 0,2', 'fw' ); ?>" style="width:15em;margin-right:.4em"><input type="text" name="fw_sc_only_sections" class="regular-text" placeholder="<?php esc_attr_e( 'or ONLY these, e.g. 1,3', 'fw' ); ?>" style="width:15em"></p>
 							<p class="description" style="margin:0 0 .5em"><?php esc_html_e( 'Get the convert bundle as a .zip rather than importing now — e.g. to refine it with AI first, then re-upload.', 'fw' ); ?></p>
 							<p><button type="submit" class="button button-secondary" name="fw_sc_convert_action" value="download"><?php esc_html_e( 'Download bundle (.zip) instead of converting', 'fw' ); ?></button></p>
 						</div>
