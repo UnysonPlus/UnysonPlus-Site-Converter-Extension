@@ -15,7 +15,7 @@ The deterministic (**no‑AI**) converter — the logic that turns a source desi
 | Path | Lives in | Files |
 |---|---|---|
 | **File upload** (this extension) | `framework/extensions/site-converter/includes/` (PHP) | `class-fw-site-converter-stitch.php`, `class-fw-site-converter-mapper.php`, `class-fw-site-converter-theme-generator.php` |
-| **URL capture** (capture service repo) | `UnysonPlus-HTML-to-Wordpress-Conversion/tools/design-capture/` (JS) | `capture-extract.mjs`, `to-pages.mjs`, `to-design-config.mjs` |
+| **URL capture** (capture service repo) | `UnysonPlus-Capture-Service/tools/design-capture/` (JS) | `capture-extract.mjs`, `to-pages.mjs`, `to-design-config.mjs` |
 
 > The **AI** path (`to-ai.mjs`, `/ai-convert`) is separate — this rule is about the **deterministic**
 > path that runs offline. (When the AI authors the child theme, the deterministic path is the fallback.)

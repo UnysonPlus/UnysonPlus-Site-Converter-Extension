@@ -134,7 +134,7 @@ ls=2.88px` match with the source, and the eco heading/card titles to the correct
    - **Site Converter** (PHP): `framework/extensions/site-converter/includes/`
      `class-fw-site-converter-mapper.php` (element→shortcode + option assignment), `-stitch.php`,
      `-tailwind.php` (token extraction), `-theme-settings.php` + `-theme-generator.php`.
-   - **Capture service** (JS): `Github Repository/UnysonPlus-HTML-to-Wordpress-Conversion/tools/design-capture/`
+   - **Capture service** (JS): `Github Repository/UnysonPlus-Capture-Service/tools/design-capture/`
      `capture-extract.mjs`, `to-pages.mjs`, `to-design-config.mjs`, `to-presets.mjs`, `atom-templates.json`.
    Standing improvement target: extend `to-presets.mjs` (add `button_colors`/`border_presets`/
    `font_sizes`/`spacing_scale` — all whitelisted in `FW_Site_Converter_Presets::ALLOWED_KEYS`),
@@ -923,6 +923,24 @@ Adobe simple-icons marks, Show Names on, White Logo Color, grayscale, height 22,
   hover-lighter), override in the button's **Custom CSS**: `selector{text-decoration:none}
   selector:hover{color:var(--color-primary-light)}` — or set the Link preset's hover state +
   a `{{SELECTOR}}{text-decoration:none}` preset Custom CSS (tier-1, all links at once).
+- **Parent-theme section defaults out-specify a scoped child's single-class rules.** The parent
+  theme paints EVERY page-builder section via `.fw-page-builder-content > section { padding-block:
+  calc(4rem * var(--section-spacing-scale,1)) }` — specificity (0,1,1). A scoped child that sets
+  section spacing with a single class (`.pfu-hero { padding }`, (0,1,0)) LOSES, so every section
+  silently snaps to the default rhythm (a real bug: all sections forced to 96px/96px, ~3000px of
+  extra page height). Win with a **compound selector** `.fw-page-builder-content > section.pfu-hero {
+  padding-block: … }` (0,2,1), or set the spacing on the section's **builder padding options**
+  (renders inline, beats any selector). Same family: **footer section dividers are now opt-in** —
+  the parent's `.footer .footer-section + .footer-section` border defaults to
+  `--footer-section-divider: none` (theme 2.3.92), so a child sets `--footer-section-divider: 1px
+  solid …` only when it WANTS dividers (it previously defaulted to a 1px line every child had to
+  fight off).
+- **Legacy `custom_icon` SVGs need explicit width/height for the builder preview.** An icon_box
+  saved pre-icon-picker keeps its icon as a raw inline SVG in the hidden `custom_icon` field. The
+  front end sizes it via CSS, but the page-builder CANVAS preview renders the SVG in an inline-flex
+  span with no sizing — a `viewBox`-only SVG (no `width`/`height`) collapses to 0×0 = no preview.
+  The preview now injects a fallback size (shortcodes 1.11.45), but **generators should emit the
+  modern `icon` field** (or, for `custom_icon`, always include `width`/`height` on the `<svg>`).
 
 ## Site chrome — header + footer via Theme Settings (REQUIRED, and I kept missing details)
 

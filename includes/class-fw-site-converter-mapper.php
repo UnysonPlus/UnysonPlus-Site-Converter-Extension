@@ -439,6 +439,63 @@ class FW_Site_Converter_Mapper {
 		return array( 'margin' => $box, 'padding' => $box, 'advanced' => array( 'md' => array( 'margin' => $box, 'padding' => $box ), 'lg' => array( 'margin' => $box, 'padding' => $box ) ) );
 	}
 
+	/**
+	 * "Attach media" uploads for the current conversion: basename(lowercased) => { id, url, mime }.
+	 * Set by the build AJAX handlers from the sideloaded map, so captured media whose source URL
+	 * matches an uploaded file (by filename) is rewritten to the Media-Library copy — and a
+	 * full-screen background <video> can be wired into the section background.
+	 *
+	 * @var array
+	 */
+	private static $assets = array();
+
+	/** @param array $map basename => { id, url, mime }. */
+	public static function set_assets( $map ) {
+		self::$assets = is_array( $map ) ? $map : array();
+	}
+
+	/** Match a captured media URL to an uploaded asset by filename. Returns { id, url, mime } or null. */
+	private static function asset_for( $url ) {
+		if ( empty( self::$assets ) || ! is_string( $url ) || $url === '' ) { return null; }
+		$noqs = preg_replace( '/[?#].*$/', '', $url );
+		$base = strtolower( basename( (string) $noqs ) );
+		return ( $base !== '' && isset( self::$assets[ $base ] ) ) ? self::$assets[ $base ] : null;
+	}
+
+	/** An `upload`-type option value ({attachment_id,url}) for a URL — using the sideloaded copy if one matches. */
+	private static function upload_val( $url ) {
+		$url = (string) $url;
+		if ( $url === '' ) { return array(); }
+		$a = self::asset_for( $url );
+		return $a ? array( 'attachment_id' => (string) $a['id'], 'url' => (string) $a['url'] ) : array( 'attachment_id' => '', 'url' => $url );
+	}
+
+	/**
+	 * Wire a full-screen background `<video>` block onto a built section node's `background.video`
+	 * layer (autoplay/muted/loop). The file is the captured `<source>` URL, or the matching "Attach
+	 * media" upload when one was provided (upload_val swaps in the sideloaded copy). No‑op if nothing
+	 * plays back, so a section without a resolvable video keeps its default background.
+	 *
+	 * @param array $node Section node (by ref).
+	 * @param array $b    The captured video block { src, webm, poster, bg }.
+	 */
+	private static function apply_bg_video( array &$node, array $b ) {
+		$mp4  = self::upload_val( isset( $b['src'] ) ? (string) $b['src'] : '' );
+		$webm = self::upload_val( isset( $b['webm'] ) ? (string) $b['webm'] : '' );
+		$post = self::upload_val( isset( $b['poster'] ) ? (string) $b['poster'] : '' );
+		if ( empty( $mp4['url'] ) && empty( $webm['url'] ) ) { return; }
+		if ( ! isset( $node['atts']['background'] ) || ! is_array( $node['atts']['background'] ) ) { return; }
+		$node['atts']['background']['video'] = array(
+			'enabled'      => 'yes',
+			'external_url' => '',
+			'source_mp4'   => empty( $mp4['url'] )  ? array() : $mp4,
+			'source_webm'  => empty( $webm['url'] ) ? array() : $webm,
+			'poster'       => empty( $post['url'] ) ? array() : $post,
+			'fallback'     => array(),
+			'loop'         => 'yes', 'autoplay' => 'yes', 'mute' => 'yes', 'playsinline' => 'yes',
+		);
+	}
+
 	private static function n_section( $css_class, $css_id, $css, array $items, $fullwidth ) {
 		// NOTE: section CSS is NOT written to `custom_css` (that routes through the dynamic-CSS
 		// aggregator, defeating the clean-child-theme goal). It's emitted into style.css via
@@ -581,8 +638,9 @@ class FW_Site_Converter_Mapper {
 		if ( preg_match( '/<img\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) { $src = trim( $m[1] ); }
 		if ( preg_match( '/<img\b[^>]*\balt\s*=\s*["\']([^"\']*)["\']/i', $html, $m ) ) { $alt = trim( $m[1] ); }
 		if ( $src === '' ) { return self::n_code( $html ); }
+		$iv = self::upload_val( $src ); // sideloaded copy if the filename matches an "Attach media" upload
 		return array( 'type' => 'simple', 'shortcode' => 'media_image', '_items' => array(), 'atts' => array(
-			'image'         => array( 'attachment_id' => '', 'url' => $src, 'alt' => $alt ),
+			'image'         => array( 'attachment_id' => $iv['attachment_id'], 'url' => $iv['url'], 'alt' => $alt ),
 			'width'         => array( 'value' => '', 'unit' => 'px' ),
 			'height'        => array( 'value' => '', 'unit' => 'px' ),
 			'fetchpriority' => 'auto',
@@ -617,7 +675,8 @@ class FW_Site_Converter_Mapper {
 			if ( $embed === '' && $src !== '' ) { $embed = $src; }
 		}
 
-		$up = function ( $url ) { return $url !== '' ? array( 'attachment_id' => '', 'url' => $url ) : array(); };
+		// Uses the sideloaded "Attach media" copy when the source URL's filename matches an upload.
+		$up = function ( $url ) { return self::upload_val( $url ); };
 
 		$source_type = array(
 			'source' => $mode,
@@ -998,7 +1057,10 @@ class FW_Site_Converter_Mapper {
 
 		// Icon: a font icon → icon-v2 value (normalized to Font Awesome so it renders); an SVG →
 		// custom_icon (icon_box renders inline SVG).
-		if ( ! empty( $card['customIcon'] ) ) {
+		if ( ! empty( $card['lucide'] ) && is_array( $atts['icon'] ) ) {
+			// Native Lucide → icon_box library icon (icon-v2 SVG source), preserving the atom's icon shape.
+			$atts['icon'] = array_merge( $atts['icon'], array( 'type' => 'svg', 'svg-source' => 'library', 'svg-id' => (string) $card['lucide'] ) );
+		} elseif ( ! empty( $card['customIcon'] ) ) {
 			$atts['custom_icon'] = (string) $card['customIcon'];
 		} elseif ( ! empty( $card['icon'] ) ) {
 			$atts['icon'] = self::icon_value( (string) $card['icon'] );
@@ -1841,6 +1903,18 @@ class FW_Site_Converter_Mapper {
 		$css = self::flatten_css( $css );
 
 		$blocks = isset( $sec['blocks'] ) && is_array( $sec['blocks'] ) ? $sec['blocks'] : array();
+
+		// A full-screen background <video> (extractor-flagged `bg` = absolute + object-cover behind the
+		// content) becomes the SECTION's background video — not a content media_video block. Pull it out
+		// here; it's wired onto the section node after the node is built. The actual file comes from the
+		// captured <source> URL, or the matching "Attach media" upload (upload_val handles the swap).
+		$bg_video = null;
+		foreach ( $blocks as $bi => $bb ) {
+			$bt = isset( $bb['t'] ) ? $bb['t'] : ( isset( $bb['role'] ) ? $bb['role'] : '' );
+			if ( $bt === 'video' && ! empty( $bb['bg'] ) ) { $bg_video = $bb; unset( $blocks[ $bi ] ); break; }
+		}
+		$blocks = array_values( $blocks );
+
 		$items = array();   // section's columns
 		$buf   = array();   // pending stacked items for a 1_1 column
 		$head  = null;      // pending special_heading accumulator
@@ -1947,6 +2021,7 @@ class FW_Site_Converter_Mapper {
 				$row_valign = isset( $b['valign'] ) && in_array( $b['valign'], array( 'start', 'center', 'end' ), true ) ? $b['valign'] : '';
 				foreach ( $b['cols'] as $c ) {
 					$box_on_column = ''; // box class for this column's Inner Wrapper Class (box card WITH a button)
+						$btn_row_on_column = ''; // .btn-row class for a CTA button-group cell (side-by-side buttons)
 					// Cell content: a nested card-grid → a CSS-grid column of icon_boxes; a text cell
 					// → special_heading (+ text); a single icon card → icon_box; else the verbatim
 					// HTML as a code-block.
@@ -2001,6 +2076,15 @@ class FW_Site_Converter_Mapper {
 						} else {
 							$inner_items = array( $ib );
 						}
+					} elseif ( ! empty( $c['buttons'] ) && is_array( $c['buttons'] ) ) {
+						// A CTA button-group cell (no heading/prose) → real button shortcodes. Two+ buttons
+						// would STACK in a builder column, so wrap them in a `.btn-row` flex-row Inner Wrapper
+						// Class (mirrors the capture service's btn-row). Matches the JS to-pages path.
+						$inner_items = array();
+						foreach ( $c['buttons'] as $bt ) {
+							$inner_items[] = self::n_button( (string) ( $bt['label'] ?? 'Button' ), (string) ( $bt['href'] ?? '#' ), (string) ( $bt['cls'] ?? '' ), (string) ( $bt['icon'] ?? '' ), 'after', (string) ( $bt['cs'] ?? '' ) );
+						}
+						if ( count( $inner_items ) > 1 ) { $btn_row_on_column = self::btn_row_class(); }
 					} else {
 						$inner_items = array( self::n_code( (string) ( $c['html'] ?? '' ) ) );
 					}
@@ -2018,6 +2102,8 @@ class FW_Site_Converter_Mapper {
 					// Box card WITH a button → the box styling is on the COLUMN's Inner Wrapper Class so it
 					// wraps the icon_box AND the button (a simple box card put it on the icon_box instead).
 					if ( $box_on_column !== '' ) { $col['atts']['inner_class'] = trim( $col['atts']['inner_class'] . ' ' . $box_on_column ); }
+					// CTA button group → the column's Inner Wrapper Class is `.btn-row` (side-by-side).
+					if ( $btn_row_on_column !== '' ) { $col['atts']['inner_class'] = trim( $col['atts']['inner_class'] . ' ' . $btn_row_on_column ); $col['atts']['content_h'] = 'center'; }
 					if ( $row_valign !== '' && empty( $c['grid'] ) ) { $col['atts']['content_v'] = $row_valign; }
 					// Counter cells center their content via the column's own alignment (the source
 					// `.counter-item text-center`), instead of carrying a text-center wrapper class.
@@ -2044,6 +2130,7 @@ class FW_Site_Converter_Mapper {
 		// NOT `sc-mirror` (whose reset would nuke the container back to full width). The section
 		// element is still full-width, so a section background still spans edge to edge.
 		$sec_node = self::n_section( $src_cls_str, $css_id, $css, $items, false );
+		if ( $bg_video !== null ) { self::apply_bg_video( $sec_node, $bg_video ); } // full-screen <video> → section background
 		// Reproduce the source section's FULL container styling — not just vertical rhythm. Its Tailwind
 		// classes (`max-w-[..] mx-auto px-.. py-.. border-y border-<color> rounded-.. bg-..`) describe a
 		// centered, bordered, padded BOX, which maps onto the builder's centered `.fw-container`; the

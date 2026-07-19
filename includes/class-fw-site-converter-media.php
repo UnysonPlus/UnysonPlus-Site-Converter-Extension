@@ -139,6 +139,71 @@ class FW_Site_Converter_Media {
 	}
 
 	/**
+	 * Sideload an ALREADY-LOCAL uploaded file (from $_FILES) into the Media Library — used by the
+	 * Convert box "Attach media" uploader so a real hero video / poster the source references via an
+	 * external CDN can be provided directly instead of downloaded. Keyed by basename (source meta
+	 * "upload:<name>") so the mapper can match a captured <source src="…/video.mp4"> to it.
+	 *
+	 * @param string $name     Original filename (e.g. "video.mp4").
+	 * @param string $tmp_path The uploaded temp path ($_FILES[..]['tmp_name']).
+	 * @param int    $post_id  Attach-to post (0 = unattached).
+	 * @param string $desc     Optional description/title.
+	 * @return int|WP_Error Attachment ID, or WP_Error.
+	 */
+	public static function sideload_upload( $name, $tmp_path, $post_id = 0, $desc = '' ) {
+		self::$last_reused = false;
+		$name = sanitize_file_name( (string) $name );
+		if ( $name === '' || ! is_string( $tmp_path ) || ! is_readable( $tmp_path ) ) {
+			return new WP_Error( 'bad_upload', __( 'Unreadable upload.', 'fw' ) );
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/media.php';
+		require_once ABSPATH . 'wp-admin/includes/image.php';
+
+		// Content de-dup: identical bytes already imported → reuse it.
+		$hash = @md5_file( $tmp_path ); // phpcs:ignore
+		if ( $hash ) {
+			$dupe = self::find_by_hash( $hash );
+			if ( $dupe ) {
+				self::$last_reused = true;
+				update_post_meta( (int) $dupe, self::SOURCE_META, 'upload:' . $name );
+				return (int) $dupe;
+			}
+		}
+
+		// Copy to a fresh temp so media_handle_sideload can move it without touching the $_FILES tmp
+		// (and to sidestep is_uploaded_file() constraints on the original).
+		$tmp = wp_tempnam( $name );
+		if ( ! $tmp || false === @copy( $tmp_path, $tmp ) ) { // phpcs:ignore
+			return new WP_Error( 'stage_failed', __( 'Could not stage the upload.', 'fw' ) );
+		}
+		$file = array( 'name' => $name, 'tmp_name' => $tmp );
+
+		// Ensure common video/image types are allowed (mp4/webm/ogg are core-allowed, but be explicit).
+		$allow_av = static function ( $m ) {
+			$m['mp4']  = 'video/mp4';
+			$m['m4v']  = 'video/mp4';
+			$m['webm'] = 'video/webm';
+			$m['ogv']  = 'video/ogg';
+			$m['webp'] = 'image/webp';
+			$m['avif'] = 'image/avif';
+			return $m;
+		};
+		add_filter( 'upload_mimes', $allow_av, 99 );
+		$id = media_handle_sideload( $file, (int) $post_id, $desc !== '' ? $desc : null );
+		remove_filter( 'upload_mimes', $allow_av, 99 );
+
+		if ( is_wp_error( $id ) ) {
+			if ( file_exists( $tmp ) ) { @unlink( $tmp ); } // phpcs:ignore
+			return $id;
+		}
+		update_post_meta( (int) $id, self::SOURCE_META, 'upload:' . $name );
+		if ( $hash ) { update_post_meta( (int) $id, self::HASH_META, $hash ); }
+		return (int) $id;
+	}
+
+	/**
 	 * Download a URL to a temp file. Tries WP's streamed download_url() first (memory-light);
 	 * on failure — common when a demo/CDN host (e.g. Cloudflare bot rules) 403s a datacenter
 	 * request that carries a library User-Agent and no Referer — retries with a browser-like

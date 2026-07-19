@@ -665,9 +665,14 @@ class FW_Site_Converter_Stitch {
 	 */
 	private static function header_root( $dom ) {
 		$header = $dom->getElementsByTagName( 'header' )->item( 0 );
-		if ( $header ) { return $header; }
-		$body = $dom->getElementsByTagName( 'body' )->item( 0 );
-		if ( ! $body ) { return null; }
+		$body   = $dom->getElementsByTagName( 'body' )->item( 0 );
+		// A full-viewport <header> that holds the H1 + CTA (openhero-style: `<header class="min-h-screen">`,
+		// with the real nav in a SEPARATE <nav>) is a HERO band, not the masthead — don't let it become
+		// chrome. When the first <header> is a hero, prefer a distinct top-level sticky/fixed <nav>. Mirrors
+		// the capture service's isHeroHeader() split.
+		$header_is_hero = self::is_hero_header( $header );
+		if ( $header && ! $header_is_hero ) { return $header; }
+		if ( ! $body ) { return $header; }
 		$first = null;
 		foreach ( $body->getElementsByTagName( 'nav' ) as $nav ) {
 			if ( self::has_ancestor_tag( $nav, 'main', $body )
@@ -675,13 +680,47 @@ class FW_Site_Converter_Stitch {
 				|| self::has_ancestor_tag( $nav, 'footer', $body ) ) {
 				continue;
 			}
+			if ( $header_is_hero && self::node_within( $nav, $header ) ) { continue; } // a nav INSIDE the hero isn't the masthead
 			$c = self::cls( $nav );
 			if ( strpos( $c, 'fixed' ) !== false || strpos( $c, 'sticky' ) !== false || strpos( $c, 'top-0' ) !== false ) {
 				return $nav;
 			}
 			if ( $first === null ) { $first = $nav; }
 		}
-		return $first;
+		if ( $first !== null ) { return $first; }
+		return $header; // no separate nav found → keep the header (hero stays chrome, as before the split)
+	}
+
+	/**
+	 * Is this <header> actually a full-viewport HERO (not the site masthead)? A hero is tall
+	 * (min-h-screen / h-screen / min-h-[NNvh], or a data-sc-cs min-height ≥ 60vh) AND leads with a big
+	 * heading. A masthead is short and nav-like. Class-based (this path has no layout engine), with a
+	 * computed-style fallback when the capture annotated data-sc-cs. Mirrors the JS isHeroHeader().
+	 *
+	 * @param DOMElement|null $el
+	 * @return bool
+	 */
+	private static function is_hero_header( $el ) {
+		if ( ! $el ) { return false; }
+		$c    = ' ' . self::cls( $el ) . ' ';
+		$tall = ( strpos( $c, ' min-h-screen ' ) !== false ) || ( strpos( $c, ' h-screen ' ) !== false )
+			|| preg_match( '/\b(?:min-)?h-\[\s*(?:[6-9]\d|1\d\d)(?:vh|dvh|svh)/', $c );
+		if ( ! $tall ) {
+			$cs = (string) $el->getAttribute( 'data-sc-cs' );
+			if ( $cs !== '' && preg_match( '/min-height:\s*([\d.]+)(px|vh|dvh|svh)/', $cs, $m ) ) {
+				$v    = (float) $m[1];
+				$tall = ( 'px' === $m[2] ) ? ( $v >= 480 ) : ( $v >= 60 ); // ~60% of an 800px viewport, or 60vh
+			}
+		}
+		if ( ! $tall ) { return false; }
+		return $el->getElementsByTagName( 'h1' )->length > 0 || $el->getElementsByTagName( 'h2' )->length > 0;
+	}
+
+	/** True when $node is a descendant of $ancestor (node-path prefix — robust against PHP DOM wrapper identity). */
+	private static function node_within( $node, $ancestor ) {
+		if ( ! $node || ! $ancestor ) { return false; }
+		$ap = $ancestor->getNodePath();
+		return $ap !== '' && strpos( (string) $node->getNodePath(), $ap . '/' ) === 0;
 	}
 
 	private static function detect_header( $html ) {
@@ -956,15 +995,41 @@ class FW_Site_Converter_Stitch {
 	}
 
 	private static function section_roots( $body ) {
-		$out = array();
 		$main = null;
 		foreach ( $body->getElementsByTagName( 'main' ) as $m ) { $main = $m; break; }
 		$scope = $main ? $main : $body;
-		foreach ( $scope->getElementsByTagName( 'section' ) as $s ) {
-			// Only top-level sections (not a <section> nested inside another we'll already emit).
-			if ( ! self::has_ancestor_tag( $s, 'section', $scope ) ) { $out[] = $s; }
-		}
+		// The masthead header (so a hero <header> that ISN'T the masthead can be folded in as a body band).
+		$masthead      = $body->ownerDocument ? self::header_root( $body->ownerDocument ) : null;
+		$masthead_path = $masthead ? (string) $masthead->getNodePath() : '';
+		$out = array();
+		self::walk_section_roots( $scope, $masthead_path, $out );
 		return $out;
+	}
+
+	/**
+	 * Pre-order DFS (= document order) that claims each top-level <section> AND each hero <header>
+	 * (a full-viewport <header> that is NOT the masthead — openhero-style), diving through plain
+	 * wrappers but never into a claimed band or chrome (nav/footer/masthead). Mirrors the capture
+	 * service folding hero headers into its section list.
+	 *
+	 * @param DOMNode $node
+	 * @param string  $masthead_path node-path of the masthead header (skip it), '' if none
+	 * @param array   $out
+	 */
+	private static function walk_section_roots( $node, $masthead_path, array &$out ) {
+		foreach ( $node->childNodes as $ch ) {
+			if ( XML_ELEMENT_NODE !== $ch->nodeType ) { continue; }
+			$tag = strtolower( $ch->tagName );
+			if ( 'section' === $tag ) { $out[] = $ch; continue; }                 // claim; don't descend (nested sections ignored)
+			if ( 'header' === $tag ) {
+				if ( ( '' === $masthead_path || (string) $ch->getNodePath() !== $masthead_path ) && self::is_hero_header( $ch ) ) {
+					$out[] = $ch;                                                  // a hero header = body content
+				}
+				continue;                                                          // never descend into a <header>
+			}
+			if ( 'footer' === $tag || 'nav' === $tag ) { continue; }              // chrome — never a body band
+			self::walk_section_roots( $ch, $masthead_path, $out );                // dive through wrappers to reach sections
+		}
 	}
 
 	/**
@@ -1067,8 +1132,16 @@ class FW_Site_Converter_Stitch {
 					if ( $src === ''  && ( $stype === 'video/mp4'  || preg_match( '/\.mp4(\?|$)/i',  $ssrc ) ) ) { $src  = $ssrc; }
 				}
 				if ( $src === '' && $webm === '' ) { return null; }
+				// Full-screen BACKGROUND <video> (absolute/fixed + object-cover) → flagged `bg` so the
+				// mapper wires it into the SECTION background. No computed styles here (static parse), so
+				// read the class (Tailwind object-cover/inset-0/absolute) + inline style. Mirrors the JS
+				// extractor's videoBlockOf `bg` flag.
+				$vcls   = strtolower( (string) $el->getAttribute( 'class' ) );
+				$vstyle = strtolower( (string) $el->getAttribute( 'style' ) );
+				$is_bg  = ( preg_match( '/\b(absolute|fixed)\b/', $vcls ) || preg_match( '/position\s*:\s*(absolute|fixed)/', $vstyle ) )
+					&& ( preg_match( '/\b(object-cover|inset-0)\b/', $vcls ) || preg_match( '/object-fit\s*:\s*cover/', $vstyle ) );
 				return array(
-					't' => 'video', 'role' => 'video', 'mode' => 'self_hosted',
+					't' => 'video', 'role' => 'video', 'mode' => 'self_hosted', 'bg' => (bool) $is_bg,
 					'src' => $src, 'webm' => $webm, 'poster' => (string) $el->getAttribute( 'poster' ),
 					'autoplay'    => $el->hasAttribute( 'autoplay' )    ? 'yes' : 'no',
 					'muted'       => $el->hasAttribute( 'muted' )       ? 'yes' : 'no',
@@ -1254,7 +1327,9 @@ class FW_Site_Converter_Stitch {
 			if ( $card ) {
 				$col['card'] = $card;
 			} else {
-				$col['html'] = self::clean_block_html( $cell );
+				$btns = self::buttons_from_cell( $cell ); // a CTA button-group cell?
+				if ( $btns ) { $col['buttons'] = $btns; }
+				else { $col['html'] = self::clean_block_html( $cell ); }
 			}
 			$out[] = $col;
 		}
@@ -1296,7 +1371,10 @@ class FW_Site_Converter_Stitch {
 				break;
 			}
 		}
-		if ( $icon === '' ) {
+		// Native Lucide (data-lucide / lucide-<name> class / <iconify-icon icon="lucide:zap">) → library icon id.
+		$lucide = '';
+		if ( $icon === '' ) { $lucide = self::detect_lucide_in( $cell ); }
+		if ( $icon === '' && $lucide === '' ) {
 			$svg = $cell->getElementsByTagName( 'svg' )->item( 0 );
 			if ( $svg && $cell->ownerDocument ) { $custom_icon = (string) $cell->ownerDocument->saveHTML( $svg ); }
 		}
@@ -1327,6 +1405,7 @@ class FW_Site_Converter_Stitch {
 			'icon'       => $icon,
 			'iconCls'    => $icon_cls,
 			'customIcon' => $custom_icon,
+			'lucide'     => $lucide, // 'lucide/<name>' when the card icon is a native Lucide glyph → n_icon_box library icon
 			'title'      => self::text( $heading ),
 			'titleTag'   => $htag,
 			'text'       => $body,
@@ -1340,6 +1419,62 @@ class FW_Site_Converter_Stitch {
 			'cs'         => $cell->getAttribute( 'data-sc-cs' ), // its RESOLVED computed style → styling for non-Tailwind sites
 			'iconLayout' => 'top-title',
 		);
+	}
+
+	/**
+	 * A grid cell that is ONLY CTA buttons (no heading/prose) → an array of button descriptors
+	 * { label, href, cls, cs, icon }, else null. Mirrors the capture service's buttonsOf() so the
+	 * URL and file-upload paths agree — a button group maps to real button shortcodes (side-by-side
+	 * via the mapper's .btn-row Inner Wrapper Class), not a frozen code_block.
+	 *
+	 * @param DOMElement $cell
+	 * @return array[]|null
+	 */
+	private static function buttons_from_cell( $cell ) {
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
+			if ( $cell->getElementsByTagName( $h )->length > 0 ) { return null; } // a heading → it's a card, not a button group
+		}
+		$btns = array();
+		foreach ( $cell->getElementsByTagName( '*' ) as $el ) {
+			$tag = strtolower( $el->tagName );
+			if ( $tag !== 'a' && $tag !== 'button' ) { continue; }
+			if ( ! ( self::is_button( $el ) || self::cs_is_button( $el ) ) ) { continue; }
+			if ( trim( self::text_no_icons( $el ) ) === '' ) { continue; }
+			$btns[] = $el;
+		}
+		// Keep only the OUTERMOST matches (an <a> wrapping a button-like <span>).
+		$outer = array();
+		foreach ( $btns as $b ) {
+			$nested = false;
+			foreach ( $btns as $o ) {
+				if ( $o === $b ) { continue; }
+				for ( $p = $b->parentNode; $p !== null; $p = $p->parentNode ) { if ( $p === $o ) { $nested = true; break; } }
+				if ( $nested ) { break; }
+			}
+			if ( ! $nested ) { $outer[] = $b; }
+		}
+		if ( ! $outer ) { return null; }
+		// Require the cell be dominated by button labels (no substantial prose beside them).
+		$prose  = strlen( trim( preg_replace( '/\s+/', ' ', $cell->textContent ) ) );
+		$btnlen = 0;
+		foreach ( $outer as $b ) { $btnlen += strlen( trim( self::text_no_icons( $b ) ) ); }
+		if ( $prose > $btnlen + 24 ) { return null; }
+		$out = array();
+		foreach ( $outer as $b ) {
+			$href  = strtolower( $b->tagName ) === 'a' ? (string) $b->getAttribute( 'href' ) : '#';
+			$bicon = '';
+			foreach ( $b->getElementsByTagName( 'span' ) as $sp ) {
+				if ( strpos( self::cls( $sp ), 'material-symbols' ) !== false ) { $bicon = self::material_to_fa( trim( $sp->textContent ) ); break; }
+			}
+			$out[] = array(
+				'label' => self::text_no_icons( $b ),
+				'href'  => $href !== '' ? $href : '#',
+				'cls'   => self::cls( $b ),
+				'cs'    => (string) $b->getAttribute( 'data-sc-cs' ),
+				'icon'  => $bicon,
+			);
+		}
+		return $out;
 	}
 
 	/** Build a button block from a <button>/<a> CTA. */

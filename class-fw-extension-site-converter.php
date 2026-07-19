@@ -61,6 +61,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			// File-upload Convert with review: prepare (build bundle + return mapping) → build (corrected).
 			add_action( 'wp_ajax_fw_sc_convert_prepare', array( $this, '_ajax_convert_prepare' ) );
 			add_action( 'wp_ajax_fw_sc_convert_build', array( $this, '_ajax_convert_build' ) );
+			add_action( 'wp_ajax_fw_sc_upload_assets', array( $this, '_ajax_upload_assets' ) );
 			add_action( 'wp_ajax_fw_sc_export_rules', array( $this, '_ajax_export_rules' ) );
 			add_action( 'wp_ajax_fw_sc_import_rules', array( $this, '_ajax_import_rules' ) );
 			add_action( 'wp_ajax_fw_sc_selftest', array( $this, '_ajax_selftest' ) );
@@ -545,10 +546,20 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				$this->redirect_back();
 				return;
 			}
-			// Raw source → DECOMPOSE mapper (build_from_dir) → editable page-builder elements. (Auto-capture
-			// of raw uploads is OFF — see faithful_import(); upload a pre-built convert-bundle.zip for the
-			// faithful render instead.)
-			$bundle  = FW_Site_Converter_Sources::build_from_dir( $tmp, $opts );
+			// A SOURCE BUNDLE (a zipped folder of loose files — the RENDERED HTML + real media, i.e. the
+			// kit's demo-pages/<slug>/: devtools.html [+ view-source.html] + video.mp4 + images). Not a
+			// builder export → pick the primary HTML, sideload the media (matched into the markup by
+			// filename, like "Attach media"), then convert offline as if pasted.
+			$sb = $this->source_bundle_from_dir( $tmp );
+			if ( $sb ) {
+				if ( ! empty( $sb['media'] ) ) { $this->sideload_bundle_media( $sb['media'] ); }
+				$bundle = FW_Site_Converter_Sources::build_from_html( $sb['html'], ( $sb['title'] !== '' ? $sb['title'] : $title ), $opts );
+			} else {
+				// Raw builder export → DECOMPOSE mapper (build_from_dir) → editable page-builder elements.
+				// (Auto-capture of raw uploads is OFF — upload a pre-built convert-bundle.zip for the
+				// faithful render instead.)
+				$bundle = FW_Site_Converter_Sources::build_from_dir( $tmp, $opts );
+			}
 			$cleanup = $tmp;
 		} elseif ( trim( $html ) !== '' ) {
 			$bundle = FW_Site_Converter_Sources::build_from_html( $html, $title, $opts );
@@ -794,6 +805,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			: array();
 		FW_Site_Converter_Mapper::set_style_config( $cfg );
 
+		$__am = get_transient( $this->assets_key() );
+		FW_Site_Converter_Mapper::set_assets( is_array( $__am ) ? $__am : array() ); // "Attach media" uploads → used by the mapper
 		$pages = FW_Site_Converter_Mapper::build_pages( $mapping );
 
 		// Fold the styling the mapper just registered (sc-btn / .box / btn-row) into the stashed child-theme
@@ -844,6 +857,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			if ( ! $opt( 'opt_footer' ) ) { $files['theme-design.json']['skip_footer'] = true; } // "Capture footer" off
 		}
 
+		$__am = get_transient( $this->assets_key() );
+		FW_Site_Converter_Mapper::set_assets( is_array( $__am ) ? $__am : array() ); // "Attach media" uploads → used by the mapper
 		$result = FW_Site_Converter_Stitch::import_bundle( array( 'files' => $files, 'screens' => $stash['screens'] ?? 1, 'error' => '' ) );
 		if ( ! empty( $result['error'] ) && empty( $result['sections'] ) ) { wp_send_json_error( array( 'message' => $result['error'] ) ); }
 
@@ -1051,6 +1066,110 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 * the bundle importer and hand back the results-page URL (so the existing
 	 * bundle_result view shows the per-phase summary).
 	 */
+	/**
+	 * Sideload the optional "Attach media" uploads (videos / poster images) from the Convert box into
+	 * the Media Library, and stash a basename → { id, url } map in a transient the build step reads.
+	 * Lets the user provide a real hero video the source only referenced via an external CDN, so the
+	 * mapper can wire it in (e.g. as a section background video) at build time.
+	 *
+	 * @internal
+	 */
+	public function _ajax_upload_assets() {
+		check_ajax_referer( self::NONCE );
+		if ( ! current_user_can( self::CAPABILITY ) ) {
+			wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 );
+		}
+		$map    = array();
+		$failed = array();
+		if ( ! empty( $_FILES['assets'] ) && is_array( $_FILES['assets']['name'] ) && class_exists( 'FW_Site_Converter_Media' ) ) {
+			$names = $_FILES['assets']['name'];
+			$tmps  = $_FILES['assets']['tmp_name'];
+			$errs  = isset( $_FILES['assets']['error'] ) ? $_FILES['assets']['error'] : array();
+			foreach ( (array) $names as $i => $n ) {
+				if ( ! empty( $errs[ $i ] ) || empty( $tmps[ $i ] ) || ! is_uploaded_file( $tmps[ $i ] ) ) { continue; }
+				$id = FW_Site_Converter_Media::sideload_upload( (string) $n, (string) $tmps[ $i ] );
+				if ( is_wp_error( $id ) ) { $failed[] = sanitize_file_name( (string) $n ) . ': ' . $id->get_error_message(); continue; }
+				$key = strtolower( sanitize_file_name( (string) $n ) );
+				$map[ $key ] = array( 'id' => (int) $id, 'url' => (string) wp_get_attachment_url( (int) $id ), 'mime' => (string) get_post_mime_type( (int) $id ) );
+			}
+		}
+		// Stash for the build step (both the URL-path build_mapping and the file-path convert_build read it).
+		set_transient( $this->assets_key(), $map, 30 * MINUTE_IN_SECONDS );
+		wp_send_json_success( array( 'assets' => $map, 'failed' => $failed, 'count' => count( $map ) ) );
+	}
+
+	/** Per-user transient key holding the sideloaded "Attach media" map for the current conversion. */
+	private function assets_key() {
+		return 'fw_sc_assets_' . get_current_user_id();
+	}
+
+	/**
+	 * Detect a SOURCE BUNDLE in an unzipped folder — a loose collection of the rendered HTML + real
+	 * media (the kit's `demo-pages/<slug>/` shape), as opposed to a recognized builder export.
+	 * Returns `array( html, title, media[] )`, or null when it's a builder export / has no HTML.
+	 *
+	 * @param string $dir
+	 * @return array|null
+	 */
+	private function source_bundle_from_dir( $dir ) {
+		if ( ! function_exists( 'list_files' ) ) { require_once ABSPATH . 'wp-admin/includes/file.php'; }
+		$files = list_files( $dir ); // recursive
+		if ( ! is_array( $files ) || ! $files ) { return null; }
+		$htmls = array(); $media = array();
+		foreach ( $files as $f ) {
+			$base = strtolower( basename( $f ) );
+			$ext  = strtolower( pathinfo( $f, PATHINFO_EXTENSION ) );
+			if ( 'html' === $ext || 'htm' === $ext ) {
+				$htmls[ $base ] = $f;
+			} elseif ( in_array( $ext, array( 'mp4', 'webm', 'mov', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'avif' ), true ) ) {
+				if ( false === strpos( $base, 'screenshot' ) ) { $media[] = $f; } // the reference screenshot isn't page media
+			}
+		}
+		if ( ! $htmls ) { return null; }
+		// If it's a recognized builder export (Stitch, …), let the normal auto-detect path handle it —
+		// UNLESS our own bundle filenames are present (those are unambiguously a source bundle).
+		$known = isset( $htmls['devtools.html'] ) || isset( $htmls['view-source.html'] ) || isset( $htmls['rendered.html'] );
+		if ( ! $known && class_exists( 'FW_Site_Converter_Sources' ) ) {
+			$id   = FW_Site_Converter_Sources::identify_dir( $dir );
+			$conf = is_array( $id ) ? (float) ( $id['confidence'] ?? 0 ) : 0;
+			$key  = is_array( $id ) ? (string) ( $id['source'] ?? $id['key'] ?? '' ) : '';
+			if ( $conf >= 0.5 && $key && 'generic' !== $key ) { return null; }
+		}
+		// Primary HTML: the RENDERED DOM wins (has JS-built content + inline SVGs); view-source last.
+		$pick = '';
+		foreach ( array( 'devtools.html', 'rendered.html', 'index.html', 'view-source.html' ) as $name ) {
+			if ( isset( $htmls[ $name ] ) ) { $pick = $htmls[ $name ]; break; }
+		}
+		if ( '' === $pick ) { // else the largest .html
+			uasort( $htmls, function ( $a, $b ) { return (int) @filesize( $b ) - (int) @filesize( $a ); } );
+			$pick = (string) reset( $htmls );
+		}
+		$html = (string) @file_get_contents( $pick );
+		if ( '' === trim( $html ) ) { return null; }
+		$title = ucwords( trim( str_replace( array( '-', '_' ), ' ', basename( untrailingslashit( $dir ) ) ) ) );
+		return array( 'html' => $html, 'title' => ( '' !== $title ? $title : 'Home' ), 'media' => $media );
+	}
+
+	/**
+	 * Sideload a source bundle's media files into the Media Library and MERGE them into the
+	 * "Attach media" map (same `assets_key()` transient the build step reads to wire media into the
+	 * markup by filename — a full-screen <video> becomes the section background video, etc.).
+	 *
+	 * @param string[] $files absolute paths
+	 */
+	private function sideload_bundle_media( array $files ) {
+		if ( ! $files || ! class_exists( 'FW_Site_Converter_Media' ) ) { return; }
+		$map = (array) get_transient( $this->assets_key() );
+		foreach ( $files as $path ) {
+			$name = basename( (string) $path );
+			$id   = FW_Site_Converter_Media::sideload_upload( $name, (string) $path );
+			if ( is_wp_error( $id ) ) { continue; }
+			$key         = strtolower( sanitize_file_name( $name ) );
+			$map[ $key ] = array( 'id' => (int) $id, 'url' => (string) wp_get_attachment_url( (int) $id ), 'mime' => (string) get_post_mime_type( (int) $id ) );
+		}
+		set_transient( $this->assets_key(), $map, 30 * MINUTE_IN_SECONDS );
+	}
+
 	public function _ajax_analyze_apply() {
 		check_ajax_referer( self::NONCE );
 		if ( ! current_user_can( self::CAPABILITY ) ) {
@@ -1157,6 +1276,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		// structure into their existing site, then styles it themselves).
 		$grab_only = isset( $_POST['opt_theme'] ) && $_POST['opt_theme'] === '0';
 
+		$__am = get_transient( $this->assets_key() );
+		FW_Site_Converter_Mapper::set_assets( is_array( $__am ) ? $__am : array() ); // "Attach media" uploads → used by the mapper
 		$pages = FW_Site_Converter_Mapper::build_pages( $mapping );
 		if ( $grab_only ) {
 			foreach ( $pages as $i => $pg ) {
@@ -1442,8 +1563,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<ol style="margin:.6em 0 .4em 1.4em;padding:0">
 						<li style="margin-bottom:.9em">
 							<strong><?php esc_html_e( 'Download the capture service.', 'fw' ); ?></strong><br>
-							<span class="description"><?php echo wp_kses_post( __( 'Get it from GitHub — <a href="https://github.com/UnysonPlus/UnysonPlus-HTML-to-Wordpress-Conversion" target="_blank" rel="noopener">UnysonPlus/UnysonPlus-HTML-to-Wordpress-Conversion</a>. Clone it (recommended, so <code>git pull</code> updates it later):', 'fw' ) ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-HTML-to-Wordpress-Conversion.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<span class="description"><?php echo wp_kses_post( __( 'Get it from GitHub — <a href="https://github.com/UnysonPlus/UnysonPlus-Capture-Service" target="_blank" rel="noopener">UnysonPlus/UnysonPlus-Capture-Service</a>. Clone it (recommended, so <code>git pull</code> updates it later):', 'fw' ) ); ?></span>
+							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-Capture-Service.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							<span class="description"><?php echo wp_kses_post( __( '…or use the green <strong>Code → Download ZIP</strong> button on that page and unzip it.', 'fw' ) ); ?></span>
 						</li>
 						<li style="margin-bottom:.9em">
@@ -1557,30 +1678,45 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<?php wp_nonce_field( self::NONCE ); ?>
 					<input type="hidden" name="fw_sc_step" value="convert_file">
 				<p style="margin:.2em 0 1em">
-					<label style="margin-right:1.4em;font-weight:600"><input type="radio" name="fw_sc_source" class="fw-sc-src-radio" value="file" checked> <?php esc_html_e( 'Upload a file (.zip)', 'fw' ); ?></label>
-					<label style="font-weight:600"><input type="radio" name="fw_sc_source" class="fw-sc-src-radio" value="url"> <?php esc_html_e( 'From a URL', 'fw' ); ?></label>
-					<span id="fw-sc-src-hint" class="description" style="display:block;margin-top:.35em"></span>
+					<label style="margin-right:1.4em;font-weight:600"><input type="radio" name="fw_sc_source" class="fw-sc-src-radio" value="url" checked> <?php esc_html_e( 'From a URL', 'fw' ); ?></label>
+					<label style="margin-right:1.4em;font-weight:600"><input type="radio" name="fw_sc_source" class="fw-sc-src-radio" value="file"> <?php esc_html_e( 'Upload a file (.zip / bundle)', 'fw' ); ?></label>					<span id="fw-sc-src-hint" class="description" style="display:block;margin-top:.35em"></span>
 				</p>
 
 				<!-- Source input (right after the source choice) -->
-				<div id="fw-sc-src-file">
+				<div id="fw-sc-src-file" style="display:none">
 					<table class="form-table" role="presentation" style="margin-top:0">
 						<tr>
 							<th scope="row"><?php esc_html_e( 'Export file (.zip)', 'fw' ); ?></th>
 							<td><input type="file" name="fw_sc_file" accept=".zip,application/zip">
-								<p class="description"><?php esc_html_e( 'e.g. a Google Stitch export. Both layouts work: a single exported frame, or a whole multi-screen project. The builder is auto-detected on upload.', 'fw' ); ?></p>
+								<p class="description"><?php esc_html_e( 'e.g. a Google Stitch export, OR a “source bundle” — a .zip of the rendered HTML + real media (devtools.html [+ view-source.html] + video.mp4 + images, like the AI Dev Kit’s demo-pages/<slug>/ folder). Builder exports auto-detect (single frame or multi-screen); a source bundle picks the rendered HTML and sideloads its media, matched into the markup by filename.', 'fw' ); ?></p>
 								<p class="description" style="margin:.4em 0 0"><?php esc_html_e( 'A file converts as a faithful mirror, offline: the source’s exact header/footer become the child theme’s header.php/footer.php, the body becomes page-builder sections, and the compiled CSS is reproduced — pixel-identical, no AI, no capture service.', 'fw' ); ?></p>
+									<details style="margin:.6em 0 0">
+										<summary style="cursor:pointer;color:#2271b1;font-weight:600"><?php esc_html_e( 'How to capture a source bundle (.zip) from any page', 'fw' ); ?></summary>
+										<ol style="margin:.5em 0 0 1.3em;color:#50575e;font-size:13px;line-height:1.7">
+											<li><?php esc_html_e( 'Open the page in your browser. Scroll to the bottom once (so lazy-loaded sections/images appear), then back to the top.', 'fw' ); ?></li>
+											<li><?php echo wp_kses_post( __( '<strong>Rendered HTML (primary)</strong> — open DevTools (F12) → <em>Elements</em>, right-click the top <code>&lt;html&gt;</code> tag → <em>Copy → Copy outerHTML</em>, and save it as <code>devtools.html</code>. This carries the JS-built content + inline SVGs a raw view-source misses.', 'fw' ) ); ?></li>
+											<li><?php echo wp_kses_post( __( '<strong>Original HTML</strong> — view the page source (Ctrl+U / ⌥⌘U) and save it as <code>view-source.html</code> (keeps <code>&lt;head&gt;</code> / fonts / embedded data).', 'fw' ) ); ?></li>
+											<li><?php esc_html_e( 'Download the real hero video / images the page uses (right-click → Save video / image as…).', 'fw' ); ?></li>
+											<li><?php echo wp_kses_post( __( 'Put them in one folder and <strong>zip it</strong>, then upload above. The converter uses <code>devtools.html</code> and sideloads the media, matched into the markup by filename.', 'fw' ) ); ?></li>
+										</ol>
+										<p class="description" style="margin:.4em 0 0"><?php esc_html_e( 'Best fidelity (exact computed colors/spacing) still comes from “From a URL” with the capture service running — a static bundle is a faithful mirror without computed styles.', 'fw' ); ?></p>
+									</details>
 							</td>
 						</tr>
 					</table>
 				</div><!-- /#fw-sc-src-file -->
-				<div id="fw-sc-src-url" style="display:none">
+				<div id="fw-sc-src-url">
 					<p class="description" style="margin:0 0 .6em"><?php esc_html_e( 'Point it at a live site and it is rendered + converted in one step — best for AI builders that render in the browser (Lovable, v0, Bolt, React / Vite apps). The capture service must be running (set it up under “Enable AI” above).', 'fw' ); ?></p>
 					<div class="fw-sc-analyze" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>">
 						<input type="url" id="fw-sc-an-url" class="regular-text" style="width:30em;max-width:100%" placeholder="https://your-site.lovable.app/" onkeydown="if(event.key==='Enter'){event.preventDefault();var g=document.getElementById('fw-sc-an-go');if(g){g.click();}}">
 						<span id="fw-sc-an-svc" class="description" style="margin-left:.6em"></span>
 					</div>
 				</div><!-- /#fw-sc-src-url -->
+				<div id="fw-sc-src-paste" style="display:none">
+					<p class="description" style="margin:0 0 .6em"><?php esc_html_e( 'Paste the RENDERED HTML — in browser DevTools, right-click the <html> node → Copy → “Copy outerHTML”. Best for JS / SPA sources (React, Next, Vue) with no capture service: your browser already rendered it, so it converts offline as a faithful mirror. Tip: paste the whole <html> so <head> / fonts come along, and attach the real hero video / images below — they are wired into the markup by filename.', 'fw' ); ?></p>
+					<p style="margin:0 0 .5em"><input type="text" name="fw_sc_file_title" class="regular-text" placeholder="<?php esc_attr_e( 'Page title (e.g. Home)', 'fw' ); ?>"></p>
+					<?php echo $this->json_editor_field( 'fw_sc_file_html', '<!DOCTYPE html> … paste the rendered page markup …', '', 12, 'fw_sc_file_html', '.html,text/html,text/plain' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+				</div><!-- /#fw-sc-src-paste -->
 
 				<!-- Shared options (apply to whichever source is selected) -->
 				<p style="margin:.6em 0 .4em;font-size:13px;color:#3c434a">
@@ -1597,8 +1733,43 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<label style="display:block;margin-top:.3em;color:#50575e"><?php esc_html_e( 'Service URL', 'fw' ); ?> <input type="url" id="fw-sc-ai-svcurl" class="regular-text" value="http://localhost:8787" style="width:15em"></label>
 				</p>
 
+				<!-- Optional: attach real media (hero videos / poster images) the source only references via an external URL -->
+				<p style="margin:.2em 0 1.1em">
+					<label style="font-weight:600"><?php esc_html_e( 'Attach media', 'fw' ); ?> <span style="font-weight:400;color:#646970">(<?php esc_html_e( 'optional', 'fw' ); ?>)</span></label>
+					<input type="file" id="fw-sc-assets" multiple accept="video/*,image/*" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>" style="display:block;margin:.3em 0">
+					<span id="fw-sc-assets-status" class="description"></span>
+					<span class="description" style="display:block;margin-top:.2em"><?php esc_html_e( 'Upload the real hero video(s) / poster images when the source loads them from an external URL (e.g. a Google Stitch cinematic video). They are sideloaded into the Media Library and matched to the captured markup by filename — a full-screen background <video> becomes the section background video; other matches replace the dead external URL.', 'fw' ); ?></span>
+				</p>
+				<script>
+				( function () {
+					var input = document.getElementById( 'fw-sc-assets' );
+					if ( ! input ) { return; }
+					var status = document.getElementById( 'fw-sc-assets-status' );
+					var ajaxurl = window.ajaxurl || '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
+					// Auto-upload on selection → the files are sideloaded + a basename→attachment map is stashed
+					// server-side (a transient the build step reads), so this is decoupled from the convert flow.
+					input.addEventListener( 'change', function () {
+						if ( ! input.files || ! input.files.length ) { if ( status ) { status.textContent = ''; } return; }
+						if ( status ) { status.innerHTML = '<span style="color:#3c434a">● <?php echo esc_js( __( 'Uploading media…', 'fw' ) ); ?></span>'; }
+						var fd = new FormData();
+						fd.append( 'action', 'fw_sc_upload_assets' );
+						fd.append( '_wpnonce', input.getAttribute( 'data-nonce' ) );
+						for ( var i = 0; i < input.files.length; i++ ) { fd.append( 'assets[]', input.files[ i ] ); }
+						fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } )
+							.then( function ( r ) {
+								if ( r && r.success ) {
+									var n = ( r.data && r.data.count ) || 0;
+									var msg = '&#10003; ' + n + ' <?php echo esc_js( __( 'media file(s) attached &amp; added to the Media Library', 'fw' ) ); ?>';
+									if ( r.data && r.data.failed && r.data.failed.length ) { msg += ' — ' + r.data.failed.length + ' <?php echo esc_js( __( 'failed', 'fw' ) ); ?>'; }
+									if ( status ) { status.innerHTML = '<span style="color:#1a7f37">' + msg + '</span>'; }
+								} else if ( status ) { status.innerHTML = '<span style="color:#b32d2e"><?php echo esc_js( __( 'Upload failed.', 'fw' ) ); ?></span>'; }
+							} ).catch( function () { if ( status ) { status.innerHTML = '<span style="color:#b32d2e"><?php echo esc_js( __( 'Upload failed (is WordPress reachable?).', 'fw' ) ); ?></span>'; } } );
+					} );
+				} )();
+				</script>
+
 				<!-- Action buttons (per source) -->
-				<div id="fw-sc-act-file">
+				<div id="fw-sc-act-file" style="display:none">
 					<p class="submit" style="display:flex;gap:.6em;align-items:center;flex-wrap:wrap;margin-top:.4em">
 						<button type="submit" class="button button-primary button-hero" name="fw_sc_convert_action" value="import"><?php esc_html_e( 'Convert to WordPress', 'fw' ); ?></button>
 						<button type="button" class="button button-secondary" id="fw-sc-file-review" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>"><?php esc_html_e( 'Review mapping first', 'fw' ); ?></button>
@@ -1608,13 +1779,12 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<details class="fw-sc-convert-adv" style="margin-top:.6em">
 						<summary style="cursor:pointer;color:#646970"><?php esc_html_e( 'Advanced options', 'fw' ); ?></summary>
 						<div style="padding:.8em 0 0">
-							<p style="margin:0 0 .5em"><label for="fw_sc_file_html" style="font-weight:600"><?php esc_html_e( 'Paste one screen’s code.html instead of a file', 'fw' ); ?></label><br><input type="text" name="fw_sc_file_title" class="regular-text" placeholder="<?php esc_attr_e( 'Page title (e.g. Home)', 'fw' ); ?>" style="margin:.4em 0"></p>
-							<?php echo $this->json_editor_field( 'fw_sc_file_html', '<!DOCTYPE html> … the exported screen markup …', '', 8, 'fw_sc_file_html', '.html,text/html,text/plain' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+							<p class="description" style="margin:0 0 .5em"><?php esc_html_e( 'Get the convert bundle as a .zip rather than importing now — e.g. to refine it with AI first, then re-upload.', 'fw' ); ?></p>
 							<p><button type="submit" class="button button-secondary" name="fw_sc_convert_action" value="download"><?php esc_html_e( 'Download bundle (.zip) instead of converting', 'fw' ); ?></button></p>
 						</div>
 					</details>
 				</div><!-- /#fw-sc-act-file -->
-				<div id="fw-sc-act-url" style="display:none">
+				<div id="fw-sc-act-url">
 					<p class="submit" style="margin:.4em 0"><button type="button" class="button button-primary" id="fw-sc-an-go"><?php esc_html_e( 'Analyze &amp; convert', 'fw' ); ?></button></p>
 					<p class="description" style="margin:.2em 0;font-size:12px"><?php esc_html_e( 'Grab content only (Create child theme off): the converted sections become a NEW page — your homepage and active theme are left untouched, no section CSS is written. Pick which sections to keep in the review step.', 'fw' ); ?></p>
 					<div id="fw-sc-an-status" style="margin-top:.7em"></div>
@@ -2011,21 +2181,26 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				var radios = document.querySelectorAll( '.fw-sc-src-radio' );
 				var fileBox = document.getElementById( 'fw-sc-src-file' );
 				var urlBox  = document.getElementById( 'fw-sc-src-url' );
+					var pasteBox = document.getElementById( 'fw-sc-src-paste' );
 					var actFile = document.getElementById( 'fw-sc-act-file' );
 					var actUrl  = document.getElementById( 'fw-sc-act-url' );
 				var aiChk   = document.getElementById( 'fw-sc-ai' );
 				var hint    = document.getElementById( 'fw-sc-src-hint' );
 				if ( ! radios.length || ! fileBox || ! urlBox ) { return; }
-				function current() { var r = document.querySelector( '.fw-sc-src-radio:checked' ); return r ? r.value : 'file'; }
+				function current() { var r = document.querySelector( '.fw-sc-src-radio:checked' ); return r ? r.value : 'url'; }
 				function sync() {
-					var src = current(), isFile = ( src === 'file' );
+					var src = current(), isUrl = ( src === 'url' ), isPaste = ( src === 'paste' ), isFile = ( ! isUrl && ! isPaste );
 					fileBox.style.display = isFile ? '' : 'none';
-					urlBox.style.display  = isFile ? 'none' : '';
-					if ( actFile ) { actFile.style.display = isFile ? '' : 'none'; }
-					if ( actUrl )  { actUrl.style.display  = isFile ? 'none' : ''; }
+					urlBox.style.display  = isUrl  ? '' : 'none';
+					if ( pasteBox ) { pasteBox.style.display = isPaste ? '' : 'none'; }
+					// File AND Paste both submit the offline convert_file step (reads fw_sc_file / fw_sc_file_html), so they share the file action buttons.
+					if ( actFile ) { actFile.style.display = isUrl ? 'none' : ''; }
+					if ( actUrl )  { actUrl.style.display  = isUrl ? '' : 'none'; }
 					if ( hint ) {
-						if ( src === 'url' ) {
+						if ( isUrl ) {
 							hint.innerHTML = '<?php echo esc_js( __( 'A URL is rendered by the capture service, so it must be running (set it up under “Enable AI” above).', 'fw' ) ); ?>';
+						} else if ( isPaste ) {
+							hint.innerHTML = '<?php echo esc_js( __( 'Rendered HTML (DevTools “Copy outerHTML”) converts offline as a faithful mirror — no capture service needed. Attach the real hero video / images below and they are wired in by filename.', 'fw' ) ); ?>';
 						} else {
 							hint.innerHTML = '<?php echo esc_js( __( 'A file converts offline as a faithful mirror — no AI or capture service needed.', 'fw' ) ); ?>';
 						}

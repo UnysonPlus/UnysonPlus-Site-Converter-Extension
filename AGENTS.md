@@ -144,6 +144,36 @@ images, so CSS `@font-face` `url(...woff2)`, favicons (`.ico`), SVG, video, and 
 `url(window.location.href)` never reach the picker. `<img>`/`srcset` URLs are trusted; `url()` and
 JS-bundle refs must carry a raster extension (png/jpg/jpeg/gif/webp/avif/bmp).
 
+### Convert form — source choice + handlers (all in `render_page()`)
+
+The whole Convert UI lives in **`class-fw-extension-site-converter.php` → `render_page()`** (one big
+method: PHP markup + inline `<script>`; there is NO separate view/JS file — edit it here).
+
+- **Source radios** `name="fw_sc_source"` (class `.fw-sc-src-radio`): **`file` | `url` | `paste`**.
+  A JS `sync()` (find the `.fw-sc-src-radio` `querySelectorAll`) shows/hides the input panels
+  **`#fw-sc-src-file` / `#fw-sc-src-url` / `#fw-sc-src-paste`** and the action blocks
+  **`#fw-sc-act-file` (shared by file AND paste) / `#fw-sc-act-url`**.
+- **file + paste → the OFFLINE path.** Both submit the form with `fw_sc_step=convert_file`
+  (`fw_sc_convert_action` = `import` | `download`). The handler reads the uploaded
+  **`$_FILES['fw_sc_file']`** (.zip) **OR** the pasted **`$_POST['fw_sc_file_html']`** (rendered HTML)
+  + `fw_sc_file_title`, then runs the **PHP Stitch → Mapper** converter — no capture service. So
+  "Paste HTML" is just the .zip path fed raw rendered markup (e.g. DevTools *Copy outerHTML* of a SPA).
+- **A .zip is one of three things** (`run_convert_file()` unzips then branches): (1) a **capture bundle**
+  (`FW_Site_Converter_Bundle::looks_like_bundle` → `import_dir`, the pre-built convert-bundle.zip);
+  (2) a **source bundle** (`source_bundle_from_dir()` — a loose folder of the RENDERED HTML + real
+  media, i.e. the kit's `demo-pages/<slug>/`: it picks `devtools.html`/`rendered.html`/`view-source.html`,
+  and `sideload_bundle_media()` sideloads the video/images into the `assets_key()` map so they wire in by
+  filename); else (3) a **builder export** → `FW_Site_Converter_Sources::build_from_dir()` (Stitch auto-detect).
+- **url → the capture-SERVICE path.** Not a form POST — the "Analyze & convert" button (`#fw-sc-an-go`)
+  drives AJAX against the capture service (which renders JS), then feeds the rendered HTML to
+  `window.__fwSCFromHtml` → the same Mapper. Needs the local Node service running.
+- **Attach media** (`#fw-sc-assets`, optional) → AJAX `fw_sc_upload_assets` sideloads the real hero
+  video / poster images and stashes a **basename→attachment** transient; the build step matches by
+  **filename** (a full-screen `<video>` becomes the section background video; other matches replace the
+  dead external URL). This is how you wire a real `video.mp4` into a URL/paste/zip source.
+- **Options checkboxes** (`#fw-sc-opt-theme/header/footer/media/render-browser`, `#fw-sc-ai`) are
+  client-side flags read by the JS and passed into the convert call; they apply to whichever source.
+
 ## Verification
 
 1. Activate the extension (Unyson+ → Extensions). Unyson+ → **Convert** appears.
