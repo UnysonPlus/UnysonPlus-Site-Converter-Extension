@@ -1533,8 +1533,12 @@ class FW_Site_Converter_Stitch {
 					$plain = trim( preg_replace( '/\s+/', ' ', strip_tags( $html ) ) );
 					$media = (bool) preg_match( '/<(img|svg|video|iframe|picture|canvas|input|button|select|textarea)\b/i', $html );
 					if ( $plain === '' && ! $media ) { continue; }                                // drop empty / decorative cell
-					if ( $plain !== '' && ! $media ) { $col['role'] = 'text'; $col['text'] = $html; } // editable text_block
-					else { $col['html'] = $html; }                                                // media / structural → verbatim
+					$has_img = $cell->getElementsByTagName( 'img' )->length > 0;
+					$has_txt = false;
+					foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p' ) as $tg ) { if ( $cell->getElementsByTagName( $tg )->length > 0 ) { $has_txt = true; break; } }
+					if ( $plain !== '' && ! $media ) { $col['role'] = 'text'; $col['text'] = $html; }  // editable text_block
+					elseif ( $has_img && ! $has_txt ) { $col['role'] = 'image'; $col['html'] = $html; } // image-dominant cell → media_image
+					else { $col['html'] = $html; }                                                     // media / structural → verbatim
 				}
 			}
 			// The cell's OWN flex layout (from data-sc-cs) → replay via the column's native

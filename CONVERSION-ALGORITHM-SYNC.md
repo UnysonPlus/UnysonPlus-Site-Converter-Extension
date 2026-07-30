@@ -20,6 +20,19 @@ The deterministic (**no‑AI**) converter — the logic that turns a source desi
 > The **AI** path (`to-ai.mjs`, `/ai-convert`) is separate — this rule is about the **deterministic**
 > path that runs offline. (When the AI authors the child theme, the deterministic path is the fallback.)
 
+### Kept in sync — 2026-07-31 · Hero / content-column decomposition
+- **A rich content column is not a card** — a cell with an `<h1>` no longer collapses into one `icon_box`
+  (the false-positive where a hero overline's sparkle read as a card icon). JS `cardOf` adds the `<h1>`
+  guard; PHP `card_from_cell` already only matches `h2`–`h6`, so heroes were never cards there.
+- **Recursive content-cell + image-cell decomposition** — a heading-bearing content column is decomposed
+  into its child shortcodes (`cell.blocks`), and an image-dominant cell (an `<img>`, no heading/paragraph)
+  → `media_image` instead of a verbatim `code_block`. JS `rowCols` + `to-pages` (`c.blocks` / `c.image`);
+  PHP `grid_cols` (`role:'image'` → the Mapper's `cell_by_role('image')`).
+- **Heroes decompose only when CLEAN** (JS-only gate — the PHP path always decomposes): the auto-build
+  decomposes an `<h1>` section only if every block maps to a real shortcode; a design-dense hero with an
+  un-mappable overline pill / stat row stays **verbatim** (fidelity preserved). On pinky-bites: 4→3
+  fallbacks (an image cell now maps; the hero correctly stays verbatim).
+
 ### Kept in sync — 2026-07-31 · Flex-row cells → native column options
 - **Column layout from the source flex** on BOTH paths: a grid cell that is itself a flex-**row** container
   is replayed via the column's NATIVE options — `content_direction:row` + `content_gap` (nearest Gap-Scale
