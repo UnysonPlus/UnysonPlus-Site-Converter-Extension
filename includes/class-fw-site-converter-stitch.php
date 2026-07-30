@@ -1192,6 +1192,13 @@ class FW_Site_Converter_Stitch {
 
 	/** The built-in recognizers (the original hardcoded chain, now table-driven + extensible). */
 	private static function register_builtin_recognizers() {
+		// A grid of QUOTE-cards → the `testimonials` shortcode (checked BEFORE card_grid so a testimonial
+		// grid isn't flattened into a generic columns row). Content only; source design not preserved.
+		// Mirrors the JS testimonialsOf() structural fallback.
+		self::register_recognizer( 'testimonials', 92,
+			function ( $el ) { return self::is_testimonials_grid( $el ); },
+			function ( $el ) { $rows = self::testimonials_items( $el ); return count( $rows ) >= 2 ? array( 't' => 'testimonials', 'items' => $rows ) : null; }
+		);
 		// A grid/flex of uniform cards → one "columns" row (each cell → icon_box / text / code).
 		self::register_recognizer( 'card_grid', 90,
 			function ( $el ) { return self::is_card_grid( $el ); },
@@ -1426,6 +1433,66 @@ class FW_Site_Converter_Stitch {
 	 * @param DOMElement $k
 	 * @return bool
 	 */
+	/** Structural testimonials grid (utility-class / Tailwind): a flex/grid whose >=2 sibling cards each
+	 *  read like a quote — quote marks, a star rating, or a "— Name" attribution. Quote/rating signals keep
+	 *  it from matching plain feature/pricing grids. Mirror of the JS testimonialsOf() structural fallback. */
+	private static function is_testimonials_grid( $el ) {
+		$cls = self::cls( $el );
+		$cs  = (string) $el->getAttribute( 'data-sc-cs' );
+		$is_grid = strpos( $cls, 'grid' ) !== false || strpos( $cls, 'flex' ) !== false
+			|| strpos( $cs, 'display:flex' ) !== false || strpos( $cs, 'display:grid' ) !== false || strpos( $cs, 'display:inline-flex' ) !== false;
+		if ( ! $is_grid ) { return false; }
+		$kids = self::el_children( $el );
+		if ( count( $kids ) < 2 ) { return false; }
+		$cards = 0;
+		foreach ( $kids as $k ) { if ( self::looks_quote_card( $k ) ) { $cards++; } }
+		return $cards >= 2 && $cards >= count( $kids ) - 1;
+	}
+	/** A card that reads like a testimonial (has a paragraph AND a quote/rating/attribution signal). */
+	private static function looks_quote_card( $k ) {
+		if ( ! ( $k instanceof DOMElement ) ) { return false; }
+		if ( $k->getElementsByTagName( 'p' )->length === 0 && $k->getElementsByTagName( 'blockquote' )->length === 0 ) { return false; }
+		$t = self::text( $k );
+		if ( mb_strlen( $t ) < 30 ) { return false; }
+		if ( preg_match( '/["“”«»‘’]/u', $t ) ) { return true; }
+		if ( self::testimonial_rating( $k ) !== null ) { return true; }
+		return (bool) preg_match( '/(^|\s)[—–-]\s*[A-Z][a-z]+/u', $t );
+	}
+	/** Star-rating glyph count in a card (svg/i with a `star` class), or null. */
+	private static function testimonial_rating( $k ) {
+		$n = 0;
+		foreach ( array( 'svg', 'i' ) as $tg ) {
+			foreach ( $k->getElementsByTagName( $tg ) as $g ) { if ( strpos( self::cls( $g ), 'star' ) !== false ) { $n++; } }
+		}
+		return $n > 0 ? min( 5, $n ) : null;
+	}
+	/** Extract testimonial rows {quote,image,name,position,rating} from a grid's quote-cards. */
+	private static function testimonials_items( $el ) {
+		$rows = array();
+		foreach ( self::el_children( $el ) as $k ) {
+			if ( ! self::looks_quote_card( $k ) ) { continue; }
+			$quote = ''; $qlen = 0;
+			foreach ( array( 'blockquote', 'p' ) as $tg ) {
+				foreach ( $k->getElementsByTagName( $tg ) as $p ) { $t = self::text( $p ); if ( mb_strlen( $t ) > $qlen ) { $qlen = mb_strlen( $t ); $quote = $t; } }
+			}
+			$image = ''; $imgs = $k->getElementsByTagName( 'img' ); if ( $imgs->length ) { $image = (string) $imgs->item( 0 )->getAttribute( 'src' ); }
+			$cands = array();
+			foreach ( array( 'h3', 'h4', 'h5', 'h6', 'cite', 'strong', 'span', 'p', 'div' ) as $tg ) {
+				foreach ( $k->getElementsByTagName( $tg ) as $e ) {
+					$t = trim( self::text( $e ) );
+					if ( $t !== '' && $t !== $quote && mb_strlen( $t ) <= 40 && $e->getElementsByTagName( '*' )->length <= 1 ) { $cands[] = $t; }
+				}
+			}
+			$cands    = array_values( array_unique( $cands ) );
+			$rows[]   = array(
+				'quote' => $quote, 'image' => $image,
+				'name'  => isset( $cands[0] ) ? $cands[0] : '', 'position' => isset( $cands[1] ) ? $cands[1] : '',
+				'rating' => self::testimonial_rating( $k ),
+			);
+		}
+		return $rows;
+	}
+
 	private static function is_card_cell( $k ) {
 		$tag = strtolower( $k->tagName );
 		if ( $tag === 'button' || $tag === 'input' ) { return false; }
@@ -1457,8 +1524,18 @@ class FW_Site_Converter_Stitch {
 				$col['card'] = $card;
 			} else {
 				$btns = self::buttons_from_cell( $cell ); // a CTA button-group cell?
-				if ( $btns ) { $col['buttons'] = $btns; }
-				else { $col['html'] = self::clean_block_html( $cell ); }
+				if ( $btns ) {
+					$col['buttons'] = $btns;
+				} else {
+					// A text-only cell → an editable text_block (role 'text'), NOT an opaque code_block.
+					// A truly EMPTY / decorative cell is DROPPED. Only a media/structural blob stays verbatim.
+					$html  = self::clean_block_html( $cell );
+					$plain = trim( preg_replace( '/\s+/', ' ', strip_tags( $html ) ) );
+					$media = (bool) preg_match( '/<(img|svg|video|iframe|picture|canvas|input|button|select|textarea)\b/i', $html );
+					if ( $plain === '' && ! $media ) { continue; }                                // drop empty / decorative cell
+					if ( $plain !== '' && ! $media ) { $col['role'] = 'text'; $col['text'] = $html; } // editable text_block
+					else { $col['html'] = $html; }                                                // media / structural → verbatim
+				}
 			}
 			$out[] = $col;
 		}

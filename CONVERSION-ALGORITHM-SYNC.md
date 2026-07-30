@@ -20,6 +20,17 @@ The deterministic (**no‑AI**) converter — the logic that turns a source desi
 > The **AI** path (`to-ai.mjs`, `/ai-convert`) is separate — this rule is about the **deterministic**
 > path that runs offline. (When the AI authors the child theme, the deterministic path is the fallback.)
 
+### Kept in sync — 2026-07-31 · Testimonials + fewer code_block fallbacks
+- **Structural testimonials detection** on BOTH paths (no `testimonial`/`review` class needed): a flex/grid
+  whose ≥2 sibling cards read like a quote (quote marks / star rating / "— Name") → the `testimonials`
+  shortcode. JS `testimonialsOf()` structural fallback + PHP `is_testimonials_grid()`/`testimonials_items()`
+  recognizer (priority 92, above `card_grid`). JS also stops `preferVerbatim` from swallowing a media-bearing
+  testimonials section (`hasRow` now counts `testimonials`); the PHP path already always decomposes.
+- **Fewer code_block fallbacks** on BOTH paths: an unrecognized grid cell with **plain text** → an editable
+  `text_block` (JS to-pages cell loop `else`; PHP `grid_cols` `role:'text'`); a truly **empty/decorative**
+  cell is **dropped** (no column). On pinky-bites this took the report from **13 → 4** fallbacks — the
+  remaining 4 are correct verbatim residuals (media-bearing hero; the bespoke interactive cupcake builder).
+
 ### Kept in sync — 2026-07-31 · Tailwind translation + Button Presets
 - **Tailwind → design tokens** on BOTH paths: JS `capture-extract.mjs` parses class names into `styles.tw`
   token intent (`shadow`/`radius`/`border`/`padding`/`font` scale) + a site-level `tailwind` flag; PHP
