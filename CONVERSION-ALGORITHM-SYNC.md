@@ -20,6 +20,15 @@ The deterministic (**no‑AI**) converter — the logic that turns a source desi
 > The **AI** path (`to-ai.mjs`, `/ai-convert`) is separate — this rule is about the **deterministic**
 > path that runs offline. (When the AI authors the child theme, the deterministic path is the fallback.)
 
+### Kept in sync — 2026-07-31 · Flex-row cells → native column options
+- **Column layout from the source flex** on BOTH paths: a grid cell that is itself a flex-**row** container
+  is replayed via the column's NATIVE options — `content_direction:row` + `content_gap` (nearest Gap-Scale
+  slug: 4px→1, 8px→2, 16px→3, 24px→4, 48px→5) + `content_order:reverse` for `row-reverse` — instead of a CSS
+  wrapper. JS: `capture-extract` records `cell.flex`, `to-pages` applies it (`gapSlug`) and the old
+  `.btn-row` button wrapper is replaced by `content_direction:row`. PHP: `grid_cols` reads the cell's flex
+  from `data-sc-cs` (already carries `flex-direction`/`gap`), the Mapper applies it (`gap_slug`).
+  `content_h`/`content_v` are intentionally left to the existing heuristics (direction-dependent semantics).
+
 ### Kept in sync — 2026-07-31 · Testimonials + fewer code_block fallbacks
 - **Structural testimonials detection** on BOTH paths (no `testimonial`/`review` class needed): a flex/grid
   whose ≥2 sibling cards read like a quote (quote marks / star rating / "— Name") → the `testimonials`
