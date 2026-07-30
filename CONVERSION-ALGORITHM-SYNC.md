@@ -20,6 +20,17 @@ The deterministic (**no‑AI**) converter — the logic that turns a source desi
 > The **AI** path (`to-ai.mjs`, `/ai-convert`) is separate — this rule is about the **deterministic**
 > path that runs offline. (When the AI authors the child theme, the deterministic path is the fallback.)
 
+### Kept in sync — 2026-07-31 · Tailwind translation + Button Presets
+- **Tailwind → design tokens** on BOTH paths: JS `capture-extract.mjs` parses class names into `styles.tw`
+  token intent (`shadow`/`radius`/`border`/`padding`/`font` scale) + a site-level `tailwind` flag; PHP
+  `class-fw-site-converter-tailwind.php` gained **arbitrary `[…]` values, the full default colour palette
+  (`pink-200`…), and `shadow-xl/2xl`** so `compile_class_set()` resolves what the browser resolves.
+- **Button Presets from the source's real skin** on BOTH paths: JS `buildButtonPresets()` in
+  `to-theme-settings.mjs` and PHP `FW_Site_Converter_Stitch::build_button_presets()` emit identical
+  `button_colors` (Primary filled + Secondary bordered, per-state colour/border/`box_shadow`) +
+  `button_sizes` (`lg`), and repoint the header CTA to `btn-lg`. Verified: both produce Primary
+  `#ff6b8b`/white/no-border/`shadow-lg`, Secondary white/`#be185d`/`2px`/`shadow-md`, `lg` `9999`/`32×16`/`18·28`.
+
 ## What "conversion logic" means (any of these changed → sync the other side)
 
 - What counts as a **page section** vs. chrome.

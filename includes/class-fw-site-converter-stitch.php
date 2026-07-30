@@ -269,6 +269,101 @@ class FW_Site_Converter_Stitch {
 	 * @param string $title  site name (logo fallback)
 	 * @return array{ values: array } theme-settings.json payload
 	 */
+	/**
+	 * Derive Button Colour + Size Presets from the source's real button skin — the PHP MIRROR of the
+	 * capture service's buildButtonPresets() (to-theme-settings.mjs). Finds <a>/<button> buttons, resolves
+	 * their Tailwind classes to CSS via FW_Site_Converter_Tailwind, and emits button_colors (Primary filled
+	 * + Secondary bordered) + a Large button_sizes preset — so the converted .btn-primary/.btn-secondary/
+	 * .btn-lg match the source instead of Bootstrap defaults. KEEP IN SYNC with buildButtonPresets() (JS).
+	 *
+	 * @return array array('button_colors'=>…,'button_sizes'=>…) or empty.
+	 */
+	public static function build_button_presets( $html ) {
+		$html = (string) $html;
+		if ( $html === '' || ! class_exists( 'FW_Site_Converter_Tailwind' ) ) { return array(); }
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return array(); }
+
+		$hex     = function ( $h ) { return array( 'predefined' => '', 'custom' => (string) $h ); };
+		$clean   = function ( $c ) { // rgb(R G B / var(…)) → rgb(R, G, B); hex / clean rgb pass through
+			$c = trim( (string) $c );
+			if ( preg_match( '/rgba?\(\s*(\d+)\s+(\d+)\s+(\d+)(?:\s*\/\s*([0-9.]+))?/', $c, $m ) ) {
+				return ( isset( $m[4] ) && $m[4] !== '' && $m[4] !== '1' ) ? "rgba({$m[1]}, {$m[2]}, {$m[3]}, {$m[4]})" : "rgb({$m[1]}, {$m[2]}, {$m[3]})";
+			}
+			return $c;
+		};
+		$unit    = function ( $v ) { $v = trim( (string) $v ); return preg_match( '/^(-?[0-9.]+)\s*(px|rem|em|%)?$/', $v, $m ) ? array( 'value' => $m[1], 'unit' => ( isset( $m[2] ) && $m[2] !== '' ? $m[2] : 'px' ) ) : null; };
+		$filledp = function ( $bg ) { $bg = strtolower( str_replace( ' ', '', (string) $bg ) ); return $bg !== '' && $bg !== 'transparent' && strpos( $bg, 'rgba(0,0,0,0' ) === false; };
+		$whitish = function ( $bg ) { if ( preg_match( '/(\d+)[,\s]+(\d+)[,\s]+(\d+)/', (string) $bg, $m ) ) { return $m[1] > 240 && $m[2] > 240 && $m[3] > 240; } return in_array( strtolower( trim( (string) $bg ) ), array( '#fff', '#ffffff', 'white' ), true ); };
+		$shbox   = function ( $css ) { $css = trim( (string) $css ); if ( $css === '' || $css === 'none' || strpos( $css, '#0000' ) !== false ) { return null; } $first = explode( ',', $css )[0]; preg_match( '/(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $first, $cm ); $off = preg_replace( '/(rgba?\([^)]*\)|#[0-9a-f]{3,8}|inset)/i', '', $first ); if ( ! preg_match_all( '/-?\d+(?:\.\d+)?/', $off, $mm ) ) { return null; } $n = array_map( 'intval', $mm[0] ); return array( 'x' => isset( $n[0] ) ? $n[0] : 0, 'y' => isset( $n[1] ) ? $n[1] : 0, 'blur' => isset( $n[2] ) ? $n[2] : 0, 'spread' => isset( $n[3] ) ? $n[3] : 0, 'color' => ( isset( $cm[1] ) ? $cm[1] : 'rgba(0,0,0,0.1)' ), 'inset' => false ); };
+
+		$skins = array();
+		foreach ( array( 'a', 'button' ) as $tag ) {
+			foreach ( $dom->getElementsByTagName( $tag ) as $node ) {
+				$txt = trim( preg_replace( '/\s+/', ' ', (string) $node->textContent ) );
+				if ( $txt === '' || mb_strlen( $txt ) > 40 ) { continue; }
+				$cls = self::cls( $node );
+				$c   = FW_Site_Converter_Tailwind::compile_class_set( $cls );
+				$b   = isset( $c['base'] ) ? $c['base'] : array();
+				$h   = isset( $c['hover'] ) ? $c['hover'] : array();
+				$bg  = isset( $b['background-color'] ) ? $clean( $b['background-color'] ) : '';
+				$bw  = ( isset( $b['border-width'] ) && $b['border-width'] !== '0' && $b['border-width'] !== '0px' ) ? $b['border-width'] : '';
+				if ( ! $filledp( $bg ) && $bw === '' && ! preg_match( '/\b(btn|button|cta)\b/', $cls ) ) { continue; }
+				$skins[] = array(
+					'bg' => $bg, 'fg' => isset( $b['color'] ) ? $clean( $b['color'] ) : '', 'bd' => isset( $b['border-color'] ) ? $clean( $b['border-color'] ) : '',
+					'bw' => $bw, 'shadow' => isset( $b['box-shadow'] ) ? $b['box-shadow'] : '', 'hshadow' => isset( $h['box-shadow'] ) ? $h['box-shadow'] : '',
+					'radius' => isset( $b['border-radius'] ) ? $b['border-radius'] : '', 'px' => isset( $b['padding-left'] ) ? $b['padding-left'] : ( isset( $b['padding'] ) ? $b['padding'] : '' ),
+					'py' => isset( $b['padding-top'] ) ? $b['padding-top'] : ( isset( $b['padding'] ) ? $b['padding'] : '' ), 'fw' => isset( $b['font-weight'] ) ? $b['font-weight'] : '',
+					'fs' => isset( $b['font-size'] ) ? $b['font-size'] : '', 'lh' => isset( $b['line-height'] ) ? $b['line-height'] : '', 'hoverBg' => isset( $h['background-color'] ) ? $clean( $h['background-color'] ) : '',
+				);
+			}
+		}
+		if ( empty( $skins ) ) { return array(); }
+
+		$filled = null; $outline = null;
+		foreach ( $skins as $k ) { if ( $filledp( $k['bg'] ) && ! $whitish( $k['bg'] ) ) { $filled = $k; break; } }
+		foreach ( $skins as $k ) { if ( $k !== $filled && $k['bw'] !== '' ) { $outline = $k; break; } }
+
+		$state = function ( $fg, $bg, $bd, $bw, $bstyle, $sh ) use ( $hex, $unit, $filledp, $shbox ) {
+			$st = array( 'text_color' => ( $fg !== '' ? $hex( $fg ) : array( 'predefined' => '', 'custom' => '' ) ), 'bg_color' => ( $filledp( $bg ) ? $hex( $bg ) : array( 'predefined' => '', 'custom' => '' ) ) );
+			if ( $bd !== '' ) { $st['border_color'] = $hex( $bd ); }
+			if ( $bstyle !== '' ) { $st['border_style'] = $bstyle; }
+			if ( $bw !== '' ) { $u = $unit( $bw ); if ( $u ) { $st['border_width'] = $u; } }
+			if ( $sh !== '' ) { $s = $shbox( $sh ); if ( $s ) { $st['box_shadow'] = $s; } }
+			return $st;
+		};
+
+		$colors = array();
+		if ( $filled ) {
+			$colors[] = array( 'id' => '0000000001', 'color_name' => 'Primary', 'states' => array(
+				'default' => $state( $filled['fg'], $filled['bg'], ( $filled['bw'] !== '' ? $filled['bd'] : '' ), $filled['bw'], ( $filled['bw'] !== '' ? 'solid' : 'none' ), $filled['shadow'] ),
+				'hover'   => $state( '', ( $filled['hoverBg'] !== '' ? $filled['hoverBg'] : $filled['bg'] ), '', '', '', ( $filled['hshadow'] !== '' ? $filled['hshadow'] : $filled['shadow'] ) ),
+				'active'  => array(), 'focus' => array(), 'disabled' => array() ) );
+		}
+		if ( $outline ) {
+			$colors[] = array( 'id' => '0000000002', 'color_name' => 'Secondary', 'states' => array(
+				'default' => $state( $outline['fg'], $outline['bg'], ( $outline['bd'] !== '' ? $outline['bd'] : $outline['fg'] ), ( $outline['bw'] !== '' ? $outline['bw'] : '2px' ), 'solid', $outline['shadow'] ),
+				'hover'   => $state( '', $outline['hoverBg'], '', '', '', ( $outline['hshadow'] !== '' ? $outline['hshadow'] : $outline['shadow'] ) ),
+				'active'  => array(), 'focus' => array(), 'disabled' => array() ) );
+		}
+
+		$src = $filled ? $filled : $outline; $sizes = array();
+		if ( $src && ( $src['fs'] !== '' || $src['px'] !== '' || $src['radius'] !== '' ) ) {
+			$sz = array( 'id' => '0000010004', 'size_name' => 'Large', 'slug' => 'lg' );
+			if ( $src['fs'] !== '' )     { $u = $unit( $src['fs'] );     if ( $u ) { $sz['font_size']     = $u; } }
+			if ( $src['lh'] !== '' && $src['lh'] !== 'normal' ) { $sz['line_height'] = $src['lh']; }
+			if ( $src['py'] !== '' )     { $u = $unit( $src['py'] );     if ( $u ) { $sz['padding_y']     = $u; } }
+			if ( $src['px'] !== '' )     { $u = $unit( $src['px'] );     if ( $u ) { $sz['padding_x']     = $u; } }
+			if ( $src['radius'] !== '' ) { $u = $unit( $src['radius'] ); if ( $u ) { $sz['border_radius'] = $u; } }
+			$sizes[] = $sz;
+		}
+
+		$out = array();
+		if ( ! empty( $colors ) ) { $out['button_colors'] = $colors; }
+		if ( ! empty( $sizes ) )  { $out['button_sizes']  = $sizes; }
+		return $out;
+	}
+
 	public static function tokens_to_theme_settings_chrome( array $tokens, $html, $title ) {
 		$el  = function ( $type, $settings = null ) {
 			$et = array( 'element' => $type );
@@ -398,6 +493,21 @@ class FW_Site_Converter_Stitch {
 				),
 			),
 		);
+
+		/* --- button_colors / button_sizes: presets derived from the source's real button skin --- */
+		$btn_presets = self::build_button_presets( (string) $html );
+		if ( ! empty( $btn_presets ) ) {
+			$values = array_merge( $values, $btn_presets );
+			// A Large size preset exists → point the header CTA at it (matches the source's chunky CTA).
+			if ( ! empty( $btn_presets['button_sizes'] ) && ! empty( $values['header_main']['main_right'] ) ) {
+				foreach ( $values['header_main']['main_right'] as &$node ) {
+					if ( isset( $node['element_type']['cta_button']['cta_size'] ) && $node['element_type']['cta_button']['cta_size'] === 'btn-md' ) {
+						$node['element_type']['cta_button']['cta_size'] = 'btn-lg';
+					}
+				}
+				unset( $node );
+			}
+		}
 
 		return array( 'values' => $values );
 	}
