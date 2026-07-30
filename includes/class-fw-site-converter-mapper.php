@@ -257,11 +257,14 @@ class FW_Site_Converter_Mapper {
 		$strip = function ( $b ) { unset( $b['_group'] ); return $b; };
 		$flush = function () use ( &$run, &$out, $strip ) {
 			if ( count( $run ) >= 2 ) {
-				// Carry the SOURCE button container's flex styling onto the row, if we captured it.
+				// Side-by-side via the column's NATIVE content_direction + content_gap (not a .btn-row CSS
+				// wrapper) — matches the JS to-pages path. Gap from the source button container if captured.
 				$grp = isset( $run[0]['_group'] ) ? $run[0]['_group'] : array();
-				$cls = $grp ? self::btn_group_class( (string) ( $grp['cls'] ?? '' ), (string) ( $grp['cs'] ?? '' ) ) : self::btn_row_class();
 				$col = self::n_column( '1_1', array_map( $strip, $run ) );
-				$col['atts']['inner_class'] = $cls;
+				$col['atts']['content_direction'] = 'row';
+				$gap = ( $grp && preg_match( '/gap:\s*([0-9.]+)px/', (string) ( $grp['cs'] ?? '' ), $gm ) ) ? self::gap_slug( $gm[1] ) : '';
+				$col['atts']['content_gap'] = array( 'base' => ( $gap !== '' ? $gap : '3' ), 'md' => '', 'lg' => '' );
+				$col['atts']['content_h'] = 'center';
 				$out[] = $col;
 			} else {
 				foreach ( $run as $r ) { $out[] = $strip( $r ); }
@@ -2095,7 +2098,7 @@ class FW_Site_Converter_Mapper {
 						foreach ( $c['buttons'] as $bt ) {
 							$inner_items[] = self::n_button( (string) ( $bt['label'] ?? 'Button' ), (string) ( $bt['href'] ?? '#' ), (string) ( $bt['cls'] ?? '' ), (string) ( $bt['icon'] ?? '' ), 'after', (string) ( $bt['cs'] ?? '' ) );
 						}
-						if ( count( $inner_items ) > 1 ) { $btn_row_on_column = self::btn_row_class(); }
+						if ( count( $inner_items ) > 1 ) { $btn_row_on_column = 'row'; }
 					} else {
 						$inner_items = array( self::n_code( (string) ( $c['html'] ?? '' ) ) );
 					}
@@ -2114,7 +2117,11 @@ class FW_Site_Converter_Mapper {
 					// wraps the icon_box AND the button (a simple box card put it on the icon_box instead).
 					if ( $box_on_column !== '' ) { $col['atts']['inner_class'] = trim( $col['atts']['inner_class'] . ' ' . $box_on_column ); }
 					// CTA button group → the column's Inner Wrapper Class is `.btn-row` (side-by-side).
-					if ( $btn_row_on_column !== '' ) { $col['atts']['inner_class'] = trim( $col['atts']['inner_class'] . ' ' . $btn_row_on_column ); $col['atts']['content_h'] = 'center'; }
+					if ( $btn_row_on_column !== '' ) { // CTA button group → side-by-side via native content_direction (not a .btn-row wrapper), matching JS
+						$col['atts']['content_direction'] = 'row';
+						if ( empty( $col['atts']['content_gap']['base'] ) ) { $col['atts']['content_gap'] = array( 'base' => '3', 'md' => '', 'lg' => '' ); }
+						$col['atts']['content_h'] = 'center';
+					}
 					if ( $row_valign !== '' && empty( $c['grid'] ) ) { $col['atts']['content_v'] = $row_valign; }
 					// Counter cells center their content via the column's own alignment (the source
 					// `.counter-item text-center`), instead of carrying a text-center wrapper class.
