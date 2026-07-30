@@ -1537,6 +1537,14 @@ class FW_Site_Converter_Stitch {
 					else { $col['html'] = $html; }                                                // media / structural → verbatim
 				}
 			}
+			// The cell's OWN flex layout (from data-sc-cs) → replay via the column's native
+			// content_direction / gap (a flex-ROW cell lays its children side-by-side).
+			$cs = (string) $cell->getAttribute( 'data-sc-cs' );
+			if ( preg_match( '/display:\s*(?:inline-)?flex/', $cs ) && count( self::el_children( $cell ) ) >= 2 ) {
+				$dir = preg_match( '/flex-direction:\s*([a-z-]+)/', $cs, $dm ) ? $dm[1] : 'row';
+				$gap = preg_match( '/(?:^|;)\s*gap:\s*([0-9.]+)px/', $cs, $gm ) ? $gm[1] : '';
+				$col['flex'] = array( 'dir' => $dir, 'gap' => $gap );
+			}
 			$out[] = $col;
 		}
 		return $out;

@@ -526,6 +526,17 @@ class FW_Site_Converter_Mapper {
 			'_items' => $items,
 		);
 	}
+	/** A CSS gap length (px) -> the nearest UnysonPlus Gap-Scale slug (Bootstrap $spacers:
+	 *  1=4px, 2=8px, 3=16px, 4=24px, 5=48px). '' when there's no meaningful gap. Mirror of the JS gapSlug(). */
+	private static function gap_slug( $g ) {
+		$px = (float) preg_replace( '/[^0-9.].*$/', '', trim( (string) $g ) );
+		if ( $px < 2 ) { return ''; }
+		$scale = array( 4 => '1', 8 => '2', 16 => '3', 24 => '4', 48 => '5' );
+		$best = '1'; $bestd = PHP_INT_MAX;
+		foreach ( $scale as $v => $slug ) { $d = abs( $v - $px ); if ( $d < $bestd ) { $bestd = $d; $best = $slug; } }
+		return $best;
+	}
+
 	private static function n_column( $width, array $items, $css_class = '', $resp = array() ) {
 		// Responsive widths land on the column's OUTER grid controls (w_phone→fw-col-{n},
 		// w_tablet→fw-col-md-{n}, w_desktop→fw-col-lg-{n}). They must NOT go on css_class —
@@ -960,7 +971,7 @@ class FW_Site_Converter_Mapper {
 		$icon_class = self::fa_icon( $icon_class ); // normalize to a renderable Font Awesome class
 		$val = array( 'type' => 'icon-font', 'icon-class' => (string) $icon_class, 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false );
 		if ( function_exists( 'fw' ) ) {
-			$ot = fw()->backend->option_type( 'icon-v2' );
+			$ot = fw()->backend->option_type( 'icon' );
 			if ( $ot && isset( $ot->packs_loader ) && $ot->packs_loader ) {
 				$pl   = $ot->packs_loader;
 				$pack = method_exists( $pl, 'pack_name_for' ) ? $pl->pack_name_for( $icon_class ) : null;
@@ -2108,6 +2119,14 @@ class FW_Site_Converter_Mapper {
 					// Counter cells center their content via the column's own alignment (the source
 					// `.counter-item text-center`), instead of carrying a text-center wrapper class.
 					if ( ! empty( $c['counter'] ) ) { $col['atts']['content_h'] = 'center'; }
+					// Replay the cell's OWN flex layout via the column's NATIVE options: a flex-ROW cell
+					// lays its children side-by-side with the source gap (parity with the JS to-pages path).
+					if ( ! empty( $c['flex']['dir'] ) && strpos( (string) $c['flex']['dir'], 'row' ) === 0 ) {
+						$col['atts']['content_direction'] = 'row';
+						$slug = self::gap_slug( isset( $c['flex']['gap'] ) ? $c['flex']['gap'] : '' );
+						if ( $slug !== '' ) { $col['atts']['content_gap'] = array( 'base' => $slug, 'md' => '', 'lg' => '' ); }
+						if ( strpos( (string) $c['flex']['dir'], 'row-reverse' ) === 0 ) { $col['atts']['content_order'] = 'reverse'; }
+					}
 					$items[] = $col;
 				}
 			} else {
