@@ -1117,6 +1117,34 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/** A column's content rebuilt as the reviewer-chosen role (overrides the auto-detected shortcode). */
+	/**
+	 * A source PRODUCT-CARD grid (each card = image + price [+ add-to-cart]) → the wc_products grid.
+	 * WooCommerce owns the products and the converter can't know real product IDs from a static source,
+	 * so it emits a placeholder grid (source: recent) to configure to your catalogue. Mirrors the JS
+	 * to-pages wcProductsNode. A cell counts as a product when its HTML has an <img> AND a price token.
+	 */
+	private static function cell_is_product( array $c ) {
+		$h = (string) ( $c['html'] ?? '' );
+		return (bool) ( preg_match( '/<img/i', $h ) && preg_match( '/(?:\$|€|£)\s?\d+[.,]\d{2}/', $h ) );
+	}
+	private static function n_wc_products( $cols, $count ) {
+		$atts = self::shortcode_default_atts( 'wc_products' );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		$atts['source']           = 'recent';
+		$atts['category']         = '';
+		$atts['posts_per_page']   = (string) ( $count ? $count : $cols );
+		$atts['orderby']          = 'menu_order';
+		$atts['order']            = 'ASC';
+		$atts['layout']           = 'grid';
+		$atts['columns']          = (string) $cols;
+		$atts['gap']              = 'lg';
+		$atts['show_price']       = 'yes';
+		$atts['show_add_to_cart'] = 'yes';
+		$atts['add_to_cart_text'] = 'Add to Cart';
+		$atts['pagination']       = 'none';
+		return array( 'type' => 'simple', 'shortcode' => 'wc_products', 'atts' => $atts, '_items' => array() );
+	}
+
 	private static function cell_by_role( $role, array $c, $html ) {
 		$txt = trim( wp_strip_all_tags( (string) $html ) );
 		switch ( $role ) {
@@ -1195,7 +1223,19 @@ class FW_Site_Converter_Mapper {
 	private static function map_accent_classes( $html ) {
 		$html = (string) $html;
 		if ( $html === '' || stripos( $html, 'class' ) === false ) { return $html; }
-		return preg_replace( '/\b(?:text-color-primary|color-primary)\b/', 'text-primary', $html );
+		$html = preg_replace( '/\b(?:text-color-primary|color-primary)\b/', 'text-primary', $html );
+		// An arbitrary Tailwind color class (text-[#hex]) is DEAD in the builder (no Tailwind runtime)
+		// → convert it to an inline color so the accent survives (parity with the JS richHeading fix).
+		// A semantic/theme class (text-primary) is left alone. Palette classes (text-pink-600) are left
+		// for the carried compiled CSS (they'd need the full palette map to inline here).
+		$html = preg_replace_callback( '/class="([^"]*)"/', function ( $m ) {
+			if ( preg_match( '/text-\[(#[0-9a-fA-F]{3,8})\]/', $m[1], $c ) ) {
+				$rest = trim( preg_replace( '/\s*text-\[#[0-9a-fA-F]{3,8}\]\s*/', ' ', $m[1] ) );
+				return ( $rest !== '' ? 'class="' . $rest . '" ' : '' ) . 'style="color:' . $c[1] . '"';
+			}
+			return $m[0];
+		}, $html );
+		return $html;
 	}
 
 	/**
@@ -1268,23 +1308,77 @@ class FW_Site_Converter_Mapper {
 		return $items;
 	}
 
+	/** Empty `spacing` composite value (margin + padding subtrees). */
+	private static function empty_spacing() {
+		return array(
+			'margin'  => array( 'all' => '', 'top' => '', 'right' => '', 'bottom' => '', 'left' => '' ),
+			'padding' => array( 'all' => '', 'top' => '', 'right' => '', 'bottom' => '', 'left' => '' ),
+			'advanced' => array(),
+		);
+	}
+
+	/** Snap a rem length to the nearest UnysonPlus spacing-scale slug (mirrors the JS to-pages map). */
+	private static function rem_to_spacing_slug( $rem ) {
+		$scale = array( array( 0, '0' ), array( 0.25, '1' ), array( 0.5, '2' ), array( 1, '3' ), array( 1.5, '4' ), array( 3, '5' ), array( 3.5, '6' ), array( 4, '7' ), array( 4.5, '8' ), array( 5, '9' ), array( 6, '10' ), array( 7, '11' ), array( 8, '12' ) );
+		$best = '0'; $bd = INF;
+		foreach ( $scale as $e ) { $d = abs( $e[0] - $rem ); if ( $d < $bd ) { $bd = $d; $best = $e[1]; } }
+		return $best;
+	}
+
+	/**
+	 * Translate a heading-group wrapper's Tailwind LAYOUT/SPACING classes into NATIVE special_heading
+	 * options (parity with the JS to-pages headingNode) — otherwise they sit dead on css_class (no
+	 * Tailwind runtime in the builder) and the heading renders with the wrong spacing. Returns the
+	 * native atts + the leftover (unmapped) class string.
+	 */
+	private static function heading_layout( $cls ) {
+		$tw_maxw = array( 'sm' => 24, 'md' => 28, 'lg' => 32, 'xl' => 36, '2xl' => 42, '3xl' => 48, '4xl' => 56, '5xl' => 64, '6xl' => 72, '7xl' => 80 );
+		$out = array( 'alignment' => '', 'element_spacing' => '', 'block_max_width' => array( 'value' => '', 'unit' => 'px' ), 'spacing' => null, 'css_class' => '' );
+		$kept = array();
+		foreach ( preg_split( '/\s+/', trim( (string) $cls ) ) as $c ) {
+			if ( $c === '' ) { continue; }
+			if ( $c === 'text-center' ) { $out['alignment'] = 'center'; }
+			elseif ( $c === 'text-right' ) { $out['alignment'] = 'right'; }
+			elseif ( $c === 'text-left' ) { $out['alignment'] = 'left'; }
+			elseif ( $c === 'mx-auto' ) { /* centring = block_max_width + centre align */ }
+			elseif ( preg_match( '/^space-y-(\d+(?:\.\d+)?)$/', $c, $m ) ) { $px = (float) $m[1] * 4; $out['element_spacing'] = $px <= 8 ? 'tight' : ( $px >= 16 ? 'relaxed' : '' ); }
+			elseif ( preg_match( '/^max-w-(?:\[(.+)\]|(sm|md|lg|xl|[2-7]xl))$/', $c, $m ) ) {
+				if ( ! empty( $m[2] ) && isset( $tw_maxw[ $m[2] ] ) ) { $out['block_max_width'] = array( 'value' => (string) $tw_maxw[ $m[2] ], 'unit' => 'rem' ); }
+				elseif ( ! empty( $m[1] ) && preg_match( '/^(\d*\.?\d+)(px|rem|em|%|vw|ch)$/', $m[1], $u ) ) { $out['block_max_width'] = array( 'value' => $u[1], 'unit' => $u[2] ); }
+			}
+			elseif ( preg_match( '/^(mb|mt)-(\d+(?:\.\d+)?)$/', $c, $m ) ) {
+				if ( $out['spacing'] === null ) { $out['spacing'] = self::empty_spacing(); }
+				$side = $m[1] === 'mb' ? 'bottom' : 'top';
+				$out['spacing']['margin'][ $side ] = $m[1] . '-' . self::rem_to_spacing_slug( (float) $m[2] * 0.25 );
+			}
+			else { $kept[] = $c; }
+		}
+		$out['css_class'] = implode( ' ', $kept );
+		return $out;
+	}
+
 	private static function n_heading( $h ) {
 		$lvl = isset( $h['level'] ) && $h['level'] >= 1 && $h['level'] <= 6 ? (int) $h['level'] : 2;
+		// Translate the wrapper's Tailwind layout/spacing classes into native options (parity w/ JS).
+		$layout = self::heading_layout( (string) ( $h['css_class'] ?? '' ) );
 		// Default to inherit ('') — `left`/`start` is the computed default for almost all content, so
 		// treat it as inherit (no `text-start`) and only force a class for an explicit center/right.
-		$align = isset( $h['align'] ) && in_array( $h['align'], array( 'center', 'right' ), true ) ? $h['align'] : '';
+		$align = $layout['alignment'] !== '' ? $layout['alignment']
+			: ( isset( $h['align'] ) && in_array( $h['align'], array( 'center', 'right' ), true ) ? $h['align'] : '' );
 		return array(
 			'type' => 'simple', 'shortcode' => 'special_heading', '_items' => array(),
 			'atts' => array(
 				'unique_id' => self::uid(), 'css_id' => '',
-				// A captured heading-group wrapper class (e.g. "heading") lands on the wrapper;
-				// keep_classes drops animation noise. The view renders the wrapper when set.
-				'css_class' => self::keep_classes( $h['css_class'] ?? '' ),
+				// Only UNMAPPED wrapper classes remain on css_class; keep_classes drops animation noise.
+				'css_class' => self::keep_classes( $layout['css_class'] ),
 				'overline' => self::map_accent_classes( (string) ( $h['overline'] ?? '' ) ),
 				'title'    => self::map_accent_classes( (string) ( $h['title'] ?? '' ) ),
 				'subtitle' => self::map_accent_classes( (string) ( $h['subtitle'] ?? '' ) ),
 				'heading'  => 'h' . $lvl,
 				'alignment' => $align,
+				'element_spacing' => $layout['element_spacing'],
+				'block_max_width' => $layout['block_max_width'],
+				'spacing' => $layout['spacing'] !== null ? $layout['spacing'] : self::empty_spacing(),
 				// Per-part source classes mapped onto the special heading's class inputs (the
 				// source's overline/title/subtitle carried their own utility classes).
 				'overline_class' => self::keep_classes( $h['overline_class'] ?? '' ),
@@ -2030,6 +2124,15 @@ class FW_Site_Converter_Mapper {
 
 			if ( $role === 'columns' && isset( $b['cols'] ) && is_array( $b['cols'] ) ) {
 				$flush_buf();
+				// A PRODUCT-CARD grid (≥60% of cells = image + price) → ONE wc_products grid, not N
+				// icon_boxes (parity with the JS to-pages recognizer). Configure Source to your products.
+				$prod_cells = 0;
+				foreach ( $b['cols'] as $pc ) { if ( is_array( $pc ) && self::cell_is_product( $pc ) ) { $prod_cells++; } }
+				if ( count( $b['cols'] ) >= 2 && $prod_cells >= (int) ceil( count( $b['cols'] ) * 0.6 ) ) {
+					$pcols = max( 2, min( 4, count( $b['cols'] ) ) );
+					$items[] = self::n_column( '1_1', array( self::n_wc_products( $pcols, count( $b['cols'] ) ) ) );
+					continue;
+				}
 				// Row vertical alignment (source `.row.align-items-center` …) → each column's Content
 				// Vertical Align. Skipped on the grid column (the height-definer where it's redundant).
 				$row_valign = isset( $b['valign'] ) && in_array( $b['valign'], array( 'start', 'center', 'end' ), true ) ? $b['valign'] : '';
