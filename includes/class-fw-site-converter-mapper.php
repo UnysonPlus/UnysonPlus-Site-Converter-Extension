@@ -739,7 +739,7 @@ class FW_Site_Converter_Mapper {
 		return $src;
 	}
 
-	/** Build the announcement_pill shortcode node from a recognized hero pill block (sub-tag + message +
+	/** Build the badge shortcode node (recognizer/role token stays announcement_pill) from a recognized hero pill block (sub-tag + message +
 	 *  optional trailing icon + optional link). Full att shape so the editor opens it cleanly; colours stay
 	 *  neutral (user themes them). The trailing icon reuses icon_value() like buttons. */
 	private static function n_announcement_pill( array $b ) {
@@ -804,7 +804,7 @@ class FW_Site_Converter_Mapper {
 			$tagbg = $col( isset( $b['tagCls'] ) ? $b['tagCls'] : '', 'background-color' );
 			if ( '' !== $tagbg && 'rgb(0 0 0)' !== $tagbg ) { $atts['tag_color'] = array( 'predefined' => '', 'custom' => $tagbg ); }
 		}
-		return array( 'type' => 'simple', 'shortcode' => 'announcement_pill', 'atts' => $atts, '_items' => array() );
+		return array( 'type' => 'simple', 'shortcode' => 'badge', 'atts' => $atts, '_items' => array() );
 	}
 	/**
 	 * A Container layout band — renders its own `.fw-container` / `.fw-container-fluid` as a
