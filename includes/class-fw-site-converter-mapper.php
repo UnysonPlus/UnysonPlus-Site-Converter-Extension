@@ -1102,6 +1102,26 @@ class FW_Site_Converter_Mapper {
 			}
 		}
 
+		// Icon badge/chip: the source icon's filled container → icon_badge (shape) + icon_badge_color
+		// (fill) — parity with the JS mapper. If a chip class is present, resolve its bg + radius via the
+		// Tailwind compiler (like icon_color above); otherwise honour a pre-resolved value.
+		if ( empty( $card['iconBadge'] ) && ! empty( $card['iconChipCls'] ) && self::$style_on && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
+			$chip = FW_Site_Converter_Tailwind::compile_class_set( (string) $card['iconChipCls'], self::$style_cfg );
+			$bg   = isset( $chip['base']['background-color'] ) ? (string) $chip['base']['background-color'] : '';
+			if ( '' !== $bg && 'transparent' !== $bg && ! preg_match( '/rgba\([^)]*,\s*0?\.?0*\)$/', $bg ) ) {
+				$card['iconBadgeColor'] = $bg;
+				$rad = isset( $chip['base']['border-radius'] ) ? (float) $chip['base']['border-radius'] : 0;
+				$card['iconBadge'] = ( $rad >= 9999 ) ? 'solid-circle' : ( $rad > 0 ? 'solid-rounded' : 'solid-square' );
+			}
+		}
+		if ( ! empty( $card['iconBadge'] ) ) {
+			$atts['icon_badge'] = (string) $card['iconBadge'];
+		}
+		$ibc = isset( $card['iconBadgeColor'] ) ? trim( (string) $card['iconBadgeColor'] ) : '';
+		if ( $ibc !== '' && preg_match( '/^#[0-9a-f]{3,8}$/i', $ibc ) ) {
+			$atts['icon_badge_color'] = array( 'predefined' => '', 'custom' => $ibc );
+		}
+
 		// css_class = source ALIGNMENT (sc-ib-left unless the card is centered) + the gray icon "image" box
 		// (if the source had one). The cell's own box classes are NOT carried here — box styling lives on the
 		// column (with-button card) or is added separately (simple card), so this stays clean (no double border).
@@ -1127,7 +1147,57 @@ class FW_Site_Converter_Mapper {
 		$h = (string) ( $c['html'] ?? '' );
 		return (bool) ( preg_match( '/<img/i', $h ) && preg_match( '/(?:\$|€|£)\s?\d+[.,]\d{2}/', $h ) );
 	}
-	private static function n_wc_products( $cols, $count ) {
+	// Tailwind's default box-shadow scale (for hover:shadow-* → CSS). Mirror of the JS TW_SHADOW.
+	private static function tw_shadow( $name ) {
+		$map = array(
+			'sm'  => '0 1px 2px 0 rgba(0,0,0,.05)',
+			'md'  => '0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -2px rgba(0,0,0,.1)',
+			'lg'  => '0 10px 15px -3px rgba(0,0,0,.1), 0 4px 6px -4px rgba(0,0,0,.1)',
+			'xl'  => '0 20px 25px -5px rgba(0,0,0,.1), 0 8px 10px -6px rgba(0,0,0,.1)',
+			'2xl' => '0 25px 50px -12px rgba(0,0,0,.25)',
+		);
+		return isset( $map[ $name ] ) ? $map[ $name ] : '';
+	}
+	/**
+	 * Translate a captured product-card wrapper skin + hover + ribbon into scoped CSS for the
+	 * wc_products grid (`.upwc-product` = card, `.upwc-product__badge.ribbon` = badge). Registered in
+	 * the style aggregator (parity with the JS wcCardCss, which appends to the section custom_css —
+	 * the PHP path emits carried CSS via the aggregator instead). Editable Custom CSS, no option bloat.
+	 */
+	private static function register_wc_card_css( $wrap, $ribbon ) {
+		$css = '';
+		if ( is_array( $wrap ) ) {
+			$rest = array();
+			if ( ! empty( $wrap['bg'] ) && ! preg_match( '/rgba?\(0, ?0, ?0, ?0\)|transparent/', $wrap['bg'] ) ) { $rest[] = 'background:' . $wrap['bg']; }
+			if ( ! empty( $wrap['radius'] ) && (float) $wrap['radius'] > 0 ) { $rest[] = 'border-radius:' . $wrap['radius']; }
+			if ( ! empty( $wrap['borderW'] ) && (float) $wrap['borderW'] > 0 ) { $rest[] = 'border:' . $wrap['borderW'] . ' ' . ( $wrap['borderStyle'] ? $wrap['borderStyle'] : 'solid' ) . ' ' . $wrap['borderColor']; }
+			if ( ! empty( $wrap['shadow'] ) ) { $rest[] = 'box-shadow:' . $wrap['shadow']; }
+			$has_hover = ! empty( $wrap['hoverShadow'] ) || ! empty( $wrap['hoverLift'] );
+			if ( $has_hover ) { $rest[] = 'transition:transform .3s ease, box-shadow .3s ease'; }
+			if ( $rest ) { $css .= '.upwc-products .upwc-product{' . implode( ';', $rest ) . '}'; }
+			if ( $has_hover ) {
+				$hv = array();
+				if ( ! empty( $wrap['hoverShadow'] ) && self::tw_shadow( $wrap['hoverShadow'] ) ) { $hv[] = 'box-shadow:' . self::tw_shadow( $wrap['hoverShadow'] ); }
+				if ( ! empty( $wrap['hoverLift'] ) ) { $hv[] = 'transform:translateY(-' . (int) round( (float) $wrap['hoverLift'] * 4 ) . 'px)'; }
+				if ( $hv ) { $css .= '.upwc-products .upwc-product:hover{' . implode( ';', $hv ) . '}'; }
+			}
+		}
+		if ( is_array( $ribbon ) ) {
+			$r = array();
+			if ( ! empty( $ribbon['bg'] ) ) { $r[] = 'background:' . $ribbon['bg']; }
+			if ( ! empty( $ribbon['color'] ) ) { $r[] = 'color:' . $ribbon['color']; }
+			if ( ! empty( $ribbon['radius'] ) && (float) $ribbon['radius'] > 0 ) { $r[] = 'border-radius:' . $ribbon['radius']; }
+			if ( ! empty( $ribbon['padding'] ) ) { $r[] = 'padding:' . $ribbon['padding']; }
+			if ( ! empty( $ribbon['fontSize'] ) ) { $r[] = 'font-size:' . $ribbon['fontSize']; }
+			if ( ! empty( $ribbon['fontWeight'] ) ) { $r[] = 'font-weight:' . $ribbon['fontWeight']; }
+			if ( ! empty( $ribbon['letterSpacing'] ) && 'normal' !== $ribbon['letterSpacing'] ) { $r[] = 'letter-spacing:' . $ribbon['letterSpacing']; }
+			if ( ! empty( $ribbon['borderW'] ) && (float) $ribbon['borderW'] > 0 ) { $r[] = 'border:' . $ribbon['borderW'] . ' solid ' . $ribbon['borderColor']; }
+			$r[] = 'text-transform:uppercase';
+			if ( $r ) { $css .= '.upwc-products .upwc-product__badge.ribbon{' . implode( ';', $r ) . '}'; }
+		}
+		if ( '' !== $css ) { self::$style_css['upwc-card'] = $css; }
+	}
+	private static function n_wc_products( $cols, $count, $has_ribbon = false ) {
 		$atts = self::shortcode_default_atts( 'wc_products' );
 		if ( ! is_array( $atts ) ) { $atts = array(); }
 		$atts['source']           = 'recent';
@@ -1141,7 +1211,17 @@ class FW_Site_Converter_Mapper {
 		$atts['show_price']       = 'yes';
 		$atts['show_add_to_cart'] = 'yes';
 		$atts['add_to_cart_text'] = 'Add to Cart';
+		$atts['show_ribbon']      = $has_ribbon ? 'yes' : 'no';
 		$atts['pagination']       = 'none';
+		// The card is always assembled from these rows (parity with the JS mapper; the card_layout
+		// Classic/Slot toggle was removed). The default four rows mirror the wc_products seed; empty
+		// slots/rows collapse.
+		$atts['card_rows']   = array(
+			array( 'slots' => array( 'badges', 'wishlist' ),        'direction' => 'inline', 'justify' => 'between', 'align' => 'center' ),
+			array( 'slots' => array( 'media', 'title', 'excerpt' ), 'direction' => 'stack',  'justify' => 'start',   'align' => 'center' ),
+			array( 'slots' => array( 'rating', 'rating_count' ),    'direction' => 'inline', 'justify' => 'center',  'align' => 'center' ),
+			array( 'slots' => array( 'price', 'cart' ),             'direction' => 'inline', 'justify' => 'between', 'align' => 'center' ),
+		);
 		return array( 'type' => 'simple', 'shortcode' => 'wc_products', 'atts' => $atts, '_items' => array() );
 	}
 
@@ -1365,13 +1445,31 @@ class FW_Site_Converter_Mapper {
 		// treat it as inherit (no `text-start`) and only force a class for an explicit center/right.
 		$align = $layout['alignment'] !== '' ? $layout['alignment']
 			: ( isset( $h['align'] ) && in_array( $h['align'], array( 'center', 'right' ), true ) ? $h['align'] : '' );
+		// overline_uppercase — reproduce the source kicker casing (parity with the JS mapper): Yes when
+		// the source overline is text-transform:uppercase OR its text is literally all-caps; else No.
+		$ol_plain = trim( wp_strip_all_tags( (string) ( $h['overline'] ?? '' ) ) );
+		$ol_upper = ( isset( $h['overline_transform'] ) && 'uppercase' === $h['overline_transform'] )
+			|| ( '' !== $ol_plain && preg_match( '/[a-z]/i', $ol_plain ) && $ol_plain === mb_strtoupper( $ol_plain ) );
+		// Overline icon: a source overline SVG → the native overline_icon (kept OUT of the text, so it
+		// doesn't double up). Parity with the JS mapper.
+		$ov_raw      = (string) ( $h['overline'] ?? '' );
+		$ov_icon     = array( 'type' => 'none' );
+		$ov_icon_pos = 'before';
+		if ( preg_match( '/<svg\b[\s\S]*?<\/svg>/i', $ov_raw, $svg_m ) ) {
+			$ov_icon     = array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => $svg_m[0] );
+			$ov_icon_pos = ( strpos( $ov_raw, $svg_m[0] ) + strlen( $svg_m[0] ) >= strlen( rtrim( $ov_raw ) ) ) ? 'after' : 'before';
+			$ov_raw      = trim( preg_replace( '/<svg\b[\s\S]*?<\/svg>/i', '', $ov_raw ) );
+		}
 		return array(
 			'type' => 'simple', 'shortcode' => 'special_heading', '_items' => array(),
 			'atts' => array(
 				'unique_id' => self::uid(), 'css_id' => '',
 				// Only UNMAPPED wrapper classes remain on css_class; keep_classes drops animation noise.
 				'css_class' => self::keep_classes( $layout['css_class'] ),
-				'overline' => self::map_accent_classes( (string) ( $h['overline'] ?? '' ) ),
+				'overline' => self::map_accent_classes( $ov_raw ),
+				'overline_uppercase' => $ol_upper ? 'yes' : 'no',
+				'overline_icon' => $ov_icon,
+				'overline_icon_position' => $ov_icon_pos,
 				'title'    => self::map_accent_classes( (string) ( $h['title'] ?? '' ) ),
 				'subtitle' => self::map_accent_classes( (string) ( $h['subtitle'] ?? '' ) ),
 				'heading'  => 'h' . $lvl,
@@ -2130,7 +2228,18 @@ class FW_Site_Converter_Mapper {
 				foreach ( $b['cols'] as $pc ) { if ( is_array( $pc ) && self::cell_is_product( $pc ) ) { $prod_cells++; } }
 				if ( count( $b['cols'] ) >= 2 && $prod_cells >= (int) ceil( count( $b['cols'] ) * 0.6 ) ) {
 					$pcols = max( 2, min( 4, count( $b['cols'] ) ) );
-					$items[] = self::n_column( '1_1', array( self::n_wc_products( $pcols, count( $b['cols'] ) ) ) );
+					// Translate the source cards' skin/hover + ribbon (captured on each product cell) →
+					// scoped CSS, and turn the Ribbon Badge slot ON when a badge was detected (parity
+					// with the JS to-pages recognizer). A placeholder grid can't carry the real per-product
+					// ribbon TEXT (product meta), but show_ribbon:'yes' + the skin reproduce the look.
+					$skin_wrap = null; $skin_ribbon = null; $has_ribbon = false;
+					foreach ( $b['cols'] as $pc ) {
+						if ( ! is_array( $pc ) ) { continue; }
+						if ( null === $skin_wrap && ! empty( $pc['wrap'] ) ) { $skin_wrap = $pc['wrap']; }
+						if ( ! empty( $pc['ribbon'] ) ) { $has_ribbon = true; if ( null === $skin_ribbon ) { $skin_ribbon = $pc['ribbon']; } }
+					}
+					self::register_wc_card_css( $skin_wrap, $has_ribbon ? $skin_ribbon : null );
+					$items[] = self::n_column( '1_1', array( self::n_wc_products( $pcols, count( $b['cols'] ), $has_ribbon ) ) );
 					continue;
 				}
 				// Row vertical alignment (source `.row.align-items-center` …) → each column's Content

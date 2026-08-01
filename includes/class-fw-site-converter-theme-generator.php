@@ -1417,6 +1417,159 @@ JS;
 		return $reset . "/* ============ AI-authored stylesheet ============ */\n" . $css . "\n";
 	}
 
+	/* ============================================================
+	 * WCAG contrast review (detect + suggest — NEVER auto-change).
+	 * A converted site's palette is the user's brand. We measure the key
+	 * text/background pairs and, when one is below AA (4.5:1), emit a comment
+	 * at the top of the generated CSS with the ratio + a suggested nearest-AA
+	 * shade, so the user can decide. We do NOT alter their colors.
+	 * ============================================================ */
+
+	/** '#rrggbb' → array(r,g,b) 0-255, or null. */
+	private static function _hex_rgb( $hex ) {
+		$hex = ltrim( trim( (string) $hex ), '#' );
+		if ( strlen( $hex ) === 3 ) { $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2]; }
+		if ( ! preg_match( '/^[0-9a-fA-F]{6}$/', $hex ) ) { return null; }
+		return array( hexdec( substr( $hex, 0, 2 ) ), hexdec( substr( $hex, 2, 2 ) ), hexdec( substr( $hex, 4, 2 ) ) );
+	}
+
+	private static function _rgb_hex( $rgb ) {
+		return '#' . sprintf( '%02x%02x%02x', max( 0, min( 255, (int) round( $rgb[0] ) ) ), max( 0, min( 255, (int) round( $rgb[1] ) ) ), max( 0, min( 255, (int) round( $rgb[2] ) ) ) );
+	}
+
+	/** WCAG relative luminance of an rgb triplet. */
+	private static function _rel_lum( $rgb ) {
+		$c = array();
+		foreach ( $rgb as $v ) {
+			$v /= 255;
+			$c[] = $v <= 0.03928 ? $v / 12.92 : pow( ( $v + 0.055 ) / 1.055, 2.4 );
+		}
+		return 0.2126 * $c[0] + 0.7152 * $c[1] + 0.0722 * $c[2];
+	}
+
+	/** Contrast ratio between two hex colors, or 0 if either is unparseable. */
+	private static function _contrast( $hex1, $hex2 ) {
+		$a = self::_hex_rgb( $hex1 );
+		$b = self::_hex_rgb( $hex2 );
+		if ( ! $a || ! $b ) { return 0.0; }
+		$la = self::_rel_lum( $a ) + 0.05;
+		$lb = self::_rel_lum( $b ) + 0.05;
+		return $la > $lb ? $la / $lb : $lb / $la;
+	}
+
+	private static function _rgb_hsl( $rgb ) {
+		$r = $rgb[0] / 255; $g = $rgb[1] / 255; $b = $rgb[2] / 255;
+		$mx = max( $r, $g, $b ); $mn = min( $r, $g, $b ); $h = 0; $s = 0; $l = ( $mx + $mn ) / 2;
+		if ( $mx !== $mn ) {
+			$d = $mx - $mn;
+			$s = $l > 0.5 ? $d / ( 2 - $mx - $mn ) : $d / ( $mx + $mn );
+			if ( $mx === $r ) { $h = ( $g - $b ) / $d + ( $g < $b ? 6 : 0 ); }
+			elseif ( $mx === $g ) { $h = ( $b - $r ) / $d + 2; }
+			else { $h = ( $r - $g ) / $d + 4; }
+			$h /= 6;
+		}
+		return array( $h, $s, $l );
+	}
+
+	private static function _hsl_rgb( $hsl ) {
+		list( $h, $s, $l ) = $hsl;
+		if ( $s == 0 ) { $v = $l * 255; return array( $v, $v, $v ); }
+		$hue = function ( $p, $q, $t ) {
+			if ( $t < 0 ) { $t += 1; } if ( $t > 1 ) { $t -= 1; }
+			if ( $t < 1 / 6 ) { return $p + ( $q - $p ) * 6 * $t; }
+			if ( $t < 1 / 2 ) { return $q; }
+			if ( $t < 2 / 3 ) { return $p + ( $q - $p ) * ( 2 / 3 - $t ) * 6; }
+			return $p;
+		};
+		$q = $l < 0.5 ? $l * ( 1 + $s ) : $l + $s - $l * $s; $p = 2 * $l - $q;
+		return array( $hue( $p, $q, $h + 1 / 3 ) * 255, $hue( $p, $q, $h ) * 255, $hue( $p, $q, $h - 1 / 3 ) * 255 );
+	}
+
+	/**
+	 * Suggest the nearest AA-passing shade for a fg/bg pair, keeping hue+saturation and
+	 * nudging lightness. Adjusts the foreground unless it's a greyscale extreme (near
+	 * #fff/#000), in which case it darkens/lightens the background. Returns a short
+	 * "text #xxxxxx" / "background #xxxxxx" suggestion string, or '' if it can't help.
+	 */
+	private static function _suggest_shade( $fg, $bg, $target = 4.5 ) {
+		$fgr = self::_hex_rgb( $fg ); $bgr = self::_hex_rgb( $bg );
+		if ( ! $fgr || ! $bgr ) { return ''; }
+		$fh = self::_rgb_hsl( $fgr ); $bh = self::_rgb_hsl( $bgr );
+		$fg_extreme = $fh[1] < 0.08 && ( $fh[2] > 0.9 || $fh[2] < 0.1 );
+		$move = $fg_extreme ? 'bg' : 'fg';
+		$hsl  = $move === 'fg' ? $fh : $bh;
+		$other_lum = self::_rel_lum( $move === 'fg' ? $bgr : $fgr );
+		$down = $other_lum > 0.18; // if the other side is light, darken the mover; else lighten
+		for ( $i = 0; $i < 100; $i++ ) {
+			$hsl[2] = max( 0, min( 1, $hsl[2] + ( $down ? -0.01 : 0.01 ) ) );
+			$cand = self::_rgb_hex( self::_hsl_rgb( $hsl ) );
+			$nf = $move === 'fg' ? $cand : $fg;
+			$nb = $move === 'fg' ? $bg : $cand;
+			if ( self::_contrast( $nf, $nb ) >= $target ) {
+				return ( $move === 'fg' ? 'text ' : 'background ' ) . $cand;
+			}
+		}
+		return $move === 'fg' ? 'dark text (#1a1a1a)' : '';
+	}
+
+	/**
+	 * Build the "CONTRAST REVIEW" comment for the top of the generated CSS. Checks the
+	 * button, heading, body and accent text/background pairs the converter emits; lists
+	 * any below AA with the measured ratio + a suggested shade. Returns '' if all pass.
+	 */
+	private static function contrast_review_comment( array $cfg ) {
+		$col = isset( $cfg['colors'] ) && is_array( $cfg['colors'] ) ? $cfg['colors'] : array();
+		$bg  = isset( $col['bg'] ) ? (string) $col['bg'] : '';
+		$cta = isset( $cfg['header']['cta']['style'] ) && is_array( $cfg['header']['cta']['style'] ) ? $cfg['header']['cta']['style'] : array();
+
+		$btn_bg    = ! empty( $cta['bg'] ) ? (string) $cta['bg'] : ( ! empty( $col['accent'] ) ? (string) $col['accent'] : '' );
+		$btn_color = ! empty( $cta['color'] ) ? (string) $cta['color'] : '#ffffff';
+
+		$pairs = array(
+			array( 'Primary button', $btn_color, $btn_bg ),
+			array( 'Heading text', isset( $col['heading'] ) ? (string) $col['heading'] : '', $bg ),
+			array( 'Body text', isset( $col['text'] ) ? (string) $col['text'] : '', $bg ),
+			array( 'Accent-on-background (links/badges)', isset( $col['accent'] ) ? (string) $col['accent'] : '', $bg ),
+		);
+
+		// Palette presets whose NAME implies text use (Muted/Text/Ink/Body) are checked
+		// against the site background too — a 2:1 "Muted" preset silently fails every
+		// meta/byline that consumes it (mirror of the JS contrast.mjs check; keep in sync).
+		$theme_colors = array();
+		foreach ( array(
+			isset( $cfg['presets']['values']['theme_colors'] ) ? $cfg['presets']['values']['theme_colors'] : null,
+			isset( $cfg['presets']['theme_colors'] ) ? $cfg['presets']['theme_colors'] : null,
+			isset( $cfg['theme_colors'] ) ? $cfg['theme_colors'] : null,
+		) as $cand ) {
+			if ( is_array( $cand ) ) { $theme_colors = $cand; break; }
+		}
+		foreach ( $theme_colors as $p ) {
+			if ( is_array( $p ) && isset( $p['name'], $p['color'] ) && is_string( $p['name'] ) && is_string( $p['color'] )
+				&& preg_match( '/muted|text|ink|body/i', $p['name'] ) ) {
+				$pairs[] = array( 'Palette preset "' . $p['name'] . '" (text use)', $p['color'], $bg !== '' ? $bg : '#ffffff' );
+			}
+		}
+
+		$lines = array();
+		foreach ( $pairs as $p ) {
+			list( $label, $fg, $pbg ) = $p;
+			if ( $fg === '' || $pbg === '' ) { continue; }
+			$r = self::_contrast( $fg, $pbg );
+			if ( $r <= 0 || $r >= 4.5 ) { continue; }
+			$sugg = self::_suggest_shade( $fg, $pbg );
+			$lines[] = sprintf( '    - %s: %s on %s = %.2f:1 (below AA 4.5:1)%s', $label, $fg, $pbg, $r, $sugg !== '' ? ' — try ' . $sugg : '' );
+		}
+		if ( empty( $lines ) ) { return ''; }
+
+		return "/* ============================================================\n"
+			. "   ⚠ CONTRAST REVIEW (WCAG AA) — the SOURCE palette has "
+			. count( $lines ) . " low-contrast pair(s).\n"
+			. "   Your brand colors were NOT changed. Review and, if you agree, apply a\n"
+			. "   suggested shade below (or use dark text on a bright fill):\n"
+			. implode( "\n", $lines ) . "\n"
+			. "   ============================================================ */\n\n";
+	}
+
 	public static function chrome_css( array $cfg ) {
 		// AI-authored design, or a faithful MIRROR (reproduced Tailwind CSS) — emit only the structural
 		// reset + the carried stylesheet; no deterministic .sc-header/.sc-footer chrome CSS to fight it.
@@ -1464,7 +1617,7 @@ JS;
 			if ( $sc_menu !== '' ) { $out .= "/* ============ Dynamic menu (wp_nav_menu .sc-menu) ============ */\n" . $sc_menu . "\n\n"; }
 			$page_mirror = self::clean_carried( (string) $cfg['custom_css'] );
 			if ( $page_mirror !== '' ) { $out .= "/* ---- Carried page CSS ---- */\n" . $page_mirror . "\n"; }
-			return $out;
+			return self::contrast_review_comment( $cfg ) . $out;
 		}
 
 		$col   = $cfg['colors'];
@@ -1475,7 +1628,8 @@ JS;
 		$head_stack = $fh !== '' ? "'" . $fh . "',Georgia,serif" : 'Georgia,serif';
 		$body_stack = $fb !== '' ? "'" . $fb . "',system-ui,sans-serif" : 'system-ui,sans-serif';
 
-		$css  = "/* ============================================================\n"
+		$css  = self::contrast_review_comment( $cfg );
+		$css .= "/* ============================================================\n"
 			. "   " . $cfg['theme']['name'] . " — generated by the Unyson+ Site Converter.\n"
 			. "   Header/footer chrome + the authored design layer. Converted page\n"
 			. "   section styles are merged into the SC:SECTIONS block at the bottom.\n"

@@ -170,6 +170,15 @@ class FW_Site_Converter_Pages {
 			'builder_active' => true,
 		) );
 
+		// Register any Tailwind-style arbitrary spacing values the converted page uses (e.g.
+		// pt-[40px]) as named Spacing-Scale presets, so they surface in Theme Settings → Components →
+		// Spacing AND show as the selected option in each section's spacing dropdown (durable on a
+		// manual re-save). The tokens render via the per-page dynamic CSS regardless.
+		if ( function_exists( 'unysonplus_register_arbitrary_spacing_scale' ) ) {
+			$added = unysonplus_register_arbitrary_spacing_scale( (string) $json );
+			if ( $added > 0 ) { $row['spacing_presets_added'] = $added; }
+		}
+
 		// Optional: set as the site's front page.
 		if ( $front ) {
 			update_option( 'show_on_front', 'page' );

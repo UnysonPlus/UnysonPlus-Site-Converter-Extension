@@ -9,6 +9,15 @@ This applies to **any** conversion — a demo for the demos network OR a real cl
 The word "demo" below refers only to the specific demos-network mechanics (subsites, the demos
 home, the demo bar); everything else is the general site-conversion process.
 
+> **⛔ STEP 1 — CAPTURE FIRST (hard gate).** Before Theme Settings, before any section, before ANY
+> hand-measuring: **run the capture/converter pipeline** — `node capture.mjs <url> capture-out/`
+> (capture service) or the plugin Site Converter for an HTML/CSS upload. It produces the source of
+> truth: design-config (→ Theme Settings), `pages.json` (per-section shortcodes), the conversion-report,
+> animations, a screenshot. **Hand-measuring + hand-building before a capture exists is a protocol
+> violation.** The measurement guidance below is how you *refine* the captured output and *improve the
+> converter* — it is NOT a licence to skip the capture and rebuild the site by eye. See the ordered
+> phases in the AI Dev Kit's `site-build-protocol.md` (Step 0 + major-steps table).
+
 This is both the manual process to follow AND the north star for the automated converters
 (the Site Converter PHP `Mapper`/`Theme_Generator` and the JS capture service): today they
 emit mostly a CSS child theme + only a color palette preset; the goal is for a conversion to
@@ -898,6 +907,29 @@ Adobe simple-icons marks, Show Names on, White Logo Color, grayscale, height 22,
 
 ---
 
+## Accessibility + SEO — descriptive link text (REQUIRED)
+
+> **See also: [SEO, Performance & Accessibility Standards](./seo-performance-accessibility-standards.md)**
+> — the full score-keeping checklist (PageSpeed/GTmetrix levers + the recurring Lighthouse a11y audits:
+> **contrast ≥ 4.5:1**, link-distinguishability, heading order, alt text, structured data). Run its §0
+> ship gate before calling any created/converted site done. The converter also emits a **contrast review**
+> (flags low-contrast brand pairs + suggests an AA shade; it does **not** change your colors).
+
+Generic anchor text — **"Read more", "Click here", "Learn more", "View", "Here"** — fails the SEO
+"descriptive link text" audit and screen readers. Any component that renders a **repeated CTA link**
+(post/card read-more, review "visit"/"read review", pagination, icon-only links) must fold the
+item's title/context into the link so its accessible name reads *"Read more about &lt;title&gt;"*.
+
+- **Use visually-hidden text inside the `<a>`, not an `aria-label`.** This SEO audit reads the
+  *crawlable text*, so an aria-label alone still fails it. A screen-reader-only span (`position:
+  absolute; width:1px; clip:rect(0,0,0,0)`) sits in `textContent` (crawlers + a11y tree get the full
+  phrase) but is clipped from view (sighted users still see just "Read more"). Drop the redundant
+  aria-label once the hidden text supplies the name; **icon-only** links keep `aria-label`.
+- **Reference:** the posts shortcode `sc_posts_render_readmore()`
+  (`framework/extensions/shortcodes/shortcodes/posts/views/view.php`, `.posts__readmore-sr` in its
+  `styles.css`, shortcodes 1.11.72). Mirror it in any new link-rendering element/view. Also see the
+  workspace `CLAUDE.md` "Descriptive link text" rule.
+
 ## Component robustness gotchas (gallery crop, btn-link)
 
 - **Gallery crop vs a theme `img{height:auto}` reset.** The gallery's cropped designs (`grid` with a
@@ -1022,6 +1054,71 @@ the twelfths split-slider snaps `40/20/20/20` → `[4,3,3,2]` (33/25/25/17), so 
 choice's fifths image-picker** — `main_footer_layout` = `f5-2-1-1-1` (2/5 + 1/5 + 1/5 + 1/5). It maps
 to `fw-col-sm-25` + three `fw-col-sm-15` and the render sets the real column count (4) from the
 composition. Set `count: '5'` + the `_layout` key + only the columns you fill.
+
+### Footer bands → the four bars (Pre / Main / Post / Copyright) — the mapping algorithm
+
+The footer builder stacks **four bars, top→bottom: Pre-Footer → Main Footer → Post-Footer →
+Copyright.** Map the source footer's **stacked bands** (full-width horizontal strips) onto them.
+Two hard rules:
+
+1. **Order is sacred.** The bars always render Pre→Main→Post→Copyright, so assign bands so the
+   source's *visual top-to-bottom order is preserved*. Never reorder to fit a bar.
+2. **Copyright = the LAST band** (© line / legal links) — always its own bar
+   (`copyright_settings.enabled='yes'`). Its columns follow the copyright auto-align:
+   **1 col = centered · 2 cols = left + right · 3 cols = left + center + right** (e.g. a legal
+   `text` element left + a policy `menu` element right = 2 columns).
+
+**Anchor on Main Footer, then fill outward.** The primary content band — the biggest multi-column
+grid (logo + link columns / widgets) — is the anchor → **Main Footer**. Then **Pre** = whatever sits
+*above* it, **Post** = whatever sits *below* it (but above copyright). That resolves the ambiguity by
+*position*. By band count (including copyright):
+
+| Source bands | Pre | Main | Post | Copyright |
+|---|---|---|---|---|
+| **1** (just ©) | — | — | — | ✓ |
+| **2** (grid + ©) | — | grid | — | ✓ |
+| **3** | top band | grid | — | ✓ *(or Main + Post + © if the extra band is below the grid)* |
+| **4+** | top band | grid | secondary rows | ✓ |
+
+**More bands than bars → stack, then (last resort) register extra bars.** When bands outnumber
+bars, first put several **single-column** bands as **stacked vertical elements inside one bar's
+single column** (elements stack top-to-bottom). Only for **5+ structurally-distinct (multi-column)
+grids** above the copyright that can't stack, register **extra bars** via the
+`unysonplus_footer_extra_bars` filter (in the site's **child theme `functions.php`**, or an
+**mu-plugin** if there's no child theme — never the parent/shipped-child): they render as their own
+bars between Post-Footer and Copyright, each with the full columns control. Never cram a distinct
+band into the Copyright tab.
+
+**Per-bar column setup.**
+- **Multi-column grid** → set that bar's Number of Columns + ratio. If the source columns are
+  *content-sized with `space-between`* (a brand block beside content-hugging link lists — the 12-grid
+  can't express it), turn **Auto Width On** (`<prefix>_auto='yes'`) and pick the Distribution
+  (`<prefix>_justify`, usually `between`). This is preferred over the fifths image-picker whenever the
+  source columns hug their content rather than filling fixed fractions.
+- **Single content row** (badge strip, centered link cloud, a disclaimer box) → **1 column**
+  (auto-centers), one element per band stacked in that column.
+
+**Common footer instances (what you'll actually see):**
+- **Minimal** — one © strip. → *Copyright only.*
+- **Classic corporate (most common)** — a multi-column link/widget grid + © bar. → *Main + Copyright.*
+- **Brand / CTA on top** — a newsletter / "Get started" / brand+social band above the columns + ©.
+  → *Pre (top band) + Main (columns) + Copyright.*
+- **Secondary bottom row** — columns + a bottom row (social + language + app badges) + ©.
+  → *Main + Post + Copyright.*
+- **Compliance-heavy (gambling / finance / pharma)** — link columns + a certification-badge strip +
+  a responsible-gambling / disclaimer notice + ©. → *Main (columns) + Post (badges + disclaimer,
+  stacked) + Copyright* (add Pre if there's also a top CTA band).
+- **Single centered stack** — logo + nav + social + © centered in one block. → *Main (1 col, stacked
+  elements) + Copyright.*
+
+**Worked example — this dev footer** (5 bands: link-columns · badges · foot-links · RG notice · legal):
+- **Route A** — Pre = link columns · Main = 1 col with [badges, foot-links, RG] stacked · Copyright =
+  legal (2 cols).
+- **Route B** (also fine; exercises Post) — Pre = link columns · Main = [badges, foot-links] · Post =
+  [RG] · Copyright = legal.
+- Either preserves the source order — pick by taste. (Slight lean: primary grid in **Main**, secondary
+  rows in **Post**, Pre free, so each bar carries its semantic role — but any order-preserving
+  assignment is valid.)
 
 **Converter TODO (wire into the no-AI path — PHP `Mapper` + JS `to-pages`):** detect the source
 `<header>`/`<nav>` and EMIT these settings (behavior, glass, main-header tint, logo icon+text, menu

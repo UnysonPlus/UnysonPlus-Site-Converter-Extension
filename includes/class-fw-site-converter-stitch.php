@@ -1549,6 +1549,44 @@ class FW_Site_Converter_Stitch {
 				$gap = preg_match( '/(?:^|;)\s*gap:\s*([0-9.]+)px/', $cs, $gm ) ? $gm[1] : '';
 				$col['flex'] = array( 'dir' => $dir, 'gap' => $gap );
 			}
+			// PRODUCT-CARD wrapper skin + hover + ribbon (image-bearing cells only) → the wc_products
+			// mapper reproduces the card look via scoped CSS. REST skin from data-sc-cs (computed); HOVER
+			// (shadow / lift) from the wrapper's `hover:*` classes (computed style can't see :hover).
+			// Mirrors the JS capture-extract rowCols product-card capture. Was the gap that dropped the
+			// source card's `hover:shadow-xl hover:-translate-y-2` + its badge.
+			if ( $cell->getElementsByTagName( 'img' )->length > 0 ) {
+				$wcls = self::cls( $cell );
+				$cprop = static function ( $s, $p ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $p, '/' ) . ':\s*([^;]+)/i', (string) $s, $m ) ? trim( $m[1] ) : ''; };
+				if ( preg_match( '/border|shadow|rounded/i', $wcls ) || $cprop( $cs, 'border-radius' ) || $cprop( $cs, 'box-shadow' ) ) {
+					$shadow = $cprop( $cs, 'box-shadow' );
+					$col['wrap'] = array(
+						'bg'          => $cprop( $cs, 'background-color' ),
+						'radius'      => $cprop( $cs, 'border-radius' ),
+						'borderW'     => $cprop( $cs, 'border-top-width' ),
+						'borderStyle' => $cprop( $cs, 'border-top-style' ),
+						'borderColor' => $cprop( $cs, 'border-top-color' ),
+						'shadow'      => ( $shadow && 'none' !== $shadow ) ? $shadow : '',
+						'hoverShadow' => preg_match( '/(?:^|\s)hover:shadow-(2xl|xl|lg|md|sm)(?:\s|$)/', $wcls, $hm ) ? $hm[1] : '',
+						'hoverLift'   => preg_match( '/(?:^|\s)hover:-translate-y-([0-9.]+)(?:\s|$)/', $wcls, $lm ) ? $lm[1] : '',
+					);
+				}
+				// A small uppercase pill inside the card → the ribbon/badge (e.g. "Best Seller").
+				foreach ( $cell->getElementsByTagName( 'span' ) as $sp ) {
+					$t = trim( self::text( $sp ) );
+					if ( '' === $t || strlen( $t ) > 24 || $sp->getElementsByTagName( '*' )->length > 0 ) { continue; }
+					$scs = (string) $sp->getAttribute( 'data-sc-cs' );
+					if ( preg_match( '/text-transform:\s*uppercase/i', $scs ) && (float) $cprop( $scs, 'border-radius' ) >= 8 ) {
+						$col['ribbon'] = array(
+							'text' => $t, 'bg' => $cprop( $scs, 'background-color' ), 'color' => $cprop( $scs, 'color' ),
+							'radius' => $cprop( $scs, 'border-radius' ), 'padding' => $cprop( $scs, 'padding' ),
+							'fontSize' => $cprop( $scs, 'font-size' ), 'fontWeight' => $cprop( $scs, 'font-weight' ),
+							'letterSpacing' => $cprop( $scs, 'letter-spacing' ),
+							'borderW' => $cprop( $scs, 'border-top-width' ), 'borderColor' => $cprop( $scs, 'border-top-color' ),
+						);
+						break;
+					}
+				}
+			}
 			$out[] = $col;
 		}
 		return $out;
