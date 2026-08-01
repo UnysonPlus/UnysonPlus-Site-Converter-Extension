@@ -364,6 +364,464 @@ class FW_Site_Converter_Stitch {
 		return $out;
 	}
 
+	/**
+	 * Section Styles — cluster the source's distinctive section BANDS into reusable presets.
+	 * PHP mirror of the capture service's sectionStyles() (to-presets.mjs): a section style is
+	 * the reusable band SKIN (background + text/heading/link colours + border + radius). Only a
+	 * band that DEVIATES from the page base (its own background fill, border, radius or shadow)
+	 * becomes a preset; near-identical bands cluster into one; a text/heading colour is carried
+	 * only when it differs from the base. Per-section PADDING stays a native section option, so
+	 * presets leave padding empty (matching unysonplus_default_section_style_presets()).
+	 *
+	 * @param string $html
+	 * @return array array('section_style_presets'=>…) or empty.
+	 */
+	public static function build_section_style_presets( $html ) {
+		$html = (string) $html;
+		if ( $html === '' || ! class_exists( 'FW_Site_Converter_Tailwind' ) ) { return array(); }
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return array(); }
+		$body = null;
+		foreach ( $dom->getElementsByTagName( 'body' ) as $b ) { $body = $b; break; }
+		if ( ! $body ) { return array(); }
+		$roots = self::section_roots( $body );
+		if ( empty( $roots ) ) { return array(); }
+
+		$parse = function ( $c ) {
+			$c = strtolower( trim( (string) $c ) );
+			if ( preg_match( '/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s\/]+([0-9.]+))?/', $c, $m ) ) {
+				return array( (int) $m[1], (int) $m[2], (int) $m[3], ( isset( $m[4] ) && $m[4] !== '' ? (float) $m[4] : 1.0 ) );
+			}
+			if ( preg_match( '/^#([0-9a-f]{3}|[0-9a-f]{6})$/', $c, $m ) ) {
+				$h = $m[1]; if ( strlen( $h ) === 3 ) { $h = $h[0] . $h[0] . $h[1] . $h[1] . $h[2] . $h[2]; }
+				return array( hexdec( substr( $h, 0, 2 ) ), hexdec( substr( $h, 2, 2 ) ), hexdec( substr( $h, 4, 2 ) ), 1.0 );
+			}
+			return null;
+		};
+		$norm = function ( $c ) use ( $parse ) {
+			$p = $parse( $c );
+			if ( ! $p || (float) $p[3] === 0.0 ) { return ''; }                 // transparent / none = no fill
+			return $p[3] < 1 ? "rgba({$p[0]}, {$p[1]}, {$p[2]}, {$p[3]})" : "rgb({$p[0]}, {$p[1]}, {$p[2]})";
+		};
+		$lum  = function ( $c ) use ( $parse ) { $p = $parse( $c ); return $p ? ( 0.2126 * $p[0] + 0.7152 * $p[1] + 0.0722 * $p[2] ) : null; };
+		$unit = function ( $v ) { $v = trim( (string) $v ); return preg_match( '/^(-?[0-9.]+)\s*(px|rem|em|%)?$/', $v, $m ) ? array( 'value' => $m[1], 'unit' => ( isset( $m[2] ) && $m[2] !== '' ? $m[2] : 'px' ) ) : null; };
+		$headOf = function ( $node ) use ( $norm ) {
+			foreach ( array( 'h1', 'h2', 'h3' ) as $ht ) {
+				foreach ( $node->getElementsByTagName( $ht ) as $hn ) {
+					$hc = FW_Site_Converter_Tailwind::compile_class_set( self::cls( $hn ) );
+					return isset( $hc['base']['color'] ) ? $norm( $hc['base']['color'] ) : '';
+				}
+			}
+			return '';
+		};
+
+		// Pass 1 — compile each section's skin; also tally base text/heading (mode across ALL bands).
+		$secs = array(); $textTally = array(); $headTally = array();
+		foreach ( $roots as $node ) {
+			$c = FW_Site_Converter_Tailwind::compile_class_set( self::cls( $node ) );
+			$b = isset( $c['base'] ) ? $c['base'] : array();
+			$bg     = isset( $b['background-color'] ) ? $norm( $b['background-color'] ) : '';
+			$bw     = ( isset( $b['border-width'] ) && $b['border-width'] !== '0' && $b['border-width'] !== '0px' ) ? $b['border-width'] : '';
+			$radius = ( isset( $b['border-radius'] ) && $b['border-radius'] !== '0' && $b['border-radius'] !== '0px' ) ? $b['border-radius'] : '';
+			$shadow = ( isset( $b['box-shadow'] ) && $b['box-shadow'] !== 'none' ) ? $b['box-shadow'] : '';
+			$text   = isset( $b['color'] ) ? $norm( $b['color'] ) : '';
+			$head   = $headOf( $node );
+			$bdcol  = isset( $b['border-color'] ) ? $norm( $b['border-color'] ) : '';
+			if ( $text !== '' ) { $textTally[ $text ] = ( isset( $textTally[ $text ] ) ? $textTally[ $text ] : 0 ) + 1; }
+			if ( $head !== '' ) { $headTally[ $head ] = ( isset( $headTally[ $head ] ) ? $headTally[ $head ] : 0 ) + 1; }
+			$secs[] = compact( 'bg', 'bw', 'radius', 'shadow', 'text', 'head', 'bdcol' );
+		}
+		arsort( $textTally ); arsort( $headTally );
+		$baseText = $textTally ? (string) array_key_first( $textTally ) : '';
+		$baseHead = $headTally ? (string) array_key_first( $headTally ) : '';
+
+		// Pass 2 — cluster the distinctive bands.
+		$groups = array();
+		foreach ( $secs as $s ) {
+			if ( $s['bg'] === '' && $s['bw'] === '' && $s['radius'] === '' && $s['shadow'] === '' ) { continue; } // plain band = default
+			$key = $s['bg'] . '|' . $s['radius'] . '|' . $s['bw'] . $s['bdcol'];
+			if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array_merge( $s, array( 'count' => 0 ) ); }
+			$groups[ $key ]['count']++;
+		}
+		if ( empty( $groups ) ) { return array(); }
+		uasort( $groups, function ( $a, $b ) { return $b['count'] - $a['count']; } );
+
+		$empty = array( 'predefined' => '', 'custom' => '' );
+		$u0    = array( 'value' => '', 'unit' => 'px' );
+		$pad0  = array(
+			'margin'  => array( 'all' => '', 'top' => '', 'right' => '', 'bottom' => '', 'left' => '' ),
+			'padding' => array( 'all' => '', 'top' => '', 'right' => '', 'bottom' => '', 'left' => '' ),
+		);
+		$used = array(); $n = 0; $presets = array();
+		foreach ( $groups as $g ) {
+			$L      = $lum( $g['bg'] );
+			$base   = ( $L === null ) ? 'Band' : ( $L < 90 ? 'Dark' : ( $L > 245 ? 'Light' : 'Alt' ) );
+			$used[ $base ] = ( isset( $used[ $base ] ) ? $used[ $base ] : 0 ) + 1;
+			$name   = $used[ $base ] > 1 ? $base . ' ' . $used[ $base ] : $base;
+			$isDark = ( $L !== null && $L < 90 );
+			$rad    = $g['radius'] !== '' ? $unit( $g['radius'] ) : null;
+			$bwu    = $g['bw'] !== '' ? $unit( $g['bw'] ) : null;
+			$presets[] = array(
+				'id'            => 's' . str_pad( (string) ( ++$n ), 9, '0', STR_PAD_LEFT ),
+				'style_name'    => $name,
+				'background'    => $g['bg'] !== '' ? array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => $g['bg'] ) ) ) : array( 'color' => array( 'value' => $empty ) ),
+				'text_color'    => ( $g['text'] !== '' && ( $isDark || $g['text'] !== $baseText ) ) ? array( 'predefined' => '', 'custom' => $g['text'] ) : $empty,
+				'heading_color' => ( $g['head'] !== '' && ( $isDark || $g['head'] !== $baseHead ) ) ? array( 'predefined' => '', 'custom' => $g['head'] ) : $empty,
+				'link_color'    => $empty,
+				'border'        => $bwu ? array( 'width' => $bwu, 'style' => 'solid', 'color' => ( $g['bdcol'] !== '' ? array( 'predefined' => '', 'custom' => $g['bdcol'] ) : $empty ) ) : array( 'width' => $u0, 'style' => '', 'color' => $empty ),
+				'border_sides'  => array( 'top', 'right', 'bottom', 'left' ),
+				'border_extent' => array( 'mode' => 'full' ),
+				'border_radius' => $rad ? $rad : $u0,
+				'padding'       => $pad0,
+			);
+		}
+		return empty( $presets ) ? array() : array( 'section_style_presets' => $presets );
+	}
+
+	/**
+	 * Derive BOX PRESETS (Theme Settings → Components → Box Presets — the border_presets data model,
+	 * the boxp-{slug} card skins) from the source's cards / containers / image frames. Walks every
+	 * box-like element, compiles its Tailwind classes to CSS (border / corner radius / shadow + the
+	 * hover shadow & lift), clusters the DISTINCT designs across the page, and appends the top few as
+	 * named presets on top of the plugin defaults. Same DOM + Tailwind-compile pattern as
+	 * build_section_style_presets()/build_button_presets(). Returns array( 'border_presets' => [...] ).
+	 */
+	public static function build_box_presets( $html ) {
+		$html = (string) $html;
+		if ( $html === '' || ! class_exists( 'FW_Site_Converter_Tailwind' ) ) { return array(); }
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return array(); }
+		$body = null;
+		foreach ( $dom->getElementsByTagName( 'body' ) as $b ) { $body = $b; break; }
+		if ( ! $body ) { return array(); }
+
+		$unit = function ( $v ) {
+			$v = trim( (string) $v );
+			return preg_match( '/^(-?[0-9.]+)\s*(px|rem|em|%)?$/', $v, $m )
+				? array( 'value' => $m[1], 'unit' => ( isset( $m[2] ) && $m[2] !== '' ? $m[2] : 'px' ) )
+				: array( 'value' => '', 'unit' => 'px' );
+		};
+		// Normalize a compiled Tailwind color (which may carry a `/ var(--tw-*-opacity)`) to a clean
+		// rgb()/rgba() — or '' for transparent. Mirrors the section-preset color handling.
+		$norm = function ( $c ) {
+			$c = strtolower( trim( (string) $c ) );
+			$has_var = ( strpos( $c, 'var(' ) !== false );
+			if ( preg_match( '/rgba?\(\s*([0-9.]+)[,\s]+([0-9.]+)[,\s]+([0-9.]+)(?:[,\s\/]+([0-9.]+))?/', $c, $m ) ) {
+				$a = ( ! $has_var && isset( $m[4] ) && $m[4] !== '' ) ? (float) $m[4] : 1.0;
+				if ( $a === 0.0 ) { return ''; }
+				return $a < 1 ? "rgba({$m[1]}, {$m[2]}, {$m[3]}, {$a})" : "rgb({$m[1]}, {$m[2]}, {$m[3]})";
+			}
+			if ( preg_match( '/^#([0-9a-f]{3}|[0-9a-f]{6})$/', $c, $m ) ) {
+				$h = $m[1]; if ( strlen( $h ) === 3 ) { $h = $h[0] . $h[0] . $h[1] . $h[1] . $h[2] . $h[2]; }
+				return 'rgb(' . hexdec( substr( $h, 0, 2 ) ) . ', ' . hexdec( substr( $h, 2, 2 ) ) . ', ' . hexdec( substr( $h, 4, 2 ) ) . ')';
+			}
+			return '';
+		};
+		// Parse the FIRST box-shadow layer into the preset's { x, y, blur, spread, color, inset } shape.
+		$parse_shadow = function ( $s ) use ( $norm ) {
+			$s = trim( (string) $s );
+			if ( $s === '' || strtolower( $s ) === 'none' ) { return null; }
+			$depth = 0; $first = '';
+			for ( $i = 0, $len = strlen( $s ); $i < $len; $i++ ) {
+				$ch = $s[ $i ];
+				if ( $ch === '(' ) { $depth++; } elseif ( $ch === ')' ) { $depth--; } elseif ( $ch === ',' && $depth === 0 ) { break; }
+				$first .= $ch;
+			}
+			$first = trim( $first );
+			$inset = ( stripos( $first, 'inset' ) !== false );
+			$first = preg_replace( '/inset/i', '', $first );
+			$color = 'rgba(0, 0, 0, 0.1)';
+			if ( preg_match( '/(rgba?\([^)]*\)|#[0-9a-fA-F]{3,8})/', $first, $cm ) ) {
+				$nc = $norm( $cm[1] );
+				if ( $nc !== '' ) { $color = $nc; }
+				$first = str_replace( $cm[1], '', $first );
+			}
+			// Lengths x/y/blur/spread — split on whitespace so a UNITLESS 0 isn't dropped.
+			$L = array();
+			foreach ( preg_split( '/\s+/', trim( $first ) ) as $tok ) {
+				if ( preg_match( '/^(-?[0-9.]+)(?:px)?$/', $tok, $tm ) ) { $L[] = $tm[1]; }
+			}
+			return array(
+				'x'      => isset( $L[0] ) ? (int) round( (float) $L[0] ) : 0,
+				'y'      => isset( $L[1] ) ? (int) round( (float) $L[1] ) : 0,
+				'blur'   => isset( $L[2] ) ? (int) round( (float) $L[2] ) : 0,
+				'spread' => isset( $L[3] ) ? (int) round( (float) $L[3] ) : 0,
+				'color'  => $color,
+				'inset'  => $inset,
+			);
+		};
+
+		$skip  = array( 'html', 'head', 'body', 'section', 'nav', 'header', 'footer', 'main', 'script', 'style', 'svg', 'path', 'button', 'a' );
+		$boxes = array();
+		foreach ( $body->getElementsByTagName( '*' ) as $node ) {
+			$cls = self::cls( $node );
+			if ( $cls === '' || ! preg_match( '/(?:^|\s)(rounded|shadow|border)/i', $cls ) ) { continue; } // cheap pre-filter
+			if ( in_array( strtolower( $node->tagName ), $skip, true ) ) { continue; }
+			$c = FW_Site_Converter_Tailwind::compile_class_set( $cls );
+			$b = isset( $c['base'] ) ? $c['base'] : array();
+			$radius = ( isset( $b['border-radius'] ) && ! in_array( (string) $b['border-radius'], array( '', '0', '0px' ), true ) ) ? (string) $b['border-radius'] : '';
+			$shadow = ( isset( $b['box-shadow'] ) && strtolower( (string) $b['box-shadow'] ) !== 'none' ) ? (string) $b['box-shadow'] : '';
+			$bw     = ( isset( $b['border-width'] ) && ! in_array( (string) $b['border-width'], array( '', '0', '0px' ), true ) ) ? (string) $b['border-width'] : '';
+			if ( $radius === '' && $shadow === '' && $bw === '' ) { continue; }
+			$hv      = isset( $c['hover'] ) ? $c['hover'] : array();
+			$boxes[] = array(
+				'radius'  => $radius,
+				'shadow'  => $shadow,
+				'bw'      => $bw,
+				'bdcol'   => isset( $b['border-color'] ) ? $norm( (string) $b['border-color'] ) : '',
+				'hshadow' => ( isset( $hv['box-shadow'] ) && strtolower( (string) $hv['box-shadow'] ) !== 'none' ) ? (string) $hv['box-shadow'] : '',
+				'hlift'   => (bool) preg_match( '/hover:-translate-y-[0-9.]/', $cls ),
+			);
+		}
+		if ( empty( $boxes ) ) { return array(); }
+
+		// Cluster the distinct box designs; keep the most common few.
+		$groups = array();
+		foreach ( $boxes as $bx ) {
+			$key = $bx['radius'] . '|' . preg_replace( '/\s+/', '', $bx['shadow'] ) . '|' . $bx['bw'] . '|' . $bx['bdcol'];
+			if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array_merge( $bx, array( 'count' => 0 ) ); }
+			$groups[ $key ]['count']++;
+		}
+		uasort( $groups, function ( $a, $b ) { return $b['count'] - $a['count']; } );
+		$groups = array_slice( $groups, 0, 5, true );
+
+		$empty = array( 'predefined' => '', 'custom' => '' );
+		$u0    = array( 'value' => '', 'unit' => 'px' );
+		$pad0  = array(
+			'margin'  => array( 'all' => '', 'top' => '', 'right' => '', 'bottom' => '', 'left' => '' ),
+			'padding' => array( 'all' => '', 'top' => '', 'right' => '', 'bottom' => '', 'left' => '' ),
+		);
+		$used = array(); $n = 0; $derived = array();
+		foreach ( $groups as $g ) {
+			$has_shadow = ( $g['shadow'] !== '' );
+			$has_border = ( $g['bw'] !== '' );
+			$base = ( $has_shadow && $has_border ) ? 'Card' : ( $has_shadow ? 'Elevated' : ( $has_border ? 'Outline' : 'Rounded' ) );
+			$used[ $base ] = ( isset( $used[ $base ] ) ? $used[ $base ] : 0 ) + 1;
+			$name = $used[ $base ] > 1 ? $base . ' ' . $used[ $base ] : $base;
+
+			$default = array();
+			if ( $has_border ) {
+				$default['border_style'] = 'solid';
+				$default['border_width'] = $unit( $g['bw'] );
+				$default['border_color'] = $g['bdcol'] !== '' ? array( 'predefined' => '', 'custom' => $g['bdcol'] ) : $empty;
+			}
+			$sh = $parse_shadow( $g['shadow'] );
+			if ( $sh ) { $default['box_shadow'] = $sh; }
+			$hover = array();
+			$hsh   = $parse_shadow( $g['hshadow'] );
+			if ( $hsh ) { $hover['box_shadow'] = $hsh; }
+
+			$derived[] = array(
+				'id'            => 'b' . str_pad( (string) ( 100 + ( ++$n ) ), 9, '0', STR_PAD_LEFT ),
+				'preset_name'   => $name,
+				'border_sides'  => 'all',
+				'border_radius' => $g['radius'] !== '' ? $unit( $g['radius'] ) : $u0,
+				'padding'       => $pad0,
+				'transition'    => '200',
+				'hover_fx'      => $g['hlift'] ? array( 'lift' ) : array(),
+				'custom_css'    => '',
+				'states'        => $hover ? array( 'default' => $default, 'hover' => $hover ) : array( 'default' => $default ),
+			);
+		}
+		if ( empty( $derived ) ) { return array(); }
+
+		// Append the site-specific presets to the plugin defaults (keeps the built-in Card/Outline/… library).
+		$base_presets = function_exists( 'unysonplus_default_border_presets' ) ? unysonplus_default_border_presets() : array();
+		return array( 'border_presets' => array_merge( $base_presets, $derived ) );
+	}
+
+	/**
+	 * Derive TEXT STYLES (Theme Settings → Components → Text Styles — the `font_sizes` key: named
+	 * size + weight + line-height + letter-spacing + transform utilities). Reads the source's headings
+	 * (h1–h6) for the DISPLAY size scale (largest rendered size per level, across breakpoints) and
+	 * detects the distinctive EYEBROW/overline treatment (uppercase + tracking). Emits a faithful
+	 * `font_sizes` scale: Display 1..N (class display-N) + Lead + Eyebrow. Same DOM+Tailwind pattern
+	 * as build_box_presets(). Returns array( 'font_sizes' => [...] ).
+	 */
+	public static function build_text_styles( $html ) {
+		$html = (string) $html;
+		if ( $html === '' || ! class_exists( 'FW_Site_Converter_Tailwind' ) ) { return array(); }
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return array(); }
+		$body = null;
+		foreach ( $dom->getElementsByTagName( 'body' ) as $b ) { $body = $b; break; }
+		if ( ! $body ) { return array(); }
+
+		$to_px = function ( $v ) {
+			$v = trim( (string) $v );
+			if ( $v === '' ) { return null; }
+			if ( preg_match( '/^(-?[0-9.]+)(rem|em)$/', $v, $m ) ) { return (float) $m[1] * 16; }
+			if ( preg_match( '/^(-?[0-9.]+)px$/', $v, $m ) ) { return (float) $m[1]; }
+			if ( preg_match( '/^(-?[0-9.]+)$/', $v ) ) { return (float) $v; }
+			return null;
+		};
+
+		// --- Display scale from headings: the largest rendered size (across base/md/lg) per heading. ---
+		$disp = array();
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $ht ) {
+			foreach ( $body->getElementsByTagName( $ht ) as $hn ) {
+				$c = FW_Site_Converter_Tailwind::compile_class_set( self::cls( $hn ) );
+				$size = null; $weight = ''; $lh = '';
+				foreach ( array( 'base', 'md', 'lg' ) as $bp ) {
+					if ( ! isset( $c[ $bp ] ) || ! is_array( $c[ $bp ] ) ) { continue; }
+					$bk = $c[ $bp ];
+					if ( isset( $bk['font-size'] ) ) {
+						$px = $to_px( $bk['font-size'] );
+						if ( $px !== null && ( $size === null || $px > $size ) ) {
+							$size   = $px;
+							$weight = isset( $bk['font-weight'] ) ? (string) $bk['font-weight'] : $weight;
+							$lh     = isset( $bk['line-height'] ) ? (string) $bk['line-height'] : $lh;
+						}
+					}
+				}
+				$bb = isset( $c['base'] ) ? $c['base'] : array();
+				if ( $weight === '' && isset( $bb['font-weight'] ) ) { $weight = (string) $bb['font-weight']; }
+				if ( $lh === '' && isset( $bb['line-height'] ) ) { $lh = (string) $bb['line-height']; }
+				if ( $size === null || $size < 20 ) { continue; } // ignore tiny / unstyled headings
+				$key = (string) (int) round( $size );
+				if ( ! isset( $disp[ $key ] ) ) { $disp[ $key ] = array( 'size' => (int) round( $size ), 'weight' => $weight, 'lh' => $lh, 'count' => 0 ); }
+				$disp[ $key ]['count']++;
+			}
+		}
+		uasort( $disp, function ( $a, $b ) { return $b['size'] - $a['size']; } ); // largest first
+
+		// --- Eyebrow / overline: uppercase + letter-spacing (tracking), most common instance. ---
+		$eye = null; $eye_best = -1;
+		foreach ( $body->getElementsByTagName( '*' ) as $node ) {
+			$cls = self::cls( $node );
+			if ( $cls === '' || ! preg_match( '/uppercase/i', $cls ) || ! preg_match( '/tracking|letter/i', $cls ) ) { continue; }
+			$c = FW_Site_Converter_Tailwind::compile_class_set( $cls );
+			$b = isset( $c['base'] ) ? $c['base'] : array();
+			if ( ( isset( $b['text-transform'] ) ? $b['text-transform'] : '' ) !== 'uppercase' ) { continue; }
+			$ls = isset( $b['letter-spacing'] ) ? (string) $b['letter-spacing'] : '';
+			if ( $ls === '' ) { continue; }
+			$sz = isset( $b['font-size'] ) ? $to_px( $b['font-size'] ) : null;
+			// Prefer a SMALL eyebrow (overlines are small); keep the smallest-sized candidate.
+			$score = ( $sz !== null ) ? ( 1000 - $sz ) : 0;
+			if ( $score > $eye_best ) {
+				$eye_best = $score;
+				$eye = array(
+					'size'   => $sz !== null ? (string) (int) round( $sz ) : '',
+					'weight' => isset( $b['font-weight'] ) ? (string) $b['font-weight'] : '',
+					'ls'     => $ls,
+				);
+			}
+		}
+
+		if ( empty( $disp ) && ! $eye ) { return array(); }
+
+		$mk = function ( $name, $size, $weight, $lh, $ls, $transform, $class ) {
+			return array(
+				'name'           => $name,
+				'size'           => (string) $size,
+				'weight'         => (string) $weight,
+				'line_height'    => (string) $lh,
+				'letter_spacing' => (string) $ls,
+				'transform'      => (string) $transform,
+				'class'          => (string) $class,
+			);
+		};
+
+		$presets = array();
+		$dv = array_values( $disp );
+		$n  = min( 6, count( $dv ) );
+		for ( $i = 0; $i < $n; $i++ ) {
+			$presets[] = $mk( 'Display ' . ( $i + 1 ), $dv[ $i ]['size'], $dv[ $i ]['weight'], $dv[ $i ]['lh'], '', '', 'display-' . ( $i + 1 ) );
+		}
+		$presets[] = $mk( 'Lead', 22, '', '', '', '', 'lead' ); // keep a sensible Lead
+		if ( $eye ) {
+			$presets[] = $mk( 'Eyebrow', $eye['size'], $eye['weight'], '', $eye['ls'], 'uppercase', '' ); // → .font-eyebrow
+		}
+		return array( 'font_sizes' => $presets );
+	}
+
+	/**
+	 * Derive IMAGE STYLES (Theme Settings → Components → Image Styles — the `image_styles` key, the
+	 * .imgs-{slug} treatments). Walks each <img> (and its immediate wrapper) for corner radius / circle,
+	 * aspect-ratio and colour filter, clusters the distinct treatments, and appends them to the default
+	 * library. Same DOM+Tailwind pattern as build_box_presets(). Returns array( 'image_styles' => [...] ).
+	 */
+	public static function build_image_styles( $html ) {
+		$html = (string) $html;
+		if ( $html === '' || ! class_exists( 'FW_Site_Converter_Tailwind' ) ) { return array(); }
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return array(); }
+		$body = null;
+		foreach ( $dom->getElementsByTagName( 'body' ) as $b ) { $body = $b; break; }
+		if ( ! $body ) { return array(); }
+
+		$aspect_slug = function ( $ar ) {
+			$ar = str_replace( ' ', '', strtolower( (string) $ar ) );
+			$map = array( '1/1' => '1-1', '4/3' => '4-3', '3/4' => '3-4', '16/9' => '16-9', '3/2' => '3-2' );
+			return isset( $map[ $ar ] ) ? $map[ $ar ] : 'auto';
+		};
+		$filter_slug = function ( $f ) {
+			$f = strtolower( (string) $f );
+			foreach ( array( 'grayscale', 'sepia', 'blur', 'contrast', 'saturate' ) as $k ) {
+				if ( strpos( $f, $k ) !== false ) { return $k; }
+			}
+			return 'none';
+		};
+		// A radius counts as a "circle" if it's rounded-full (9999/50%) or a very large px.
+		$radius_of = function ( $props ) {
+			$r = isset( $props['border-radius'] ) ? trim( (string) $props['border-radius'] ) : '';
+			if ( $r === '' || $r === '0' || $r === '0px' ) { return array( '', false ); }
+			if ( strpos( $r, '9999' ) !== false || strpos( $r, '50%' ) !== false || ( preg_match( '/^([0-9.]+)px$/', $r, $m ) && (float) $m[1] >= 500 ) ) {
+				return array( '', true ); // circle
+			}
+			return array( $r, false );
+		};
+
+		$imgs = array();
+		foreach ( $body->getElementsByTagName( 'img' ) as $img ) {
+			$ci = FW_Site_Converter_Tailwind::compile_class_set( self::cls( $img ) );
+			$bi = isset( $ci['base'] ) ? $ci['base'] : array();
+			list( $radius, $circle ) = $radius_of( $bi );
+			$aspect = isset( $bi['aspect-ratio'] ) ? $aspect_slug( $bi['aspect-ratio'] ) : 'auto';
+			$filter = isset( $bi['filter'] ) ? $filter_slug( $bi['filter'] ) : 'none';
+			// Radius / aspect are often on the wrapping element (rounded overflow-hidden frame).
+			if ( ( $radius === '' && ! $circle ) || $aspect === 'auto' ) {
+				$p = $img->parentNode;
+				if ( $p instanceof DOMElement ) {
+					$cp = FW_Site_Converter_Tailwind::compile_class_set( self::cls( $p ) );
+					$bp = isset( $cp['base'] ) ? $cp['base'] : array();
+					if ( $radius === '' && ! $circle ) { list( $radius, $circle ) = $radius_of( $bp ); }
+					if ( $aspect === 'auto' && isset( $bp['aspect-ratio'] ) ) { $aspect = $aspect_slug( $bp['aspect-ratio'] ); }
+				}
+			}
+			if ( $radius === '' && ! $circle && $aspect === 'auto' && $filter === 'none' ) { continue; } // untreated
+			$key = ( $circle ? 'circle' : $radius ) . '|' . $aspect . '|' . $filter;
+			if ( ! isset( $imgs[ $key ] ) ) { $imgs[ $key ] = array( 'radius' => $radius, 'circle' => $circle, 'aspect' => $aspect, 'filter' => $filter, 'count' => 0 ); }
+			$imgs[ $key ]['count']++;
+		}
+		if ( empty( $imgs ) ) { return array(); }
+		uasort( $imgs, function ( $a, $b ) { return $b['count'] - $a['count']; } );
+		$imgs = array_slice( $imgs, 0, 5, true );
+
+		$mask = function ( $key ) { return array( 'mask' => $key, 'custom' => array( 'custom_svg' => '', 'custom_clip' => '' ) ); };
+		$col0 = array( 'predefined' => '', 'custom' => '' );
+		$used = array(); $n = 0; $derived = array();
+		foreach ( $imgs as $s ) {
+			$base_name = $s['circle'] ? 'Circle' : ( $s['filter'] === 'grayscale' ? 'Monochrome' : ( $s['filter'] !== 'none' ? ucfirst( $s['filter'] ) : ( $s['aspect'] === '1-1' ? 'Square' : ( in_array( $s['aspect'], array( '16-9', '3-2', '4-3' ), true ) ? 'Wide' : ( $s['aspect'] === '3-4' ? 'Portrait' : 'Rounded' ) ) ) ) );
+			$used[ $base_name ] = ( isset( $used[ $base_name ] ) ? $used[ $base_name ] : 0 ) + 1;
+			$name = $used[ $base_name ] > 1 ? $base_name . ' ' . $used[ $base_name ] : $base_name;
+			$derived[] = array(
+				'id'          => 'img' . str_pad( (string) ( 100 + ( ++$n ) ), 6, '0', STR_PAD_LEFT ),
+				'style_name'  => $name,
+				'aspect'      => $s['aspect'],
+				'radius'      => $s['circle'] ? '' : $s['radius'],
+				'mask'        => $s['circle'] ? $mask( 'circle' ) : $mask( 'none' ),
+				'filter'      => $s['filter'],
+				'duo_color'   => $col0,
+				'scrim'       => 'none',
+				'scrim_color' => $col0,
+			);
+		}
+		if ( empty( $derived ) ) { return array(); }
+		$base_lib = function_exists( 'unysonplus_default_image_style_presets' ) ? unysonplus_default_image_style_presets() : array();
+		return array( 'image_styles' => array_merge( $base_lib, $derived ) );
+	}
+
 	public static function tokens_to_theme_settings_chrome( array $tokens, $html, $title ) {
 		$el  = function ( $type, $settings = null ) {
 			$et = array( 'element' => $type );
@@ -507,6 +965,30 @@ class FW_Site_Converter_Stitch {
 				}
 				unset( $node );
 			}
+		}
+
+		/* --- section_style_presets: reusable band skins clustered from the source's sections --- */
+		$sec_presets = self::build_section_style_presets( (string) $html );
+		if ( ! empty( $sec_presets ) ) {
+			$values = array_merge( $values, $sec_presets );
+		}
+
+		/* --- border_presets (Box Presets): reusable card/box skins clustered from the source --- */
+		$box_presets = self::build_box_presets( (string) $html );
+		if ( ! empty( $box_presets ) ) {
+			$values = array_merge( $values, $box_presets );
+		}
+
+		/* --- font_sizes (Text Styles): display scale + eyebrow derived from the source's headings --- */
+		$text_styles = self::build_text_styles( (string) $html );
+		if ( ! empty( $text_styles ) ) {
+			$values = array_merge( $values, $text_styles );
+		}
+
+		/* --- image_styles (Image Styles): radius / circle / aspect / filter from the source's images --- */
+		$img_styles = self::build_image_styles( (string) $html );
+		if ( ! empty( $img_styles ) ) {
+			$values = array_merge( $values, $img_styles );
 		}
 
 		return array( 'values' => $values );

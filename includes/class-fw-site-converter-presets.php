@@ -32,6 +32,9 @@ class FW_Site_Converter_Presets {
 		'button_animations',
 		'border_presets',
 		'table_presets',
+		'section_style_presets',
+		'image_styles',
+		'background_patterns',
 		'spacing_scale',
 		'gap_scale',
 		'default_gap',
@@ -80,7 +83,16 @@ class FW_Site_Converter_Presets {
 				continue;
 			}
 			// json_decode gives only scalars/arrays, so the value is plain data.
-			FW_WP_Option::set( self::OPTION, $key, $val );
+			// Write via the preset store SEAM so it lands in the store the preset
+			// engine actually reads — the theme-scoped Theme Settings store on a
+			// migrated site (the norm), else the legacy extension store. Writing
+			// straight to self::OPTION (the extension store) left every imported
+			// preset invisible on already-migrated installs.
+			if ( function_exists( 'unysonplus_preset_store_set' ) ) {
+				unysonplus_preset_store_set( $key, $val );
+			} else {
+				FW_WP_Option::set( self::OPTION, $key, $val );
+			}
 			$out['imported'][ $key ] = is_array( $val ) ? count( $val ) : 1;
 		}
 

@@ -634,10 +634,30 @@ class FW_Site_Converter_Mapper {
 		return null;
 	}
 	private static function n_code( $html ) {
+		$html = (string) $html;
+		// PRETEACH tables: a verbatim <table> is wrapped in the default Table Preset skin (.tbl-{slug}).
+		// That preset's CSS targets descendant `> table > thead/tbody…`, so the raw source table renders
+		// styled (header fill, borders, stripes) instead of bare — no per-site table-style derivation
+		// needed. Only when the block is a table and isn't already inside a tbl- wrapper.
+		if ( stripos( $html, '<table' ) !== false && strpos( $html, 'tbl-' ) === false ) {
+			$slug = self::default_table_slug();
+			if ( $slug !== '' ) { $html = '<div class="tbl-' . $slug . '">' . $html . '</div>'; }
+		}
 		return array( 'type' => 'simple', 'shortcode' => 'code_block', '_items' => array(), 'atts' => array(
-			'code' => (string) $html, 'animation' => self::def_animation(),
+			'code' => $html, 'animation' => self::def_animation(),
 			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		) );
+	}
+
+	/** Slug of the first (default) Table Preset — the skin the converter applies to verbatim tables. */
+	private static function default_table_slug() {
+		if ( ! function_exists( 'unysonplus_get_table_presets' ) ) { return ''; }
+		$presets = unysonplus_get_table_presets();
+		if ( empty( $presets ) || ! is_array( $presets ) || empty( $presets[0] ) || ! is_array( $presets[0] ) ) { return ''; }
+		$id = isset( $presets[0]['id'] ) ? preg_replace( '/[^a-zA-Z0-9_-]/', '', (string) $presets[0]['id'] ) : '';
+		if ( $id === '' ) { return ''; }
+		$map = function_exists( 'unysonplus_table_preset_slug_map' ) ? unysonplus_table_preset_slug_map() : array();
+		return isset( $map[ $id ] ) ? (string) $map[ $id ] : '';
 	}
 
 	/**
