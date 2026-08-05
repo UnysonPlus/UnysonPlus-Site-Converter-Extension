@@ -672,6 +672,24 @@ class FW_Site_Converter_Mapper {
 		if ( preg_match( '/<img\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) { $src = trim( $m[1] ); }
 		if ( preg_match( '/<img\b[^>]*\balt\s*=\s*["\']([^"\']*)["\']/i', $html, $m ) ) { $alt = trim( $m[1] ); }
 		if ( $src === '' ) { return self::n_code( $html ); }
+
+		// NOTHING DROPPED: the native media_image can carry a src/alt/size but NOT a visual SKIN
+		// (border colour + width, shadow, ring, outline, or an organic/rounded radius / blob shape).
+		// If the source <img> (or a wrapping element) carries such a skin — as a class OR an inline
+		// style — preserve the source VERBATIM as a code block so every class and its CSS survives,
+		// instead of emitting a skin-less native image. The src is localized first so it still loads.
+		$img_cls = '';
+		if ( preg_match( '/<img\b[^>]*\bclass\s*=\s*["\']([^"\']*)["\']/i', $html, $cm ) ) { $img_cls = ' ' . $cm[1] . ' '; }
+		$skin_class = (bool) preg_match( '/\s(border(?![-\s]?(box|collapse))|shadow|drop-shadow|ring\b|ring-|rounded-(?!none)|rounded\b|outline\b|outline-|blob)/i', $img_cls );
+		$skin_style = (bool) preg_match( '/<img\b[^>]*\bstyle\s*=\s*["\'][^"\']*(border|box-shadow|outline|border-radius|clip-path)/i', $html );
+		$wrapped    = (bool) preg_match( '/<(div|figure|span|a|picture)\b[^>]*>\s*<img/i', $html );
+		if ( $skin_class || $skin_style || $wrapped ) {
+			$iv    = self::upload_val( $src );
+			$local = ( '' !== $iv['url'] ) ? $iv['url'] : $src;
+			if ( $local !== $src ) { $html = str_replace( $src, $local, $html ); }
+			return self::n_code( $html );
+		}
+
 		$iv = self::upload_val( $src ); // sideloaded copy if the filename matches an "Attach media" upload
 		return array( 'type' => 'simple', 'shortcode' => 'media_image', '_items' => array(), 'atts' => array(
 			'image'         => array( 'attachment_id' => $iv['attachment_id'], 'url' => $iv['url'], 'alt' => $alt ),
@@ -1302,7 +1320,15 @@ class FW_Site_Converter_Mapper {
 		$out = array();
 		foreach ( preg_split( '/\s+/', (string) $cls ) as $c ) {
 			if ( $c === '' ) { continue; }
-			if ( preg_match( '/^(wow|aos|animate|animated|js-|init|fade|slide|zoom)/i', $c ) ) { continue; }
+			// Drop ONLY genuine scroll-animation-library markers, matched as whole tokens / library
+			// hooks — never as loose prefixes (the old /^(…|init|fade|slide|zoom)/ ate semantic names
+			// like `slide-title`, `zoom-card`, `initiatives`, `faded-panel`, silently dropping the class).
+			if (
+				preg_match( '/^(wow|animated)$/i', $c )                        // animate.css base markers
+				|| preg_match( '/^(aos|js|animate)-/i', $c )                    // aos-* / js-* / animate-* hooks
+				|| preg_match( '/^animate__/i', $c )                           // animate.css v4
+				|| preg_match( '/^(fade|slide|zoom|flip|bounce|init)(-(in|out|up|down|left|right|top|bottom|delay|duration))?$/i', $c )
+			) { continue; }
 			$out[] = $c;
 		}
 		return implode( ' ', array_unique( $out ) );
@@ -2096,7 +2122,14 @@ class FW_Site_Converter_Mapper {
 
 		$src_cls = preg_split( '/\s+/', (string) ( $sec['sectionClass'] ?? '' ) );
 		$src_cls = array_values( array_filter( $src_cls, function ( $c ) {
-			return $c !== '' && ! preg_match( '/^(swiper|owl|slick|splide|carousel|aos|init|wow)/i', $c );
+			// Drop slider/animation LIBRARY classes only — library prefixes (unique enough) plus
+			// whole-token carousel/init/wow — NOT loose `carousel`/`init` prefixes that would eat
+			// semantic section names like `carousel-section` or `initiatives`.
+			if ( $c === '' ) { return false; }
+			if ( preg_match( '/^(swiper|owl|slick|splide)(-|$)/i', $c ) ) { return false; }
+			if ( preg_match( '/^aos(-|$)/i', $c ) ) { return false; }
+			if ( preg_match( '/^(carousel|init|wow|animated)$/i', $c ) ) { return false; }
+			return true;
 		} ) );
 		$src_cls_str = implode( ' ', $src_cls );
 		$css_id      = isset( $sec['css_id'] ) ? sanitize_html_class( (string) $sec['css_id'] ) : '';

@@ -120,6 +120,18 @@ class FW_Site_Converter_Bundle {
 		$do_header = $opt( 'header' );
 		$do_footer = $opt( 'footer' );
 
+		// REGION-TARGETING SCOPE (from an --only-header / --only-footer / --only-sections capture): run
+		// ONLY the in-scope region and leave the rest of the live site untouched. When scoped we skip the
+		// design-system phases (presets / theme-settings / style guide) — the design system is already
+		// applied — and gate the theme (chrome) + pages (body) phases to the scoped regions; the pages
+		// phase MERGES the scoped sections into the existing page (see Pages::import `scope_sections`),
+		// and the theme-generator preserves the out-of-scope chrome file (see its `convert_scope`).
+		$td_early = self::read_json( $dir, self::FILE_THEME_DESIGN );
+		$scope    = ( is_array( $td_early ) && isset( $td_early['convert_scope'] ) && is_array( $td_early['convert_scope'] ) ) ? $td_early['convert_scope'] : null;
+		$scoped         = ( $scope !== null );
+		$scope_chrome   = $scoped ? ( ! empty( $scope['header'] ) || ! empty( $scope['footer'] ) ) : true;
+		$scope_sections = $scoped ? ( ! empty( $scope['sections'] ) && is_array( $scope['sections'] ) ) : true;
+
 		$out['manifest'] = self::read_json( $dir, self::FILE_MANIFEST );
 
 		// --- Phase 1: media (URL list → sideload, de-duped) ---
@@ -136,14 +148,14 @@ class FW_Site_Converter_Bundle {
 
 		// --- Phase 2: styling presets ---
 		$presets = self::read_json( $dir, self::FILE_PRESETS );
-		if ( $do_design && $presets !== null && class_exists( 'FW_Site_Converter_Presets' ) ) {
+		if ( $do_design && ! $scoped && $presets !== null && class_exists( 'FW_Site_Converter_Presets' ) ) {
 			$out['presets']    = FW_Site_Converter_Presets::import( $presets );
 			$out['sections'][] = 'presets';
 		}
 
 		// --- Phase 3: theme settings (design file → fw_theme_settings_options) ---
 		$theme = self::read_json( $dir, self::FILE_THEME_SETTINGS );
-		if ( $do_design && $theme !== null && class_exists( 'FW_Site_Converter_Theme_Settings' ) ) {
+		if ( $do_design && ! $scoped && $theme !== null && class_exists( 'FW_Site_Converter_Theme_Settings' ) ) {
 			$out['theme_settings'] = FW_Site_Converter_Theme_Settings::import( $theme );
 			$out['sections'][]     = 'theme-settings';
 		}
@@ -152,7 +164,7 @@ class FW_Site_Converter_Bundle {
 		// Skipped when "create child theme" is off — the converted sections are then imported as
 		// page content into the ACTIVE theme (dev wants to grab structure into an existing site).
 		$theme_design = self::read_json( $dir, self::FILE_THEME_DESIGN );
-		if ( $do_design && $do_theme && $theme_design !== null && class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
+		if ( $do_design && $do_theme && $scope_chrome && $theme_design !== null && class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
 			// Honor the header/footer toggles: drop the mirrored chrome the user didn't want, so the
 			// generated theme reproduces only the requested parts (the rest fall back to the theme's).
 			if ( ! $do_header || ! $do_footer ) {
@@ -166,6 +178,16 @@ class FW_Site_Converter_Bundle {
 			$res               = FW_Site_Converter_Theme_Generator::install( $theme_design );
 			$out['theme']      = $res;
 			$out['sections'][] = 'theme';
+			// Copy the captured WordPress theme screenshot (screenshot.png, 1200×900) from the bundle
+			// into the generated theme's root, so Appearance → Themes shows a real thumbnail of the
+			// source design instead of a blank tile. Best-effort — a bundle without one just skips it.
+			if ( empty( $res['error'] ) && ! empty( $res['slug'] ) && is_file( $dir . '/screenshot.png' ) && function_exists( 'get_theme_root' ) ) {
+				$theme_dir = trailingslashit( get_theme_root() ) . $res['slug'];
+				if ( is_dir( $theme_dir ) ) {
+					@copy( $dir . '/screenshot.png', trailingslashit( $theme_dir ) . 'screenshot.png' );
+					$out['theme']['screenshot'] = true;
+				}
+			}
 			// Remember this design-config so the standalone "Install into themes" panel can
 			// pre-fill + one-click re-install the same theme later (no re-uploading the zip).
 			update_option( 'fw_sc_last_theme_design', wp_json_encode( $theme_design ), false );
@@ -182,7 +204,7 @@ class FW_Site_Converter_Bundle {
 
 		// --- Phase 3c: Style Guide page (review artifact from the captured design tokens) ---
 		$styleguide = self::read_json( $dir, self::FILE_STYLEGUIDE );
-		if ( $do_design && $styleguide !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
+		if ( $do_design && ! $scoped && $styleguide !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
 			$out['styleguide'] = FW_Site_Converter_Pages::import( $styleguide );
 			$out['sections'][] = 'styleguide';
 			$first = isset( $out['styleguide']['pages'][0] ) ? $out['styleguide']['pages'][0] : null;
@@ -194,7 +216,7 @@ class FW_Site_Converter_Bundle {
 		// Mapping document — returned (with suggested roles) during the design phase so the admin
 		// can show the review editor; the pages are then built from the user's corrected roles
 		// (NOT from pages.json) via FW_Site_Converter_Mapper.
-		if ( $do_design ) {
+		if ( $do_design && ! $scoped ) {
 			$mapping = self::read_json( $dir, self::FILE_MAPPING );
 			if ( $mapping !== null && class_exists( 'FW_Site_Converter_Mapper' ) ) {
 				$out['mapping'] = FW_Site_Converter_Mapper::suggest_mapping( $mapping );
@@ -205,7 +227,7 @@ class FW_Site_Converter_Bundle {
 		// Skipped when the review editor is driving the build (it posts a corrected mapping to
 		// the dedicated build action); kept as the no-mapping fallback.
 		$pages = self::read_json( $dir, self::FILE_PAGES );
-		if ( $do_pages && $pages !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
+		if ( $do_pages && $scope_sections && $pages !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
 			$out['pages']      = FW_Site_Converter_Pages::import( $pages );
 			$out['sections'][] = 'pages';
 		}

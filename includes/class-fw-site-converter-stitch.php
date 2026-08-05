@@ -1779,10 +1779,24 @@ class FW_Site_Converter_Stitch {
 			function ( $el ) { return self::is_image_wrapper( $el ); },
 			function ( $el ) { $img = $el->getElementsByTagName( 'img' )->item( 0 ); return $img ? array( 't' => 'image', 'role' => 'image', 'html' => self::img_html( $img ) ) : null; }
 		);
-		// An image with an OVERLAID UI (player/caption/controls) → whole widget verbatim in a code block.
+		// An image with an OVERLAID UI (player/caption/controls, a floating badge, a decorative blob) →
+		// whole widget verbatim in a code block. saveHTML($el) carries the OUTER element, so the widget's
+		// own wrapper (e.g. `div.relative.lg:h-[600px]`) rides along and its absolute overlays anchor to
+		// it — but we ALSO force `position:relative` inline on the clone (mirror of the JS to-pages
+		// composite wrapper), so an `inset-0` blob / `top-10 -left-6` badge still anchors to the image
+		// even if the carried `.relative` class doesn't resolve (else the overlays fly to the section
+		// corner / balloon full-bleed). Cloned first so the live DOM isn't mutated for other recognizers.
 		self::register_recognizer( 'image_overlay', 30,
 			function ( $el ) { return self::is_image_with_overlay( $el ); },
-			function ( $el ) { $doc = $el->ownerDocument; $v = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) ) : ''; return '' !== $v ? array( 't' => 'html', 'role' => 'code', 'wide' => true, 'html' => '<div class="sc-tw">' . $v . '</div>' ) : null; }
+			function ( $el ) {
+				$doc = $el->ownerDocument;
+				if ( ! $doc ) { return null; }
+				$clone = $el->cloneNode( true );
+				$st    = trim( (string) $clone->getAttribute( 'style' ) );
+				$clone->setAttribute( 'style', ( '' !== $st ? rtrim( $st, ';' ) . ';' : '' ) . 'position:relative' );
+				$v = self::strip_cs( trim( (string) $doc->saveHTML( $clone ) ) );
+				return '' !== $v ? array( 't' => 'html', 'role' => 'code', 'wide' => true, 'html' => '<div class="sc-tw">' . $v . '</div>' ) : null;
+			}
 		);
 		// A logo / "trusted by" strip (several images, no headings) → whole flex row verbatim in a code block.
 		self::register_recognizer( 'logo_strip', 25,

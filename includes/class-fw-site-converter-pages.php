@@ -162,6 +162,15 @@ class FW_Site_Converter_Pages {
 		$row['id']   = $post_id;
 		$row['slug'] = (string) get_post_field( 'post_name', $post_id );
 
+		// TARGETED RE-IMPORT (region scope): merge the reconverted sections INTO the existing page by
+		// their original index, so the sections you did NOT reconvert stay exactly as they were, instead
+		// of the whole page being replaced. Only when the page already exists (a re-import) and the bundle
+		// flagged it partial with a section-index map.
+		if ( ! empty( $spec['partial'] ) && ! empty( $existing ) && isset( $spec['scope_sections'] ) && is_array( $spec['scope_sections'] ) ) {
+			$merged = self::merge_partial_tree( $post_id, $json, $spec['scope_sections'] );
+			if ( $merged !== null ) { $json = $merged; $row['merged_sections'] = array_map( 'intval', $spec['scope_sections'] ); }
+		}
+
 		// Set the page-builder option. This fires fw_post_options_update, and the
 		// page-builder extension regenerates post_content from the tree (its own
 		// encoder) — we never touch post_content ourselves.
@@ -198,6 +207,36 @@ class FW_Site_Converter_Pages {
 	 * @param string $json
 	 * @return string
 	 */
+	/**
+	 * Merge a targeted re-import's sections INTO the existing page's builder tree by original index.
+	 * `$scope_sections[k]` is the original s_index of incoming section `k`, so incoming[k] replaces the
+	 * existing top-level section at that position; every other existing section is left untouched. Returns
+	 * the merged JSON string, or null if there's no usable existing tree (caller then imports normally).
+	 *
+	 * @param int    $post_id        the existing page
+	 * @param string $incoming_json  the reconverted (partial) tree, JSON string
+	 * @param array  $scope_sections original indices, parallel to the incoming sections
+	 * @return string|null
+	 */
+	private static function merge_partial_tree( $post_id, $incoming_json, array $scope_sections ) {
+		if ( ! function_exists( 'fw_get_db_post_option' ) ) { return null; }
+		$existing_opt  = fw_get_db_post_option( (int) $post_id, self::OPTION_KEY, null );
+		$existing_json = ( is_array( $existing_opt ) && isset( $existing_opt['json'] ) ) ? (string) $existing_opt['json'] : '';
+		if ( trim( $existing_json ) === '' || trim( $existing_json ) === '[]' ) { return null; }
+		$existing = json_decode( $existing_json, true );
+		$incoming = json_decode( (string) $incoming_json, true );
+		if ( ! is_array( $existing ) || ! is_array( $incoming ) ) { return null; }
+		$existing = array_values( $existing );
+		$incoming = array_values( $incoming );
+		foreach ( $incoming as $k => $node ) {
+			$idx = isset( $scope_sections[ $k ] ) ? (int) $scope_sections[ $k ] : -1;
+			if ( $idx < 0 ) { continue; }
+			if ( $idx < count( $existing ) ) { $existing[ $idx ] = $node; } // replace that section in place
+			else { $existing[] = $node; }                                    // beyond the end → append
+		}
+		return wp_json_encode( array_values( $existing ) );
+	}
+
 	private static function resolve_media_urls( $json ) {
 		if ( ! class_exists( 'FW_Site_Converter_Media' ) || ! function_exists( 'wp_get_attachment_url' ) ) {
 			return $json;

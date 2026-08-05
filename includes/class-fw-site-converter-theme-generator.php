@@ -72,6 +72,10 @@ class FW_Site_Converter_Theme_Generator {
 		$hpat   = isset( $hero['pattern'] ) && is_array( $hero['pattern'] ) ? $hero['pattern'] : array();
 
 		return array(
+			// Region-targeting scope (from an --only-header/--only-footer capture): which chrome part is
+			// IN scope this run. The write step preserves the OUT-of-scope template file (header.php /
+			// footer.php) so a targeted header re-convert doesn't clobber a hand-edited footer.
+			'convert_scope' => ( isset( $c['convert_scope'] ) && is_array( $c['convert_scope'] ) ) ? $c['convert_scope'] : null,
 			'theme' => array(
 				'name'        => $name,
 				'slug'        => $slug,
@@ -209,6 +213,10 @@ class FW_Site_Converter_Theme_Generator {
 				// HTML placeholders) + the copyright HTML (→ a child Footer Copyright widget area).
 				'footer_cols' => self::localize_media_list( isset( $raw_chrome_src['footer_cols'] ) ? $raw_chrome_src['footer_cols'] : array() ),
 				'footer_copyright' => self::localize_media( isset( $raw_chrome_src['footer_copyright'] ) ? (string) $raw_chrome_src['footer_copyright'] : '' ),
+				// Sticky-header SCROLL STATE: { top:{…}, scrolled:{ bg, backdrop, shadow, padTop, padBottom,
+				// borderBottom } } — the look the source header animates to on scroll. Reproduced via a
+				// `.sc-scrolled` rule + a scroll toggle in interactivity.js.
+				'header_scroll' => ( isset( $raw_chrome_src['header_scroll'] ) && is_array( $raw_chrome_src['header_scroll'] ) ) ? $raw_chrome_src['header_scroll'] : array(),
 			),
 		);
 	}
@@ -1128,8 +1136,20 @@ class FW_Site_Converter_Theme_Generator {
 		targets.forEach( function ( t ) { io.observe( t ); } );
 	}
 
-	if ( doc.readyState !== 'loading' ) { init(); }
-	else { doc.addEventListener( 'DOMContentLoaded', init ); }
+	// Sticky-header scroll state: the source toggles the header's look on scroll (transparent bar →
+	// solid/blurred). Add `.sc-scrolled` to the mirrored <header> past a small threshold; the
+	// `.sc-tw header.sc-scrolled` rule (emitted only when the source actually changes on scroll) +
+	// the header's own `transition-*` handle the animation.
+	function headerScroll() {
+		var h = doc.querySelector( '.sc-tw header' );
+		if ( ! h ) { return; }
+		var on = function () { h.classList.toggle( 'sc-scrolled', ( window.scrollY || window.pageYOffset || 0 ) > 24 ); };
+		on();
+		window.addEventListener( 'scroll', on, { passive: true } );
+	}
+
+	if ( doc.readyState !== 'loading' ) { init(); headerScroll(); }
+	else { doc.addEventListener( 'DOMContentLoaded', function () { init(); headerScroll(); } ); }
 } )();
 JS;
 	}
@@ -1171,9 +1191,14 @@ JS;
 	 * and element resets are scoped so they don't touch the admin bar).
 	 */
 	private static function admin_bar_css() {
+		// `.sc-tw header` = the raw-chrome MIRROR header (a bare <header class="fixed top-0 …"> — no
+		// #masthead / role="banner"), so it needs its own offset or the admin bar clips it. `top` on a
+		// static header is inert, so applying it unconditionally is safe. `!important` beats the carried
+		// `.sc-tw .top-0` (top:0) utility.
 		return "\n/* Keep a fixed header below the logged-in admin bar */\n"
 			. ".admin-bar .sc-header,.admin-bar #masthead,.admin-bar header[role=\"banner\"]{top:32px;}\n"
-			. "@media screen and (max-width:782px){.admin-bar .sc-header,.admin-bar #masthead,.admin-bar header[role=\"banner\"]{top:46px;}}\n";
+			. ".admin-bar .sc-tw header{top:32px !important;}\n"
+			. "@media screen and (max-width:782px){.admin-bar .sc-header,.admin-bar #masthead,.admin-bar header[role=\"banner\"]{top:46px;}.admin-bar .sc-tw header{top:46px !important;}}\n";
 	}
 
 	/** The merge markers + (optional) per-section CSS. The Build step replaces the body. */
@@ -1215,6 +1240,60 @@ JS;
 	 * @param string $css
 	 * @return string
 	 */
+	/**
+	 * Prefix every rule's selector with a SCOPE (e.g. `.sc-tw`) so the carried source utility CSS beats
+	 * the host plugin's SAME-NAMED utilities. The source is Tailwind: `.px-6` = 1.5rem/24px; UnysonPlus
+	 * ships its own `.px-6` = 3.5rem/56px (Bootstrap-aligned scale). Both target `.px-6` (specificity
+	 * 0,1,0), so the plugin's rule won and the mirror header's `Book a Stay` button rendered 56px-wide
+	 * instead of 24px. Prefixing the mirror's carried rules with `.sc-tw` (→ 0,2,0) makes the SOURCE
+	 * value win, scoped to the mirrored chrome only. Global rules (:root/html/body/*) and @font-face/
+	 * @keyframes are left alone; @media/@supports recurse so their inner selectors get scoped too.
+	 */
+	public static function scope_selectors( $css, $scope ) {
+		$css = (string) $css;
+		if ( trim( $css ) === '' ) { return ''; }
+		$out = ''; $buf = ''; $i = 0; $len = strlen( $css );
+		while ( $i < $len ) {
+			$ch = $css[ $i ];
+			if ( $ch === '{' ) {
+				$prelude = trim( $buf ); $buf = '';
+				$depth = 1; $i++; $body = '';
+				while ( $i < $len && $depth > 0 ) { $c = $css[ $i ]; if ( $c === '{' ) { $depth++; } elseif ( $c === '}' ) { $depth--; if ( $depth === 0 ) { break; } } $body .= $c; $i++; }
+				$i++; // consume the closing }
+				if ( $prelude !== '' && $prelude[0] === '@' ) {
+					if ( preg_match( '/^@(media|supports)/i', $prelude ) ) {
+						$out .= $prelude . '{' . self::scope_selectors( $body, $scope ) . '}';
+					} else {
+						$out .= $prelude . '{' . $body . '}'; // @font-face / @keyframes: leave selectors alone
+					}
+				} else {
+					$parts = array_filter( array_map( 'trim', explode( ',', $prelude ) ) );
+					$scoped = array();
+					foreach ( $parts as $s ) {
+						$scoped[] = preg_match( '/^(:root|html|body|\*)\b/i', $s ) ? $s : ( $scope . ' ' . $s );
+					}
+					// The plugin's OWN spacing/type utilities (`.px-6`, `.py-*`, `.m-*`, `.gap-*`, font-size)
+					// emit their value with `!important`, so a scoped carried Tailwind rule (`.sc-tw .px-6`)
+					// still loses the cascade (the source button rendered 56px instead of 24px). Re-assert the
+					// carried SOURCE value with `!important` — but ONLY on the properties those utilities target
+					// (padding / margin / gap / font-size), so colours, backgrounds and transitions stay clean
+					// (important for the scroll-state background the header toggles).
+					$decls = array();
+					foreach ( explode( ';', $body ) as $d ) {
+						$d = trim( $d );
+						if ( $d === '' ) { continue; }
+						if ( strpos( $d, '!important' ) === false && preg_match( '/^(padding|margin|gap|row-gap|column-gap|font-size)(-[a-z-]+)?\s*:/i', $d ) ) {
+							$d .= ' !important';
+						}
+						$decls[] = $d;
+					}
+					$out .= implode( ', ', $scoped ) . '{' . implode( ';', $decls ) . ';}';
+				}
+			} else { $buf .= $ch; $i++; }
+		}
+		return $out;
+	}
+
 	public static function pretty_css( $css ) {
 		$css = trim( (string) $css );
 		if ( $css === '' ) { return ''; }
@@ -1257,7 +1336,7 @@ JS;
 	/** The footer CSS group — written LAST (after the section styles) for a clean, readable order. */
 	private static function footer_block( array $cfg ) {
 		if ( ! self::has_raw_chrome( $cfg ) ) { return ''; }
-		$f = isset( $cfg['raw_chrome']['footer_css'] ) ? self::clean_carried( (string) $cfg['raw_chrome']['footer_css'] ) : '';
+		$f = isset( $cfg['raw_chrome']['footer_css'] ) ? self::scope_selectors( self::clean_carried( (string) $cfg['raw_chrome']['footer_css'] ), '.sc-tw' ) : '';
 		return $f !== '' ? "\n\n/* ============ Footer ============ */\n" . $f . "\n" : '';
 	}
 
@@ -1289,12 +1368,26 @@ JS;
 		$cmax = isset( $cfg['layout']['container_max'] ) ? trim( (string) $cfg['layout']['container_max'] ) : '';
 		if ( $cmax !== '' ) {
 			$out .= ".fw-container { max-width:{$cmax} !important; }\n";
+			// The MIRRORED header/footer keep the source's own `.container` markup. The parent theme's
+			// `body .container` rule (specificity 0,1,1) beats the carried Tailwind `.container` rules
+			// (0,1,0), so without this the mirror chrome collapses to the parent's default container
+			// width (e.g. 1218px) while the body's .fw-container sits at the source width — a visible
+			// header/body misalignment. Pin the mirror's container to the SAME captured width (max-width
+			// caps, so narrow viewports still fill; !important beats the un-!important parent rule).
+			$out .= "body .sc-tw .container { max-width:{$cmax} !important; }\n";
 		}
 		// Clip horizontal bleed from full-bleed source sections (sliders, negative-margin rows). The
 		// source relies on `html { overflow-x:hidden }`; we scope it to the converted content so it
 		// can't widen the page (which would push the header/banner and leave a white gap). `clip`
 		// keeps vertical flow intact and — unlike `hidden` — doesn't create a scroll container.
 		$out .= ".fw-page-builder-content { overflow-x:clip; }\n";
+		// Mirrored headings INHERIT their container's colour (the source design — e.g. a dark footer's
+		// `text-white` cascading to its "Quick Links"/"Services" column titles) instead of the parent
+		// theme's global `h1–h6 { color: <ink> }`, which otherwise wins (it sets colour EXPLICITLY, so the
+		// footer's inherited white loses) and renders the titles dark-on-dark = invisible. `.sc-tw :is(h…)`
+		// (0,1,1) outranks the theme's `h1–h6` (0,0,1); an EXPLICIT source colour class (text-white /
+		// text-primary, carried + `!important`) still overrides this, so only the default case changes.
+		$out .= ".sc-tw :is(h1,h2,h3,h4,h5,h6){ color:inherit; }\n";
 		if ( $fh !== '' || $fb !== '' ) {
 			$out .= ":root, body {\n";
 			if ( $fb !== '' ) { $out .= "\t--font-body:{$body_stack};\n"; }
@@ -1570,6 +1663,29 @@ JS;
 			. "   ============================================================ */\n\n";
 	}
 
+	/**
+	 * The sticky header's SCROLLED look → a `.sc-scrolled` rule (interactivity.js toggles the class on
+	 * scroll). Reproduces the common "transparent bar → solid/blurred bar on scroll" transition; the
+	 * mirror's own `transition-all` on the header animates it. `!important` on bg/padding beats the
+	 * carried top-state utilities (e.g. `.py-5` is emitted `!important` by the scope pass).
+	 */
+	private static function header_scroll_css( array $cfg ) {
+		$hs = ( isset( $cfg['raw_chrome']['header_scroll']['scrolled'] ) && is_array( $cfg['raw_chrome']['header_scroll']['scrolled'] ) )
+			? $cfg['raw_chrome']['header_scroll']['scrolled'] : array();
+		if ( ! $hs ) { return ''; }
+		$clean = function ( $v ) { return trim( preg_replace( '/[{}@<>;]/', '', (string) $v ) ); };
+		$d = array();
+		if ( ! empty( $hs['bg'] ) && $hs['bg'] !== 'rgba(0, 0, 0, 0)' && $hs['bg'] !== 'transparent' ) { $d[] = 'background:' . $clean( $hs['bg'] ) . ' !important'; }
+		if ( ! empty( $hs['backdrop'] ) ) { $d[] = 'backdrop-filter:' . $clean( $hs['backdrop'] ); $d[] = '-webkit-backdrop-filter:' . $clean( $hs['backdrop'] ); }
+		if ( ! empty( $hs['shadow'] ) ) { $d[] = 'box-shadow:' . $clean( $hs['shadow'] ); }
+		if ( ! empty( $hs['padTop'] ) ) { $d[] = 'padding-top:' . $clean( $hs['padTop'] ) . ' !important'; }
+		if ( ! empty( $hs['padBottom'] ) ) { $d[] = 'padding-bottom:' . $clean( $hs['padBottom'] ) . ' !important'; }
+		if ( ! empty( $hs['borderBottom'] ) ) { $d[] = 'border-bottom:' . $clean( $hs['borderBottom'] ); }
+		if ( ! $d ) { return ''; }
+		return "/* ============ Sticky header scroll state (source toggles on scroll) ============ */\n"
+			. ".sc-tw header.sc-scrolled { " . implode( ';', $d ) . "; }\n\n";
+	}
+
 	public static function chrome_css( array $cfg ) {
 		// AI-authored design, or a faithful MIRROR (reproduced Tailwind CSS) — emit only the structural
 		// reset + the carried stylesheet; no deterministic .sc-header/.sc-footer chrome CSS to fight it.
@@ -1601,11 +1717,15 @@ JS;
 			// empty rules / blank-line runs collapsed.
 			$rc   = $cfg['raw_chrome'];
 			$base = self::clean_carried( isset( $rc['base_css'] ) ? $rc['base_css'] : '' );
-			$util = self::clean_carried( isset( $rc['util_css'] ) ? $rc['util_css'] : '' );
-			$head = self::clean_carried( isset( $rc['header_css'] ) ? $rc['header_css'] : '' );
+			// Scope the carried UTILITY + HEADER rules to `.sc-tw` (the mirror wrapper) so the source's
+			// Tailwind utilities win over the plugin's same-named utilities (`.px-6` = 24px vs 56px) — the
+			// mirror is the only `.sc-tw` on the page, so this is safe and confines the source CSS to it.
+			// base_css (globals / typography / :root vars) stays UNSCOPED so it can set body/root tokens.
+			$util = self::scope_selectors( self::clean_carried( isset( $rc['util_css'] ) ? $rc['util_css'] : '' ), '.sc-tw' );
+			$head = self::scope_selectors( self::clean_carried( isset( $rc['header_css'] ) ? $rc['header_css'] : '' ), '.sc-tw' );
 			// Back-compat: older bundles only carried a single `css` blob (uncategorized).
 			if ( $base === '' && $util === '' && $head === '' && ! empty( $rc['css'] ) ) {
-				$util = self::clean_carried( (string) $rc['css'] );
+				$util = self::scope_selectors( self::clean_carried( (string) $rc['css'] ), '.sc-tw' );
 			}
 			$out  = self::typography_layer( $cfg );
 			$out .= self::button_layer( $cfg );
@@ -1613,6 +1733,7 @@ JS;
 			if ( $base !== '' ) { $out .= "/* ============ Base & typography (source) ============ */\n" . $base . "\n\n"; }
 			if ( $util !== '' ) { $out .= "/* ============ Globals & utilities (source) ============ */\n" . $util . "\n\n"; }
 			if ( $head !== '' ) { $out .= "/* ============ Header ============ */\n" . $head . "\n\n"; }
+			$out .= self::header_scroll_css( $cfg );
 			$sc_menu = self::sc_menu_css( $cfg );
 			if ( $sc_menu !== '' ) { $out .= "/* ============ Dynamic menu (wp_nav_menu .sc-menu) ============ */\n" . $sc_menu . "\n\n"; }
 			$page_mirror = self::clean_carried( (string) $cfg['custom_css'] );
@@ -2526,6 +2647,20 @@ JS;
 		$files      = self::assemble_overlay( $cfg, $standalone );
 		$count      = 0;
 
+		// TARGETED CHROME re-convert: when the scope is header-only (or footer-only), do NOT overwrite the
+		// OUT-of-scope chrome template if it already exists — so reconverting just the header preserves a
+		// hand-edited footer, and vice-versa. Only applies on a re-install (the file already exists).
+		$scope     = isset( $cfg['convert_scope'] ) && is_array( $cfg['convert_scope'] ) ? $cfg['convert_scope'] : null;
+		$preserved = array();
+		if ( $scope !== null ) {
+			$want = array();
+			if ( empty( $scope['header'] ) ) { $want[] = 'template-parts/header-builder.php'; }
+			if ( empty( $scope['footer'] ) ) { $want[] = 'template-parts/footer-builder.php'; }
+			foreach ( $want as $rel ) {
+				if ( isset( $files[ $rel ] ) && file_exists( trailingslashit( $dir ) . $rel ) ) { unset( $files[ $rel ] ); $preserved[] = $rel; }
+			}
+		}
+
 		foreach ( $files as $rel => $contents ) {
 			$path = trailingslashit( $dir ) . $rel;
 			$sub  = dirname( $path );
@@ -2545,7 +2680,9 @@ JS;
 		// owns a full parent copy, so its "missing" overlays are intentional parent files).
 		if ( ! $standalone ) {
 			foreach ( self::generated_relpaths() as $rel ) {
-				if ( ! isset( $files[ $rel ] ) ) {
+				// `$preserved` = the out-of-scope chrome file(s) we deliberately KEPT this targeted run —
+				// never treat those as stale, or a header-only re-convert would delete the footer part.
+				if ( ! isset( $files[ $rel ] ) && ! in_array( $rel, $preserved, true ) ) {
 					$stale = trailingslashit( $dir ) . $rel;
 					if ( is_file( $stale ) ) { @unlink( $stale ); }
 				}

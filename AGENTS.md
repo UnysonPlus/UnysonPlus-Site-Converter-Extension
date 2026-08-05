@@ -23,6 +23,32 @@ bundle** that runs all of them from a single `.zip`. The conversion pipeline is 
 > — the manual process AND the north star for making THIS converter emit presets rather than a CSS
 > child theme. Root `CLAUDE.md` points here for any demo conversion.
 
+## Governing invariant — NOTHING DROPPED, ALL CLASS EFFECTS CARRIED (REQUIRED)
+
+The converter's core contract: **no source content is silently dropped, and every source class's
+*effect* is carried.** Concretely, when a node can't be mapped to a specific shortcode/option, it
+**falls back to a verbatim `code_block`** (the exact markup + all its classes survive, and the
+flattened source CSS still targets them) — it is never discarded. This applies in BOTH pipeline
+seams: the capture **extractor** (`UnysonPlus-Capture-Service/tools/design-capture/capture-extract.mjs`)
+and the PHP **mapper** (`includes/class-fw-site-converter-mapper.php`). Specifics:
+
+- **Images** carrying a skin `media_image` can't express (border colour/width, box-shadow, an
+  organic/blob `border-radius`, ring/outline) → preserved **verbatim as a `code_block`** (src
+  localized), not a skin-less native image. Only a plain image becomes `media_image`.
+- **Decorative flourishes** (a blob / gradient overlay) with any class or inline style → verbatim
+  `code_block`. Only a *genuinely styleless* empty element (nothing to render) may be dropped.
+- **Absolute overlays with content** (a floating "24/7 Care" badge on an image cell) → the WHOLE
+  cell is kept **verbatim** (image + blob + badge), never collapsed to a bare image that loses them.
+- **Standalone `<svg>` illustrations and non-provider `<iframe>`s** (maps / embeds / forms) →
+  verbatim `code_block`, not skipped. (Provider videos still map to `media_video`.)
+- **Class filters** (`keep_classes`, the section-class filter) strip ONLY genuine
+  animation/slider-library markers as whole tokens/hooks — never loose prefixes that would eat
+  semantic names (`slide-title`, `initiatives`, `carousel-section`).
+
+The **only** sanctioned drops are user-driven (`include:false` / the `skip` role) and truly
+non-content tags (script/style/noscript/template/header/footer/nav). If you add a new mapping path,
+give it a `code_block` fallback — never a silent `continue`/`return` that loses content.
+
 ## Structure
 
 ```

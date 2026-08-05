@@ -225,6 +225,20 @@ There are three, chosen by SCOPE — never add a schema field for a property one
 
 **Rule of thumb:** reusable + preset → tier 1; this-one-element → tier 2; site-wide → tier 3.
 
+> **⚠️ Verify carried-CSS COMPLETENESS on a raw-chrome conversion (the "10%-done" trap).** When the
+> generated child `style.css` is written from the capture bundle's `raw_chrome` buckets
+> (`base_css` / `util_css` / `header_css` / `footer_css`), the **`/* Globals & utilities (source) */`**
+> block MUST be present and substantial. If it's missing/empty, the source's **body-section utilities
+> were dropped** and every section below the header ships **unstyled** (hero fine, feature grid / CTA /
+> footer bare) — the `freshpaws` regression. Root cause (fixed capture-service v1.7.78): the JS
+> categorizer only globalized header/footer-scoped or **vendor-filename**-matched utilities, so a
+> Tailwind/JIT source served from an inline `<style>` or a hash-named bundle lost its body utilities.
+> **Fix + invariant:** the global `util_css` must carry EVERY page-matching utility, independent of the
+> source stylesheet's filename. The PHP upload path was already complete (it carries the whole
+> reproduced CSS blob as `css`). **Review step:** after generating a raw-chrome theme, open the child
+> `style.css`, confirm the "Globals & utilities" block exists, and eyeball the front page below the
+> hero before shipping — this is part of the region-by-region / ship-gate pass, not optional.
+
 ### Responsive line breaks (source `<br class="hidden md:block">`)
 
 The source's utility-class-on-a-`<br>` is exactly the DOM noise UnysonPlus avoids. Reproduce it CLEAN:
