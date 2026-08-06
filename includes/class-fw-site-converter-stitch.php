@@ -1553,6 +1553,7 @@ class FW_Site_Converter_Stitch {
 				$sections[] = array(
 					'sectionClass' => '',
 					'sectionRawClass' => self::cls( $node ), // the section's RAW classes (mt/mb/py …) → vertical-spacing carry, without polluting css_class
+					'sectionCs'    => (string) $node->getAttribute( 'data-sc-cs' ), // the section's COMPUTED style → faithful full-width band background (mapper reproduces bg the class parse misses)
 					'css_id'       => self::section_id( $node, $idx ),
 					'omit'         => false,
 					'verbatim'     => false,

@@ -2466,6 +2466,27 @@ class FW_Site_Converter_Mapper {
 		}
 		if ( $cont ) { $cont['box-sizing'] = 'border-box'; }
 
+		// Reproduce the section's OWN rendered background (edge-to-edge, on the section element) from its
+		// COMPUTED style. AI-builder bands often set their fill via computed CSS, not a `bg-*` class (e.g. a
+		// white feature strip, a tinted band) — the class parse above misses those, so faithful spacing reads
+		// as an empty void. We deliberately take ONLY a background that is on the section element itself: an
+		// inner "layer" is ambiguous (decorative blur blobs, gradients, overlays) and hoisting it wholesale
+		// paints the wrong colour, so that case is left to a future, discrimination-aware pass.
+		if ( self::$style_on ) {
+			$cont_has_bg = isset( $cont['background'] ) || isset( $cont['background-color'] ) || isset( $cont['background-image'] );
+			$sec_cs = (string) ( $sec['sectionCs'] ?? '' );
+			if ( $sec_cs !== '' ) {
+				$bgd = self::cs_decls( $sec_cs, array( 'background-color', 'background-image' ) );
+				$bc  = isset( $bgd['background-color'] ) ? trim( $bgd['background-color'] ) : '';
+				if ( $bc !== '' && $bc !== 'transparent' && ! preg_match( '/,\s*0\s*\)\s*$/', $bc ) && ! isset( $secd['background-color'] ) && ! $cont_has_bg ) {
+					$secd['background-color'] = $bc;
+				}
+				if ( isset( $bgd['background-image'] ) && 'none' !== trim( $bgd['background-image'] ) && ! isset( $secd['background-image'] ) && ! $cont_has_bg ) {
+					$secd['background-image'] = trim( $bgd['background-image'] );
+				}
+			}
+		}
+
 		if ( $cont || $secd ) {
 			if ( $secd ) { self::register_section_rule( $css_id, '', $secd ); }
 			if ( $cont ) { self::register_section_rule( $css_id, '.fw-container', $cont ); }
