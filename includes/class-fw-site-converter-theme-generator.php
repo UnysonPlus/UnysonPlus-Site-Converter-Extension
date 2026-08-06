@@ -2008,7 +2008,7 @@ JS;
 		if ( $raw ) {
 			$nav_items = self::nav_tree_items( isset( $cfg['raw_chrome']['nav_tree'] ) ? $cfg['raw_chrome']['nav_tree'] : array() );
 			if ( $nav_items ) {
-				$out .= self::menu_bootstrap_code( $fn, 'header_menu', 'Header', $loc, $nav_items );
+				$out .= self::menu_bootstrap_code( $fn, 'header_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header', $loc, $nav_items );
 			}
 			$logo_src = isset( $cfg['header']['logo_src'] ) ? (string) $cfg['header']['logo_src'] : '';
 			if ( $cfg['theme']['mode'] === 'child' && $logo_src !== '' ) {
@@ -2055,10 +2055,10 @@ JS;
 		// as the footer, which sidesteps the theme-switch nav_menu_locations reset).
 		$header_menu = isset( $cfg['header']['menu'] ) && is_array( $cfg['header']['menu'] ) ? $cfg['header']['menu'] : array();
 		if ( $header_menu ) {
-			$out .= self::menu_bootstrap_code( $fn, 'header_menu', 'Header', $loc, $header_menu );
+			$out .= self::menu_bootstrap_code( $fn, 'header_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header', $loc, $header_menu );
 		}
 		if ( $footer_menu ) {
-			$out .= self::menu_bootstrap_code( $fn, 'footer_menu', 'Footer', 'sc_footer', $footer_menu );
+			$out .= self::menu_bootstrap_code( $fn, 'footer_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Footer', 'sc_footer', $footer_menu );
 		}
 
 		// Seed the editable header layout (Appearance → Theme Settings → Header) once on activation:
