@@ -1639,7 +1639,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			<details class="fw-sc-setup">
 				<summary><span class="dashicons dashicons-superhero-alt"></span> <?php esc_html_e( 'Enable AI — sign in to Claude Code or add an API key (optional)', 'fw' ); ?></summary>
 				<div class="fw-sc-setup-body">
-					<p class="description"><?php echo wp_kses_post( __( 'The <strong>Use AI</strong> option (in <strong>Convert</strong> below) makes the result look much closer to the original — it fixes the section mapping and writes matching CSS. It runs inside the capture service above. Set up <strong>one</strong> of the two options; the AI status turns green once it works.', 'fw' ) ); ?></p>
+					<p class="description"><?php echo wp_kses_post( __( 'The <strong>Use AI</strong> option (in <strong>Convert</strong> below) refines the <strong>section mapping</strong> — what each element is (heading vs text vs button), which decorative blocks to skip, which custom widgets to keep verbatim. It does <strong>not</strong> restyle the page: the deterministic engine still produces all CSS + chrome, so AI never makes the look worse. It helps most on pages with <strong>ambiguous structure</strong>; a clean page is often already mapped correctly (no visible change). It runs in the capture service above — Claude if configured, else a local model you pick in the dashboard.', 'fw' ) ); ?></p>
 
 					<h4 style="margin:.9em 0 .2em"><?php esc_html_e( 'Option A — Claude Code (use your Claude subscription; no API key)', 'fw' ); ?> <span style="font-size:11px;background:#1a7f37;color:#fff;border-radius:9px;padding:1px 7px;vertical-align:middle"><?php esc_html_e( 'recommended', 'fw' ); ?></span></h4>
 					<ol style="margin:.4em 0 .4em 1.4em;padding:0">
@@ -1743,7 +1743,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<label><input type="checkbox" id="fw-sc-opt-render-browser"> <?php esc_html_e( 'Render in a browser', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'uses the capture SERVICE. Runtime-CSS sources (Google Stitch / Tailwind CDN, Lovable, v0) MUST be rendered for fidelity — but when a local Node capture engine is configured, uploads auto-render without needing the service or this box', 'fw' ); ?>)</span></label>
 				</p>
 				<p style="margin:.2em 0 1.1em">
-					<label><input type="checkbox" id="fw-sc-ai"> <strong><?php esc_html_e( 'Use AI to match the original design more closely', 'fw' ); ?></strong></label>
+					<label><input type="checkbox" id="fw-sc-ai"> <strong><?php esc_html_e( 'Use AI to refine the element mapping (Experimental)', 'fw' ); ?></strong></label>
 					<span id="fw-sc-ai-status" class="description" style="margin-left:.5em"></span>
 					<span class="description" style="display:block;margin-top:.2em"><?php esc_html_e( 'Runs in the capture service on your machine (set it up under “Enable AI” above) — sign in to Claude Code or use an Anthropic API key; it never touches WordPress. Adds ~30s. Needs “Create child theme” on.', 'fw' ); ?></span>
 					<label style="display:block;margin-top:.3em;color:#50575e"><?php esc_html_e( 'Service URL', 'fw' ); ?> <input type="url" id="fw-sc-ai-svcurl" class="regular-text" value="http://localhost:8787" style="width:15em"></label>
