@@ -548,4 +548,61 @@ class FW_Site_Converter_Tailwind {
 		}
 		return $out;
 	}
+
+	/**
+	 * Extract the source's CUSTOM semantic colours (foreground, background, muted, card, accent,
+	 * border, …) from the captured computed styles, so their `bg-`/`text-`/`border-` utilities can be
+	 * emitted even when the site defines them via a Tailwind config / CSS vars we can't see in
+	 * view-source (React/shadcn sites — no inline `tailwind.config`, no `:root{--foreground}` in the
+	 * rendered HTML). The capture service stamps each element's getComputedStyle onto `data-sc-cs`;
+	 * we pair a base colour utility (`bg-foreground`, `text-muted`) with the matching computed value
+	 * on the SAME element and record name => #hex. Opacity variants (`bg-foreground/70`) are ignored
+	 * here (they resolve off the base colour via the normal /opacity path).
+	 *
+	 * Returns array( name => '#rrggbb', … ) — merge as a FALLBACK under any real config colours.
+	 *
+	 * @param string $html rendered markup carrying data-sc-cs computed-style attributes
+	 * @return array
+	 */
+	public static function extract_semantic_colors( $html ) {
+		$out = array();
+		if ( ! preg_match_all( '/<[a-zA-Z][^>]*\bdata-sc-cs\s*=\s*"[^"]*"[^>]*>/', (string) $html, $tags ) ) { return $out; }
+		$kind_prop = array( 'bg' => array( 'background-color' ), 'text' => array( 'color' ), 'border' => array( 'border-color', 'border-top-color', 'border-bottom-color' ) );
+		foreach ( $tags[0] as $tag ) {
+			if ( ! preg_match( '/\bclass\s*=\s*"([^"]*)"/', $tag, $cm ) ) { continue; }
+			if ( ! preg_match( '/\bdata-sc-cs\s*=\s*"([^"]*)"/', $tag, $sm ) ) { continue; }
+			$props = array();
+			foreach ( explode( ';', $sm[1] ) as $decl ) {
+				$cp = strpos( $decl, ':' );
+				if ( $cp === false ) { continue; }
+				$props[ strtolower( trim( substr( $decl, 0, $cp ) ) ) ] = trim( substr( $decl, $cp + 1 ) );
+			}
+			foreach ( preg_split( '/\s+/', trim( $cm[1] ) ) as $cls ) {
+				// Only BASE utilities reflect the element's computed colour (variant / opacity forms don't).
+				if ( $cls === '' || strpos( $cls, ':' ) !== false || strpos( $cls, '/' ) !== false ) { continue; }
+				if ( ! preg_match( '/^(bg|text|border)-([a-z][a-z0-9-]*)$/', $cls, $km ) ) { continue; }
+				$kind = $km[1];
+				$name = $km[2];
+				if ( isset( $out[ $name ] ) ) { continue; }
+				// Skip anything the standard palette / built-ins already cover — ADD custom colours only.
+				if ( in_array( $name, array( 'white', 'black', 'transparent', 'current', 'inherit' ), true ) ) { continue; }
+				if ( self::palette( $name ) !== '' ) { continue; }
+				$val = '';
+				foreach ( $kind_prop[ $kind ] as $p ) { if ( ! empty( $props[ $p ] ) ) { $val = $props[ $p ]; break; } }
+				$hex = self::rgb_to_hex( $val );
+				if ( $hex !== '' ) { $out[ $name ] = $hex; }
+			}
+		}
+		return $out;
+	}
+
+	/** "rgb(41, 61, 54)" / fully-opaque "rgba(r,g,b,1)" → "#rrggbb". Transparent / partial-alpha → ''. */
+	private static function rgb_to_hex( $val ) {
+		$val = trim( (string) $val );
+		if ( $val === '' ) { return ''; }
+		if ( preg_match( '/^#[0-9a-fA-F]{3,8}$/', $val ) ) { return $val; }
+		if ( ! preg_match( '/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/i', $val, $m ) ) { return ''; }
+		if ( isset( $m[4] ) && $m[4] !== '' && (float) $m[4] < 0.999 ) { return ''; } // needs a solid colour for a utility
+		return sprintf( '#%02x%02x%02x', min( 255, (int) round( $m[1] ) ), min( 255, (int) round( $m[2] ) ), min( 255, (int) round( $m[3] ) ) );
+	}
 }

@@ -43,6 +43,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-stitch.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sources.php' );
 
+		// REST API for the AI Dev Kit dashboard (external local Node tool): token + localhost auth,
+		// so it can drive a full "convert a source URL and install it into THIS site" over HTTP.
+		add_action( 'rest_api_init', array( $this, '_register_rest_routes' ) );
+
 		if ( is_admin() ) {
 			add_action( 'admin_menu', array( $this, '_action_admin_menu' ), 30 );
 			// Slot our page into the shared Unyson+ submenu order (the Post Types
@@ -65,6 +69,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			add_action( 'wp_ajax_fw_sc_export_rules', array( $this, '_ajax_export_rules' ) );
 			add_action( 'wp_ajax_fw_sc_import_rules', array( $this, '_ajax_import_rules' ) );
 			add_action( 'wp_ajax_fw_sc_selftest', array( $this, '_ajax_selftest' ) );
+			// AI header/footer fidelity pass: persist the verified, chrome-scoped CSS the capture service
+			// returned into the active converted theme's style.css (labeled, idempotent block).
+			add_action( 'wp_ajax_fw_sc_apply_chrome_css', array( $this, '_ajax_apply_chrome_css' ) );
 		}
 	}
 
@@ -111,7 +118,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$this->hook_suffix = add_submenu_page(
 			self::PARENT_SLUG,
 			__( 'Convert — AI Site Importer', 'fw' ),
-			__( 'Convert', 'fw' ),
+			__( 'Site Converter', 'fw' ),
 			self::CAPABILITY,
 			self::PAGE_SLUG,
 			array( $this, 'render_page' )
@@ -196,6 +203,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			$this->run_convert_file();
 		} elseif ( $step === 'generate_theme' ) {
 			$this->run_generate_theme();
+		} elseif ( $step === 'regen_dashboard_token' ) {
+			$this->run_regen_dashboard_token();
 		} else {
 			$this->run_scan();
 		}
@@ -596,14 +605,35 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			exit;
 		}
 
-		$result = FW_Site_Converter_Stitch::import_bundle( $bundle );
+		$result = $this->import_and_activate_bundle( $bundle, $source_label, isset( $bundle['screens'] ) ? (int) $bundle['screens'] : 1 );
 		if ( ! empty( $result['error'] ) && empty( $result['sections'] ) ) {
 			$this->convert_fail( $result['error'] );
 		}
 
-		// One-step setup: ACTIVATE the freshly generated child theme so "upload → done" — the new theme
-		// carries the export's palette/fonts + header/footer, and its activation bootstrap builds the
-		// header/footer menus. (Theme switch is safe here — we're in an admin POST handler.)
+		set_transient( $this->results_transient_key(), $result, 5 * MINUTE_IN_SECONDS );
+		$this->redirect_back();
+	}
+
+	/**
+	 * SHARED CONVERSION CORE: import a built bundle (media → presets → theme settings → theme → pages
+	 * → menus), then ACTIVATE the freshly generated child theme so "convert → done" in one step. Both
+	 * the admin direct-submit path (run_convert_file) and the REST-driven run_url_conversion() call
+	 * this, so their install behavior is identical. (Theme switch is safe — callers run in an admin
+	 * POST handler or a token+localhost-guarded REST route.)
+	 *
+	 * @param array  $bundle       build_bundle()/build_from_html() result.
+	 * @param string $source_label Human label for the result view ('' = default).
+	 * @param int    $screens      Number of source screens (for the result annotation).
+	 * @return array import_bundle() result annotated with stage/convert_source/stitch_screens.
+	 */
+	private function import_and_activate_bundle( array $bundle, $source_label = '', $screens = 1 ) {
+		$result = FW_Site_Converter_Stitch::import_bundle( $bundle );
+		if ( ! empty( $result['error'] ) && empty( $result['sections'] ) ) {
+			return $result; // caller decides how to surface it (redirect vs. JSON)
+		}
+
+		// ACTIVATE the freshly generated child theme so the export's palette/fonts + header/footer go
+		// live, and its activation bootstrap builds the header/footer menus.
 		if ( ! empty( $result['theme']['slug'] ) && empty( $result['theme']['error'] ) ) {
 			$slug = $result['theme']['slug'];
 			if ( wp_get_theme( $slug )->exists() ) {
@@ -613,11 +643,260 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			}
 		}
 
-		$result['stage']           = 'bundle_result';
-		$result['convert_source']  = $source_label;
-		$result['stitch_screens']  = isset( $bundle['screens'] ) ? (int) $bundle['screens'] : 1;
-		set_transient( $this->results_transient_key(), $result, 5 * MINUTE_IN_SECONDS );
-		$this->redirect_back();
+		$result['stage']          = 'bundle_result';
+		$result['convert_source'] = (string) $source_label;
+		$result['stitch_screens'] = (int) $screens;
+		return $result;
+	}
+
+	/**
+	 * Reusable end-to-end URL conversion (used by the admin flow's parity and by the REST endpoint the
+	 * AI Dev Kit dashboard calls). Fetches the source HTML server-side (browser UA, follow redirects),
+	 * runs the SAME build_from_html → generate theme → import pages → switch_theme pipeline the admin
+	 * direct-submit path uses (via import_and_activate_bundle), and returns a normalized result.
+	 *
+	 * `$opts['dry_run']` = true runs everything EXCEPT switch_theme + page creation: it still generates
+	 * the child-theme directory (via Theme_Generator::install, which does NOT activate) and returns the
+	 * page count that WOULD be created — a safe verification that the whole pipeline runs.
+	 *
+	 * @param string $source_url http(s) URL of the source site.
+	 * @param array  $opts       build_from_html opts; plus `dry_run` (bool). `dynamic_chrome` defaults on.
+	 * @return array{ ok:bool, theme_slug:string, theme_name:string, activated:bool, pages_created:int, home_url:string, error:string }
+	 */
+	public function run_url_conversion( $source_url, array $opts = array() ) {
+		$out = array(
+			'ok'            => false,
+			'theme_slug'    => '',
+			'theme_name'    => '',
+			'activated'     => false,
+			'pages_created' => 0,
+			'home_url'      => home_url(),
+			'error'         => '',
+		);
+
+		$dry_run = ! empty( $opts['dry_run'] );
+		unset( $opts['dry_run'] );
+		if ( ! isset( $opts['dynamic_chrome'] ) ) {
+			$opts['dynamic_chrome'] = true; // faithful source look + EDITABLE chrome (parity with the admin path)
+		}
+
+		$source_url = trim( (string) $source_url );
+		if ( $source_url === '' || ! preg_match( '#^https?://#i', $source_url ) ) {
+			$out['error'] = __( 'A valid http(s) source URL is required.', 'fw' );
+			return $out;
+		}
+
+		if ( ! class_exists( 'FW_Site_Converter_Sources' ) ) {
+			$out['error'] = __( 'The Site Converter engine is not available.', 'fw' );
+			return $out;
+		}
+
+		// Fetch the source HTML server-side (browser UA + follow redirects), reusing the media class's
+		// shared browser UA so the fetch matches the rest of the converter.
+		$ua   = class_exists( 'FW_Site_Converter_Media' ) ? FW_Site_Converter_Media::BROWSER_UA : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+		$resp = wp_remote_get( $source_url, array(
+			'timeout'     => 45,
+			'redirection' => 5,
+			'sslverify'   => false,
+			'user-agent'  => $ua,
+			'headers'     => array( 'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' ),
+		) );
+		if ( is_wp_error( $resp ) ) {
+			$out['error'] = sprintf( __( 'Could not fetch the source URL: %s', 'fw' ), $resp->get_error_message() );
+			return $out;
+		}
+		$code = (int) wp_remote_retrieve_response_code( $resp );
+		if ( $code === 0 || $code >= 400 ) {
+			$out['error'] = sprintf( __( 'The source URL returned HTTP %d.', 'fw' ), $code );
+			return $out;
+		}
+		$html = (string) wp_remote_retrieve_body( $resp );
+		if ( trim( $html ) === '' ) {
+			$out['error'] = __( 'The source URL returned an empty document.', 'fw' );
+			return $out;
+		}
+
+		// Derive a page title from <title> (fallback to the host).
+		$title = '';
+		if ( preg_match( '#<title[^>]*>(.*?)</title>#is', $html, $m ) ) {
+			$title = trim( html_entity_decode( wp_strip_all_tags( $m[1] ), ENT_QUOTES ) );
+		}
+		if ( $title === '' ) {
+			$host  = wp_parse_url( $source_url, PHP_URL_HOST );
+			$title = $host ? (string) $host : 'Home';
+		}
+
+		$bundle = FW_Site_Converter_Sources::build_from_html( $html, $title, $opts );
+		if ( ! is_array( $bundle ) || ! empty( $bundle['error'] ) || empty( $bundle['files'] ) ) {
+			$out['error'] = ( is_array( $bundle ) && ! empty( $bundle['error'] ) ) ? $bundle['error'] : __( 'Nothing recognizable at the source URL.', 'fw' );
+			return $out;
+		}
+
+		if ( $dry_run ) {
+			// Generate the child-theme DIRECTORY (no activation) so we prove the theme half runs, and
+			// count the pages that WOULD be created — but touch neither the active theme nor the DB pages.
+			$td = ( isset( $bundle['files']['theme-design.json'] ) && is_array( $bundle['files']['theme-design.json'] ) ) ? $bundle['files']['theme-design.json'] : null;
+			if ( $td !== null && class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
+				$res = FW_Site_Converter_Theme_Generator::install( $td ); // install() generates the dir; it does NOT switch_theme
+				if ( is_array( $res ) && ! empty( $res['error'] ) ) {
+					$out['error'] = $res['error'];
+					return $out;
+				}
+				if ( is_array( $res ) ) {
+					$out['theme_slug'] = isset( $res['slug'] ) ? (string) $res['slug'] : '';
+					$out['theme_name'] = isset( $res['name'] ) && $res['name'] !== '' ? (string) $res['name'] : $out['theme_slug'];
+				}
+			}
+			$out['pages_created'] = $this->count_bundle_pages( $bundle );
+			$out['activated']     = false;
+			$out['ok']            = true;
+			return $out;
+		}
+
+		$imp = $this->import_and_activate_bundle(
+			$bundle,
+			isset( $bundle['source']['label'] ) ? (string) $bundle['source']['label'] : __( 'Source URL', 'fw' ),
+			isset( $bundle['screens'] ) ? (int) $bundle['screens'] : 1
+		);
+		if ( ! empty( $imp['error'] ) && empty( $imp['sections'] ) ) {
+			$out['error'] = $imp['error'];
+			return $out;
+		}
+
+		$out['theme_slug']    = isset( $imp['theme']['slug'] ) ? (string) $imp['theme']['slug'] : '';
+		$out['theme_name']    = isset( $imp['theme']['name'] ) && $imp['theme']['name'] !== '' ? (string) $imp['theme']['name'] : $out['theme_slug'];
+		$out['activated']     = ! empty( $imp['theme']['activated'] );
+		$out['pages_created'] = ( isset( $imp['pages']['pages'] ) && is_array( $imp['pages']['pages'] ) ) ? count( $imp['pages']['pages'] ) : $this->count_bundle_pages( $bundle );
+		$out['home_url']      = home_url();
+		$out['ok']            = true;
+		return $out;
+	}
+
+	/** Count the pages a bundle's pages.json would create (for the dry-run stat). */
+	private function count_bundle_pages( array $bundle ) {
+		$pages = isset( $bundle['files']['pages.json'] ) ? $bundle['files']['pages.json'] : null;
+		if ( ! is_array( $pages ) ) {
+			return 0;
+		}
+		if ( isset( $pages['pages'] ) && is_array( $pages['pages'] ) ) {
+			return count( $pages['pages'] );
+		}
+		// A bare list of page specs, or a single page object.
+		$is_list = ( array_keys( $pages ) === range( 0, count( $pages ) - 1 ) );
+		return $is_list ? count( $pages ) : 1;
+	}
+
+	/* ---------------------------------------------------------------------- *
+	 * AI Dev Kit dashboard — token + REST API
+	 * ---------------------------------------------------------------------- */
+
+	/** Option holding the shared secret the external dashboard authenticates with. */
+	const DASHBOARD_TOKEN_OPTION = 'fw_sc_dashboard_token';
+
+	/**
+	 * The dashboard auth token, auto-generated (and persisted) on first read if absent.
+	 *
+	 * @return string
+	 */
+	public static function get_dashboard_token() {
+		$tok = (string) get_option( self::DASHBOARD_TOKEN_OPTION, '' );
+		if ( $tok === '' ) {
+			$tok = wp_generate_password( 48, false, false );
+			update_option( self::DASHBOARD_TOKEN_OPTION, $tok, false );
+		}
+		return $tok;
+	}
+
+	/** Regenerate the dashboard token (invalidates the old one). Returns the new token. */
+	public static function regenerate_dashboard_token() {
+		$tok = wp_generate_password( 48, false, false );
+		update_option( self::DASHBOARD_TOKEN_OPTION, $tok, false );
+		return $tok;
+	}
+
+	/** Admin action: regenerate the dashboard token, then PRG-redirect back to the Convert page. */
+	private function run_regen_dashboard_token() {
+		self::regenerate_dashboard_token();
+		wp_safe_redirect( add_query_arg( array( 'page' => self::PAGE_SLUG, 'fw-sc-token' => 'reset' ), admin_url( 'admin.php' ) ) . '#diagnostics' );
+		exit;
+	}
+
+	/** True when the request originates from localhost (defense-in-depth alongside the token). */
+	private static function request_is_local() {
+		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+		return in_array( $ip, array( '127.0.0.1', '::1', '0:0:0:0:0:0:0:1' ), true );
+	}
+
+	/**
+	 * @internal
+	 * REST permission callback: require BOTH a valid token (header X-FW-SC-Token or body `token`,
+	 * compared with hash_equals) AND a localhost origin. Either failing → 401.
+	 *
+	 * @param WP_REST_Request $request
+	 * @return true|WP_Error
+	 */
+	public function _rest_authorize( $request ) {
+		if ( ! self::request_is_local() ) {
+			return new WP_Error( 'fw_sc_forbidden', __( 'This endpoint is only reachable from localhost.', 'fw' ), array( 'status' => 401 ) );
+		}
+		$sent = (string) $request->get_header( 'x-fw-sc-token' );
+		if ( $sent === '' ) {
+			$sent = (string) $request->get_param( 'token' );
+		}
+		$expected = self::get_dashboard_token();
+		if ( $sent === '' || ! hash_equals( $expected, $sent ) ) {
+			return new WP_Error( 'fw_sc_unauthorized', __( 'Invalid or missing dashboard token.', 'fw' ), array( 'status' => 401 ) );
+		}
+		return true;
+	}
+
+	/**
+	 * @internal
+	 * Register the dashboard REST routes: POST /fw-sc/v1/convert and GET /fw-sc/v1/ping.
+	 */
+	public function _register_rest_routes() {
+		register_rest_route( 'fw-sc/v1', '/convert', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, '_rest_convert' ),
+			'permission_callback' => array( $this, '_rest_authorize' ),
+			'args'                => array(
+				'source_url' => array( 'required' => true, 'type' => 'string' ),
+				'dry_run'    => array( 'required' => false, 'type' => 'boolean', 'default' => false ),
+			),
+		) );
+		register_rest_route( 'fw-sc/v1', '/ping', array(
+			'methods'             => 'GET',
+			'callback'            => array( $this, '_rest_ping' ),
+			'permission_callback' => array( $this, '_rest_authorize' ),
+		) );
+	}
+
+	/** @internal GET /fw-sc/v1/ping — lets the dashboard validate the WP URL + token before converting. */
+	public function _rest_ping( $request ) {
+		return new WP_REST_Response( array(
+			'ok'      => true,
+			'site'    => home_url(),
+			'theme'   => get_stylesheet(),
+			'version' => is_object( $this->manifest ) && method_exists( $this->manifest, 'get_version' ) ? $this->manifest->get_version() : '',
+		), 200 );
+	}
+
+	/** @internal POST /fw-sc/v1/convert — drive the shared URL→install pipeline; returns the result JSON. */
+	public function _rest_convert( $request ) {
+		$source_url = trim( (string) $request->get_param( 'source_url' ) );
+		if ( $source_url === '' ) {
+			return new WP_REST_Response( array( 'ok' => false, 'error' => __( 'source_url is required.', 'fw' ) ), 400 );
+		}
+		$dry_run = (bool) $request->get_param( 'dry_run' );
+
+		$result = $this->run_url_conversion( $source_url, array( 'dynamic_chrome' => true, 'dry_run' => $dry_run ) );
+
+		if ( empty( $result['ok'] ) ) {
+			// A bad source URL / unreachable host = client-ish (400); anything else = server-side (500).
+			$status = ( ! empty( $result['error'] ) && preg_match( '/required|http\s|empty document|recognizable/i', $result['error'] ) ) ? 400 : 500;
+			return new WP_REST_Response( $result, $status );
+		}
+		return new WP_REST_Response( $result, 200 );
 	}
 
 	/** Delete a temp dir created while ingesting an uploaded export (no-op when empty). */
@@ -764,11 +1043,25 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			wp_send_json_error( array( 'message' => is_array( $bundle ) && $bundle['error'] !== '' ? $bundle['error'] : __( 'Nothing recognizable in the export.', 'fw' ) ) );
 		}
 
+		// URL-conversion screenshot: the capture service saved a 1200×900 screenshot.png of the source, which
+		// the admin JS fetched (browser → localhost) and posted here as base64. Attach it to the theme-design so
+		// the generated child theme gets a real Appearance → Themes thumbnail (the file-upload path copies the
+		// bundle's screenshot.png directly; a URL has no local file WordPress can read, so it travels in the POST).
+		// Best-effort: bad/empty/non-PNG input is simply dropped.
+		$shot_b64 = self::sc_clean_screenshot_b64( $_POST['fw_sc_screenshot_b64'] ?? '' );
+		if ( $shot_b64 !== '' && isset( $bundle['files']['theme-design.json'] ) && is_array( $bundle['files']['theme-design.json'] ) ) {
+			$bundle['files']['theme-design.json']['screenshot_png_b64'] = $shot_b64;
+		}
+
 		// Stash the design half (theme + media) — pages are rebuilt from the corrected mapping in step 2.
 		set_transient( $this->convert_stash_key(), array(
 			'bundle.json'       => $bundle['files']['bundle.json'] ?? null,
 			'media.json'        => $bundle['files']['media.json'] ?? null,
 			'theme-design.json' => $bundle['files']['theme-design.json'] ?? null,
+			// The native-chrome payload (Header/Footer Theme Settings) built by build_bundle — carry it
+			// through the review step so the converted site's chrome stays editable (NOT baked). AI
+			// refinement (Use AI) layers over this in _ajax_convert_build.
+			'theme-settings.json' => $bundle['files']['theme-settings.json'] ?? null,
 			'screens'           => $bundle['screens'] ?? 1,
 			'source'            => $bundle['source'] ?? null,
 			// The source markup — needed in step 2 to re-enable the styling mapper (sc-btn / .box) when the
@@ -820,8 +1113,13 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		// CSS so those rules ship alongside the corrected pages.
 		$reg_css = FW_Site_Converter_Mapper::registered_css();
 		if ( '' !== $reg_css && isset( $stash['theme-design.json'] ) && is_array( $stash['theme-design.json'] ) ) {
-			$td               = $stash['theme-design.json'];
-			$td['custom_css'] = trim( ( isset( $td['custom_css'] ) ? (string) $td['custom_css'] : '' ) . "\n\n" . $reg_css );
+			$td   = $stash['theme-design.json'];
+			$prev = isset( $td['custom_css'] ) ? (string) $td['custom_css'] : '';
+			// build_bundle() already folded a (sentinel-wrapped) copy of this registered CSS into custom_css;
+			// build_pages() re-ran above and re-derives the identical block. Strip the prior sentinel region
+			// before re-appending so style.css isn't given the #section-N rules twice (duplicate-CSS regression).
+			$prev = trim( preg_replace( '#/\* SC:REGCSS:START \*/.*?/\* SC:REGCSS:END \*/#s', '', $prev ) );
+			$td['custom_css'] = trim( $prev . "\n\n/* SC:REGCSS:START */\n" . $reg_css . "\n/* SC:REGCSS:END */" );
 			$stash['theme-design.json'] = $td;
 		}
 
@@ -830,7 +1128,27 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		if ( ! empty( $stash['bundle.json'] ) )       { $files['bundle.json'] = $stash['bundle.json']; }
 		if ( ! empty( $stash['media.json'] ) )        { $files['media.json'] = $stash['media.json']; }
 		if ( ! empty( $stash['theme-design.json'] ) ) { $files['theme-design.json'] = $stash['theme-design.json']; }
+		if ( ! empty( $stash['theme-settings.json'] ) && is_array( $stash['theme-settings.json'] ) ) { $files['theme-settings.json'] = $stash['theme-settings.json']; }
 		if ( $pages )                                 { $files['pages.json'] = array( 'pages' => $pages ); }
+
+		// NATIVE-CHROME AI REFINEMENT: when Use AI mapped the header/footer into Theme-Settings JSON
+		// (capture service /translate-chrome → translateHeader/translateFooter), layer that OVER the
+		// deterministic native chrome (apply_ai_chrome keeps whichever is more faithful per bar). This is
+		// the preferred AI path — editable native chrome — vs. the legacy raw-chrome bake (ai_header_html).
+		$ai_chrome_header = isset( $_POST['ai_chrome_header'] ) ? json_decode( (string) wp_unslash( $_POST['ai_chrome_header'] ), true ) : null;
+		$ai_chrome_footer = isset( $_POST['ai_chrome_footer'] ) ? json_decode( (string) wp_unslash( $_POST['ai_chrome_footer'] ), true ) : null;
+		if ( ( is_array( $ai_chrome_header ) || is_array( $ai_chrome_footer ) )
+			&& isset( $files['theme-settings.json'] ) && is_array( $files['theme-settings.json'] )
+			&& method_exists( 'FW_Site_Converter_Stitch', 'apply_ai_chrome' ) ) {
+			$refined = FW_Site_Converter_Stitch::apply_ai_chrome( $files['theme-settings.json'], $ai_chrome_header, $ai_chrome_footer, '' );
+			if ( ! empty( $refined['values'] ) ) {
+				$files['theme-settings.json']['values'] = $refined['values'];
+				// Native chrome is in play → force the generator to skip baking header.php/footer.php.
+				if ( isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {
+					$files['theme-design.json']['chrome_via_settings'] = true;
+				}
+			}
+		}
 
 		// AI-authored child-theme DESIGN: the companion returns a complete stylesheet PLUS the header /
 		// footer markup. The stylesheet becomes the child theme's design layer (loaded last, so it wins
@@ -847,8 +1165,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				$td['custom_css'] = trim( $existing . "\n\n/* --- AI-authored design --- */\n" . wp_strip_all_tags( $ai_css ) );
 			}
 			// The theme generator sanitizes + placeholder-swaps these when it writes the chrome files.
-			if ( $ai_header !== '' ) { $td['ai_header_html'] = $ai_header; $td['ai_authored'] = true; }
-			if ( $ai_footer !== '' ) { $td['ai_footer_html'] = $ai_footer; $td['ai_authored'] = true; }
+			// SKIP when native chrome (Theme Settings) is active — the generator won't bake header.php/
+			// footer.php then, so raw-chrome HTML would be dead weight (and the native path is preferred).
+			$native_chrome = ! empty( $td['chrome_via_settings'] );
+			if ( ! $native_chrome && $ai_header !== '' ) { $td['ai_header_html'] = $ai_header; $td['ai_authored'] = true; }
+			if ( ! $native_chrome && $ai_footer !== '' ) { $td['ai_footer_html'] = $ai_footer; $td['ai_authored'] = true; }
 			$files['theme-design.json'] = $td;
 		}
 
@@ -878,6 +1199,22 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		$result['stage']          = 'bundle_result';
 		$result['convert_source'] = isset( $stash['source']['label'] ) ? $stash['source']['label'] : '';
+
+		// AI header/footer fidelity pass — the metadata the RESULTS page needs to run the (best-effort)
+		// chrome refine. Only wired when (a) "Use AI" was on, (b) the source was a real URL, and (c) a
+		// child theme was actually generated + activated (so home_url() now serves the converted site).
+		// The results-page JS calls the capture service's /refine-chrome, then posts the verified CSS back
+		// to fw_sc_apply_chrome_css. If the service is down or AI is off, it silently does nothing.
+		$rc_src = isset( $_POST['refine_chrome_source'] ) ? esc_url_raw( wp_unslash( $_POST['refine_chrome_source'] ) ) : '';
+		$rc_svc = isset( $_POST['refine_chrome_svc'] ) ? esc_url_raw( wp_unslash( $_POST['refine_chrome_svc'] ) ) : '';
+		$rc_ai  = isset( $_POST['refine_chrome_ai'] ) && $_POST['refine_chrome_ai'] === '1';
+		if ( $rc_ai && $rc_src !== '' && preg_match( '#^https?://#i', $rc_src ) && ! empty( $result['theme']['activated'] ) ) {
+			$result['chrome_refine'] = array(
+				'source' => $rc_src,
+				'svc'    => $rc_svc !== '' ? $rc_svc : 'http://localhost:8787',
+			);
+		}
+
 		delete_transient( $this->convert_stash_key() );
 		set_transient( $this->results_transient_key(), $result, 5 * MINUTE_IN_SECONDS );
 
@@ -885,6 +1222,89 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'redirect' => add_query_arg( array( 'page' => self::PAGE_SLUG, 'fw-sc-done' => '1' ), admin_url( 'admin.php' ) ),
 			'learned'  => $learned,
 		) );
+	}
+
+	/**
+	 * AI header/footer fidelity pass — persist the verified, chrome-scoped CSS.
+	 *
+	 * The results-page JS runs the capture service's /refine-chrome (which keeps CSS ONLY if measured
+	 * header/footer drift dropped) and posts the returned CSS here. We fold it into the ACTIVE (just-
+	 * converted) theme's style.css inside a clearly-labeled block so it is identifiable and IDEMPOTENT —
+	 * a re-run replaces the block instead of stacking. The child theme's style.css is already enqueued by
+	 * the parent theme, so nothing else needs wiring. Best-effort: empty CSS is a no-op success.
+	 *
+	 * @internal
+	 */
+	public function _ajax_apply_chrome_css() {
+		check_ajax_referer( self::NONCE );
+		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 ); }
+
+		$css = isset( $_POST['css'] ) ? (string) wp_unslash( $_POST['css'] ) : '';
+		$css = self::sanitize_theme_css( $css );
+		if ( $css === '' ) { wp_send_json_success( array( 'written' => false, 'message' => __( 'No CSS to apply.', 'fw' ) ) ); }
+
+		// Two slots persisted into the SAME child-theme style.css store: the automated header/footer pass
+		// (default, replaced on re-run) and the user-directed "Ask the AI to change something" box
+		// (slot=instruct, which ACCUMULATES so repeated requests stack instead of clobbering each other).
+		$slot = ( isset( $_POST['slot'] ) && $_POST['slot'] === 'instruct' ) ? 'instruct' : 'chrome';
+
+		$dir = get_stylesheet_directory();
+		$style = trailingslashit( $dir ) . 'style.css';
+		if ( ! is_readable( $style ) ) { wp_send_json_error( array( 'message' => __( 'The active theme has no writable style.css.', 'fw' ) ) ); }
+
+		$current = (string) @file_get_contents( $style );
+		if ( ! is_string( $current ) || $current === '' ) { $current = ''; }
+
+		if ( $slot === 'instruct' ) {
+			$start = '/* AI user-directed changes — START (from the “Ask the AI to change something” box; safe to edit) */';
+			$end   = '/* AI user-directed changes — END */';
+			// Accumulate: keep any prior user-directed CSS and append the new request under the same block.
+			$prior = '';
+			if ( preg_match( '#' . preg_quote( $start, '#' ) . '\n(.*?)\n' . preg_quote( $end, '#' ) . '#s', $current, $mm ) ) {
+				$prior = trim( $mm[1] );
+			}
+			$current = preg_replace( '#\n*' . preg_quote( $start, '#' ) . '.*?' . preg_quote( $end, '#' ) . '\n*#s', "\n", $current );
+			$current = rtrim( (string) $current );
+			$inner   = $prior !== '' ? $prior . "\n\n" . $css : $css;
+		} else {
+			$start = '/* AI header/footer fidelity pass — START (auto-generated, safe to edit; replaced on re-run) */';
+			$end   = '/* AI header/footer fidelity pass — END */';
+			// Idempotent: drop any prior block first (don't stack across re-runs).
+			$current = preg_replace( '#\n*' . preg_quote( $start, '#' ) . '.*?' . preg_quote( $end, '#' ) . '\n*#s', "\n", $current );
+			$current = rtrim( (string) $current );
+			$inner   = $css;
+		}
+
+		$block = "\n\n" . $start . "\n" . $inner . "\n" . $end . "\n";
+		$ok = ( false !== @file_put_contents( $style, $current . $block ) );
+		if ( ! $ok ) { wp_send_json_error( array( 'message' => __( 'Could not write the CSS into the theme.', 'fw' ) ) ); }
+
+		wp_send_json_success( array( 'written' => true, 'bytes' => strlen( $css ), 'theme' => basename( $dir ), 'slot' => $slot ) );
+	}
+
+	/**
+	 * Sanitize an untrusted CSS string before it is written into a theme stylesheet.
+	 *
+	 * The capture service already sanitizes, but this is the WP-side belt-and-suspenders for BOTH the
+	 * automated chrome pass and the user-directed AI-instruct box: strip any HTML tags / <style>/<script>
+	 * wrappers (KEEPING CSS punctuation {}:;> etc), and neutralize the CSS vectors that can still bite —
+	 * @import (remote fetch), javascript:/vbscript: URLs, and IE expression(). Never inject the result
+	 * into a live <style> without running it through here first.
+	 *
+	 * @param string $css
+	 * @return string
+	 */
+	private static function sanitize_theme_css( $css ) {
+		$css = (string) $css;
+		// wp_strip_all_tags removes tags without touching braces, so it is safe for a raw CSS string.
+		$css = wp_strip_all_tags( $css );
+		// Defensive: kill leftover close-tag fragments an attacker might smuggle to break out of <style>.
+		$css = str_ireplace( array( '</style', '<style', '</script', '<script' ), '', $css );
+		// Drop @import lines (remote CSS fetch) and the classic injection vectors.
+		$css = preg_replace( '#@import[^;]*;?#i', '', $css );
+		$css = preg_replace( '#(javascript|vbscript)\s*:#i', '', $css );
+		$css = preg_replace( '#expression\s*\(#i', '', $css );
+		return trim( (string) $css );
 	}
 
 	/**
@@ -1117,6 +1537,32 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			if ( '' !== $t && ctype_digit( $t ) ) { $out[] = (int) $t; }
 		}
 		return $out;
+	}
+
+	/**
+	 * Sanitize a posted screenshot data string into a clean, verified base64 PNG payload (no data: prefix),
+	 * or '' when it isn't a real PNG. Strips any `data:image/...;base64,` prefix + whitespace, then validates
+	 * strict base64 that decodes to PNG-magic bytes. Used by the URL-conversion flow to carry the capture
+	 * service's screenshot.png into the generated theme. Returns the RAW base64 string (the theme generator
+	 * decodes it when writing screenshot.png).
+	 *
+	 * @param mixed $raw posted value ($_POST['fw_sc_screenshot_b64'])
+	 * @return string clean base64, or ''
+	 */
+	private static function sc_clean_screenshot_b64( $raw ) {
+		$s = is_string( $raw ) ? (string) wp_unslash( $raw ) : '';
+		$s = trim( $s );
+		if ( $s === '' ) { return ''; }
+		if ( stripos( $s, 'data:' ) === 0 ) {
+			$comma = strpos( $s, ',' );
+			if ( $comma === false ) { return ''; }
+			$s = substr( $s, $comma + 1 );
+		}
+		$s = preg_replace( '/\s+/', '', $s );
+		if ( ! is_string( $s ) || $s === '' || ! preg_match( '#^[A-Za-z0-9+/]+={0,2}$#', $s ) ) { return ''; }
+		$bin = base64_decode( $s, true );
+		if ( $bin === false || strlen( $bin ) < 100 || substr( $bin, 0, 8 ) !== "\x89PNG\r\n\x1a\n" ) { return ''; }
+		return $s;
 	}
 
 	/**
@@ -1551,13 +1997,24 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 			<div class="fw-sc-panel is-active" id="panel-convert">
 
+				<div style="margin:0 0 1.1em;padding:.7em .9em;background:#fef7e6;border:1px solid #f0d98c;border-left:4px solid #dba617;border-radius:4px">
+					<p style="margin:0;font-weight:600;color:#7a5c00">
+						<span class="dashicons dashicons-warning" style="vertical-align:text-bottom;color:#dba617"></span>
+						<?php esc_html_e( 'The Site Converter is in Beta.', 'fw' ); ?>
+						<span style="font-size:11px;background:#dba617;color:#fff;border-radius:9px;padding:1px 8px;margin-left:.3em;vertical-align:middle;text-transform:uppercase;letter-spacing:.04em">Beta</span>
+					</p>
+					<p class="description" style="margin:.35em 0 0;color:#7a5c00">
+						<?php esc_html_e( 'It converts most sites well, but results vary by source — always review the generated theme and pages, and keep a backup before going live. Fidelity is actively being improved.', 'fw' ); ?>
+					</p>
+				</div>
+
 			<p class="description" style="margin:0 0 1.2em">
 				<?php esc_html_e( 'Turn an AI-built site into a real, editable WordPress site — a child theme (colors, fonts, header &amp; footer) plus the pages, generated and activated for you. Two ways to convert: upload an export file, or point it at a live URL.', 'fw' ); ?>
 			</p>
 
 			<!-- ================= Capture service setup (shared — needed only for the URL method + the AI option) ================= -->
 			<details class="fw-sc-setup">
-				<summary><span class="dashicons dashicons-admin-tools"></span> <?php esc_html_e( 'Capture service — download &amp; set up once (4 steps)', 'fw' ); ?></summary>
+				<summary><span class="dashicons dashicons-admin-tools"></span> <?php esc_html_e( 'Start the capture service — one click with the AI Dev Kit', 'fw' ); ?></summary>
 				<div class="fw-sc-setup-body">
 					<p style="margin:.2em 0 .6em;padding:.5em .7em;background:#fcf9e8;border:1px solid #f0e6a6;border-radius:4px">
 						<?php echo wp_kses_post( __( '<strong>Optional.</strong> You only need this for the <strong>URL</strong> source in <strong>Convert</strong> below, and for the <strong>Use AI</strong> option. A <strong>file</strong> source converts on its own — no download, no Node.', 'fw' ) ); ?>
@@ -1576,11 +2033,15 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						</p>
 					</div>
 					<style>.fw-sc-code{position:relative}.fw-sc-copy{position:absolute;top:.35em;right:.4em;border:0;background:transparent;cursor:pointer;color:#646970;padding:2px;line-height:1}.fw-sc-copy:hover{color:#2271b1}.fw-sc-copy .dashicons{font-size:18px;width:18px;height:18px}</style>
+					<p style="margin:.2em 0 .6em;padding:.5em .7em;background:#eaf6ee;border:1px solid #b6ddc2;border-radius:4px;color:#1a5c33">
+						<span class="dashicons dashicons-yes-alt" style="vertical-align:text-bottom"></span>
+						<?php echo wp_kses_post( __( '<strong>The easy way — the AI Dev Kit.</strong> One launcher starts the capture service <em>and</em> the live dashboard for you, and downloads everything it needs on first run. No manual <code>npm install</code>, no <code>node serve.mjs</code>.', 'fw' ) ); ?>
+					</p>
 					<ol style="margin:.6em 0 .4em 1.4em;padding:0">
 						<li style="margin-bottom:.9em">
-							<strong><?php esc_html_e( 'Download the capture service.', 'fw' ); ?></strong><br>
-							<span class="description"><?php echo wp_kses_post( __( 'Get it from GitHub — <a href="https://github.com/UnysonPlus/UnysonPlus-Capture-Service" target="_blank" rel="noopener">UnysonPlus/UnysonPlus-Capture-Service</a>. Clone it (recommended, so <code>git pull</code> updates it later):', 'fw' ) ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-Capture-Service.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<strong><?php esc_html_e( 'Get the AI Dev Kit.', 'fw' ); ?></strong><br>
+							<span class="description"><?php echo wp_kses_post( __( 'Download it from GitHub — <a href="https://github.com/UnysonPlus/UnysonPlus-AI-Dev-Kit" target="_blank" rel="noopener">UnysonPlus/UnysonPlus-AI-Dev-Kit</a>. Clone it (recommended, so <code>git pull</code> updates it later):', 'fw' ) ); ?></span>
+							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-AI-Dev-Kit.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							<span class="description"><?php echo wp_kses_post( __( '…or use the green <strong>Code → Download ZIP</strong> button on that page and unzip it.', 'fw' ) ); ?></span>
 						</li>
 						<li style="margin-bottom:.9em">
@@ -1588,22 +2049,31 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							<span class="description"><?php echo wp_kses_post( __( 'You need <a href="https://nodejs.org/" target="_blank" rel="noopener">Node.js 20 or newer</a> and <a href="https://www.google.com/chrome/" target="_blank" rel="noopener">Google Chrome</a> (the service uses your system Chrome to render). Confirm Node is installed:', 'fw' ) ); ?></span>
 							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">node -v</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 						</li>
-						<li style="margin-bottom:.9em">
-							<strong><?php esc_html_e( 'Go to the service folder.', 'fw' ); ?></strong><br>
-							<span class="description"><?php echo wp_kses_post( __( 'In the folder you just downloaded, open a terminal and go to the service folder:', 'fw' ) ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">cd "tools\design-capture"</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
-							<span class="description"><?php echo wp_kses_post( __( '<strong>First time only</strong> — install its dependencies (run this once, in the same folder):', 'fw' ) ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">npm install</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
-						</li>
 						<li style="margin-bottom:.4em">
-							<strong><?php esc_html_e( 'Start the service.', 'fw' ); ?></strong><br>
-							<span class="description"><?php esc_html_e( 'Start it and keep the terminal window open while you convert sites:', 'fw' ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
-							<span class="description"><?php echo wp_kses_post( __( 'It serves <code>http://localhost:8787</code> and the status turns green once it is detected. Need a different port? Set a <code>PORT</code> environment variable before starting.', 'fw' ) ); ?></span>
-							<span class="description" style="display:block;margin-top:.4em"><?php echo wp_kses_post( __( '<strong>To also enable the AI option</strong> — either sign in to <strong>Claude Code</strong> (uses your subscription, no API key) then just run <code>node serve.mjs</code>, or start it with an Anthropic API key:', 'fw' ) ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">ANTHROPIC_API_KEY=sk-ant-... node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<strong><?php esc_html_e( 'Run the launcher.', 'fw' ); ?></strong><br>
+							<span class="description"><?php echo wp_kses_post( __( 'In the kit folder, double-click <code>start-converter.bat</code> (Windows) — or run <code>./start-converter.command</code> on macOS. Keep the window open while you convert sites.', 'fw' ) ); ?></span>
+							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">start-converter.bat</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<span class="description"><?php echo wp_kses_post( __( '<strong>First run</strong> auto-downloads the capture service, its dependencies, and (for the optional local-AI models) the Ollama runtime — all self-contained inside the kit folder, so deleting the kit removes everything cleanly. Then it starts:', 'fw' ) ); ?></span>
+							<ul style="margin:.35em 0 .2em 1.2em;padding:0;list-style:disc;color:#50575e;font-size:13px">
+								<li><?php echo wp_kses_post( __( 'the <strong>capture service</strong> at <code>http://localhost:8787</code> — the status below turns green once it is detected;', 'fw' ) ); ?></li>
+								<li><?php echo wp_kses_post( __( 'the <strong>dashboard</strong> at <code>http://localhost:4600</code> — a live view of every conversion, and where you pick/download a local AI model (see “Enable AI” below).', 'fw' ) ); ?></li>
+							</ul>
 						</li>
 					</ol>
+					<details style="margin:.2em 0 .4em">
+						<summary style="cursor:pointer;color:#2271b1;font-weight:600"><?php esc_html_e( 'Prefer to run it by hand? (manual capture-service setup)', 'fw' ); ?></summary>
+						<ol style="margin:.5em 0 .2em 1.4em;padding:0;color:#50575e;font-size:13px;line-height:1.7">
+							<li><?php echo wp_kses_post( __( 'Clone just the capture service — <a href="https://github.com/UnysonPlus/UnysonPlus-Capture-Service" target="_blank" rel="noopener">UnysonPlus/UnysonPlus-Capture-Service</a>:', 'fw' ) ); ?>
+								<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-Capture-Service.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							</li>
+							<li><?php echo wp_kses_post( __( 'Open a terminal in the service folder and install its dependencies once:', 'fw' ) ); ?>
+								<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">cd "tools\design-capture" && npm install</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							</li>
+							<li><?php echo wp_kses_post( __( 'Start it (keep the window open). It serves <code>http://localhost:8787</code>; set a <code>PORT</code> env var for a different port:', 'fw' ) ); ?>
+								<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							</li>
+						</ol>
+					</details>
 					<script>(function(){document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest(".fw-sc-copy");if(!b)return;e.preventDefault();var pre=b.parentNode.querySelector("pre");if(!pre)return;var ok=function(){var i=b.querySelector(".dashicons");if(!i)return;var o=i.className;i.className="dashicons dashicons-yes";setTimeout(function(){i.className=o;},1200);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(pre.textContent.trim()).then(ok).catch(function(){});}else{var r=document.createRange();r.selectNode(pre);var sel=window.getSelection();sel.removeAllRanges();sel.addRange(r);try{document.execCommand("copy");ok();}catch(x){}sel.removeAllRanges();}});})();</script>
 					<p style="margin:.6em 0 .2em"><label><strong><?php esc_html_e( 'Service URL', 'fw' ); ?></strong> <input type="url" id="fw-sc-an-svcurl" class="regular-text" value="http://localhost:8787" style="width:18em"></label></p>
 					<p id="fw-sc-svc-info" class="description" style="margin:.3em 0 .2em"></p>
@@ -1666,6 +2136,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					</ol>
 					<p class="description" style="color:#1a7f37;margin:.4em 0"><span class="dashicons dashicons-lock" style="vertical-align:text-bottom"></span> <?php esc_html_e( 'Either way, your key / subscription stays in the local service on your machine — it is never sent to or stored in WordPress.', 'fw' ); ?></p>
 
+					<h4 style="margin:1em 0 .2em"><?php esc_html_e( 'Option C — Local AI, no cloud (Experimental)', 'fw' ); ?></h4>
+					<p class="description"><?php echo wp_kses_post( __( 'No Claude sign-in and no API key? The <strong>AI Dev Kit launcher</strong> also fetches a small, self-contained <strong>Ollama</strong> runtime into the kit, and the <a href="http://localhost:4600" target="_blank" rel="noopener">dashboard</a> lets you download and pick a local model with one click — it runs entirely on your machine. Claude is still the best quality; a local model is a fallback. Open the dashboard, go to <strong>Local AI</strong>, pull the recommended model, and it is used automatically. (Leave the model unselected to prefer Claude Code when it is configured.)', 'fw' ) ); ?></p>
+
+					<p class="description" style="margin:.4em 0"><span class="dashicons dashicons-info-outline" style="vertical-align:text-bottom"></span> <?php echo wp_kses_post( __( 'After configuring AI, <strong>restart the service</strong> — with the Dev Kit, just close its window and run <code>start-converter.bat</code> again; run by hand, restart <code>node serve.mjs</code>. Its log should say <em>“AI ON”</em>.', 'fw' ) ); ?></p>
+
 					<h4 style="margin:1em 0 .2em"><?php esc_html_e( 'Troubleshooting', 'fw' ); ?></h4>
 					<ul style="margin:.3em 0 .2em 1.4em;padding:0;list-style:disc">
 						<li style="margin-bottom:.5em"><?php echo wp_kses_post( __( '<code>claude --version</code> → <em>“not a valid application for this OS platform”</em> (from an npm install): uninstall the npm copy and use the native installer above — <code>npm uninstall -g @anthropic-ai/claude-code</code>.', 'fw' ) ); ?></li>
@@ -1722,7 +2197,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					</table>
 				</div><!-- /#fw-sc-src-file -->
 				<div id="fw-sc-src-url">
-					<p class="description" style="margin:0 0 .6em"><?php esc_html_e( 'Point it at a live site and it is rendered + converted in one step — best for AI builders that render in the browser (Lovable, v0, Bolt, React / Vite apps). The capture service must be running (set it up under “Enable AI” above).', 'fw' ); ?></p>
+					<p class="description" style="margin:0 0 .6em"><?php esc_html_e( 'Point it at a live site and it is rendered + converted in one step — best for AI builders that render in the browser (Lovable, v0, Bolt, React / Vite apps). The capture service must be running — start it with the AI Dev Kit launcher (see “Start the capture service” above).', 'fw' ); ?></p>
 					<div class="fw-sc-analyze" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>">
 						<input type="url" id="fw-sc-an-url" class="regular-text" style="width:30em;max-width:100%" placeholder="https://your-site.lovable.app/" onkeydown="if(event.key==='Enter'){event.preventDefault();var g=document.getElementById('fw-sc-an-go');if(g){g.click();}}">
 						<span id="fw-sc-an-svc" class="description" style="margin-left:.6em"></span>
@@ -1740,12 +2215,12 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-header" checked> <?php esc_html_e( 'Capture header', 'fw' ); ?></label>
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-footer" checked> <?php esc_html_e( 'Capture footer', 'fw' ); ?></label>
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-media" checked> <?php esc_html_e( 'Import images', 'fw' ); ?></label>
-					<label><input type="checkbox" id="fw-sc-opt-render-browser"> <?php esc_html_e( 'Render in a browser', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'uses the capture SERVICE. Runtime-CSS sources (Google Stitch / Tailwind CDN, Lovable, v0) MUST be rendered for fidelity — but when a local Node capture engine is configured, uploads auto-render without needing the service or this box', 'fw' ); ?>)</span></label>
+						<span style="color:#646970;font-size:12px"><?php esc_html_e( 'Runtime-CSS builder exports (Google Stitch / Tailwind CDN, Lovable, v0) are rendered in a real browser automatically when the capture service is running — no option needed. A “source bundle” (.zip of already-rendered HTML + media) always converts offline.', 'fw' ); ?></span>
 				</p>
 				<p style="margin:.2em 0 1.1em">
 					<label><input type="checkbox" id="fw-sc-ai"> <strong><?php esc_html_e( 'Use AI to refine the element mapping (Experimental)', 'fw' ); ?></strong></label>
 					<span id="fw-sc-ai-status" class="description" style="margin-left:.5em"></span>
-					<span class="description" style="display:block;margin-top:.2em"><?php esc_html_e( 'Runs in the capture service on your machine (set it up under “Enable AI” above) — sign in to Claude Code or use an Anthropic API key; it never touches WordPress. Adds ~30s. Needs “Create child theme” on.', 'fw' ); ?></span>
+					<span class="description" style="display:block;margin-top:.2em"><?php esc_html_e( 'Runs in the capture service on your machine (see “Enable AI” above) — sign in to Claude Code, use an Anthropic API key, or pick a local model in the dashboard; it never touches WordPress. Adds ~30s. Needs “Create child theme” on.', 'fw' ); ?></span>
 					<label style="display:block;margin-top:.3em;color:#50575e"><?php esc_html_e( 'Service URL', 'fw' ); ?> <input type="url" id="fw-sc-ai-svcurl" class="regular-text" value="http://localhost:8787" style="width:15em"></label>
 				</p>
 
@@ -1821,6 +2296,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				var aiUrlEl = document.getElementById( 'fw-sc-ai-svcurl' );
 				var importBtn = form.querySelector( 'button[value="import"]' );
 				var aiCss = '', aiHeader = '', aiFooter = '';
+					// NATIVE-chrome AI mapping (/translate-chrome → editable Theme Settings). Preferred over the
+					// raw-chrome aiHeader/aiFooter HTML; threaded to the build as ai_chrome_header/footer JSON.
+					var aiChromeHeader = null, aiChromeFooter = null;
 					var serviceUp = false, serviceMode = false;
 				function escH( s ) { return String( s == null ? '' : s ).replace( /&/g, '&amp;' ).replace( /</g, '&lt;' ).replace( />/g, '&gt;' ); }
 				// A "working…" message with a progress bar that advances through the REAL conversion phases.
@@ -1852,12 +2330,31 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					}
 					function svc() { return ( ( aiUrlEl && aiUrlEl.value ) || 'http://localhost:8787' ).replace( /\/+$/, '' ); }
 				function aiOn() { return !! ( aiChk && aiChk.checked ); }
-					// (b) A file upload uses the deterministic PHP engine by DEFAULT -- even when the capture
-					// service is running -- because the PHP engine carries the full styling mappers (box / button /
-					// max-width) the JS capture engine does not yet. The capture service is used for a file ONLY when
-					// the user explicitly opts in (a JS-rendered file that needs a real browser). URLs still always
-					// use the capture service (a separate flow).
-					function renderInBrowser() { var e = document.getElementById( 'fw-sc-opt-render-browser' ); return !! ( e && e.checked ); }
+						// AUTO browser-render (replaces the old "Render in a browser" checkbox): when the capture
+						// service is up and AI is off, FILE / paste uploads are rendered in a real browser through the
+						// service so runtime-CSS builder exports (Google Stitch / Tailwind CDN, Lovable, v0) convert
+						// faithfully -- no user opt-in. The ONE exception is a "source bundle" (.zip of already-rendered
+						// devtools.html/view-source.html + real media): it converts OFFLINE (faithful mirror + media
+						// sideload), so it must NEVER be force-rendered. A source bundle and a raw export are both .zip,
+						// so peek at the zip's bytes -- ZIP stores entry FILENAMES in cleartext, so a substring scan for
+						// the bundle's signature files flags it without a full unzip. Service down / AI on fall through to
+						// the offline PHP analyze path (graceful). URLs still always use the capture service (a separate flow).
+						function looksLikeSourceBundleFile( file ) {
+							return new Promise( function ( resolve ) {
+								if ( ! file ) { resolve( false ); return; }
+								if ( ( file.name || '' ).toLowerCase().slice( -4 ) !== '.zip' ) { resolve( false ); return; }
+								try {
+									var fr = new FileReader();
+									fr.onload = function () {
+										var s = '';
+										try { s = new TextDecoder( 'latin1' ).decode( new Uint8Array( fr.result ) ); } catch ( e ) { s = ''; }
+										resolve( /devtools\.html|view-source\.html/i.test( s ) );
+									};
+									fr.onerror = function () { resolve( false ); };
+									fr.readAsArrayBuffer( file );
+								} catch ( e ) { resolve( false ); }
+							} );
+						}
 				function pingAI() {
 					if ( ! aiStatus ) { return; }
 					fetch( svc() + '/health' ).then( function ( r ) { return r.json(); } ).then( function ( h ) {
@@ -1889,6 +2386,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					if ( aiCss ) { fd.append( 'ai_css', aiCss ); }
 						if ( aiHeader ) { fd.append( 'ai_header_html', aiHeader ); }
 						if ( aiFooter ) { fd.append( 'ai_footer_html', aiFooter ); }
+						// NATIVE-chrome AI mapping → the applier merges it over the deterministic Theme Settings.
+						if ( aiChromeHeader ) { fd.append( 'ai_chrome_header', JSON.stringify( aiChromeHeader ) ); }
+						if ( aiChromeFooter ) { fd.append( 'ai_chrome_footer', JSON.stringify( aiChromeFooter ) ); }
+						// AI header/footer fidelity pass (URL flow + Use AI): pass the source URL + service URL so the
+						// RESULTS page can run the capture service's /refine-chrome after the theme is activated.
+						if ( aiOn() && window.__fwSCSourceUrl ) {
+							fd.append( 'refine_chrome_ai', '1' );
+							fd.append( 'refine_chrome_source', window.__fwSCSourceUrl );
+							fd.append( 'refine_chrome_svc', svc() );
+						}
 					return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( r2 ) {
 						if ( r2 && r2.success && r2.data && r2.data.redirect ) { window.location.href = r2.data.redirect; return; }
 						throw new Error( ( r2 && r2.data && r2.data.message ) || '<?php echo esc_js( __( 'Build failed.', 'fw' ) ); ?>' );
@@ -1931,6 +2438,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						var fd = new FormData();
 						fd.append( 'action', 'fw_sc_convert_prepare' ); fd.append( '_wpnonce', nonce );
 						fd.append( 'fw_sc_file_html', renderedHtml );
+						// URL flow only: the captured source screenshot (base64 PNG) rides along so the generated
+						// theme gets a real Appearance → Themes thumbnail. One-shot — cleared after use so a later
+						// file conversion doesn't reuse a stale shot.
+						if ( window.__fwSCScreenshotB64 ) { fd.append( 'fw_sc_screenshot_b64', window.__fwSCScreenshotB64 ); window.__fwSCScreenshotB64 = ''; }
 						var titleEl = form.querySelector( '[name=fw_sc_file_title]' );
 						if ( titleEl && titleEl.value.trim() ) { fd.append( 'fw_sc_file_title', titleEl.value.trim() ); }
 						return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( res ) {
@@ -2005,11 +2516,19 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					if ( ! aiOn() ) { return Promise.resolve( { mapping: data.mapping || { pages: [] }, css: '', header: '', footer: '', ai: false } ); }
 					loading( '<?php echo esc_js( __( 'Handing the design to the AI… (this can take a few minutes)', 'fw' ) ); ?>', 98, 180000, '<?php echo esc_js( __( 'Claude is authoring the stylesheet…', 'fw' ) ); ?>' );
 					aiMessagesStart( function ( t ) { var el = document.getElementById( 'fw-sc-detail' ); if ( el ) { el.innerHTML = t; } }, function () { return curPct; } );
-					return fetch( svc() + '/ai-convert', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify( { html: data.html || '', mapping: data.mapping, source: data.source || '' } ) } )
+					// NATIVE chrome: map the header/footer into editable Theme Settings (best-effort, parallel).
+					// A failure here is non-fatal — the deterministic native chrome remains the base.
+					var chromeP = fetch( svc() + '/translate-chrome', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify( { html: data.html || '' } ) } )
+						.then( function ( r ) { return r.json(); } )
+						.then( function ( c ) { return ( c && c.ok ) ? { header: ( c.header && c.header.ok ) ? c.header.json : null, footer: ( c.footer && c.footer.ok ) ? c.footer.json : null } : { header: null, footer: null }; } )
+						.catch( function () { return { header: null, footer: null }; } );
+					var convertP = fetch( svc() + '/ai-convert', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify( { html: data.html || '', mapping: data.mapping, source: data.source || '' } ) } )
 						.then( function ( r ) { return r.json(); } ).then( function ( a ) {
 							if ( a && a.ok && a.mapping ) { var th = a.theme || {}; return { mapping: a.mapping, css: ( th.style_css || a.custom_css || '' ), header: th.header_html || '', footer: th.footer_html || '', ai: true }; }
 							throw new Error( ( a && a.error ) || '<?php echo esc_js( __( 'AI refine failed.', 'fw' ) ); ?>' );
-						} )
+						} );
+					return Promise.all( [ convertP, chromeP ] )
+						.then( function ( arr ) { var r = arr[ 0 ]; r.chromeHeader = arr[ 1 ].header; r.chromeFooter = arr[ 1 ].footer; return r; } )
 						.finally( aiMessagesStop );
 				}
 				function preview( b ) {
@@ -2147,12 +2666,28 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				}
 				reviewBtn.addEventListener( 'click', function () {
 					reviewBtn.disabled = true;
-						if ( serviceUp && ! aiOn() && renderInBrowser() ) { serviceFlow( false ); reviewBtn.disabled = false; return; }
+					// Offline PHP analyze/review path (the default + the graceful fallback).
+					function runOffline() {
 						serviceMode = false;
-					resetProg(); loading( '<?php echo esc_js( __( 'Analyzing the export…', 'fw' ) ); ?>', 20, 6000, '<?php echo esc_js( __( 'Reading the export — extracting the palette, fonts, page sections, and the header/footer.', 'fw' ) ); ?>' );
-					prepare().then( function ( data ) {
-						return maybeAI( data ).then( function ( r ) { aiCss = r.css || ''; aiHeader = r.header || ''; aiFooter = r.footer || ''; render( r.mapping || { pages: [] }, data.roles || {}, data.source || '', r.ai ); } );
-					} ).catch( function ( e ) { wrap.innerHTML = '<div class="notice notice-error"><p>' + escH( e.message ) + '</p></div>'; } ).then( function () { reviewBtn.disabled = false; } );
+						resetProg(); loading( '<?php echo esc_js( __( 'Analyzing the export…', 'fw' ) ); ?>', 20, 6000, '<?php echo esc_js( __( 'Reading the export — extracting the palette, fonts, page sections, and the header/footer.', 'fw' ) ); ?>' );
+						prepare().then( function ( data ) {
+							return maybeAI( data ).then( function ( r ) { aiCss = r.css || ''; aiHeader = r.header || ''; aiFooter = r.footer || ''; aiChromeHeader = r.chromeHeader || null; aiChromeFooter = r.chromeFooter || null; render( r.mapping || { pages: [] }, data.roles || {}, data.source || '', r.ai ); } );
+						} ).catch( function ( e ) { wrap.innerHTML = '<div class="notice notice-error"><p>' + escH( e.message ) + '</p></div>'; } ).then( function () { reviewBtn.disabled = false; } );
+					}
+					// AUTO browser-render: service up + AI off → route the upload through the capture service so
+					// runtime-CSS builder exports render faithfully — UNLESS it's a source bundle (offline by design).
+					var fileInput = form.querySelector( 'input[type=file]' );
+					var htmlInput = form.querySelector( '[name=fw_sc_file_html]' );
+					var file = fileInput && fileInput.files[ 0 ];
+					var html = htmlInput && htmlInput.value.trim();
+					if ( serviceUp && ! aiOn() && ( file || html ) ) {
+						looksLikeSourceBundleFile( file ).then( function ( isBundle ) {
+							if ( isBundle ) { runOffline(); return; }
+							serviceFlow( false ); reviewBtn.disabled = false;
+						} );
+						return;
+					}
+					runOffline();
 				} );
 				// "Convert to WordPress" runs the FULL conversion via AJAX with the progress bar:
 				// prepare (build the section→element mapping) → AI refine when "Use AI" is on → build.
@@ -2171,6 +2706,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							.then( function ( data ) {
 								return maybeAI( data ).then( function ( r ) {
 									aiCss = r.css || ''; aiHeader = r.header || ''; aiFooter = r.footer || '';
+									aiChromeHeader = r.chromeHeader || null; aiChromeFooter = r.chromeFooter || null;
 									return doBuild( r.mapping || { pages: [] } );
 								} );
 							} )
@@ -2185,6 +2721,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				// the PHP build path (serviceMode=false).
 				window.__fwSCFromHtml = function ( html, label, container ) {
 					serviceMode = false;
+					// Remember the source URL (URL flow only) so the build can trigger the AI header/footer pass.
+					if ( /^https?:\/\//i.test( String( label || '' ) ) ) { window.__fwSCSourceUrl = String( label ); }
 					return prepareFromHtml( html ).then( function ( d ) {
 						render( d.mapping || { pages: [] }, d.roles || {}, label || ( d.source || '' ), false, container );
 					} );
@@ -2216,7 +2754,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					if ( actUrl )  { actUrl.style.display  = isUrl ? '' : 'none'; }
 					if ( hint ) {
 						if ( isUrl ) {
-							hint.innerHTML = '<?php echo esc_js( __( 'A URL is rendered by the capture service, so it must be running (set it up under “Enable AI” above).', 'fw' ) ); ?>';
+							hint.innerHTML = '<?php echo esc_js( __( 'A URL is rendered by the capture service, so it must be running — start it with the AI Dev Kit launcher (see “Start the capture service” above).', 'fw' ) ); ?>';
 						} else if ( isPaste ) {
 							hint.innerHTML = '<?php echo esc_js( __( 'Rendered HTML (DevTools “Copy outerHTML”) converts offline as a faithful mirror — no capture service needed. Attach the real hero video / images below and they are wired in by filename.', 'fw' ) ); ?>';
 						} else {
@@ -2372,9 +2910,19 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						// Phase 1 unified flow: the capture service ONLY renders (?html=1 returns the rendered HTML);
 						// the deterministic PHP engine does ALL mapping + styling via the same prepare->review->build
 						// path the file upload uses. No JS-bundle engine, so a URL and a file give the same output.
+						window.__fwSCScreenshotB64 = '';
+						// Best-effort: pull the capture service's screenshot.png for this URL as a base64 data string,
+						// so the generated child theme gets a real Appearance → Themes thumbnail. A failure (older
+						// service, no shot) just skips — it must never block the conversion.
+						function fwSCFetchShot( u ) {
+							return fetch( svc() + '/capture-screenshot?url=' + encodeURIComponent( u ), { mode: 'cors' } )
+								.then( function ( r ) { if ( ! r.ok ) { throw new Error( 'no screenshot' ); } return r.blob(); } )
+								.then( function ( b ) { return new Promise( function ( res ) { var fr = new FileReader(); fr.onload = function () { res( String( fr.result || '' ) ); }; fr.onerror = function () { res( '' ); }; fr.readAsDataURL( b ); } ); } )
+								.catch( function () { return ''; } );
+						}
 						fetch( svc() + '/capture?url=' + encodeURIComponent( target ) + '&html=1', { mode: 'cors' } )
 							.then( function ( r ) { if ( ! r.ok ) { return r.json().then( function ( e ) { throw new Error( ( e && e.error ) || ( 'HTTP ' + r.status ) ); } ); } return r.text(); } )
-							.then( function ( renderedHtml ) { clearProg(); bar( '<?php echo esc_js( __( 'Mapping the rendered page…', 'fw' ) ); ?>' ); setBar( 82 ); return window.__fwSCFromHtml( renderedHtml, target, $status ); } )
+							.then( function ( renderedHtml ) { clearProg(); bar( '<?php echo esc_js( __( 'Mapping the rendered page…', 'fw' ) ); ?>' ); setBar( 82 ); return fwSCFetchShot( target ).then( function ( shot ) { window.__fwSCScreenshotB64 = shot || ''; return window.__fwSCFromHtml( renderedHtml, target, $status ); } ); } )
 							.then( function () { $go.disabled = false; } )
 							.catch( function ( e ) { note( '<?php echo esc_js( __( 'Failed:', 'fw' ) ); ?> ' + ( e && e.message ? e.message : e ) + '. <?php echo esc_js( __( 'Is the capture service running?', 'fw' ) ); ?>', 'error' ); $go.disabled = false; } );
 					} );
@@ -2691,6 +3239,36 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						<button type="button" class="button" id="fw-sc-diag-check"><?php esc_html_e( 'Check now', 'fw' ); ?></button>
 						<span id="fw-sc-diag-result" class="description" style="margin-left:.5em"></span>
 					</p>
+				</div>
+			</details>
+
+			<details class="fw-sc-card"<?php echo isset( $_GET['fw-sc-token'] ) ? ' open' : ''; ?>>
+				<summary><span class="dashicons dashicons-admin-network"></span> <?php esc_html_e( 'AI Dev Kit dashboard token', 'fw' ); ?></summary>
+				<div class="fw-sc-card-body">
+					<?php if ( isset( $_GET['fw-sc-token'] ) && $_GET['fw-sc-token'] === 'reset' ) : ?>
+						<div class="notice notice-success inline" style="margin:.2em 0 .8em"><p><?php esc_html_e( 'Token regenerated. Update it in the dev kit dashboard.', 'fw' ); ?></p></div>
+					<?php endif; ?>
+					<p class="description"><?php esc_html_e( 'Paste this into the dev kit dashboard → Settings → Destination WordPress, so the dashboard can convert + install into this site.', 'fw' ); ?></p>
+					<p>
+						<input type="text" readonly id="fw-sc-dash-token" class="regular-text code" style="width:26em" value="<?php echo esc_attr( self::get_dashboard_token() ); ?>" onclick="this.select()">
+						<button type="button" class="button" id="fw-sc-dash-token-copy"><?php esc_html_e( 'Copy', 'fw' ); ?></button>
+					</p>
+					<form method="post" action="" style="margin:.2em 0 0" onsubmit="return confirm('<?php echo esc_js( __( 'Regenerate the token? The old token stops working immediately.', 'fw' ) ); ?>');">
+						<?php wp_nonce_field( self::NONCE ); ?>
+						<input type="hidden" name="fw_sc_step" value="regen_dashboard_token">
+						<button type="submit" class="button button-secondary"><?php esc_html_e( 'Regenerate', 'fw' ); ?></button>
+					</form>
+					<script>
+					( function () {
+						var b = document.getElementById( 'fw-sc-dash-token-copy' ), f = document.getElementById( 'fw-sc-dash-token' );
+						if ( ! b || ! f ) { return; }
+						b.addEventListener( 'click', function () {
+							f.select();
+							try { ( navigator.clipboard && navigator.clipboard.writeText ) ? navigator.clipboard.writeText( f.value ) : document.execCommand( 'copy' ); } catch ( e ) { document.execCommand( 'copy' ); }
+							var t = b.textContent; b.textContent = '<?php echo esc_js( __( 'Copied', 'fw' ) ); ?>'; setTimeout( function () { b.textContent = t; }, 1200 );
+						} );
+					} )();
+					</script>
 				</div>
 			</details>
 
@@ -3185,6 +3763,208 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			echo '<div class="notice notice-info is-dismissible"><p>'
 				. esc_html( sprintf( __( 'The bundle also contained sections not applied yet (coming soon): %s.', 'fw' ), implode( ', ', $deferred ) ) )
 				. '</p></div>';
+		}
+
+		// AI header/footer fidelity pass — runs on the RESULTS page (the converted child theme is now active,
+		// so home_url() serves it). Best-effort + time-boxed: calls the capture service's /refine-chrome
+		// (HEADER-first; keeps CSS only if measured chrome drift dropped), then posts the verified CSS back to
+		// fw_sc_apply_chrome_css to persist into the active theme's style.css. If the service is unreachable or
+		// AI is off, it silently does nothing — the conversion result stands unchanged. Claude gives the best
+		// results; a local model works too.
+		if ( ! empty( $data['chrome_refine'] ) && is_array( $data['chrome_refine'] ) && ! empty( $data['chrome_refine']['source'] ) ) {
+			$rc_src   = (string) $data['chrome_refine']['source'];
+			$rc_svc   = ! empty( $data['chrome_refine']['svc'] ) ? (string) $data['chrome_refine']['svc'] : 'http://localhost:8787';
+			$rc_nonce = wp_create_nonce( self::NONCE );
+			?>
+			<div class="notice notice-info" id="fw-sc-chrome-refine" style="margin:.5em 0;padding:.6em .9em">
+				<p style="margin:.2em 0" id="fw-sc-chrome-refine-msg">
+					<span class="spinner is-active" style="float:none;margin:0 .4em 0 0"></span>
+					<?php esc_html_e( 'AI header &amp; footer fidelity pass — matching the source header/footer… (kept only if it measurably improves the match; Claude gives the best results)', 'fw' ); ?>
+				</p>
+			</div>
+			<script>
+			( function () {
+				var box = document.getElementById( 'fw-sc-chrome-refine' );
+				var msg = document.getElementById( 'fw-sc-chrome-refine-msg' );
+				if ( ! box || ! msg ) { return; }
+				var svc = <?php echo wp_json_encode( rtrim( $rc_svc, '/' ) ); ?>;
+				var source = <?php echo wp_json_encode( $rc_src ); ?>;
+				var converted = <?php echo wp_json_encode( home_url( '/' ) ); ?>;
+				var ajaxurl = <?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
+				var nonce = <?php echo wp_json_encode( $rc_nonce ); ?>;
+				function done( html, cls ) { box.className = 'notice notice-' + ( cls || 'info' ) + ' is-dismissible'; msg.innerHTML = html; }
+				// Best-effort health check first so we fail fast + silent when the service isn't running.
+				fetch( svc + '/health', { mode: 'cors' } ).then( function ( r ) { return r.json(); } ).then( function ( h ) {
+					if ( ! ( h && h.ok && h.aiReady ) ) { box.parentNode && box.parentNode.removeChild( box ); return; } // AI off / no service — say nothing
+					return fetch( svc + '/refine-chrome', { method: 'POST', mode: 'cors', headers: { 'content-type': 'application/json' }, body: JSON.stringify( { source_url: source, converted_url: converted } ) } )
+						.then( function ( r ) { return r.json(); } )
+						.then( function ( out ) {
+							if ( ! out || out.error ) { throw new Error( ( out && out.error ) || 'refine failed' ); }
+							if ( ! out.improved || ! out.css ) {
+								done( '<?php echo esc_js( __( 'AI header/footer pass — no measurable improvement over the deterministic chrome, so nothing was changed.', 'fw' ) ); ?>', 'info' );
+								return;
+							}
+							// Persist the verified CSS into the active theme.
+							var fd = new FormData(); fd.append( 'action', 'fw_sc_apply_chrome_css' ); fd.append( '_wpnonce', nonce ); fd.append( 'css', out.css );
+							return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( res ) {
+								if ( res && res.success && res.data && res.data.written ) {
+									var pct = ( typeof out.before_chrome_drift_pct !== 'undefined' ) ? ( ' (' + out.before_chrome_drift_pct + '% → ' + out.after_chrome_drift_pct + '%)' ) : '';
+									done( '<?php echo esc_js( __( 'AI header/footer fidelity pass applied — chrome drift dropped', 'fw' ) ); ?>' + pct + '. <?php echo esc_js( __( 'Reload the front page to see it.', 'fw' ) ); ?>', 'success' );
+								} else {
+									done( ( res && res.data && res.data.message ) || '<?php echo esc_js( __( 'Could not persist the chrome CSS.', 'fw' ) ); ?>', 'warning' );
+								}
+							} );
+						} );
+				} ).catch( function () { if ( box.parentNode ) { box.parentNode.removeChild( box ); } } ); // service down — silent
+			} )();
+			</script>
+			<?php
+		}
+
+		// "Ask the AI to change something" — a user-directed refine box on the RESULTS page. Shown whenever a
+		// child theme was generated AND activated (so home_url() serves the converted site and we have a real
+		// stylesheet to write into). Posts the user's prompt + the converted page HTML + the theme's current
+		// custom CSS to the capture service's /ai-instruct, then: CSS changes are previewed and (on Apply)
+		// persisted through the SAME save path the chrome pass uses (fw_sc_apply_chrome_css, slot=instruct),
+		// so they land in the child theme's style.css and are fully reversible; structural suggestions are
+		// shown as guidance only (a local model isn't trusted to rewrite page structure).
+		if ( ! empty( $data['theme'] ) && is_array( $data['theme'] ) && ! empty( $data['theme']['activated'] ) ) {
+			$ai_src = '';
+			if ( ! empty( $data['chrome_refine']['source'] ) ) {
+				$ai_src = (string) $data['chrome_refine']['source'];
+			} elseif ( $source !== '' && preg_match( '#^https?://#i', $source ) ) {
+				$ai_src = $source;
+			}
+			$ai_svc = ! empty( $data['chrome_refine']['svc'] ) ? (string) $data['chrome_refine']['svc'] : 'http://localhost:8787';
+			$ai_nonce = wp_create_nonce( self::NONCE );
+			?>
+			<div class="notice notice-info" id="fw-sc-ai-instruct" style="margin:1em 0;padding:.8em 1em">
+				<h2 style="margin:.2em 0 .4em;font-size:14px"><?php esc_html_e( 'Ask the AI to change something', 'fw' ); ?></h2>
+				<p class="description" style="margin:0 0 .6em">
+					<?php esc_html_e( 'Describe a change in plain English (e.g. “make the header background dark and the buttons rounder”). The AI looks at the converted page and, when the change is styling, returns CSS you can preview and apply to the child theme. Structural changes are suggested as guidance — make those in the builder or re-run the conversion.', 'fw' ); ?>
+				</p>
+				<p style="margin:0 0 .5em">
+					<textarea id="fw-sc-ai-prompt" rows="3" class="large-text" placeholder="<?php esc_attr_e( 'e.g. Increase the spacing between sections and make the primary buttons use the accent color.', 'fw' ); ?>"></textarea>
+				</p>
+				<p style="margin:0 0 .5em">
+					<button type="button" class="button button-primary" id="fw-sc-ai-ask"><?php esc_html_e( 'Ask', 'fw' ); ?></button>
+					<span class="spinner" id="fw-sc-ai-spin" style="float:none;margin:0 0 0 .4em"></span>
+					<label style="margin-left:1em;color:#50575e"><?php esc_html_e( 'Service URL', 'fw' ); ?>
+						<input type="url" id="fw-sc-ai-instruct-svc" class="regular-text" value="<?php echo esc_attr( rtrim( $ai_svc, '/' ) ); ?>" style="width:15em"></label>
+				</p>
+				<div id="fw-sc-ai-out" style="display:none">
+					<p id="fw-sc-ai-explain" style="margin:.4em 0;font-weight:600"></p>
+					<div id="fw-sc-ai-structural" style="display:none;margin:.4em 0;padding:.5em .7em;border-left:4px solid #dba617;background:#fcf9e8"></div>
+					<div id="fw-sc-ai-css-wrap" style="display:none">
+						<p style="margin:.3em 0"><label for="fw-sc-ai-css"><strong><?php esc_html_e( 'Proposed CSS (editable):', 'fw' ); ?></strong></label></p>
+						<textarea id="fw-sc-ai-css" rows="8" class="large-text code" style="font-family:Menlo,Consolas,monospace;font-size:12px"></textarea>
+						<p style="margin:.4em 0">
+							<button type="button" class="button button-primary" id="fw-sc-ai-apply"><?php esc_html_e( 'Apply to child theme', 'fw' ); ?></button>
+							<button type="button" class="button" id="fw-sc-ai-discard"><?php esc_html_e( 'Discard', 'fw' ); ?></button>
+						</p>
+					</div>
+				</div>
+				<p id="fw-sc-ai-note" style="display:none;margin:.4em 0"></p>
+			</div>
+			<script>
+			( function () {
+				var box = document.getElementById( 'fw-sc-ai-instruct' );
+				if ( ! box ) { return; }
+				var promptEl = document.getElementById( 'fw-sc-ai-prompt' );
+				var svcEl    = document.getElementById( 'fw-sc-ai-instruct-svc' );
+				var askBtn   = document.getElementById( 'fw-sc-ai-ask' );
+				var spin     = document.getElementById( 'fw-sc-ai-spin' );
+				var out      = document.getElementById( 'fw-sc-ai-out' );
+				var explain  = document.getElementById( 'fw-sc-ai-explain' );
+				var structEl = document.getElementById( 'fw-sc-ai-structural' );
+				var cssWrap  = document.getElementById( 'fw-sc-ai-css-wrap' );
+				var cssEl    = document.getElementById( 'fw-sc-ai-css' );
+				var applyBtn = document.getElementById( 'fw-sc-ai-apply' );
+				var discBtn  = document.getElementById( 'fw-sc-ai-discard' );
+				var note     = document.getElementById( 'fw-sc-ai-note' );
+				var converted = <?php echo wp_json_encode( home_url( '/' ) ); ?>;
+				var styleUri  = <?php echo wp_json_encode( get_stylesheet_uri() ); ?>;
+				var sourceUrl = <?php echo wp_json_encode( $ai_src ); ?>;
+				var ajaxurl   = <?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
+				var nonce     = <?php echo wp_json_encode( $ai_nonce ); ?>;
+				function svc() { return ( svcEl.value || 'http://localhost:8787' ).replace( /\/+$/, '' ); }
+				function busy( on ) { spin.className = on ? 'spinner is-active' : 'spinner'; spin.style.cssText = 'float:none;margin:0 0 0 .4em'; askBtn.disabled = on; }
+				function showNote( html, cls ) { note.style.display = 'block'; note.style.cssText = 'display:block;margin:.4em 0;padding:.5em .7em;border-left:4px solid ' + ( cls === 'error' ? '#d63638' : ( cls === 'ok' ? '#1a7f37' : '#72aee6' ) ) + ';background:#f6f7f7'; note.innerHTML = html; }
+				// Best-effort same-origin text fetch; returns '' on any failure.
+				function grab( url ) { return fetch( url, { credentials: 'same-origin' } ).then( function ( r ) { return r.ok ? r.text() : ''; } ).catch( function () { return ''; } ); }
+
+				askBtn.addEventListener( 'click', function () {
+					var prompt = ( promptEl.value || '' ).trim();
+					note.style.display = 'none'; out.style.display = 'none';
+					if ( ! prompt ) { showNote( <?php echo wp_json_encode( esc_html__( 'Type what you want changed first.', 'fw' ) ); ?>, 'error' ); return; }
+					busy( true );
+					// page_html = the converted page (same-origin); custom_css = the child theme stylesheet
+					// (the same style.css store Apply writes into); source_html = best-effort, optional.
+					Promise.all( [ grab( converted ), grab( styleUri ), sourceUrl ? grab( sourceUrl ) : Promise.resolve( '' ) ] ).then( function ( parts ) {
+						var payload = { prompt: prompt, page_html: parts[0] || '', custom_css: parts[1] || '' };
+						if ( parts[2] ) { payload.source_html = parts[2]; }
+						return fetch( svc() + '/ai-instruct', { method: 'POST', mode: 'cors', headers: { 'content-type': 'application/json' }, body: JSON.stringify( payload ) } )
+							.then( function ( r ) { return r.json().then( function ( j ) { return { status: r.status, body: j }; } ).catch( function () { return { status: r.status, body: null }; } ); } );
+					} ).then( function ( res ) {
+						busy( false );
+						if ( res.status === 503 ) { showNote( <?php echo wp_json_encode( esc_html__( 'The AI is off — pick a local model in the capture-service dashboard, or enable Claude, then try again.', 'fw' ) ); ?>, 'error' ); return; }
+						if ( res.status === 400 ) { showNote( <?php echo wp_json_encode( esc_html__( 'No prompt was received. Describe the change and try again.', 'fw' ) ); ?>, 'error' ); return; }
+						var b = res.body;
+						if ( res.status !== 200 || ! b || ! b.ok ) {
+							showNote( ( b && b.error ? String( b.error ) : <?php echo wp_json_encode( esc_html__( 'The AI could not complete that request. Check the capture service and try again.', 'fw' ) ); ?> ), 'error' );
+							return;
+						}
+						out.style.display = 'block';
+						explain.textContent = b.explanation || '';
+						var kind = b.kind || '';
+						// Structural guidance (structural or both).
+						if ( ( kind === 'structural' || kind === 'both' ) && b.structural_note ) {
+							structEl.style.display = 'block';
+							structEl.textContent = '';
+							var lbl = document.createElement( 'strong' );
+							lbl.textContent = <?php echo wp_json_encode( esc_html__( 'Structural change suggested:', 'fw' ) ); ?>;
+							structEl.appendChild( lbl );
+							// Untrusted model text — appended as a text node, never as HTML.
+							structEl.appendChild( document.createTextNode( ' ' + String( b.structural_note ) + <?php echo wp_json_encode( ' — ' . esc_html__( 'make this in the builder, or re-run the conversion. (Not applied automatically.)', 'fw' ) ); ?> ) );
+						} else { structEl.style.display = 'none'; }
+						// CSS preview + apply (css or both).
+						if ( ( kind === 'css' || kind === 'both' ) && b.css ) {
+							cssWrap.style.display = 'block';
+							cssEl.value = b.css;
+						} else {
+							cssWrap.style.display = 'none';
+							if ( kind === 'structural' ) { explain.textContent = explain.textContent || <?php echo wp_json_encode( esc_html__( 'The AI suggests a structural change (see below).', 'fw' ) ); ?>; }
+						}
+					} ).catch( function () {
+						busy( false );
+						showNote( <?php echo wp_json_encode( esc_html__( 'Could not reach the capture service. Make sure it is running at the Service URL above.', 'fw' ) ); ?>, 'error' );
+					} );
+				} );
+
+				discBtn.addEventListener( 'click', function () { cssWrap.style.display = 'none'; out.style.display = ( structEl.style.display === 'block' ) ? 'block' : 'none'; } );
+
+				applyBtn.addEventListener( 'click', function () {
+					var css = ( cssEl.value || '' ).trim();
+					if ( ! css ) { showNote( <?php echo wp_json_encode( esc_html__( 'Nothing to apply.', 'fw' ) ); ?>, 'error' ); return; }
+					applyBtn.disabled = true;
+					var fd = new FormData();
+					fd.append( 'action', 'fw_sc_apply_chrome_css' );
+					fd.append( '_wpnonce', nonce );
+					fd.append( 'slot', 'instruct' );
+					fd.append( 'css', css );
+					fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( r ) {
+						applyBtn.disabled = false;
+						if ( r && r.success && r.data && r.data.written ) {
+							showNote( <?php echo wp_json_encode( esc_html__( 'Applied to the child theme. Reloading the preview…', 'fw' ) ); ?>, 'ok' );
+							setTimeout( function () { window.open( converted, '_blank', 'noopener' ); }, 400 );
+						} else {
+							showNote( ( r && r.data && r.data.message ) || <?php echo wp_json_encode( esc_html__( 'Could not save the CSS into the theme.', 'fw' ) ); ?>, 'error' );
+						}
+					} ).catch( function () { applyBtn.disabled = false; showNote( <?php echo wp_json_encode( esc_html__( 'Save failed — please try again.', 'fw' ) ); ?>, 'error' ); } );
+				} );
+			} )();
+			</script>
+			<?php
 		}
 	}
 

@@ -31,6 +31,7 @@ class FW_Site_Converter_Presets {
 		'button_sizes',
 		'button_animations',
 		'border_presets',
+		'icon_badge_presets',
 		'table_presets',
 		'section_style_presets',
 		'image_styles',

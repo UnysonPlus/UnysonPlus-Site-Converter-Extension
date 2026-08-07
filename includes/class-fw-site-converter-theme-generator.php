@@ -169,6 +169,10 @@ class FW_Site_Converter_Theme_Generator {
 				),
 			),
 			'custom_css' => isset( $c['custom_css'] ) ? (string) $c['custom_css'] : '',
+			// Captured WordPress theme screenshot (1200×900 PNG, base64 — no data: prefix). Travels through
+			// the URL-conversion flow (capture service → admin JS → WP POST) so a URL-converted theme gets a
+			// real Appearance → Themes thumbnail. Carried verbatim; written to screenshot.png in install()/build_zip.
+			'screenshot_png_b64' => isset( $c['screenshot_png_b64'] ) ? (string) $c['screenshot_png_b64'] : '',
 			// AI-authored design: a complete self-contained stylesheet (lands in `custom_css`) PLUS the
 			// header/footer markup with placeholders. When `ai_authored`, the generator drops its own
 			// deterministic palette/font/header CSS and lets the AI stylesheet own the whole look, and
@@ -1442,10 +1446,17 @@ JS;
 		if ( ! empty( $cta['padding'] ) )     { $decl .= "padding:{$cta['padding']};"; }
 		if ( ! empty( $cta['font_weight'] ) ) { $decl .= "font-weight:{$cta['font_weight']};"; }
 
+		// SCOPE: exclude buttons that carry a Color Preset (or size) compound class `btn-{slug}`.
+		// The button-preset token CSS (`.btn-primary`/`.btn-secondary`, specificity 0,1,0, NO
+		// !important by design) is EQUAL-specificity to a bare `.btn` and loses to it on load order
+		// (this child-theme CSS is concatenated AFTER the token sheet). A header/footer CTA set to a
+		// Color Preset (e.g. amber `.btn-secondary`) was therefore being repainted by this baseline.
+		// `.btn:not([class*="btn-"])` (0,2,0) still styles a bare Default `.btn` but never overrides a
+		// preset-classed button, so the CTA keeps its preset fill.
 		return "/* ---- Buttons — baseline for the bare .btn (Style: Default). The source's own\n"
 			. "   button rules (base + :hover) are carried into the sections block below and\n"
-			. "   override this; switching a button to a Color Preset overrides both. ---- */\n"
-			. ".btn { {$decl} }\n\n";
+			. "   override this; a Color Preset's `.btn-{slug}` is excluded so it always wins. ---- */\n"
+			. ".btn:not([class*=\"btn-\"]) { {$decl} }\n\n";
 	}
 
 	/**
@@ -1697,9 +1708,17 @@ JS;
 		// wraps the footer template part) don't add their own padding/background around the
 		// mirrored markup — the source CSS then owns the chrome's look entirely.
 		if ( self::has_raw_chrome( $cfg ) ) {
+			// NATIVE chrome (Theme Settings drives header/footer): the header/footer are NOT baked, so the
+			// #colophon wrapper reset must NOT neutralize the background — otherwise `#colophon{background:none}`
+			// (id specificity) overrides the parent's `.footer{background-color:var(--footer-bg-color)}` and the
+			// native footer renders on white (its light text then goes invisible). Reset the box metrics only.
+			$native = ! empty( $cfg['chrome_via_settings'] );
+			$colophon_reset = $native
+				? "#colophon{max-width:none;}\n"
+				: "#colophon{margin:0;padding:0;background:none;border:0;max-width:none;}\n";
 			$reset = "/* Site Converter raw-chrome reset — let the mirrored markup own its layout. */\n"
 				. "#page,#content,#primary,.site-content{max-width:none;margin:0;padding:0;}\n"
-				. "#colophon{margin:0;padding:0;background:none;border:0;max-width:none;}\n"
+				. $colophon_reset
 				// Body sections are mirrored verbatim inside a .sc-mirror builder section; zero the
 				// builder's container/column gutters AND its own vertical padding so the source
 				// markup renders edge-to-edge and the SOURCE section owns 100% of the spacing (the
@@ -2490,6 +2509,11 @@ JS;
 			return array( 'error' => $written, 'slug' => $slug, 'mode' => $mode );
 		}
 
+		// Captured source screenshot → theme root screenshot.png (Appearance → Themes thumbnail). Best-effort:
+		// a bad/empty base64 just skips, never fatals. This is the URL-flow equivalent of the file-upload path's
+		// copy of screenshot.png (FW_Site_Converter_Bundle::import_dir).
+		self::write_screenshot_png( $cfg, $dir );
+
 		// Re-installing re-applies the conversion: clear the one-time seeding flags so the next page
 		// load (wp_loaded) re-seeds the header layout, re-assigns the converted menus to their
 		// locations, and re-sets the custom logo with the latest captured data — overriding any
@@ -2554,6 +2578,13 @@ JS;
 			$zip->addFromString( $slug . '/' . $rel, $contents );
 		}
 
+		// Captured source screenshot → screenshot.png in the zipped theme root (thumbnail on install).
+		// Best-effort: only added when the config carries a valid base64 PNG.
+		$shot = self::decode_screenshot_png( $cfg );
+		if ( $shot !== '' ) {
+			$zip->addFromString( $slug . '/screenshot.png', $shot );
+		}
+
 		$zip->close();
 
 		return array(
@@ -2570,6 +2601,12 @@ JS;
 	private static function generated_relpaths() {
 		return array(
 			'style.css',
+			// The child's OWN document wrappers — emitted only by the BAKED (raw-chrome) path. When a
+			// re-convert switches to native (chrome_via_settings) these are no longer emitted, so they MUST
+			// be pruned or the leftover baked header.php/footer.php shadows the parent's editable Theme-
+			// Settings chrome (the native header/footer would never take over). Child mode only.
+			'header.php',
+			'footer.php',
 			'template-parts/header-builder.php',
 			'template-parts/footer-builder.php',
 			'assets/js/interactivity.js',
@@ -2701,6 +2738,49 @@ JS;
 		}
 
 		return $count;
+	}
+
+	/**
+	 * Decode $cfg['screenshot_png_b64'] (base64, no data: prefix) and write it as screenshot.png in the
+	 * theme root $dir, so Appearance → Themes shows a real thumbnail of the converted source. Best-effort:
+	 * empty/invalid/non-PNG input is silently skipped (never fatal). Returns true when a file was written.
+	 *
+	 * @param array  $cfg  normalized config
+	 * @param string $dir  theme root directory
+	 * @return bool
+	 */
+	private static function write_screenshot_png( array $cfg, $dir ) {
+		if ( ! is_dir( $dir ) ) {
+			return false;
+		}
+		$bin = self::decode_screenshot_png( $cfg );
+		if ( $bin === '' ) {
+			return false;
+		}
+		return false !== @file_put_contents( trailingslashit( $dir ) . 'screenshot.png', $bin );
+	}
+
+	/**
+	 * Decode $cfg['screenshot_png_b64'] to raw PNG bytes, or '' when absent/invalid/non-PNG. Tolerant of a
+	 * stray data: URL prefix + whitespace; validates strictly (base64 + PNG magic) so we never write garbage.
+	 *
+	 * @param array $cfg normalized config
+	 * @return string raw PNG bytes, or '' to skip
+	 */
+	private static function decode_screenshot_png( array $cfg ) {
+		$b64 = isset( $cfg['screenshot_png_b64'] ) ? (string) $cfg['screenshot_png_b64'] : '';
+		if ( $b64 === '' ) {
+			return '';
+		}
+		if ( stripos( $b64, 'data:' ) === 0 && strpos( $b64, ',' ) !== false ) {
+			$b64 = substr( $b64, strpos( $b64, ',' ) + 1 );
+		}
+		$b64 = preg_replace( '/\s+/', '', $b64 );
+		$bin = base64_decode( $b64, true );
+		if ( $bin === false || strlen( $bin ) < 100 || substr( $bin, 0, 8 ) !== "\x89PNG\r\n\x1a\n" ) {
+			return '';
+		}
+		return $bin;
 	}
 
 	/**

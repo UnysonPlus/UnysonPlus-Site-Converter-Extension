@@ -35,6 +35,7 @@ class FW_Site_Converter_Mapper {
 	private static $style_key   = array(); // declset hash → class name
 	private static $style_css   = array(); // class name → CSS rule
 	private static $style_count = array(); // base name → count
+	private static $sec_presets = array(); // [{ slug, rgb:[r,g,b] }] — Section Style presets for band-fill linking
 
 	/** Enable the box CSS Class Mapper for this build + reset its registry. Pass the parsed tailwind config. */
 	public static function set_style_config( $cfg ) {
@@ -43,6 +44,317 @@ class FW_Site_Converter_Mapper {
 		self::$style_key   = array();
 		self::$style_css   = array();
 		self::$style_count = array();
+	}
+
+	/**
+	 * The Section Style presets built for THIS conversion (Stitch::build_section_style_presets),
+	 * so n_section() can LINK a detected band fill to an existing preset (set the section's
+	 * `variant` = the preset slug) instead of only hardcoding the colour. Each entry is normalised
+	 * to { slug, rgb:[r,g,b] } — the slug is derived from the preset's `style_name` the SAME way the
+	 * theme's unysonplus_section_style_preset_slug_map() does (lowercase, non-alnum → '-', dedupe
+	 * with '-2'), so a linked `variant` matches the `.section--{slug}` rule the final theme emits.
+	 *
+	 * @param array $presets the `section_style_presets` list (each with style_name + background).
+	 */
+	public static function set_section_presets( $presets ) {
+		self::$sec_presets = array();
+		if ( ! is_array( $presets ) ) { return; }
+		$seen = array();
+		foreach ( $presets as $sp ) {
+			if ( ! is_array( $sp ) ) { continue; }
+			$name = isset( $sp['style_name'] ) ? (string) $sp['style_name'] : '';
+			$slug = trim( preg_replace( '/[^a-z0-9]+/', '-', strtolower( $name ) ), '-' );
+			$bg   = '';
+			if ( isset( $sp['background']['color']['value'] ) && is_array( $sp['background']['color']['value'] ) ) {
+				$v  = $sp['background']['color']['value'];
+				$bg = ( isset( $v['custom'] ) && $v['custom'] !== '' ) ? (string) $v['custom'] : ( isset( $v['predefined'] ) ? (string) $v['predefined'] : '' );
+			}
+			$rgb = self::rgb_triplet( $bg );
+			if ( $rgb === null ) { continue; } // a preset with no solid opaque fill can't be colour-matched
+			if ( $slug === '' ) { $slug = isset( $sp['id'] ) ? strtolower( (string) $sp['id'] ) : ''; }
+			if ( $slug === '' ) { continue; }
+			$base = $slug; $n = 1;
+			while ( isset( $seen[ $slug ] ) ) { $n++; $slug = $base . '-' . $n; }
+			$seen[ $slug ] = true;
+			self::$sec_presets[] = array( 'slug' => $slug, 'rgb' => $rgb );
+		}
+	}
+
+	/** Parse an opaque colour ("rgb(..)", "rgba(..,1)", "#hex") → [r,g,b], or null (non-opaque / non-colour). */
+	private static function rgb_triplet( $c ) {
+		$c = strtolower( trim( (string) $c ) );
+		if ( $c === '' || $c === 'transparent' ) { return null; }
+		if ( stripos( $c, 'gradient' ) !== false ) { return null; }
+		if ( preg_match( '/rgba?\(\s*(\d{1,3})[,\s]+(\d{1,3})[,\s]+(\d{1,3})(?:[,\s\/]+([0-9.]+))?/', $c, $m ) ) {
+			if ( isset( $m[4] ) && $m[4] !== '' && (float) $m[4] < 0.85 ) { return null; }
+			return array( (int) $m[1], (int) $m[2], (int) $m[3] );
+		}
+		if ( preg_match( '/^#([0-9a-f]{3}|[0-9a-f]{6})$/', $c, $m ) ) {
+			$h = $m[1];
+			if ( strlen( $h ) === 3 ) { $h = $h[0] . $h[0] . $h[1] . $h[1] . $h[2] . $h[2]; }
+			return array( hexdec( substr( $h, 0, 2 ) ), hexdec( substr( $h, 2, 2 ) ), hexdec( substr( $h, 4, 2 ) ) );
+		}
+		return null;
+	}
+
+	/**
+	 * A computed colour → a clean `rgb(r, g, b)` / `rgba(r, g, b, a)` string when it is a REAL fill,
+	 * or '' when transparent / near-transparent. Unlike rgb_triplet() this KEEPS a low-alpha tint
+	 * (a `bg-primary/10` pill is rgba(…, 0.1) — a valid, visible fill), rejecting only alpha <= 0.02.
+	 */
+	private static function pill_fill_color( $c ) {
+		$c = strtolower( trim( (string) $c ) );
+		if ( $c === '' || $c === 'transparent' || $c === 'none' ) { return ''; }
+		if ( preg_match( '/rgba?\(\s*(\d{1,3})[,\s]+(\d{1,3})[,\s]+(\d{1,3})(?:[,\s\/]+([0-9.]+))?/', $c, $m ) ) {
+			$a = ( isset( $m[4] ) && $m[4] !== '' ) ? (float) $m[4] : 1.0;
+			if ( $a <= 0.02 ) { return ''; }
+			return $a < 1 ? "rgba({$m[1]}, {$m[2]}, {$m[3]}, {$a})" : "rgb({$m[1]}, {$m[2]}, {$m[3]})";
+		}
+		if ( preg_match( '/^#[0-9a-f]{3,8}$/', $c ) ) { return $c; }
+		return '';
+	}
+
+	/** A detected band-fill [r,g,b] → the slug of the nearest Section Style preset within tolerance, or ''. */
+	private static function match_section_preset( $rgb ) {
+		if ( ! is_array( $rgb ) || empty( self::$sec_presets ) ) { return ''; }
+		$best = ''; $bestd = PHP_INT_MAX;
+		foreach ( self::$sec_presets as $p ) {
+			$d = abs( $p['rgb'][0] - $rgb[0] ) + abs( $p['rgb'][1] - $rgb[1] ) + abs( $p['rgb'][2] - $rgb[2] );
+			if ( $d < $bestd ) { $bestd = $d; $best = $p['slug']; }
+		}
+		// Tolerance: total per-channel drift <= 18 (each channel ~<=6). Tight so distinct bands don't collapse.
+		return ( $bestd <= 18 ) ? $best : '';
+	}
+
+	/* ---------------------------------------------------------------------- *
+	 * BUTTON preset linking — the SAME button_colors / button_sizes presets
+	 * that theme-settings.json carries (built by Stitch::build_button_presets),
+	 * so a converted BODY button can attach the matching color-preset slug
+	 * (`style` = btn-{slug}) + size-preset slug (`size` = btn-{slug}) — exactly
+	 * what the header CTA already does — instead of falling to the shortcode's
+	 * bare default. The per-node exact custom_css (fill/padding) stays as the
+	 * safety net; the preset is ADDITIVE (picks up hover + theme consistency).
+	 * ---------------------------------------------------------------------- */
+	private static $btn_colors = array(); // [{ slug, role, bg:[r,g,b]|null, fg:[r,g,b]|null, bd:[r,g,b]|null, outline:bool }]
+	private static $btn_sizes  = array(); // [{ slug, fs:float|null, py:float|null, px:float|null, radius:float|null }]
+
+	/**
+	 * Give the mapper the built Button Colour + Size presets for THIS conversion, so
+	 * button_preset_for() can attach the matching slug. Colour slug is derived from
+	 * `color_name` the SAME way unysonplus_button_preset_slug_map() does (lowercase,
+	 * non-alnum → '-', dedupe with '-2'); size slug is the preset's own `slug`.
+	 *
+	 * @param array $colors the `button_colors` list (each with color_name + states.default).
+	 * @param array $sizes  the `button_sizes` list (each with slug + font_size/padding/radius).
+	 */
+	public static function set_button_presets( $colors, $sizes ) {
+		self::$btn_colors = array();
+		self::$btn_sizes  = array();
+		$seen = array();
+		foreach ( (array) $colors as $c ) {
+			if ( ! is_array( $c ) ) { continue; }
+			$name = isset( $c['color_name'] ) ? (string) $c['color_name'] : '';
+			$slug = trim( preg_replace( '/[^a-z0-9]+/', '-', strtolower( $name ) ), '-' );
+			if ( $slug === '' ) { $slug = isset( $c['id'] ) ? preg_replace( '/[^a-zA-Z0-9_-]/', '', (string) $c['id'] ) : ''; }
+			if ( $slug === '' ) { continue; }
+			$base = $slug; $n = 1;
+			while ( isset( $seen[ $slug ] ) ) { $n++; $slug = $base . '-' . $n; }
+			$seen[ $slug ] = true;
+			$def  = ( isset( $c['states']['default'] ) && is_array( $c['states']['default'] ) ) ? $c['states']['default'] : array();
+			$pick = function ( $field ) use ( $def ) {
+				if ( ! isset( $def[ $field ] ) || ! is_array( $def[ $field ] ) ) { return ''; }
+				$v = $def[ $field ];
+				return ( isset( $v['custom'] ) && $v['custom'] !== '' ) ? (string) $v['custom'] : ( isset( $v['predefined'] ) && $v['predefined'] !== '' ? (string) $v['predefined'] : '' );
+			};
+			$bg      = self::rgb_triplet( $pick( 'bg_color' ) );
+			$fg      = self::rgb_triplet( $pick( 'text_color' ) );
+			$bd      = self::rgb_triplet( $pick( 'border_color' ) );
+			$bstyle  = isset( $def['border_style'] ) ? (string) $def['border_style'] : '';
+			$outline = ( $bg === null && ( $bstyle === 'solid' || $bd !== null ) );
+			self::$btn_colors[] = array( 'slug' => $slug, 'role' => strtolower( $name ), 'bg' => $bg, 'fg' => $fg, 'bd' => $bd, 'outline' => $outline );
+		}
+		foreach ( (array) $sizes as $s ) {
+			if ( ! is_array( $s ) || empty( $s['slug'] ) ) { continue; }
+			$num = function ( $f ) use ( $s ) { return ( isset( $s[ $f ]['value'] ) && $s[ $f ]['value'] !== '' ) ? (float) $s[ $f ]['value'] : null; };
+			self::$btn_sizes[] = array(
+				'slug'   => preg_replace( '/[^a-z0-9_-]/', '', strtolower( (string) $s['slug'] ) ),
+				'fs'     => $num( 'font_size' ),
+				'py'     => $num( 'padding_y' ),
+				'px'     => $num( 'padding_x' ),
+				'radius' => $num( 'border_radius' ),
+			);
+		}
+	}
+
+	/** The color-preset slug whose role matches $role ('primary'/'secondary'/'outline'/'fill'), or ''. */
+	private static function btn_color_slug_by_role( $role ) {
+		foreach ( self::$btn_colors as $p ) {
+			if ( $p['role'] === $role ) { return $p['slug']; }
+		}
+		return '';
+	}
+
+	/** Match a button's computed bg/fg/border → the nearest color-preset slug within tolerance, or ''. The
+	 *  fill is the primary signal; for a border/no-fill button the border+text carry the match. */
+	private static function match_button_color( $bg, $fg, $bd ) {
+		if ( empty( self::$btn_colors ) ) { return ''; }
+		$dist = function ( $a, $b ) { return ( $a === null || $b === null ) ? null : abs( $a[0] - $b[0] ) + abs( $a[1] - $b[1] ) + abs( $a[2] - $b[2] ); };
+		$best = ''; $bestd = PHP_INT_MAX;
+		foreach ( self::$btn_colors as $p ) {
+			if ( $bg !== null && $p['bg'] !== null ) {
+				$d = $dist( $bg, $p['bg'] );
+				// bg match: tighten with text when both known.
+				$dt = $dist( $fg, $p['fg'] );
+				if ( $dt !== null ) { $d += (int) round( $dt / 3 ); }
+			} elseif ( $bg === null && $p['bg'] === null ) {
+				// both borderless/outline — match on the BORDER colour (a real outline button). A button
+				// with no border is a plain text link, not an outline preset — never match on text alone.
+				if ( $bd === null ) { continue; }
+				$d = $dist( $bd, $p['bd'] );
+				if ( $d === null ) { continue; }
+			} else {
+				continue; // one filled, one not — not comparable
+			}
+			if ( $d < $bestd ) { $bestd = $d; $best = $p['slug']; }
+		}
+		return ( $bestd <= 40 ) ? $best : '';
+	}
+
+	/** Match a button's computed font-size + padding (+ radius) → the nearest size-preset slug, or ''. */
+	private static function match_button_size( $fs, $py, $px ) {
+		if ( empty( self::$btn_sizes ) || $fs === null ) { return ''; }
+		foreach ( self::$btn_sizes as $s ) {
+			if ( $s['fs'] === null ) { continue; }
+			if ( abs( $s['fs'] - $fs ) > 1.0 ) { continue; }
+			if ( $py !== null && $s['py'] !== null && abs( $s['py'] - $py ) > 3.0 ) { continue; }
+			if ( $px !== null && $s['px'] !== null && abs( $s['px'] - $px ) > 4.0 ) { continue; }
+			return $s['slug'];
+		}
+		return '';
+	}
+
+	/** Parse a computed "Npx" value → float px (or null). */
+	private static function px_num( $v ) {
+		$v = trim( (string) $v );
+		return preg_match( '/^(-?[0-9.]+)\s*px?$/i', $v, $m ) || preg_match( '/^(-?[0-9.]+)$/', $v, $m ) ? (float) $m[1] : null;
+	}
+
+	/**
+	 * SHARED button-preset resolver (header CTA + body buttons stay consistent): given a button's
+	 * source classes + its computed data-sc-cs, return the matching color-preset + size-preset
+	 * slugs as `style` / `size` att values (btn-{slug}), or '' when nothing is confidently detected.
+	 * Strategy: (1) the SEMANTIC fill class (bg-primary/btn-primary → the Primary preset, bg-secondary
+	 * → Secondary, bg-white/bg-surface + border → Outline) — mirroring build_button_presets()'
+	 * role assignment; (2) falling back to matching the computed bg/text/border colours to a built
+	 * preset within tolerance. Size: an explicit btn-lg/btn-md/btn-sm class, else the computed
+	 * font-size + padding matched to a size preset.
+	 *
+	 * @param string $cls source classes
+	 * @param string $cs  the button's data-sc-cs (computed style), if any
+	 * @return array{ style:string, size:string }
+	 */
+	public static function button_preset_for( $cls, $cs = '' ) {
+		$out = array( 'style' => '', 'size' => '' );
+		if ( empty( self::$btn_colors ) && empty( self::$btn_sizes ) ) { return $out; }
+		$lc    = ' ' . strtolower( (string) $cls ) . ' ';
+		$props = ( '' !== (string) $cs ) ? self::cs_decls( $cs, array( 'background-color', 'color', 'border', 'font-size', 'padding', 'padding-top', 'padding-left' ) ) : array();
+
+		/* ---- COLOR ---- */
+		$style = '';
+		// (1a) an already-slugged btn-{slug} / btn-outline-{slug} class naming a real preset.
+		if ( preg_match( '/\sbtn-outline-([a-z0-9-]+)\s/', $lc, $m ) ) {
+			foreach ( self::$btn_colors as $p ) { if ( $p['slug'] === $m[1] ) { $style = 'btn-outline-' . $p['slug']; break; } }
+		}
+		if ( $style === '' && preg_match_all( '/\sbtn-([a-z0-9-]+)\s/', $lc, $mm ) ) {
+			foreach ( $mm[1] as $cand ) {
+				if ( in_array( $cand, array( 'lg', 'md', 'sm', 'xl', 'xs' ), true ) ) { continue; } // size token
+				foreach ( self::$btn_colors as $p ) { if ( $p['slug'] === $cand ) { $style = 'btn-' . $p['slug']; break 2; } }
+			}
+		}
+		// (1b) SEMANTIC role from the fill class → the preset carrying that role.
+		if ( $style === '' ) {
+			$role = '';
+			if ( preg_match( '/\s(?:btn-primary|bg-primary|bg-brand)\b/', $lc ) )        { $role = 'primary'; }
+			elseif ( preg_match( '/\s(?:btn-secondary|bg-secondary|bg-accent|bg-cta)\b/', $lc ) ) { $role = 'secondary'; }
+			elseif ( ( preg_match( '/\sbg-white\b/', $lc ) || preg_match( '/\sbg-surface\b/', $lc ) ) && preg_match( '/\sborder\b/', $lc ) ) { $role = 'outline'; }
+			if ( $role !== '' ) { $slug = self::btn_color_slug_by_role( $role ); if ( $slug !== '' ) { $style = 'btn-' . $slug; } }
+		}
+		// (2) fall back to matching the computed colours.
+		if ( $style === '' ) {
+			$bg = self::rgb_triplet( isset( $props['background-color'] ) ? $props['background-color'] : '' );
+			$fg = self::rgb_triplet( isset( $props['color'] ) ? $props['color'] : '' );
+			// A border only counts when there's a real border WIDTH — cs_decls synthesizes the `border`
+			// shorthand only from a non-zero border-top-width, so a plain link's default border-*-color
+			// (no width) never registers as an outline.
+			$bd = '';
+			if ( isset( $props['border'] ) && preg_match( '/(rgba?\([^)]*\)|#[0-9a-fA-F]{3,8})/', $props['border'], $bm ) ) { $bd = $bm[1]; }
+			$bd = self::rgb_triplet( $bd );
+			// Only match a REAL styled button (a fill or a border) — never a plain text link.
+			if ( $bg !== null || $bd !== null ) {
+				$slug = self::match_button_color( $bg, $fg, $bd );
+				if ( $slug !== '' ) { $style = 'btn-' . $slug; }
+			}
+		}
+		$out['style'] = $style;
+
+		/* ---- SIZE ---- */
+		$size = '';
+		if ( preg_match( '/\sbtn-(lg|md|sm|xl|xs)\b/', $lc, $m ) ) {
+			foreach ( self::$btn_sizes as $s ) { if ( $s['slug'] === $m[1] ) { $size = $s['slug']; break; } }
+		}
+		if ( $size === '' ) {
+			$fs = self::px_num( isset( $props['font-size'] ) ? $props['font-size'] : '' );
+			$py = self::px_num( isset( $props['padding-top'] ) ? $props['padding-top'] : '' );
+			$px = self::px_num( isset( $props['padding-left'] ) ? $props['padding-left'] : '' );
+			$size = self::match_button_size( $fs, $py, $px );
+		}
+		$out['size'] = $size !== '' ? 'btn-' . $size : '';
+		return $out;
+	}
+
+	/** Normalise a colour to a compact `rgb(r, g, b)` (or pass a hex through) for a native background field. */
+	private static function norm_bg_color( $c ) {
+		$rgb = self::rgb_triplet( $c );
+		if ( $rgb === null ) { return trim( (string) $c ); }
+		return 'rgb(' . $rgb[0] . ', ' . $rgb[1] . ', ' . $rgb[2] . ')';
+	}
+
+	/**
+	 * Parse a CSS `linear-gradient(...)` → the section background.gradient `data` shape
+	 * ({ type:'linear', angle, stops:[{color,position}] }), or null when it isn't a parseable
+	 * linear gradient with >= 2 colour stops. Best-effort: radial / conic / var()-driven gradients
+	 * are left to the style.css path.
+	 */
+	private static function parse_linear_gradient( $css ) {
+		$css = trim( (string) $css );
+		if ( ! preg_match( '/linear-gradient\(\s*(.+)\)\s*$/is', $css, $m ) ) { return null; }
+		$inner = $m[1];
+		// Split top-level by commas (don't split inside rgb()/rgba() parens).
+		$parts = array(); $buf = ''; $depth = 0;
+		for ( $i = 0, $len = strlen( $inner ); $i < $len; $i++ ) {
+			$ch = $inner[ $i ];
+			if ( $ch === '(' ) { $depth++; }
+			elseif ( $ch === ')' ) { $depth--; }
+			if ( $ch === ',' && $depth === 0 ) { $parts[] = trim( $buf ); $buf = ''; continue; }
+			$buf .= $ch;
+		}
+		if ( $buf !== '' ) { $parts[] = trim( $buf ); }
+		$angle = 90;
+		if ( isset( $parts[0] ) && preg_match( '/^(-?[0-9.]+)deg$/', $parts[0], $am ) ) {
+			$angle = (float) $am[1]; array_shift( $parts );
+		} elseif ( isset( $parts[0] ) && stripos( $parts[0], 'to ' ) === 0 ) {
+			$dir = strtolower( trim( substr( $parts[0], 3 ) ) );
+			$map = array( 'top' => 0, 'right' => 90, 'bottom' => 180, 'left' => 270, 'top right' => 45, 'bottom right' => 135, 'bottom left' => 225, 'top left' => 315 );
+			$angle = isset( $map[ $dir ] ) ? $map[ $dir ] : 90; array_shift( $parts );
+		}
+		$stops = array(); $count = count( $parts );
+		foreach ( $parts as $idx => $part ) {
+			if ( ! preg_match( '/^(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\))\s*([0-9.]+)?%?/', $part, $pm ) ) { continue; }
+			$color = $pm[1];
+			$pos   = ( isset( $pm[2] ) && $pm[2] !== '' ) ? (float) $pm[2] : ( $count > 1 ? round( $idx * 100 / ( $count - 1 ) ) : 0 );
+			$stops[] = array( 'color' => $color, 'position' => $pos );
+		}
+		return ( count( $stops ) >= 2 ) ? array( 'type' => 'linear', 'angle' => $angle, 'stops' => $stops ) : null;
 	}
 
 	/** Does this class string read as a BOX container? (border / shadow / background / rounded.) */
@@ -95,6 +407,51 @@ class FW_Site_Converter_Mapper {
 			if ( isset( $raw[ $p ] ) && '' !== $raw[ $p ] ) { $out[ $p ] = $raw[ $p ]; }
 		}
 		return $out;
+	}
+
+	/**
+	 * From a section direct-child "layer" (class / inline style / computed style), return its SOLID,
+	 * opaque background-COLOR if it qualifies as a full-bleed band fill to hoist onto the section — else ''.
+	 * Discrimination (so decorative overlays are NOT hoisted):
+	 *   - the layer must be FULL-BLEED (Tailwind `inset-0`, or `w-full`+`h-full`, or a computed `position:absolute`
+	 *     with inset:0px) — a tiny child is never the band;
+	 *   - SKIP low-opacity decorative overlays (`opacity-10`..`opacity-40`, or computed `opacity` < 0.5);
+	 *   - the background must be an OPAQUE / near-opaque solid colour (alpha >= 0.85) — a gradient-only /
+	 *     `background-image`-only overlay (the dot pattern) has no `background-color` and is skipped.
+	 *
+	 * @param array $layer { cls:string, style:string, cs:string }
+	 * @return string a `background-color` value to hoist, or ''
+	 */
+	private static function layer_band_bg( $layer ) {
+		$cls   = ' ' . strtolower( (string) ( $layer['cls'] ?? '' ) ) . ' ';
+		$cs    = (string) ( $layer['cs'] ?? '' );
+		$style = (string) ( $layer['style'] ?? '' );
+		$decl  = self::cs_decls( $cs, array( 'background-color', 'position', 'opacity', 'inset' ) );
+		// Full-bleed test: a class flag (inset-0 / w-full h-full) OR a computed absolute inset:0.
+		$full_bleed = ( strpos( $cls, ' inset-0 ' ) !== false )
+			|| ( strpos( $cls, ' w-full ' ) !== false && strpos( $cls, ' h-full ' ) !== false )
+			|| ( strpos( $cls, ' absolute ' ) !== false && strpos( $cls, ' inset-0' ) !== false );
+		if ( ! $full_bleed ) {
+			$pos   = isset( $decl['position'] ) ? $decl['position'] : '';
+			$inset = isset( $decl['inset'] ) ? $decl['inset'] : '';
+			if ( ( 'absolute' === $pos || 'fixed' === $pos ) && preg_match( '/^0px(\s+0px){0,3}$/', trim( $inset ) ) ) { $full_bleed = true; }
+		}
+		if ( ! $full_bleed ) { return ''; }
+		// Decorative low-opacity overlay → skip. Tailwind opacity-10..40, or a computed opacity < 0.5.
+		if ( preg_match( '/\sopacity-(0|5|10|15|20|25|30|35|40|45)\s/', $cls ) ) { return ''; }
+		if ( isset( $decl['opacity'] ) && is_numeric( trim( $decl['opacity'] ) ) && (float) $decl['opacity'] < 0.5 ) { return ''; }
+		// The solid fill: prefer the computed background-color, else an inline `background-color`/`background`.
+		$bc = isset( $decl['background-color'] ) ? trim( $decl['background-color'] ) : '';
+		if ( '' === $bc && preg_match( '/background(?:-color)?\s*:\s*([^;]+)/i', $style, $mm ) ) { $bc = trim( $mm[1] ); }
+		if ( '' === $bc || 'transparent' === $bc ) { return ''; }
+		// Must be an OPAQUE solid colour. An rgba()/hsla() with alpha < 0.85 (or a *-gradient) is not a band fill.
+		if ( stripos( $bc, 'gradient' ) !== false ) { return ''; }
+		if ( preg_match( '/rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)/i', $bc, $am ) ) {
+			if ( (float) $am[1] < 0.85 ) { return ''; }
+		} elseif ( preg_match( '/hsla?\([^)]*,\s*([\d.]+)\s*\)/i', $bc, $am ) && substr_count( $bc, ',' ) >= 3 ) {
+			if ( (float) $am[1] < 0.85 ) { return ''; }
+		}
+		return $bc;
 	}
 
 	/**
@@ -336,6 +693,7 @@ class FW_Site_Converter_Mapper {
 		$txt = trim( isset( $b['text'] ) ? (string) $b['text'] : '' );
 
 		if ( $t === 'button' ) { return 'button'; }
+		if ( $t === 'avatar' ) { return 'avatar'; }
 		if ( $t === 'video' ) { return 'video'; }
 		if ( $t === 'row' ) { return 'columns'; }
 		if ( $t === 'html' ) { return 'code'; }
@@ -396,9 +754,31 @@ class FW_Site_Converter_Mapper {
 		return $mapping;
 	}
 
-	/** A stable, unique CSS ID for a section (from its first meaningful source class, else N). */
+	/**
+	 * Sanitize a raw id/anchor into a valid slug (lowercase, [a-z0-9-], trimmed).
+	 * Mirrors FW_Site_Converter_Stitch::slug_from_id() so the two id paths agree.
+	 */
+	private static function slug_from_id( $raw ) {
+		if ( class_exists( 'FW_Site_Converter_Stitch' ) && method_exists( 'FW_Site_Converter_Stitch', 'slug_from_id' ) ) {
+			return FW_Site_Converter_Stitch::slug_from_id( $raw );
+		}
+		$s = strtolower( trim( (string) $raw ) );
+		$s = preg_replace( '/[^a-z0-9-]+/', '-', $s );
+		$s = preg_replace( '/-+/', '-', $s );
+		return trim( $s, '-' );
+	}
+
+	/** A stable, unique CSS ID for a section: source id attribute first, then first meaningful source class, else N. */
 	private static function auto_id( array $sec, $idx, array $used ) {
 		$base = '';
+		// 1) Prefer a source id carried on the section record (what in-page anchors / scroll-spy target).
+		foreach ( array( 'sectionId', 'id' ) as $k ) {
+			if ( ! empty( $sec[ $k ] ) ) {
+				$sid = self::slug_from_id( $sec[ $k ] );
+				if ( $sid !== '' ) { $base = $sid; break; }
+			}
+		}
+		if ( $base === '' )
 		foreach ( preg_split( '/\s+/', (string) ( $sec['sectionClass'] ?? '' ) ) as $c ) {
 			// Prefer a descriptive class (about/process/cta) over generic structural ones.
 			if ( $c !== '' && ! preg_match( '/^(sc-mirror|section|wrapper|block|area|inner|content|main|elementor|d-|align-|justify-|text-|p[xytrbl]?-|m[xytrbl]?-|g-|container|row|col|w-|h-|position-|overflow-|bg-|order-)/', $c ) ) {
@@ -436,6 +816,33 @@ class FW_Site_Converter_Mapper {
 			'yes'    => array( 'effect' => 'animate__fadeInUp', 'speed_preset' => '', 'advanced_tweaks_heading' => '', 'delay' => 0, 'custom_duration' => 0, 'repeat_count' => 1, 'loop_forever' => 'no', 'replay_on_scroll' => 'no', 'easing' => '' ),
 		);
 	}
+	/**
+	 * The Animations-tab att for a node given a detected source animation intent (an animate.css effect
+	 * string from Stitch::anim_intent, e.g. `animate__fadeInUp`). Empty intent → the disabled default
+	 * (no false motion). A real intent → the same shape with `enable:'yes'` + the mapped effect.
+	 */
+	private static function anim_att( $effect ) {
+		$a = self::def_animation();
+		$effect = (string) $effect;
+		if ( '' === $effect ) { return $a; }
+		$a['enable']         = 'yes';
+		$a['yes']['effect']  = $effect;
+		return $a;
+	}
+
+	/**
+	 * Overlay a node's Animations att from a captured block's `anim` intent (no-op when absent). Shape-aware:
+	 * only touches the `{ enable, yes:{effect} }` animation shape (the standard elements — text/heading/button/
+	 * image/counter/testimonials/…), whose effect vocabulary is the animate.css set def_animation() already
+	 * uses. The interactive widgets (tabs/steps/…) use a different multi-picker `{effect}` whose valid slugs
+	 * come from the animation-engine registry, so they're left at their safe default (no invalid value written).
+	 */
+	private static function apply_block_anim( array &$node, array $b ) {
+		if ( empty( $b['anim'] ) || ! isset( $node['atts']['animation'] ) || ! is_array( $node['atts']['animation'] ) ) { return; }
+		if ( ! array_key_exists( 'enable', $node['atts']['animation'] ) ) { return; } // multi-picker shape → leave default
+		$node['atts']['animation'] = self::anim_att( (string) $b['anim'] );
+	}
+
 	/** Default spacing att (margin/padding + responsive), shared by columns / buttons. */
 	private static function def_spacing() {
 		$box = array( 'all' => '', 'top' => '', 'right' => '', 'bottom' => '', 'left' => '' );
@@ -611,16 +1018,32 @@ class FW_Site_Converter_Mapper {
 		if ( $d < 1 || $d > 12 ) { return null; }
 		return array( 'width' => self::frac12( $d ) );
 	}
-	private static function n_text( $html, $max_width = '' ) {
+	private static function n_text( $html, $max_width = '', $align = '' ) {
+		$html      = (string) $html;
+		$centered  = in_array( $align, array( 'center', 'right' ), true );
+		$mw        = self::max_width_att( (string) $max_width );
+		$use_att   = ( $mw !== null );
+		// A centered band (source `text-center`) carries onto its sub-text paragraph. Wrap the content so the
+		// text lines centre too (the column's flex-centering only centres the block, not its inline text). When
+		// the paragraph ALSO has a source max-width (`max-w-2xl mx-auto`), bake that width + `margin:auto` into
+		// the SAME wrapper so the constrained box is CENTERED (mx-auto), not pinned to the column's left edge —
+		// then drop the max_width att (it would left-pin the box). Otherwise keep the native att.
+		if ( $centered ) {
+			$style = 'text-align:' . $align . ';';
+			if ( $mw !== null ) {
+				$m = $mw['custom']['custom_width'] ?? array();
+				if ( ! empty( $m['value'] ) ) { $style .= 'max-width:' . $m['value'] . ( $m['unit'] ?? 'px' ) . ';margin-left:auto;margin-right:auto;'; $use_att = false; }
+			}
+			$html = '<div style="' . $style . '">' . $html . '</div>';
+		}
 		$atts = array(
-			'text' => self::map_accent_classes( (string) $html ), 'animation' => self::def_animation(),
+			'text' => self::map_accent_classes( $html ), 'animation' => self::def_animation(),
 			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		);
 		// Source max-width on the text (from a class, an inline style, OR a stylesheet rule — detected in
 		// the engine) → the Text Block's "Custom Max Width" option, so a constrained paragraph stays
 		// constrained + centered (matches the source measure).
-		$mw = self::max_width_att( (string) $max_width );
-		if ( $mw !== null ) { $atts['max_width'] = $mw; }
+		if ( $use_att ) { $atts['max_width'] = $mw; }
 		return array( 'type' => 'simple', 'shortcode' => 'text_block', '_items' => array(), 'atts' => $atts );
 	}
 
@@ -665,10 +1088,11 @@ class FW_Site_Converter_Mapper {
 	 * images — and NOT a code_block). Pulls the src/alt out of the img markup; the importer sideloads
 	 * the URL. Falls back to a code_block only when there's no resolvable src.
 	 */
-	private static function n_media_image( $html ) {
-		$html = (string) $html;
-		$src  = '';
-		$alt  = '';
+	private static function n_media_image( $html, $skin_css = '' ) {
+		$html     = (string) $html;
+		$skin_css = (string) $skin_css;
+		$src      = '';
+		$alt      = '';
 		if ( preg_match( '/<img\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) { $src = trim( $m[1] ); }
 		if ( preg_match( '/<img\b[^>]*\balt\s*=\s*["\']([^"\']*)["\']/i', $html, $m ) ) { $alt = trim( $m[1] ); }
 		if ( $src === '' ) { return self::n_code( $html ); }
@@ -678,16 +1102,22 @@ class FW_Site_Converter_Mapper {
 		// If the source <img> (or a wrapping element) carries such a skin — as a class OR an inline
 		// style — preserve the source VERBATIM as a code block so every class and its CSS survives,
 		// instead of emitting a skin-less native image. The src is localized first so it still loads.
-		$img_cls = '';
-		if ( preg_match( '/<img\b[^>]*\bclass\s*=\s*["\']([^"\']*)["\']/i', $html, $cm ) ) { $img_cls = ' ' . $cm[1] . ' '; }
-		$skin_class = (bool) preg_match( '/\s(border(?![-\s]?(box|collapse))|shadow|drop-shadow|ring\b|ring-|rounded-(?!none)|rounded\b|outline\b|outline-|blob)/i', $img_cls );
-		$skin_style = (bool) preg_match( '/<img\b[^>]*\bstyle\s*=\s*["\'][^"\']*(border|box-shadow|outline|border-radius|clip-path)/i', $html );
-		$wrapped    = (bool) preg_match( '/<(div|figure|span|a|picture)\b[^>]*>\s*<img/i', $html );
-		if ( $skin_class || $skin_style || $wrapped ) {
-			$iv    = self::upload_val( $src );
-			$local = ( '' !== $iv['url'] ) ? $iv['url'] : $src;
-			if ( $local !== $src ) { $html = str_replace( $src, $local, $html ); }
-			return self::n_code( $html );
+		// EXCEPTION: when the caller has already translated the skin into scoped `$skin_css` (the
+		// image-composite decomposition passes a CLEAN <img> + a `selector img{…}` rule), emit the
+		// NATIVE media_image and carry the skin via Custom CSS — so an organic/bordered/shadowed hero
+		// photo becomes an editable element instead of a verbatim code_block.
+		if ( '' === $skin_css ) {
+			$img_cls = '';
+			if ( preg_match( '/<img\b[^>]*\bclass\s*=\s*["\']([^"\']*)["\']/i', $html, $cm ) ) { $img_cls = ' ' . $cm[1] . ' '; }
+			$skin_class = (bool) preg_match( '/\s(border(?![-\s]?(box|collapse))|shadow|drop-shadow|ring\b|ring-|rounded-(?!none)|rounded\b|outline\b|outline-|blob)/i', $img_cls );
+			$skin_style = (bool) preg_match( '/<img\b[^>]*\bstyle\s*=\s*["\'][^"\']*(border|box-shadow|outline|border-radius|clip-path)/i', $html );
+			$wrapped    = (bool) preg_match( '/<(div|figure|span|a|picture)\b[^>]*>\s*<img/i', $html );
+			if ( $skin_class || $skin_style || $wrapped ) {
+				$iv    = self::upload_val( $src );
+				$local = ( '' !== $iv['url'] ) ? $iv['url'] : $src;
+				if ( $local !== $src ) { $html = str_replace( $src, $local, $html ); }
+				return self::n_code( $html );
+			}
 		}
 
 		$iv = self::upload_val( $src ); // sideloaded copy if the filename matches an "Attach media" upload
@@ -701,7 +1131,7 @@ class FW_Site_Converter_Mapper {
 			'bg_color'      => self::empty_color(),
 			'spacing'       => self::def_spacing(),
 			'animation'     => self::def_animation(),
-			'unique_id'     => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
+			'unique_id'     => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => $skin_css, 'responsive_hide' => array(), 'custom_attrs' => array(),
 		) );
 	}
 
@@ -819,6 +1249,14 @@ class FW_Site_Converter_Mapper {
 			'unique_id'     => self::uid(),
 			'css_id'        => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		);
+		// Leading icon: a source inline <svg> BEFORE the text (e.g. a lucide heart) → the native leading_icon,
+		// carried verbatim (icon-v2 renders inline SVG via currentColor) — the SAME mechanism the heading
+		// overline_icon uses. Only set when a real leading svg was captured; a plain pill stays icon-less.
+		$lead_svg = trim( (string) ( $b['leadingSvg'] ?? '' ) );
+		if ( '' !== $lead_svg ) {
+			$atts['leading']      = 'icon';
+			$atts['leading_icon'] = array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => $lead_svg );
+		}
 		// Reproduce the source pill's colors so it's VISIBLE — an empty pill renders as a near-invisible soft
 		// tint on a light hero. Resolve the container's fill/border, the message text color and the tag fill
 		// from their Tailwind classes (config-aware), and pick the bordered `outline` style when the source
@@ -832,6 +1270,16 @@ class FW_Site_Converter_Mapper {
 			};
 			$border = $col( isset( $b['pillCls'] ) ? $b['pillCls'] : '', 'border-color' );
 			$fill   = $col( isset( $b['pillCls'] ) ? $b['pillCls'] : '', 'background-color' );
+			// PREFER the container's RESOLVED computed style (data-sc-cs) — a semantic `bg-primary/10` tint
+			// (rgba(33,196,93,.1)) is a CSS-var token the Tailwind compiler can't resolve to a colour, but the
+			// captured computed style carries the real rgba fill. Only take a NON-default fill (a real tint,
+			// not transparent / near-transparent) so a plain pill with no fill stays unstyled.
+			$pill_cs = (string) ( $b['pillCs'] ?? '' );
+			if ( '' !== $pill_cs ) {
+				$cd = self::cs_decls( $pill_cs, array( 'background-color', 'border', 'border-top-color' ) );
+				$cbg = self::pill_fill_color( isset( $cd['background-color'] ) ? $cd['background-color'] : '' );
+				if ( '' !== $cbg ) { $fill = $cbg; }
+			}
 			if ( '' !== $border )   { $atts['style'] = 'outline'; $atts['pill_color'] = array( 'predefined' => '', 'custom' => $border ); }
 			elseif ( '' !== $fill ) { $atts['style'] = 'subtle';  $atts['pill_color'] = array( 'predefined' => '', 'custom' => $fill ); }
 			$txt = $col( isset( $b['msgCls'] ) ? $b['msgCls'] : '', 'color' );
@@ -901,6 +1349,45 @@ class FW_Site_Converter_Mapper {
 			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		) );
 	}
+	/**
+	 * A native `avatar` GROUP node from a captured reviewer stack (parity with the JS to-pages
+	 * avatarGroupNode + the demo's stored shape). Starts from the shortcode's real defaults (full option
+	 * tree the builder editor expects), then overlays the group mode: the detected images as `people`, a
+	 * `+N` extra counter, and the bordered / circle / 40px / 35%-overlap look. Label is off (the source's
+	 * stars + "4.9/5 …" text rides alongside as its own code block).
+	 *
+	 * @param array $b { avatars: string[], extra_count?: string }
+	 * @return array
+	 */
+	private static function n_avatar( array $b ) {
+		$urls = ( isset( $b['avatars'] ) && is_array( $b['avatars'] ) ) ? array_values( array_filter( array_map( 'strval', $b['avatars'] ) ) ) : array();
+		$urls = array_slice( $urls, 0, 8 );
+		$people = array();
+		foreach ( $urls as $i => $u ) {
+			$people[] = array( 'image' => array( 'attachment_id' => '', 'url' => (string) $u ), 'name' => 'Happy customer ' . ( $i + 1 ), 'initials' => '', 'link' => '', 'status' => '' );
+		}
+		$extra = trim( (string) ( $b['extra_count'] ?? '' ) );
+		$atts  = self::shortcode_default_atts( 'avatar' );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		$atts['mode_settings'] = array(
+			'mode'  => 'group',
+			'group' => array(
+				'people'      => $people,
+				'max_visible' => (string) max( 4, count( $people ) ),
+				'extra_count' => $extra,
+				'overlap'     => 35,
+				'stack_order' => 'first-on-top',
+			),
+		);
+		$atts['design']     = 'bordered';
+		$atts['shape']      = 'circle';
+		$atts['size']       = 40;
+		$atts['show_label'] = 'no';
+		$atts['unique_id']  = self::uid();
+		if ( ! isset( $atts['css_id'] ) ) { $atts['css_id'] = ''; }
+		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
+		return array( 'type' => 'simple', 'shortcode' => 'avatar', '_items' => array(), 'atts' => $atts );
+	}
 	/** An empty compact-color value `{ predefined:'', custom:'' }`. */
 	private static function empty_color() {
 		return array( 'predefined' => '', 'custom' => '' );
@@ -963,6 +1450,310 @@ class FW_Site_Converter_Mapper {
 			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		) );
 	}
+
+	/**
+	 * A native `table` shortcode node from a captured `<table>` (recognizer block `{ rows:[[{html,header}…]…] }`).
+	 * Builds the option-type's canonical `{ header_options, cols, rows, content }` value: one `cols` entry per
+	 * column (width = max cells in any row), leading all-`<th>` rows counted as `header_rows` (→ real `<thead>`),
+	 * each cell → `{ textarea, colspan:1, rowspan:1, merged:false }`. Tabular render mode. See table.md.
+	 */
+	private static function n_table( array $b ) {
+		$rows = ( isset( $b['rows'] ) && is_array( $b['rows'] ) ) ? array_values( $b['rows'] ) : array();
+		$ncol = 0;
+		foreach ( $rows as $r ) { if ( is_array( $r ) ) { $ncol = max( $ncol, count( $r ) ); } }
+		if ( $ncol < 1 || ! $rows ) { return self::n_code( '' ); }
+
+		$cols = array();
+		for ( $c = 0; $c < $ncol; $c++ ) { $cols[] = array( 'name' => 'default-col', 'align' => '', 'width' => '' ); }
+
+		// Count leading rows whose every cell is a header → the <thead> block.
+		$header_rows = 0; $seen_body = false;
+		foreach ( $rows as $r ) {
+			$all_th = is_array( $r ) && count( $r ) > 0;
+			foreach ( (array) $r as $cell ) { if ( empty( $cell['header'] ) ) { $all_th = false; break; } }
+			if ( $all_th && ! $seen_body ) { $header_rows++; } else { $seen_body = true; }
+		}
+
+		$content = array(); $rowmeta = array();
+		foreach ( $rows as $ri => $r ) {
+			$r    = is_array( $r ) ? array_values( $r ) : array();
+			$line = array();
+			for ( $c = 0; $c < $ncol; $c++ ) {
+				$cell = isset( $r[ $c ] ) && is_array( $r[ $c ] ) ? $r[ $c ] : array();
+				$line[ $c ] = array( 'textarea' => (string) ( $cell['html'] ?? '' ), 'colspan' => 1, 'rowspan' => 1, 'merged' => false );
+			}
+			$content[] = $line;
+			$rowmeta[] = array( 'name' => ( $ri < $header_rows ) ? 'heading-row' : 'default-row' );
+		}
+
+		$atts = self::shortcode_default_atts( 'table' );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		$atts['table'] = array(
+			'header_options' => array( 'table_purpose' => 'tabular', 'header_rows' => $header_rows, 'footer_rows' => 0 ),
+			'cols'           => $cols,
+			'rows'           => $rowmeta,
+			'content'        => $content,
+		);
+		if ( isset( $b['caption'] ) && '' !== trim( (string) $b['caption'] ) ) { $atts['caption'] = trim( (string) $b['caption'] ); }
+		// Table Preset: pick the best-matching reusable skin from Theme Settings → Components → Tables using
+		// the captured styling (filled header → a bordered/tinted-header preset; zebra rows → a striped preset;
+		// else the first/default). The native table then renders with a real skin instead of a bare fallback.
+		$slug = self::table_preset_for( isset( $b['style'] ) && is_array( $b['style'] ) ? $b['style'] : array() );
+		if ( '' !== $slug ) { $atts['table_preset'] = $slug; }
+		$atts['unique_id'] = self::uid();
+		if ( ! isset( $atts['css_id'] ) ) { $atts['css_id'] = ''; }
+		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
+		return array( 'type' => 'simple', 'shortcode' => 'table', '_items' => array(), 'atts' => $atts );
+	}
+
+	/** The slug of the Table Preset whose name best matches captured table styling, else the default. */
+	private static function table_preset_for( array $style ) {
+		if ( ! function_exists( 'unysonplus_get_table_presets' ) ) { return ''; }
+		$presets = unysonplus_get_table_presets();
+		$map     = function_exists( 'unysonplus_table_preset_slug_map' ) ? unysonplus_table_preset_slug_map() : array();
+		if ( empty( $presets ) || ! is_array( $presets ) || empty( $map ) ) { return self::default_table_slug(); }
+
+		// Rank preferences by evidence: header fill → "border"/"grid"/"filled"; striped rows → "strip"/"zebra".
+		$prefs = array();
+		$hdr_cs = (string) ( $style['header_cs'] ?? '' );
+		$has_header_fill = false;
+		if ( '' !== $hdr_cs ) {
+			$d  = self::cs_decls( $hdr_cs, array( 'background-color' ) );
+			$bg = isset( $d['background-color'] ) ? trim( $d['background-color'] ) : '';
+			$has_header_fill = ( '' !== $bg && 'transparent' !== $bg && ! preg_match( '/,\s*0\s*\)\s*$/', $bg ) );
+		}
+		if ( ! empty( $style['striped'] ) ) { $prefs[] = '/\b(strip|zebra|row)\b/'; }
+		if ( $has_header_fill )              { $prefs[] = '/\b(border|grid|filled|dark|modern)\b/'; }
+
+		foreach ( $prefs as $rx ) {
+			foreach ( $presets as $tp ) {
+				if ( ! is_array( $tp ) || empty( $tp['id'] ) || empty( $tp['preset_name'] ) ) { continue; }
+				$id = preg_replace( '/[^a-zA-Z0-9_-]/', '', (string) $tp['id'] );
+				if ( isset( $map[ $id ] ) && preg_match( $rx, strtolower( (string) $tp['preset_name'] ) ) ) { return (string) $map[ $id ]; }
+			}
+		}
+		return self::default_table_slug();
+	}
+
+	/**
+	 * A native `accordion` shortcode node from a captured toggle group (recognizer block `{ items:[{title,content}…] }`).
+	 * Each item → one `tabs` row `{ tab_title, tab_content, is_open:'no' }`. Starts from the shortcode defaults so
+	 * the editor gets the full option tree. See accordion.md.
+	 */
+	private static function n_accordion( array $b ) {
+		$src   = ( isset( $b['items'] ) && is_array( $b['items'] ) ) ? $b['items'] : array();
+		$tabs  = array();
+		foreach ( $src as $it ) {
+			$title = trim( (string) ( $it['title'] ?? '' ) );
+			if ( '' === $title ) { continue; }
+			$tabs[] = array( 'tab_title' => $title, 'tab_content' => (string) ( $it['content'] ?? '' ), 'is_open' => 'no' );
+		}
+		if ( ! $tabs ) { return self::n_code( '' ); }
+		$atts = self::shortcode_default_atts( 'accordion' );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		$atts['tabs']      = $tabs;
+		$atts['unique_id'] = self::uid();
+		if ( ! isset( $atts['css_id'] ) ) { $atts['css_id'] = ''; }
+		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
+		return array( 'type' => 'simple', 'shortcode' => 'accordion', '_items' => array(), 'atts' => $atts );
+	}
+
+	/**
+	 * A native `feature_list` shortcode node from a captured `<ul>`/`<ol>` (recognizer block `{ ordered, items:[{text}…] }`).
+	 * Each `<li>` → one item (icon-v2 `none` fallback marker); `<ol>` → `design:'numbered'`, `<ul>` → `design:'check'`.
+	 * See feature-list.md.
+	 */
+	private static function n_feature_list( array $b ) {
+		$src = ( isset( $b['items'] ) && is_array( $b['items'] ) ) ? $b['items'] : array();
+		$icon_none = array( 'type' => 'none', 'icon-class' => '', 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false );
+		$items = array();
+		foreach ( $src as $r ) {
+			$text = trim( (string) ( $r['text'] ?? '' ) );
+			if ( '' === $text ) { continue; }
+			$items[] = array(
+				'text' => $text, 'subtext' => '', 'value_text' => '',
+				'icon' => $icon_none, 'marker_color' => array( 'predefined' => '', 'custom' => '' ),
+				'state' => 'on', 'link_url' => '', 'link_target' => '_self',
+			);
+		}
+		if ( count( $items ) < 1 ) { return self::n_code( '' ); }
+		$atts = self::shortcode_default_atts( 'feature_list' );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		$atts['items']     = $items;
+		$atts['design']    = ! empty( $b['ordered'] ) ? 'numbered' : 'check';
+		$atts['unique_id'] = self::uid();
+		if ( ! isset( $atts['css_id'] ) ) { $atts['css_id'] = ''; }
+		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
+		return array( 'type' => 'simple', 'shortcode' => 'feature_list', '_items' => array(), 'atts' => $atts );
+	}
+
+	/** The icon-v2 "no icon" value shared by the widget item builders. */
+	private static function icon_none() {
+		return array( 'type' => 'none', 'icon-class' => '', 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false );
+	}
+
+	/** Finalize a widget node: real shortcode defaults + a fresh unique_id + guaranteed css_id/css_class. */
+	private static function finalize_widget( $tag, array $overlay ) {
+		$atts = self::shortcode_default_atts( $tag );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		$atts = array_merge( $atts, $overlay );
+		$atts['unique_id'] = self::uid();
+		if ( ! isset( $atts['css_id'] ) ) { $atts['css_id'] = ''; }
+		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
+		return array( 'type' => 'simple', 'shortcode' => $tag, '_items' => array(), 'atts' => $atts );
+	}
+
+	/**
+	 * A native `tabs` shortcode node from a captured tab widget (recognizer block `{ items:[{title,content,active}] }`).
+	 * Each item → one `tabs` entry `{ tab_title, tab_content, is_active }` (Content layout). See tabs.md.
+	 */
+	private static function n_tabs( array $b ) {
+		$src  = ( isset( $b['items'] ) && is_array( $b['items'] ) ) ? $b['items'] : array();
+		$tabs = array();
+		$have_active = false;
+		foreach ( $src as $it ) {
+			$title = trim( (string) ( $it['title'] ?? '' ) );
+			if ( '' === $title ) { continue; }
+			$active = ( ! $have_active && 'yes' === ( $it['active'] ?? 'no' ) ) ? 'yes' : 'no';
+			if ( 'yes' === $active ) { $have_active = true; }
+			$tabs[] = array(
+				'tab_title'   => $title,
+				'tab_content' => (string) ( $it['content'] ?? '' ),
+				'tab_image'   => '',
+				'badge'       => '',
+				'icon'        => self::icon_none(),
+				'disabled'    => 'no',
+				'is_active'   => $active,
+			);
+		}
+		if ( count( $tabs ) < 2 ) { return self::n_code( '' ); }
+		if ( ! $have_active ) { $tabs[0]['is_active'] = 'yes'; }
+		return self::finalize_widget( 'tabs', array( 'tabs' => $tabs ) );
+	}
+
+	/**
+	 * A native `steps` shortcode node from a captured process flow (recognizer block `{ items:[{title,content,number}] }`).
+	 * Each item → one step `{ title, content, icon, number }`. See steps.md.
+	 */
+	private static function n_steps( array $b ) {
+		$src   = ( isset( $b['items'] ) && is_array( $b['items'] ) ) ? $b['items'] : array();
+		$steps = array();
+		foreach ( $src as $it ) {
+			$title = trim( (string) ( $it['title'] ?? '' ) );
+			if ( '' === $title ) { continue; }
+			$steps[] = array(
+				'title'   => $title,
+				'content' => (string) ( $it['content'] ?? '' ),
+				'icon'    => self::icon_none(),
+				'number'  => (string) ( $it['number'] ?? '' ),
+			);
+		}
+		if ( count( $steps ) < 2 ) { return self::n_code( '' ); }
+		return self::finalize_widget( 'steps', array( 'steps' => $steps ) );
+	}
+
+	/**
+	 * A native `timeline` shortcode node from a captured dated sequence (recognizer block `{ items:[{date,title,text}] }`).
+	 * Each item → one milestone `{ date, title, text, icon, image, link_* }`. See timeline.md.
+	 */
+	private static function n_timeline( array $b ) {
+		$src   = ( isset( $b['items'] ) && is_array( $b['items'] ) ) ? $b['items'] : array();
+		$items = array();
+		foreach ( $src as $it ) {
+			$title = trim( (string) ( $it['title'] ?? '' ) );
+			$date  = trim( (string) ( $it['date'] ?? '' ) );
+			if ( '' === $title && '' === $date ) { continue; }
+			$items[] = array(
+				'date'        => $date,
+				'title'       => '' !== $title ? $title : $date,
+				'text'        => (string) ( $it['text'] ?? '' ),
+				'icon'        => self::icon_none(),
+				'image'       => '',
+				'link_label'  => '',
+				'link_url'    => '',
+				'link_target' => '_self',
+			);
+		}
+		if ( count( $items ) < 2 ) { return self::n_code( '' ); }
+		return self::finalize_widget( 'timeline', array( 'items' => $items ) );
+	}
+
+	/**
+	 * A native `progress` shortcode node from captured skill/progress bars (recognizer block `{ bars:[{label,percent}] }`).
+	 * Each item → one bar `{ label, percent, icon, color }`; bar layout. See progress.md.
+	 */
+	private static function n_progress( array $b ) {
+		$src  = ( isset( $b['bars'] ) && is_array( $b['bars'] ) ) ? $b['bars'] : array();
+		$bars = array();
+		foreach ( $src as $it ) {
+			$pct = (int) ( $it['percent'] ?? 0 );
+			$bars[] = array(
+				'label'   => (string) ( $it['label'] ?? '' ),
+				'percent' => max( 0, min( 100, $pct ) ),
+				'icon'    => self::icon_none(),
+				'color'   => array( 'predefined' => '', 'custom' => '' ),
+			);
+		}
+		if ( count( $bars ) < 2 ) { return self::n_code( '' ); }
+		return self::finalize_widget( 'progress', array( 'layout' => array( 'type' => 'bar' ), 'bars' => $bars ) );
+	}
+
+	/**
+	 * A native `pricing_table` node from a captured pricing grid (recognizer block `{ plans:[…] }`). Each plan →
+	 * a plan object with the multi-inline `price`/`period`/`original_price` `{monthly,yearly}` shape. See pricing-table.md.
+	 */
+	private static function n_pricing( array $b ) {
+		$src   = ( isset( $b['plans'] ) && is_array( $b['plans'] ) ) ? $b['plans'] : array();
+		$plans = array();
+		foreach ( $src as $p ) {
+			$title = trim( (string) ( $p['title'] ?? '' ) );
+			$price = trim( (string) ( $p['price'] ?? '' ) );
+			if ( '' === $title && '' === $price ) { continue; }
+			$period = trim( (string) ( $p['period'] ?? '' ) );
+			$plans[] = array(
+				'plan_title'     => '' !== $title ? $title : 'Plan',
+				'icon'           => self::icon_none(),
+				'subtitle'       => '',
+				'currency'       => (string) ( $p['currency'] ?? '$' ),
+				'price'          => array( 'monthly' => $price, 'yearly' => '' ),
+				'period'         => array( 'monthly' => '' !== $period ? $period : '/mo', 'yearly' => '/yr' ),
+				'original_price' => array( 'monthly' => '', 'yearly' => '' ),
+				'features'       => (string) ( $p['features'] ?? '' ),
+				'featured'       => ( 'yes' === ( $p['featured'] ?? 'no' ) ) ? 'yes' : 'no',
+				'ribbon'         => (string) ( $p['ribbon'] ?? '' ),
+				'button_label'   => (string) ( $p['btn_label'] ?? '' ),
+				'button_url'     => (string) ( $p['btn_url'] ?? '' ),
+				'button_target'  => '_self',
+			);
+		}
+		if ( count( $plans ) < 2 ) { return self::n_code( '' ); }
+		$cols = (string) max( 2, min( 5, count( $plans ) ) );
+		return self::finalize_widget( 'pricing_table', array( 'plans' => $plans, 'columns' => $cols ) );
+	}
+
+	/**
+	 * A native `lottie` shortcode node from a captured Lottie/Bodymovin embed (recognizer block `{ src }`).
+	 * URL source, viewport trigger. See lottie.md.
+	 */
+	private static function n_lottie( array $b ) {
+		$src = trim( (string) ( $b['src'] ?? '' ) );
+		if ( '' === $src ) { return self::n_code( '' ); }
+		return self::finalize_widget( 'lottie', array( 'source' => 'url', 'lottie_url' => $src, 'trigger' => 'viewport' ) );
+	}
+
+	/**
+	 * A native `svg_draw` shortcode node from a captured self-drawing SVG (recognizer block `{ code }`).
+	 * Pasted-code source, view trigger. Requires the animation-engine extension active at render. See svg-draw.md.
+	 */
+	private static function n_svg_draw( array $b ) {
+		$code = (string) ( $b['code'] ?? '' );
+		if ( '' === trim( $code ) ) { return self::n_code( '' ); }
+		return self::finalize_widget( 'svg_draw', array(
+			'svg'     => array( 'source' => 'code', 'preset' => array( 'preset' => 'signature' ), 'code' => array( 'code' => $code ), 'upload' => array( 'file' => '' ) ),
+			'trigger' => 'view',
+		) );
+	}
+
 	private static function n_button( $label, $link, $cls = '', $icon = '', $icon_pos = 'after', $cs = '', $group_cls = '', $group_cs = '' ) {
 		// Converted buttons use the 'Default' style (value '') = the bare `.btn` base. The child
 		// theme carries the source's primary-button rules (rewritten onto `.btn` in page_css,
@@ -974,6 +1765,10 @@ class FW_Site_Converter_Mapper {
 			'target'          => '_self',
 			'icon'            => array( 'type' => 'none', 'icon-class' => '', 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false ),
 			'icon_position'   => 'after',
+			// Color + size PRESET: attach the button_colors / button_sizes slug that matches this source
+			// button (semantic fill class → the built preset, or a computed-colour match) — the SAME
+			// linking the header CTA does, so body buttons pick up the theme's hover + consistency. The
+			// exact per-node custom_css below still reproduces the source's precise fill/padding (safety net).
 			'style'           => '',
 			'size'            => '',
 			'width'           => array( 'mode' => '', 'custom' => array( 'custom_width' => array( 'value' => '', 'unit' => 'px' ) ) ),
@@ -988,6 +1783,9 @@ class FW_Site_Converter_Mapper {
 			// the AI path emits doesn't exist on this path, so a single class loaded after the theme wins.
 			'css_id'          => '', 'css_class' => self::button_style_class( $cls, $cs ), 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		);
+		$preset = self::button_preset_for( (string) $cls, (string) $cs );
+		if ( '' !== $preset['style'] ) { $atts['style'] = $preset['style']; }
+		if ( '' !== $preset['size'] )  { $atts['size']  = $preset['size']; }
 		$icon = trim( (string) $icon );
 		if ( $icon !== '' ) {
 			$atts['icon']          = self::icon_value( $icon );
@@ -1146,6 +1944,7 @@ class FW_Site_Converter_Mapper {
 		if ( empty( $card['iconBadge'] ) && ! empty( $card['iconChipCls'] ) && self::$style_on && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
 			$chip = FW_Site_Converter_Tailwind::compile_class_set( (string) $card['iconChipCls'], self::$style_cfg );
 			$bg   = isset( $chip['base']['background-color'] ) ? (string) $chip['base']['background-color'] : '';
+			$bg   = trim( preg_replace( '/\s*\/\s*var\([^)]*\)/', '', $bg ) ); // drop the `/ var(--tw-bg-opacity,1)` alpha channel
 			if ( '' !== $bg && 'transparent' !== $bg && ! preg_match( '/rgba\([^)]*,\s*0?\.?0*\)$/', $bg ) ) {
 				$card['iconBadgeColor'] = $bg;
 				$rad = isset( $chip['base']['border-radius'] ) ? (float) $chip['base']['border-radius'] : 0;
@@ -1156,7 +1955,7 @@ class FW_Site_Converter_Mapper {
 			$atts['icon_badge'] = (string) $card['iconBadge'];
 		}
 		$ibc = isset( $card['iconBadgeColor'] ) ? trim( (string) $card['iconBadgeColor'] ) : '';
-		if ( $ibc !== '' && preg_match( '/^#[0-9a-f]{3,8}$/i', $ibc ) ) {
+		if ( $ibc !== '' && preg_match( '/^(#[0-9a-f]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\))$/i', $ibc ) ) {
 			$atts['icon_badge_color'] = array( 'predefined' => '', 'custom' => $ibc );
 		}
 
@@ -1434,6 +2233,57 @@ class FW_Site_Converter_Mapper {
 		return $items;
 	}
 
+	/**
+	 * Build a DECOMPOSED layout-row cell's blocks into stacked page-builder items — the SAME per-block
+	 * decomposition the single-column section path uses: overline/title/subtitle fold into ONE
+	 * special_heading, everything else routes through the block-builder registry (button / text / image /
+	 * code…), and consecutive buttons group into a side-by-side row. Lets a hero's LEFT column render as
+	 * special_heading + button×N instead of a single opaque code_block.
+	 *
+	 * @param array $blocks role-annotated blocks (from stitch collect_blocks on the cell)
+	 * @return array page-builder item nodes
+	 */
+	private static function build_cell_items( array $blocks ) {
+		$items = array();
+		$head  = null;
+		$flush_head = function () use ( &$head, &$items ) {
+			if ( $head !== null ) { $items[] = self::n_heading( $head ); $head = null; }
+		};
+		foreach ( $blocks as $b ) {
+			if ( ! is_array( $b ) ) { continue; }
+			if ( isset( $b['include'] ) && ! $b['include'] ) { continue; }
+			$role = isset( $b['role'] ) ? (string) $b['role'] : 'code';
+			if ( $role === 'skip' ) { continue; }
+
+			if ( in_array( $role, array( 'overline', 'title', 'subtitle' ), true ) ) {
+				$val   = $role === 'title' ? (string) ( $b['html'] ?? $b['text'] ?? '' ) : trim( (string) ( $b['text'] ?? '' ) );
+				$fresh = array( 'overline' => '', 'title' => '', 'subtitle' => '', 'overline_class' => '', 'title_class' => '', 'subtitle_class' => '', 'css_class' => '', 'level' => (int) ( $b['level'] ?? 2 ), 'align' => $b['align'] ?? '' );
+				if ( $head === null ) { $head = $fresh; }
+				if ( $head[ $role ] !== '' ) { $flush_head(); $head = $fresh; }
+				$head[ $role ]            = $val;
+				$head[ $role . '_class' ] = (string) ( $b['cls'] ?? '' );
+				if ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
+					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight' ) );
+					if ( isset( $cw['font-weight'] ) ) { $head[ $role . '_weight' ] = $cw['font-weight']; }
+				}
+				if ( $role === 'title' ) {
+					$head['level'] = (int) ( $b['level'] ?? 2 );
+					$head['align'] = $b['align'] ?? $head['align'];
+					if ( ! empty( $b['wrapCls'] ) ) { $head['css_class'] = (string) $b['wrapCls']; }
+				}
+				continue;
+			}
+			$flush_head();
+
+			$builders = self::builders();
+			$bld      = isset( $builders[ $role ] ) ? $builders[ $role ] : $builders['code'];
+			$item     = call_user_func( $bld['build'], $b );
+			if ( $item !== null ) { $items[] = $item; }
+		}
+		$flush_head();
+		return self::group_buttons( $items ); // consecutive buttons → one side-by-side flex-row group
+	}
+
 	/** Empty `spacing` composite value (margin + padding subtrees). */
 	private static function empty_spacing() {
 		return array(
@@ -1483,6 +2333,52 @@ class FW_Site_Converter_Mapper {
 		return $out;
 	}
 
+	/**
+	 * Resolve a heading PART's source font-weight → a numeric 100–900 (or '' when unknown). Prefers an
+	 * explicit computed weight (from the source element's data-sc-cs), else compiles the part's own utility
+	 * classes (e.g. Tailwind `font-extrabold` → 800) for a font-weight. Deterministic; only ever the real
+	 * detected weight, never a guess.
+	 */
+	private static function heading_part_weight( $explicit, $cls ) {
+		$norm = function ( $w ) {
+			$w = strtolower( trim( (string) $w ) );
+			if ( 'bold' === $w )   { return '700'; }
+			if ( 'normal' === $w ) { return '400'; }
+			return preg_match( '/^[1-9]00$/', $w ) ? $w : '';
+		};
+		$w = $norm( $explicit );
+		if ( '' !== $w ) { return $w; }
+		if ( '' !== trim( (string) $cls ) && self::$style_on && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
+			$cm = FW_Site_Converter_Tailwind::compile_class_set( (string) $cls, self::$style_cfg );
+			if ( is_array( $cm ) && isset( $cm['base']['font-weight'] ) ) { return $norm( $cm['base']['font-weight'] ); }
+		}
+		return '';
+	}
+
+	/**
+	 * Per-element Custom CSS that re-asserts each heading part's SOURCE font-weight on its own rendered
+	 * element (`.heading-title` / `.heading-overline` / `.heading-subtitle`). Scoped via `selector` (the
+	 * element's unique class) so `.uHASH .heading-title` (0,2,0) beats the theme's tag rule
+	 * `h1.heading-title { font-weight: var(--h1-font-weight …) }` (0,1,1) — otherwise a converted hero H1
+	 * with no heading-weight token in Theme Settings renders at the default (400/500) instead of its real
+	 * weight. Mirrors the JS to-pages path, which emits the same `selector .heading-title{font-weight:…}`.
+	 */
+	private static function heading_weight_css( $h ) {
+		$parts = array(
+			'title'    => '.heading-title',
+			'overline' => '.heading-overline',
+			'subtitle' => '.heading-subtitle',
+		);
+		$css = '';
+		foreach ( $parts as $part => $sel ) {
+			// Only for parts that actually render (have text).
+			if ( '' === trim( (string) ( $h[ $part ] ?? '' ) ) ) { continue; }
+			$w = self::heading_part_weight( $h[ $part . '_weight' ] ?? '', $h[ $part . '_class' ] ?? '' );
+			if ( '' !== $w ) { $css .= 'selector ' . $sel . '{font-weight:' . $w . ' !important;}'; }
+		}
+		return $css;
+	}
+
 	private static function n_heading( $h ) {
 		$lvl = isset( $h['level'] ) && $h['level'] >= 1 && $h['level'] <= 6 ? (int) $h['level'] : 2;
 		// Translate the wrapper's Tailwind layout/spacing classes into native options (parity w/ JS).
@@ -1512,6 +2408,9 @@ class FW_Site_Converter_Mapper {
 				'unique_id' => self::uid(), 'css_id' => '',
 				// Only UNMAPPED wrapper classes remain on css_class; keep_classes drops animation noise.
 				'css_class' => self::keep_classes( $layout['css_class'] ),
+				// Re-assert each part's SOURCE font-weight on its own element (wins over the theme's
+				// hN.heading-title tag rule when no heading-weight token is set) — parity with JS to-pages.
+				'custom_css' => self::heading_weight_css( $h ),
 				'overline' => self::map_accent_classes( $ov_raw ),
 				'overline_uppercase' => $ol_upper ? 'yes' : 'no',
 				'overline_icon' => $ov_icon,
@@ -1772,8 +2671,12 @@ class FW_Site_Converter_Mapper {
 				// CSS on the id (`.banner` → `#banner`) for authority. Verbatim sections keep their
 				// source class selectors (their mirrored markup still carries the classes).
 				if ( empty( $sec['verbatim'] ) && $id !== '' ) { $flat = self::anchor_css_to_id( $flat, $id ); }
-				// Rewrite the source button brand class (.btn-main) → .btn so the source's button
-				// rules (background, color AND :hover) apply to the rebuilt buttons (Style: Default).
+				// Rewrite the source button brand class (.btn-main) → its matching PRESET slug (.btn-primary /
+				// .btn-secondary), NOT bare .btn. A bare `.btn{…}` rule would collide with the token baseline
+				// `.btn:not([class*="btn-"])` and could reintroduce the black-.btn clobber; a `btn-`-prefixed
+				// selector is excluded from that baseline and lands on the same preset class the rebuilt buttons
+				// carry, so the source's fill/hover reach them without clobbering. (No-op when there are no brand
+				// classes — semantic `bg-primary` sources never trigger it.)
 				if ( empty( $sec['verbatim'] ) && $brands ) { $flat = self::rewrite_btn_classes( $flat, $brands ); }
 				// Localize source image URLs (backgrounds, etc.) to the imported media — the
 				// converted site serves its own images instead of hotlinking the source.
@@ -1857,12 +2760,25 @@ class FW_Site_Converter_Mapper {
 		return array_keys( $set );
 	}
 
-	/** Rewrite each brand button class token (`.btn-main`) to `.btn` (whole-token only). */
+	/** Rewrite each brand button class token (`.btn-main`) to its matching PRESET slug (`.btn-primary` /
+	 *  `.btn-secondary`) — whole-token only. A `btn-`-prefixed target keeps the source's button rules OFF the
+	 *  bare `.btn` baseline (which the token CSS scopes as `.btn:not([class*="btn-"])`), so a black source
+	 *  `.btn-main` can no longer clobber every rebuilt button; it lands on the preset class instead. */
 	private static function rewrite_btn_classes( $css, array $brands ) {
 		foreach ( $brands as $b ) {
-			$css = preg_replace( '/\.' . preg_quote( $b, '/' ) . '(?![\w-])/', '.btn', $css );
+			$role = self::brand_class_role( $b );
+			if ( strtolower( $b ) === $role ) { continue; } // already the preset slug → leave as-is
+			$css = preg_replace( '/\.' . preg_quote( $b, '/' ) . '(?![\w-])/', '.' . $role, $css );
 		}
 		return $css;
+	}
+
+	/** Map a source brand button class to a preset role slug: names hinting a secondary/accent/outline/ghost
+	 *  treatment → `btn-secondary`, everything else → `btn-primary` (mirrors build_button_presets()' roles). */
+	private static function brand_class_role( $cls ) {
+		$c = strtolower( (string) $cls );
+		if ( preg_match( '/(secondary|accent|cta|alt|ghost|outline|invert|dark|light)/', $c ) ) { return 'btn-secondary'; }
+		return 'btn-primary';
 	}
 
 	/** Remove every CSS at-block whose at-keyword matches $at_regex, brace-matched. */
@@ -1981,10 +2897,11 @@ class FW_Site_Converter_Mapper {
 	/** The built-in block→shortcode builders (the original elseif chain, now table-driven + extensible). */
 	private static function register_builtin_builders() {
 		self::register_builder( 'heading', function ( $b ) {
-			return self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
+			$cw = ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) ? self::cs_decls( (string) $b['cs'], array( 'font-weight' ) ) : array();
+			return self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'title_weight' => isset( $cw['font-weight'] ) ? $cw['font-weight'] : '', 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
 		} );
 		self::register_builder( 'text', function ( $b ) {
-			return self::n_text( (string) ( $b['html'] ?? $b['text'] ?? '' ), (string) ( $b['maxWidth'] ?? '' ) );
+			return self::n_text( (string) ( $b['html'] ?? $b['text'] ?? '' ), (string) ( $b['maxWidth'] ?? '' ), (string) ( $b['align'] ?? '' ) );
 		} );
 		self::register_builder( 'button', function ( $b ) {
 			return self::n_button( (string) ( $b['label'] ?? $b['text'] ?? 'Button' ), (string) ( $b['href'] ?? '#' ), (string) ( $b['srcCls'] ?? $b['cls'] ?? '' ), (string) ( $b['icon'] ?? '' ), (string) ( $b['iconPos'] ?? 'after' ), (string) ( $b['srcCs'] ?? $b['cs'] ?? '' ), (string) ( $b['groupCls'] ?? '' ), (string) ( $b['groupCs'] ?? '' ) );
@@ -1996,10 +2913,30 @@ class FW_Site_Converter_Mapper {
 			return self::n_video( $b );
 		} );
 		self::register_builder( 'image', function ( $b ) {
-			return self::n_media_image( (string) ( $b['html'] ?? '' ) );
+			// `skinCss` (set by the image-composite decomposition) carries the source image's organic
+			// radius / white border / shadow — and its blob backdrop — as scoped Custom CSS, so the
+			// native media_image reproduces the look without falling back to a verbatim code_block.
+			return self::n_media_image( (string) ( $b['html'] ?? '' ), (string) ( $b['skinCss'] ?? '' ) );
 		} );
 		self::register_builder( 'announcement_pill', function ( $b ) {
 			return self::n_announcement_pill( $b );
+		} );
+		self::register_builder( 'avatar', function ( $b ) {
+			return self::n_avatar( $b );
+		} );
+		// A FLOATING BADGE/CARD overlaid on a hero image (e.g. a "24/7 Care" chip with an icon +
+		// title + subtitle) → an editable icon_box, positioned + skinned over the image via the
+		// node's scoped `posCss` (absolute top/left, bg, rounded, shadow). The icon/title/subtitle
+		// stay editable instead of being frozen in a verbatim code_block. Part of the image-composite
+		// decomposition (P0 fidelity fix); parity with the JS to-pages imgComposite path.
+		self::register_builder( 'floating_card', function ( $b ) {
+			$card = ( isset( $b['card'] ) && is_array( $b['card'] ) ) ? $b['card'] : array();
+			$node = self::n_icon_box( $card );
+			if ( is_array( $node ) && ! empty( $b['posCss'] ) ) {
+				$cur = isset( $node['atts']['custom_css'] ) ? (string) $node['atts']['custom_css'] : '';
+				$node['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . (string) $b['posCss'] );
+			}
+			return $node;
 		} );
 	}
 
@@ -2248,7 +3185,58 @@ class FW_Site_Converter_Mapper {
 			// (the shortcode renders its own container_type). Content only; design not preserved.
 			if ( ( $b['t'] ?? '' ) === 'testimonials' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
 				$flush_buf();
-				$items[] = self::n_column( '1_1', array( self::n_testimonials( $b['items'] ) ) );
+				$node = self::n_testimonials( $b['items'] );
+				self::apply_block_anim( $node, $b );
+				$items[] = self::n_column( '1_1', array( $node ) );
+				continue;
+			}
+
+			// A data `<table>` → the native `table` shortcode (tabular render mode) in its own full-width column.
+			if ( ( $b['t'] ?? '' ) === 'table' && ! empty( $b['rows'] ) && is_array( $b['rows'] ) ) {
+				$flush_buf();
+				$node = self::n_table( $b );
+				self::apply_block_anim( $node, $b );
+				$items[] = self::n_column( '1_1', array( $node ) );
+				continue;
+			}
+
+			// An accordion / FAQ (<details> or aria-toggle group) → the native `accordion` shortcode.
+			if ( ( $b['t'] ?? '' ) === 'accordion' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
+				$flush_buf();
+				$node = self::n_accordion( $b );
+				self::apply_block_anim( $node, $b );
+				$items[] = self::n_column( '1_1', array( $node ) );
+				continue;
+			}
+
+			// A standalone <ul>/<ol> of text items → the native `feature_list` shortcode.
+			if ( ( $b['t'] ?? '' ) === 'feature_list' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
+				$flush_buf();
+				$node = self::n_feature_list( $b );
+				self::apply_block_anim( $node, $b );
+				$items[] = self::n_column( '1_1', array( $node ) );
+				continue;
+			}
+
+			// The interactive / structured native widgets — each recognized as its own block type and rendered
+			// in its own full-width column: tabs / steps / timeline / progress / pricing-table / lottie / svg-draw.
+			$native_own = array(
+				'tabs'     => 'n_tabs',
+				'steps'    => 'n_steps',
+				'timeline' => 'n_timeline',
+				'progress' => 'n_progress',
+				'pricing'  => 'n_pricing',
+				'lottie'   => 'n_lottie',
+				'svg_draw' => 'n_svg_draw',
+			);
+			$bt_native = $b['t'] ?? '';
+			if ( isset( $native_own[ $bt_native ] ) ) {
+				$flush_buf();
+				$node = call_user_func( array( __CLASS__, $native_own[ $bt_native ] ), $b );
+				if ( is_array( $node ) ) {
+					self::apply_block_anim( $node, $b );
+					$items[] = self::n_column( '1_1', array( $node ) );
+				}
 				continue;
 			}
 
@@ -2261,6 +3249,12 @@ class FW_Site_Converter_Mapper {
 				$head[ $role ] = $val;
 				// Carry the source part's own classes onto the matching class input.
 				$head[ $role . '_class' ] = (string) ( $b['cls'] ?? '' );
+				// Carry the part's RESOLVED computed font-weight (data-sc-cs) so the heading re-asserts its
+				// real weight even on a NON-Tailwind source (where the class carries no font-* utility).
+				if ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
+					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight' ) );
+					if ( isset( $cw['font-weight'] ) ) { $head[ $role . '_weight' ] = $cw['font-weight']; }
+				}
 				// The heading-group wrapper class (source `<div class="heading">`) → the special
 				// heading's own wrapper (css_class). Carried from the title block (the wrapper holds
 				// the whole group). keep_classes runs in n_heading.
@@ -2364,6 +3358,11 @@ class FW_Site_Converter_Mapper {
 							$inner_items[] = self::n_button( (string) ( $bt['label'] ?? 'Button' ), (string) ( $bt['href'] ?? '#' ), (string) ( $bt['cls'] ?? '' ), (string) ( $bt['icon'] ?? '' ), 'after', (string) ( $bt['cs'] ?? '' ) );
 						}
 						if ( count( $inner_items ) > 1 ) { $btn_row_on_column = 'row'; }
+					} elseif ( isset( $c['blocks'] ) && is_array( $c['blocks'] ) && $c['blocks'] ) {
+						// A DECOMPOSED layout-row cell (a hero's text+CTA column) → build its blocks into the
+						// normal stacked shortcodes (special_heading + button… + …), NOT one opaque code_block.
+						$inner_items = self::build_cell_items( $c['blocks'] );
+						if ( ! $inner_items ) { $inner_items = array( self::n_code( (string) ( $c['html'] ?? '' ) ) ); }
 					} else {
 						$inner_items = array( self::n_code( (string) ( $c['html'] ?? '' ) ) );
 					}
@@ -2408,6 +3407,7 @@ class FW_Site_Converter_Mapper {
 				$bld      = isset( $builders[ $role ] ) ? $builders[ $role ] : $builders['code'];
 				$item     = call_user_func( $bld['build'], $b );
 				if ( $item !== null ) {
+					if ( is_array( $item ) ) { self::apply_block_anim( $item, $b ); } // source reveal/scroll-animation intent → node Animations tab
 					if ( ! empty( $bld['full_width'] ) ) { $flush_buf(); $items[] = self::n_column( '1_1', array( $item ) ); }
 					else { $buf[] = $item; }
 				}
@@ -2456,12 +3456,18 @@ class FW_Site_Converter_Mapper {
 			'border-width', 'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
 			'border-style', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'border-color',
 			'border-radius', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-left-radius', 'border-bottom-right-radius',
-			'background', 'background-color', 'background-image',
 		);
+		// A section FILL (bg colour / image from a `bg-*` class on the section wrapper) belongs on the
+		// full-width section element — NOT the capped, centred `.fw-container`. Hoisting it onto the
+		// container painted a white/tinted card over the band and hid the section's real background
+		// (regression). Route it to $secd so it renders edge-to-edge like the source; the computed-bg
+		// block below then defers to it (its `! isset( $secd[...] )` guards).
+		$bg_props  = array( 'background', 'background-color', 'background-image' );
 		$cont = array();
 		$secd = array();
 		foreach ( $base as $p => $v ) {
-			if ( in_array( $p, $box_props, true ) || 0 === strpos( (string) $p, '--' ) ) { $cont[ $p ] = $v; }
+			if ( in_array( $p, $bg_props, true ) )                                       { $secd[ $p ] = $v; }
+			elseif ( in_array( $p, $box_props, true ) || 0 === strpos( (string) $p, '--' ) ) { $cont[ $p ] = $v; }
 			elseif ( 'margin-top' === $p || 'margin-bottom' === $p )                      { $secd[ $p ] = $v; }
 		}
 		if ( $cont ) { $cont['box-sizing'] = 'border-box'; }
@@ -2483,6 +3489,49 @@ class FW_Site_Converter_Mapper {
 				}
 				if ( isset( $bgd['background-image'] ) && 'none' !== trim( $bgd['background-image'] ) && ! isset( $secd['background-image'] ) && ! $cont_has_bg ) {
 					$secd['background-image'] = trim( $bgd['background-image'] );
+				}
+			}
+			// Discrimination-aware inner-layer pass: a section whose SOLID band colour sits on an inner
+			// full-bleed LAYER (e.g. `<div class="absolute inset-0 bg-primary">`) instead of the section
+			// root reads as transparent above. Hoist the dominant opaque layer fill to the section element,
+			// skipping decorative overlays (dot patterns, low-opacity gradient washes). Never overrides a
+			// fill already resolved onto $secd, and never touches the `.fw-container` (kept bg-free by design).
+			if ( ! isset( $secd['background-color'] ) && ! $cont_has_bg && ! empty( $sec['sectionLayers'] ) && is_array( $sec['sectionLayers'] ) ) {
+				foreach ( $sec['sectionLayers'] as $layer ) {
+					$band = self::layer_band_bg( is_array( $layer ) ? $layer : array() );
+					if ( '' !== $band ) { $secd['background-color'] = $band; break; }
+				}
+			}
+		}
+
+		// P0 — SECTION BAND FILL onto the section's NATIVE background field. Everything above resolved a
+		// detected full-bleed band fill into $secd (the section's own bg-*, its computed background-color,
+		// OR a hoisted `absolute inset-0 bg-*` layer). That was only ever written to style.css, so the band
+		// never appeared as a section OPTION (variant/Background) — the audit's "band fills not applied".
+		// Emit it here: LINK an existing Section Style preset when the colour matches one within tolerance
+		// (set `variant` = its slug — the CTA green → the built "Alt" preset), else set the native
+		// background.color.custom directly. A GRADIENT background-image → the gradient stops. In every case
+		// the value is REMOVED from $secd so style.css doesn't double-paint the same fill.
+		if ( self::$style_on ) {
+			// Flat colour band → preset link or native custom colour.
+			if ( isset( $secd['background-color'] ) ) {
+				$rgb = self::rgb_triplet( $secd['background-color'] );
+				if ( $rgb !== null ) {
+					$slug = self::match_section_preset( $rgb );
+					if ( $slug !== '' ) {
+						$sec_node['atts']['variant'] = $slug;                          // reuse the built Section Style
+					} else {
+						$sec_node['atts']['background']['color']['value']['custom'] = self::norm_bg_color( $secd['background-color'] );
+					}
+					unset( $secd['background-color'] );                                // now on the section option — not style.css
+				}
+			}
+			// Gradient band → the section's native background.gradient stops (flat colour is the priority above).
+			if ( isset( $secd['background-image'] ) && stripos( (string) $secd['background-image'], 'linear-gradient' ) !== false ) {
+				$grad = self::parse_linear_gradient( $secd['background-image'] );
+				if ( $grad !== null ) {
+					$sec_node['atts']['background']['gradient']['data'] = $grad;
+					unset( $secd['background-image'] );
 				}
 			}
 		}
