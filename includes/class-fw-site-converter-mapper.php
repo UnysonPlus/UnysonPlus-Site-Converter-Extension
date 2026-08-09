@@ -517,6 +517,16 @@ class FW_Site_Converter_Mapper {
 		foreach ( $allow as $p ) {
 			if ( isset( $raw[ $p ] ) && '' !== $raw[ $p ] ) { $out[ $p ] = $raw[ $p ]; }
 		}
+		// G1 — LOCKUP FLEX GUARD: `align-items` / `justify-content` / `gap` / `flex-direction` are no-ops
+		// unless the box is a flex container. When a caller pulls any of them into a scoped rule but no
+		// `display` came along (the common icon+text "lockup" case), synthesize `display:flex` so the
+		// captured alignment/gap actually apply. Never added when none of those props are present, and a
+		// caller that already set its own `display` (e.g. btn_row_css) wins via array_merge order.
+		if ( ! isset( $out['display'] ) ) {
+			foreach ( array( 'align-items', 'justify-content', 'gap', 'column-gap', 'flex-direction', 'flex-wrap' ) as $fp ) {
+				if ( isset( $out[ $fp ] ) ) { $out = array( 'display' => 'flex' ) + $out; break; }
+			}
+		}
 		return $out;
 	}
 

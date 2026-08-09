@@ -2623,6 +2623,22 @@ JS;
 		$out .= " * area. The header/footer markup lives in the overridden template-parts.\n */\n";
 		$out .= "if ( ! defined( 'ABSPATH' ) ) { exit; }\n\n";
 
+		// G3 (cloning-gotchas): the source is NOT WordPress, so WP's wp-emoji would swap the source's own
+		// emoji glyphs for Twemoji and mismatch the design — disable it so native emoji render as captured.
+		$out .= "/** Keep native emoji (the non-WP source's glyphs), not Twemoji — disable wp-emoji. */\n";
+		$out .= "if ( ! function_exists( '{$fn}_disable_emoji' ) ) {\n";
+		$out .= "\tfunction {$fn}_disable_emoji() {\n";
+		$out .= "\t\tremove_action( 'wp_head', 'print_emoji_detection_script', 7 );\n";
+		$out .= "\t\tremove_action( 'wp_print_styles', 'print_emoji_styles' );\n";
+		$out .= "\t\tremove_action( 'admin_print_scripts', 'print_emoji_detection_script' );\n";
+		$out .= "\t\tremove_action( 'admin_print_styles', 'print_emoji_styles' );\n";
+		$out .= "\t\tremove_filter( 'the_content_feed', 'wp_staticize_emoji' );\n";
+		$out .= "\t\tremove_filter( 'comment_text_rss', 'wp_staticize_emoji' );\n";
+		$out .= "\t\tremove_filter( 'wp_mail', 'wp_staticize_emoji_for_email' );\n";
+		$out .= "\t}\n";
+		$out .= "\tadd_action( 'init', '{$fn}_disable_emoji' );\n";
+		$out .= "}\n\n";
+
 		// In standalone mode this file is appended-included from the copied parent
 		// functions.php, so it must be self-guarding and not redeclare parent funcs.
 		$out .= "/** Webfonts + chrome stylesheet (priority 20 → loads after the parent). */\n";

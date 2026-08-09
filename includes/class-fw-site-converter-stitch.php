@@ -1549,9 +1549,15 @@ class FW_Site_Converter_Stitch {
 		$site_title = $logo['text'] !== '' ? $logo['text'] : ( trim( (string) $title ) !== '' ? trim( (string) $title ) : 'Site' );
 		$title_color = $logo['title_color'] !== '' ? $logo['title_color'] : ( $hdr['dark'] ? '#ffffff' : ( $ink !== '' ? $ink : '#111111' ) );
 
+		// H6 — Logo layout. Detectable high-confidence case: an icon/wordmark source with a REAL glyph but no
+		// visible wordmark text and no image logo → 'icon-only' (the title stays as the a11y name). The
+		// stacked/eyebrow and icon-right variants need icon-position/tagline signals the logo detector does not
+		// currently expose, so they keep the safe 'inline-left' default (correct for the overwhelming majority).
+		$has_mark   = ( $logo['svg'] !== '' || $logo['icon'] !== '' );
+		$logo_layout = ( $logo['text'] === '' && $logo['image'] === '' && $has_mark ) ? 'icon-only' : 'inline-left';
 		$logo_custom = array(
 			'site_title'   => $site_title,
-			'logo_layout'  => 'inline-left',
+			'logo_layout'  => $logo_layout,
 			// Wordmark weight/size from the MEASURED span (fall back to a bold default when unmeasured).
 			'title_weight' => ( $logo['title_weight'] !== '' ? $logo['title_weight'] : '700' ),
 			'color'        => $hex( $title_color ),
@@ -1651,14 +1657,32 @@ class FW_Site_Converter_Stitch {
 		);
 		if ( isset( $mstyle['font_size'] ) )   { $menu['menu_link_font_size'] = $mstyle['font_size']; }
 		if ( isset( $mstyle['font_weight'] ) ) { $menu['menu_link_font_weight'] = $mstyle['font_weight']; }
+		// H3 — Menu Item Style + item fill + link padding (only on a real signal from detect_menu_styles).
+		if ( isset( $mstyle['item_style'] ) )  { $menu['menu_item_style'] = $mstyle['item_style']; }
+		if ( isset( $mstyle['item_bg'] ) )     { $menu['menu_item_bg'] = $hex( $mstyle['item_bg'] ); }
+		if ( isset( $mstyle['pad_x'] ) )       { $menu['menu_link_padding_x'] = $mstyle['pad_x']; }
+		if ( isset( $mstyle['pad_y'] ) )       { $menu['menu_link_padding_y'] = $mstyle['pad_y']; }
+		// H4 — Submenu / dropdown panel styling, when the source header actually has a dropdown.
+		$sub = self::detect_submenu_styles( (string) $html );
+		if ( isset( $sub['menu_dropdown_bg'] ) )     { $menu['menu_dropdown_bg'] = $hex( $sub['menu_dropdown_bg'] ); }
+		if ( isset( $sub['menu_dropdown_link'] ) )   { $menu['menu_dropdown_link'] = $hex( $sub['menu_dropdown_link'] ); }
+		if ( isset( $sub['menu_dropdown_radius'] ) ) { $menu['menu_dropdown_radius'] = $sub['menu_dropdown_radius']; }
+		if ( isset( $sub['menu_dropdown_width'] ) )  { $menu['menu_dropdown_width'] = $sub['menu_dropdown_width']; }
+		if ( isset( $sub['menu_dropdown_style'] ) )  { $menu['menu_dropdown_style'] = $sub['menu_dropdown_style']; }
 		$values['header_menu'] = $menu;
 
 		/* --- header_layout — switches/bg driven by the detected header chrome (only override defaults on a
 		   real signal, so we never write a false 'yes'). --- */
 		$header_bg_val = isset( $hstyle['bg'] ) ? $hstyle['bg'] : $header_bg;
+		// Header DESIGN + BEHAVIOR from the deterministic signals (were hardcoded 'classic' + sticky-only, even
+		// though detect_header already knows the pill/overlay): a rounded-full nav container → 'pill'; a header
+		// pinned (fixed/sticky) with a TRANSPARENT background sitting over the hero → 'transparent-overlay'.
+		$h_design   = ( isset( $hdr['style'] ) && 'pill' === $hdr['style'] ) ? 'pill' : 'classic';
+		$h_overlay  = ! empty( $hdr['sticky'] ) && ! isset( $hstyle['bg'] ); // fixed/sticky + transparent bg = overlay
+		$h_behavior = $h_overlay ? 'transparent-overlay' : ( ! empty( $hdr['sticky'] ) ? 'sticky' : 'static' );
 		$values['header_layout'] = array(
-			'header_mode'          => array( 'mode' => 'top', 'top' => array( 'header_design' => array( 'design' => 'classic' ) ) ),
-			'header_behavior'      => $hdr['sticky'] ? 'sticky' : 'static',
+			'header_mode'          => array( 'mode' => 'top', 'top' => array( 'header_design' => array( 'design' => $h_design ) ) ),
+			'header_behavior'      => $h_behavior,
 			'header_glass'         => ! empty( $hstyle['glass'] ) ? 'yes' : 'no',
 			'header_shadow'        => ! empty( $hstyle['shadow'] ) ? 'yes' : 'no',
 			'header_border'        => ! empty( $hstyle['border'] ) ? 'yes' : 'no',
@@ -1668,6 +1692,16 @@ class FW_Site_Converter_Stitch {
 		// Mobile breakpoint — the width at which the inline nav collapses to a drawer (only on a real signal).
 		if ( ! empty( $hstyle['mobile_breakpoint'] ) ) {
 			$values['header_layout']['mobile_breakpoint'] = $hstyle['mobile_breakpoint'];
+		}
+		// H11 — header row vertical alignment + element gap (only on a real, non-default signal).
+		$hrow = self::detect_header_row_layout( (string) $html );
+		if ( isset( $hrow['valign'] ) ) { $values['header_layout']['header_valign'] = $hrow['valign']; }
+		if ( isset( $hrow['gap'] ) )    { $values['header_layout']['header_element_gap'] = $hrow['gap']; }
+		// H5 — One-page anchor nav → enable Scroll Spy (active-section highlight + smooth scroll). Only
+		// when EVERY nav item is an in-page `#id` link (a real single-page site); the target sections
+		// keep their source ids, so the highlight lines up with no further wiring. See header.md → nav_scrollspy.
+		if ( self::nav_scrollspy_targets( (string) $html ) ) {
+			$values['header_layout']['nav_scrollspy'] = 'yes';
 		}
 		// HEADER container width — from the header's INNER content wrapper (.container / mx-auto / max-w-*)
 		// computed max-width, NOT the <header> element. A real capped px → Fixed Width (the header then
@@ -1797,6 +1831,36 @@ class FW_Site_Converter_Stitch {
 		}
 		$values['misc_custom_css'] = array( 'custom_css' => "/* converted header/footer styles */\n" . implode( "\n", $residual ) . $container_ladder_css );
 
+		/* --- D2: global border/divider colour → layout_border_color (--color-border) --- */
+		$bcol = self::detect_border_color( (string) $html );
+		if ( $bcol !== '' ) {
+			if ( ! isset( $values['general_layout'] ) || ! is_array( $values['general_layout'] ) ) { $values['general_layout'] = array(); }
+			$values['general_layout']['layout_border_color'] = $hex( $bcol );
+		}
+
+		/* --- D1: global Border Roundness (--radius) from the dominant card/button corner radius. Buckets:
+		   sharp (<4px), subtle (4–11), rounded (12–23), soft (>=24 incl. pill/full). Only on a real signal. --- */
+		$round = self::detect_global_roundness( (string) $html );
+		if ( $round !== '' ) {
+			if ( ! isset( $values['general_layout'] ) || ! is_array( $values['general_layout'] ) ) { $values['general_layout'] = array(); }
+			$values['general_layout']['layout_roundness'] = $round;
+		}
+
+		/* --- D3: Content Density (section vertical rhythm) from the median section top+bottom padding.
+		   compact (<96px total), cozy (96–159), spacious (>=160). Only on a real signal. --- */
+		$dens = self::detect_section_density( (string) $html );
+		if ( $dens !== '' ) {
+			if ( ! isset( $values['general_layout'] ) || ! is_array( $values['general_layout'] ) ) { $values['general_layout'] = array(); }
+			$values['general_layout']['layout_section_spacing'] = $dens;
+		}
+
+		/* --- D4: Body Link Underline (always / hover / never) from in-text link text-decoration. --- */
+		$ul = self::detect_link_underline( (string) $html );
+		if ( $ul !== '' ) {
+			if ( ! isset( $values['general_typography'] ) || ! is_array( $values['general_typography'] ) ) { $values['general_typography'] = array(); }
+			$values['general_typography']['body_link_underline'] = $ul;
+		}
+
 		/* --- social_profiles (brand column) — footer social links → Lucide icons --- */
 		$social = self::detect_footer_social( (string) $html );
 		if ( $social ) { $values['social_profiles'] = $social; }
@@ -1841,7 +1905,7 @@ class FW_Site_Converter_Stitch {
 			}
 			foreach ( self::detect_footer_columns( $scope_html ) as $g ) {
 				if ( $brand_nl && ( $g['kind'] ?? '' ) === 'newsletter' ) { continue; } // dedupe against the brand newsletter
-				$cols[] = self::footer_group_to_column( $g );
+				$cols[] = self::attach_visibility( self::footer_group_to_column( $g ), $g['cls'] ?? '' );
 			}
 			return $cols;
 		};
@@ -2929,6 +2993,16 @@ class FW_Site_Converter_Stitch {
 	 * @param array $group { title, tag, links, items, kind, rows, newsletter }
 	 * @return array list of element_type wrappers
 	 */
+	/** H10 — stamp each element in a footer column with its responsive `visibility` (from the source column's
+	 *  Tailwind display classes). No-op when the column is visible everywhere, so it only ever ADDS a signal. */
+	private static function attach_visibility( array $els, $cls ) {
+		$vis = self::responsive_hide_visibility( (string) $cls );
+		if ( ! $vis ) { return $els; }
+		foreach ( $els as &$el ) { if ( is_array( $el ) && isset( $el['element_type'] ) ) { $el['visibility'] = $vis; } }
+		unset( $el );
+		return $els;
+	}
+
 	private static function footer_group_to_column( array $group ) {
 		if ( ( $group['kind'] ?? '' ) === 'contact' && ! empty( $group['rows'] ) ) {
 			$ftag    = preg_match( '/^h[2-6]$/', (string) ( $group['tag'] ?? '' ) ) ? $group['tag'] : 'h4';
@@ -2959,15 +3033,29 @@ class FW_Site_Converter_Stitch {
 				'design'            => 'inline',
 			) ) ) );
 		}
-		// NAV / TEXT column → heading + link/item list. (footer.md rule 10 wants links as a native `menu`
-		// element; that conversion is a tracked follow-up — this keeps today's exact output.)
+		// NAV column → the native `links` footer element (F1, footer.md rule 10): a STRUCTURED, editable
+		// {label,url} list rather than an HTML `<ul>` blob inside a Text element. `links` stores its links
+		// INLINE (no registered WP menu / menu_id), so they can never vanish from a missing menu object — the
+		// reason we map here and not to the registration-based `menu` element. A column that has real <a> links
+		// becomes `links`; a bare text-item column (no hrefs) stays a Text `<ul>` (nothing to make a link from).
+		if ( ! empty( $group['links'] ) ) {
+			$rows = array();
+			foreach ( $group['links'] as $l ) {
+				$label = trim( (string) $l['label'] );
+				if ( $label === '' ) { continue; }
+				$rows[] = array( 'label' => $label, 'url' => ( $l['href'] !== '' ? $l['href'] : '#' ) );
+			}
+			if ( $rows ) {
+				return array( array( 'element_type' => array( 'element' => 'links', 'links' => array(
+					'links_title' => (string) $group['title'],
+					'links_items' => $rows,
+				) ) ) );
+			}
+		}
+		// No real links (text-only items) → keep the heading + plain list as a Text element.
 		$ltag     = preg_match( '/^h[2-6]$/', (string) ( $group['tag'] ?? '' ) ) ? $group['tag'] : 'h4';
 		$html_col = '<' . $ltag . '>' . esc_html( $group['title'] ) . '</' . $ltag . '><ul class="fw-footer-links">';
-		if ( ! empty( $group['links'] ) ) {
-			foreach ( $group['links'] as $l ) { $html_col .= '<li><a href="' . esc_url( $l['href'] !== '' ? $l['href'] : '#' ) . '">' . esc_html( $l['label'] ) . '</a></li>'; }
-		} else {
-			foreach ( ( $group['items'] ?? array() ) as $it ) { $html_col .= '<li>' . esc_html( $it ) . '</li>'; }
-		}
+		foreach ( ( $group['items'] ?? array() ) as $it ) { $html_col .= '<li>' . esc_html( $it ) . '</li>'; }
 		$html_col .= '</ul>';
 		return array( array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $html_col ) ) ) );
 	}
@@ -2986,7 +3074,7 @@ class FW_Site_Converter_Stitch {
 	private static function build_footer_bar( array $groups, $prefix, $html, array $lead_cols = array() ) {
 		$cols = array();
 		foreach ( $lead_cols as $lc ) { if ( ! empty( $lc ) ) { $cols[] = $lc; } }
-		foreach ( $groups as $group ) { $cols[] = self::footer_group_to_column( $group ); }
+		foreach ( $groups as $group ) { $cols[] = self::attach_visibility( self::footer_group_to_column( $group ), $group['cls'] ?? '' ); }
 		return self::footer_columns_to_bar( $cols, $prefix, $html );
 	}
 
@@ -3091,7 +3179,7 @@ class FW_Site_Converter_Stitch {
 					}
 				}
 				if ( count( $links ) >= 2 || count( $items ) >= 2 || ( $kind === 'contact' && count( $rows ) >= 2 ) || $news !== null ) {
-					$out[] = array( 'title' => $title, 'tag' => $htag, 'links' => $links, 'items' => $items, 'kind' => ( $news !== null ? 'newsletter' : $kind ), 'rows' => ( $kind === 'contact' ? $rows : array() ), 'newsletter' => $news );
+					$out[] = array( 'title' => $title, 'tag' => $htag, 'links' => $links, 'items' => $items, 'kind' => ( $news !== null ? 'newsletter' : $kind ), 'rows' => ( $kind === 'contact' ? $rows : array() ), 'newsletter' => $news, 'cls' => self::cls( $parent ) );
 					$seen[ $title ] = true;
 				}
 				if ( count( $out ) >= 5 ) { break 2; }
@@ -3361,6 +3449,116 @@ class FW_Site_Converter_Stitch {
 		return 0;
 	}
 
+	/**
+	 * D2 — the site's GLOBAL border/divider colour → `layout_border_color` (drives `--color-border`, used by
+	 * cards / dividers / inputs across ~21 consumers; otherwise they fall back to the default subtle 10% black).
+	 * Tallies the computed `border-top-color` of every element that actually HAS a border (non-zero width) and
+	 * returns the most common non-transparent value, or '' when the source uses no real borders.
+	 *
+	 * @param string $html
+	 * @return string css colour or ''
+	 */
+	private static function detect_border_color( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return ''; }
+		$xp = new DOMXPath( $dom );
+		$tally = array();
+		foreach ( $xp->query( '//*[@data-sc-cs]' ) as $el ) {
+			$cs = (string) $el->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/border-top-width:\s*([0-9.]+)px/', $cs, $wm ) || (float) $wm[1] <= 0 ) { continue; }
+			if ( ! preg_match( '/border-top-color:\s*(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $cs, $cm ) ) { continue; }
+			$c = strtolower( trim( $cm[1] ) );
+			if ( preg_match( '/rgba?\([^)]*,\s*0?\.?0*\)$/', $c ) || $c === 'transparent' ) { continue; } // fully transparent
+			$tally[ $c ] = ( $tally[ $c ] ?? 0 ) + 1;
+		}
+		if ( ! $tally ) { return ''; }
+		arsort( $tally );
+		return (string) array_key_first( $tally );
+	}
+
+	/**
+	 * D1 — dominant card/button corner radius → the global Border Roundness radio. Tallies the computed
+	 * `border-radius` of boxy elements that carry a fill or border (cards, buttons, inputs, chips), takes the
+	 * MODE, and buckets it: sharp (<4px) · subtle (4–11) · rounded (12–23) · soft (>=24, incl. pill/full).
+	 * Returns '' when there are too few rounded boxes to be sure. See design-system / general-layout.md.
+	 */
+	private static function detect_global_roundness( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return ''; }
+		$xp = new DOMXPath( $dom );
+		$tally = array(); $n = 0;
+		foreach ( $xp->query( '//*[@data-sc-cs]' ) as $el ) {
+			$cs = (string) $el->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/(?:^|;)\s*border-radius:\s*([0-9.]+)px/', $cs, $rm ) ) { continue; }
+			$r = (float) $rm[1];
+			// Count CONTROLS (buttons/links/inputs) at any radius — they define the "button roundness" — and any
+			// OTHER element only when it is genuinely rounded (r>0), so full-bleed colored sections at radius 0
+			// (which aren't cards) don't drag the whole site to 'sharp'. A fill or border is still required.
+			$tag        = strtolower( $el->nodeName );
+			$is_control = in_array( $tag, array( 'button', 'a', 'input', 'select', 'textarea' ), true ) || self::is_button( $el );
+			$has_fill   = preg_match( '/(?:^|;)\s*background-color:/', $cs );
+			$has_border = preg_match( '/border-top-width:\s*([0-9.]+)px/', $cs, $bw ) && (float) $bw[1] > 0;
+			if ( ! $has_fill && ! $has_border ) { continue; }
+			if ( ! $is_control && $r <= 0 ) { continue; }
+			if ( $r > 400 ) { $r = 28; } // a huge pill/full radius (9999px) counts as 'soft'
+			$bucket = $r < 4 ? 'sharp' : ( $r < 12 ? 'subtle' : ( $r < 24 ? 'rounded' : 'soft' ) );
+			$tally[ $bucket ] = ( $tally[ $bucket ] ?? 0 ) + 1; $n++;
+		}
+		if ( $n < 3 ) { return ''; } // too few rounded surfaces to commit a global default
+		arsort( $tally );
+		return (string) array_key_first( $tally );
+	}
+
+	/**
+	 * D3 — Content Density from the median `<section>` vertical padding (top+bottom). compact (<96px total) ·
+	 * cozy (96–159) · spacious (>=160). Reads the stamped `padding` shorthand of each section-like band.
+	 * Returns '' when fewer than 3 measurable sections (not enough to set a global rhythm).
+	 */
+	private static function detect_section_density( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return ''; }
+		$totals = array();
+		foreach ( $dom->getElementsByTagName( 'section' ) as $sec ) {
+			$pad = self::sc_css( $sec, 'padding' );
+			if ( $pad === '' ) { continue; }
+			$pp = preg_split( '/\s+/', trim( $pad ) ); $c = count( $pp );
+			$top = preg_match( '/([0-9.]+)px/', $pp[0] ?? '', $tm ) ? (float) $tm[1] : 0;
+			$botv = $c >= 3 ? $pp[2] : ( $pp[0] ?? '' );
+			$bot = preg_match( '/([0-9.]+)px/', (string) $botv, $bm ) ? (float) $bm[1] : $top;
+			$sum = $top + $bot;
+			if ( $sum > 0 ) { $totals[] = $sum; }
+		}
+		if ( count( $totals ) < 3 ) { return ''; }
+		sort( $totals );
+		$med = $totals[ intval( floor( ( count( $totals ) - 1 ) / 2 ) ) ];
+		return $med < 96 ? 'compact' : ( $med < 160 ? 'cozy' : 'spacious' );
+	}
+
+	/**
+	 * D4 — Body Link Underline from in-text links (anchors sitting inside paragraphs, not nav/buttons).
+	 * always when most such links carry `text-decoration-line:underline` at rest, never when most are
+	 * un-underlined; '' (leave theme default 'hover') when the signal is mixed or too small.
+	 */
+	private static function detect_link_underline( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return ''; }
+		$under = 0; $plain = 0;
+		foreach ( $dom->getElementsByTagName( 'p' ) as $p ) {
+			foreach ( $p->getElementsByTagName( 'a' ) as $a ) {
+				if ( self::is_button( $a ) ) { continue; }
+				if ( ! $a->hasAttribute( 'data-sc-cs' ) ) { continue; } // only measured links count
+				// Capture DROPS text-decoration-line:none, so an empty value = not underlined (plain).
+				$td = self::sc_css( $a, 'text-decoration-line' );
+				if ( stripos( $td, 'underline' ) !== false ) { $under++; } else { $plain++; }
+			}
+		}
+		$tot = $under + $plain;
+		if ( $tot < 2 ) { return ''; }
+		if ( $under >= $tot * 0.75 ) { return 'always'; }
+		if ( $plain >= $tot * 0.75 ) { return 'never'; }
+		return '';
+	}
+
 	private static function detect_chrome_container( $root ) {
 		if ( ! ( $root instanceof DOMElement ) ) { return ''; }
 		$best = 0.0; $saw_wrap = false; $saw_fluid = false;
@@ -3426,6 +3624,85 @@ class FW_Site_Converter_Stitch {
 	 *   font_size ({value,unit}), font_weight (string), uppercase (bool). Excludes the brand link (has an
 	 *   svg/img) and CTA buttons, so only real nav links are sampled.
 	 */
+	/**
+	 * H4 — Submenu / dropdown panel styling. Only fires when the source header genuinely has a dropdown:
+	 * a nav item containing a nested `<ul>`/panel (role=menu / `.dropdown`/`.submenu` / a `<ul>` inside an
+	 * `<li>`). Reads the panel's computed bg / link color / corner radius / min-width, and infers the
+	 * Dropdown Design (bordered when it has a border + no shadow, elevated when a deep shadow, minimal when
+	 * flat, else classic). Returns empty when no dropdown exists (most one-page sources). See header.md.
+	 */
+	/**
+	 * H11 — the header's main flex row layout: vertical alignment (`align-items`) → header_valign, and the
+	 * inter-element `gap` → header_element_gap. Reads the header's densest flex row (the logo·menu·CTA row).
+	 * Only returns a key on a real, non-default signal (valign only when top/bottom; gap only when measured),
+	 * so the theme's sensible defaults (center / auto gap) are never overwritten with redundant values.
+	 */
+	private static function detect_header_row_layout( $html ) {
+		$out = array();
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return $out; }
+		$header = self::header_root( $dom );
+		if ( ! ( $header instanceof DOMElement ) ) { return $out; }
+		// The header's densest FLEX row = the element with the most element children whose cs says display:flex.
+		$best = null; $best_n = 1;
+		foreach ( $header->getElementsByTagName( 'div' ) as $d ) {
+			$cs = (string) $d->getAttribute( 'data-sc-cs' );
+			if ( strpos( $cs, 'display:flex' ) === false && strpos( $cs, 'display:inline-flex' ) === false ) { continue; }
+			$n = 0; foreach ( self::el_children( $d ) as $k ) { $n++; }
+			if ( $n > $best_n ) { $best_n = $n; $best = $d; }
+		}
+		if ( ! ( $best instanceof DOMElement ) ) { return $out; }
+		$cs = (string) $best->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/align-items:\s*(flex-start|start|flex-end|end)/', $cs, $am ) ) {
+			$out['valign'] = ( strpos( $am[1], 'end' ) !== false ) ? 'bottom' : 'top';
+		}
+		if ( preg_match( '/(?:^|;)\s*gap:\s*([0-9.]+)px/', $cs, $gm ) && (float) $gm[1] > 0 ) {
+			$out['gap'] = array( 'value' => round( (float) $gm[1] / 16, 2 ), 'unit' => 'rem' );
+		}
+		return $out;
+	}
+
+	private static function detect_submenu_styles( $html ) {
+		$out = array();
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return $out; }
+		$header = self::header_root( $dom );
+		if ( ! ( $header instanceof DOMElement ) ) { return $out; }
+		$panel = null;
+		// A submenu panel = a <ul> nested inside a nav <li>, or an element whose class marks it a dropdown.
+		foreach ( $header->getElementsByTagName( 'li' ) as $li ) {
+			foreach ( self::el_children( $li ) as $k ) {
+				if ( strtolower( $k->nodeName ) === 'ul' && $k->getElementsByTagName( 'a' )->length >= 1 ) { $panel = $k; break 2; }
+			}
+		}
+		if ( ! $panel ) {
+			foreach ( array( 'ul', 'div' ) as $tag ) {
+				foreach ( $header->getElementsByTagName( $tag ) as $el ) {
+					$c = ' ' . strtolower( self::cls( $el ) ) . ' ';
+					if ( ( strpos( $c, 'dropdown' ) !== false || strpos( $c, 'submenu' ) !== false || strpos( $c, 'sub-menu' ) !== false ) && $el->getElementsByTagName( 'a' )->length >= 1 ) { $panel = $el; break 2; }
+				}
+			}
+		}
+		if ( ! ( $panel instanceof DOMElement ) ) { return $out; }
+		$bg = self::sc_css( $panel, 'background-color' );
+		if ( $bg !== '' ) { $out['menu_dropdown_bg'] = $bg; }
+		$r = self::sc_css( $panel, 'border-radius' );
+		if ( preg_match( '/([0-9.]+)px/', $r, $rm ) && (float) $rm[1] > 0 ) { $out['menu_dropdown_radius'] = array( 'value' => round( (float) $rm[1] ), 'unit' => 'px' ); }
+		$w = self::sc_css( $panel, 'max-width' );
+		if ( preg_match( '/([0-9.]+)px/', $w, $wm ) && (float) $wm[1] >= 120 ) { $out['menu_dropdown_width'] = array( 'value' => round( (float) $wm[1] ), 'unit' => 'px' ); }
+		// A dropdown link colour (first anchor inside the panel).
+		$a1 = $panel->getElementsByTagName( 'a' )->item( 0 );
+		if ( $a1 instanceof DOMElement ) { $lc = self::sc_css( $a1, 'color' ); if ( $lc !== '' ) { $out['menu_dropdown_link'] = $lc; } }
+		// Dropdown Design from border vs shadow.
+		$bw = self::sc_css( $panel, 'border-top-width' ); $sh = self::sc_css( $panel, 'box-shadow' );
+		$has_border = preg_match( '/([0-9.]+)px/', $bw, $bwm ) && (float) $bwm[1] > 0;
+		$has_shadow = $sh !== '' && stripos( $sh, 'none' ) === false;
+		if ( $has_border && ! $has_shadow )      { $out['menu_dropdown_style'] = 'bordered'; }
+		elseif ( ! $has_border && ! $has_shadow ) { $out['menu_dropdown_style'] = 'minimal'; }
+		// (a deep shadow → 'elevated' would need blur-radius parsing; classic default covers the shadowed case)
+		return $out;
+	}
+
 	private static function detect_menu_styles( $html ) {
 		$out = array();
 		$dom = self::load_dom( $html );
@@ -3433,6 +3710,8 @@ class FW_Site_Converter_Stitch {
 		$header = self::header_root( $dom );
 		if ( ! ( $header instanceof DOMElement ) ) { return $out; }
 		$colors = array(); $fs = ''; $fw = ''; $tt = '';
+		// H3 — per-item chrome tallies (the MODE across the real nav links decides the item style).
+		$bgs = array(); $rads = array(); $pads_x = array(); $pads_y = array(); $borders = 0; $underlines = 0; $items = 0;
 		foreach ( $header->getElementsByTagName( 'a' ) as $a ) {
 			if ( self::is_button( $a ) ) { continue; }                                   // skip the CTA
 			if ( $a->getElementsByTagName( 'svg' )->length || $a->getElementsByTagName( 'img' )->length ) { continue; } // skip brand/icon links
@@ -3443,6 +3722,25 @@ class FW_Site_Converter_Stitch {
 			if ( $fs === '' ) { $fs = self::sc_css( $a, 'font-size' ); }
 			if ( $fw === '' ) { $fw = self::sc_css( $a, 'font-weight' ); }
 			if ( $tt === '' ) { $tt = self::sc_css( $a, 'text-transform' ); }
+			$items++;
+			// Capture drops transparent background-color, so a non-empty value is already a real fill.
+			$bg  = self::sc_css( $a, 'background-color' );
+			if ( $bg !== '' ) { $bgs[] = $bg; }
+			$r = self::sc_css( $a, 'border-radius' ); if ( preg_match( '/([0-9.]+)px/', $r, $rm ) && (float) $rm[1] > 0 ) { $rads[] = (float) $rm[1]; }
+			$bw = self::sc_css( $a, 'border-top-width' );
+			if ( preg_match( '/([0-9.]+)px/', $bw, $bm ) && (float) $bm[1] > 0 ) { $borders++; }
+			$td = self::sc_css( $a, 'text-decoration-line' );
+			if ( stripos( $td, 'underline' ) !== false ) { $underlines++; }
+			// `padding` is stamped as the shorthand (1–4 values); derive y=top, x=left.
+			$pad = self::sc_css( $a, 'padding' );
+			if ( $pad !== '' ) {
+				$pp = preg_split( '/\s+/', trim( $pad ) ); $n = count( $pp );
+				$top  = isset( $pp[0] ) && preg_match( '/([0-9.]+)px/', $pp[0], $tm ) ? (float) $tm[1] : 0;
+				$leftv = ( $n >= 4 ? $pp[3] : ( $n >= 2 ? $pp[1] : ( $pp[0] ?? '' ) ) );
+				$left = preg_match( '/([0-9.]+)px/', (string) $leftv, $lm ) ? (float) $lm[1] : 0;
+				if ( $left > 0 ) { $pads_x[] = $left; }
+				if ( $top > 0 )  { $pads_y[] = $top; }
+			}
 		}
 		if ( $colors ) {
 			$freq = array_count_values( $colors );
@@ -3454,6 +3752,31 @@ class FW_Site_Converter_Stitch {
 		if ( $fs !== '' ) { $u = self::css_len_to_unit( $fs ); if ( $u ) { $out['font_size'] = $u; } }
 		if ( preg_match( '/^(300|400|500|600|700|800)$/', trim( $fw ) ) ) { $out['font_weight'] = trim( $fw ); }
 		if ( $tt !== '' ) { $out['uppercase'] = ( stripos( $tt, 'uppercase' ) !== false ); }
+
+		/* --- H3 — Menu Item Style + item background + link padding, from the tallies above. A filled item
+		   (most links carry a non-transparent bg) → 'pill' when its radius is large (>=16px, a rounded chip)
+		   else 'box'; an item with a real border but no fill → 'outline'; underlined links → 'underline';
+		   otherwise 'none'. Only decide on a real signal (>= half the items agree) so a lone styled link
+		   never mislabels the whole nav. See header.md → menu_item_style. --- */
+		if ( $items >= 2 ) {
+			$half = $items / 2;
+			$filled = count( $bgs ) >= $half;
+			if ( $filled ) {
+				$rad = $rads ? max( $rads ) : 0;
+				$out['item_style'] = $rad >= 16 ? 'pill' : 'box';
+				$bgfreq = array_count_values( $bgs ); arsort( $bgfreq );
+				$out['item_bg'] = (string) array_key_first( $bgfreq );
+			} elseif ( $borders >= $half ) {
+				$out['item_style'] = 'outline';
+			} elseif ( $underlines >= $half ) {
+				$out['item_style'] = 'underline';
+			}
+			// Link padding — the median measured inset (rounded), so the converted item box matches the source.
+			$mid = function ( $arr ) { if ( ! $arr ) { return 0; } sort( $arr ); return $arr[ intval( floor( ( count( $arr ) - 1 ) / 2 ) ) ]; };
+			$px = $mid( $pads_x ); $py = $mid( $pads_y );
+			if ( $px > 0 ) { $out['pad_x'] = array( 'value' => round( $px ), 'unit' => 'px' ); }
+			if ( $py > 0 ) { $out['pad_y'] = array( 'value' => round( $py ), 'unit' => 'px' ); }
+		}
 		return $out;
 	}
 
@@ -3873,6 +4196,56 @@ class FW_Site_Converter_Stitch {
 				// otherwise (nav between logo and an actions group) stays centre
 			}
 		}
+		return $out;
+	}
+
+	/**
+	 * H5 — is the primary nav a ONE-PAGE anchor menu? True when there are ≥2 real nav items and EVERY
+	 * one targets an in-page anchor (`#id` or `/#id` / `page#id`). Such a source is a single-page site
+	 * whose menu highlights the active section as you scroll → the theme's Scroll Spy (nav_scrollspy).
+	 * The target sections already inherit their source `id` (section_id from the source id attribute),
+	 * so the anchors line up natively; we only flip the switch. Returns the list of target ids too.
+	 */
+	private static function nav_scrollspy_targets( $html ) {
+		$m = self::extract_menus( (string) $html );
+		$items = array();
+		foreach ( $m['menus'] as $menu ) {
+			if ( ( $menu['location'] ?? '' ) === 'primary' ) { $items = $menu['items']; break; }
+		}
+		if ( count( $items ) < 2 ) { return array(); }
+		$ids = array();
+		foreach ( $items as $it ) {
+			$url = trim( (string) ( $it['url'] ?? '' ) );
+			// Accept "#id", "/#id", "path#id" — but the fragment must be a REAL id, not a bare "#".
+			if ( ! preg_match( '/#([A-Za-z][\w-]*)$/', $url, $mm ) ) { return array(); } // any non-anchor link disqualifies
+			$ids[] = self::slug_from_id( $mm[1] );
+		}
+		return array_values( array_unique( array_filter( $ids ) ) );
+	}
+
+	/**
+	 * H10 — per-element responsive VISIBILITY from Tailwind display-utility classes. Maps the source's
+	 * `hidden` + `<bp>:block|flex|grid|inline*` (or `<bp>:hidden`) into the theme element's `visibility`
+	 * shape ({ 'hide-xs':bool, 'hide-sm':bool, 'hide-md':bool } → hide-xs/sm/md classes). The three theme
+	 * tiers approximate Tailwind's ladder: xs (<640) · sm (640–1024) · md (>=1024). Returns [] when the
+	 * element carries no responsive display signal (the common case — visible everywhere).
+	 */
+	private static function responsive_hide_visibility( $cls ) {
+		$c = ' ' . strtolower( (string) $cls ) . ' ';
+		$hide = array();
+		if ( strpos( $c, ' hidden ' ) !== false ) {
+			// Base-hidden, then revealed at a breakpoint → hide every tier BELOW that breakpoint.
+			if ( preg_match( '/\slg:(?:block|flex|grid|inline-flex|inline-block|inline|table)\s/', $c ) )      { $hide = array( 'hide-xs', 'hide-sm', 'hide-md' ); }
+			elseif ( preg_match( '/\smd:(?:block|flex|grid|inline-flex|inline-block|inline|table)\s/', $c ) )  { $hide = array( 'hide-xs', 'hide-sm' ); }
+			elseif ( preg_match( '/\ssm:(?:block|flex|grid|inline-flex|inline-block|inline|table)\s/', $c ) )  { $hide = array( 'hide-xs' ); }
+			else { $hide = array( 'hide-xs', 'hide-sm', 'hide-md' ); } // `hidden` with no reveal = hidden everywhere
+		} else {
+			// Visible by default, hidden FROM a breakpoint up → hide that tier (and above, within our 3 tiers).
+			if ( preg_match( '/\ssm:hidden\s/', $c ) )      { $hide = array( 'hide-sm', 'hide-md' ); }
+			elseif ( preg_match( '/\s(?:md|lg):hidden\s/', $c ) ) { $hide = array( 'hide-md' ); }
+		}
+		if ( ! $hide ) { return array(); }
+		$out = array(); foreach ( $hide as $h ) { $out[ $h ] = true; }
 		return $out;
 	}
 
@@ -6588,9 +6961,111 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 
+		// P1 — post-conversion PARITY REPORT. Re-measure the source and grade the emitted global tokens /
+		// chrome against it (container width, border colour, roundness, density, link underline, scroll-spy,
+		// section count, header/footer). A machine-readable pass/fail gate that turns the manual design-parity
+		// checklist into a converter-native artifact — and automatically grades every new detection rule.
+		$files['conversion-parity.json'] = self::build_parity_report(
+			$screens[0]['html'],
+			isset( $chrome['values'] ) && is_array( $chrome['values'] ) ? $chrome['values'] : array(),
+			is_array( $pages ) ? $pages : array()
+		);
+
 		$out['files']   = $files;
 		$out['screens'] = count( $screens );
 		return $out;
+	}
+
+	/**
+	 * P1 — deterministic conversion PARITY REPORT. Re-derives each measurable source signal and compares it
+	 * to the value the converter emitted, producing a pass/fail check list + an overall score. It grades the
+	 * global-token + chrome rules (container width, border colour, roundness, density, link underline,
+	 * scroll-spy, section count, header/footer presence). Each check is only counted when the SOURCE carries
+	 * a signal (so a source that legitimately has no borders doesn't fail the border check). Shape:
+	 *   { score:0-100, passed:int, total:int, checks:[ { id, label, source, converted, pass, note } ] }.
+	 *
+	 * @param string $html   source HTML (rendered, with data-sc-cs when captured)
+	 * @param array  $values emitted theme-settings values
+	 * @param array  $pages  emitted builder pages
+	 * @return array parity report (also written verbatim as conversion-parity.json)
+	 */
+	private static function build_parity_report( $html, array $values, array $pages ) {
+		$html   = (string) $html;
+		$checks = array();
+		$gl     = isset( $values['general_layout'] ) && is_array( $values['general_layout'] ) ? $values['general_layout'] : array();
+		$gt     = isset( $values['general_typography'] ) && is_array( $values['general_typography'] ) ? $values['general_typography'] : array();
+		$hl     = isset( $values['header_layout'] ) && is_array( $values['header_layout'] ) ? $values['header_layout'] : array();
+
+		$add = function ( $id, $label, $source, $converted, $pass, $note = '' ) use ( &$checks ) {
+			if ( $source === null ) { return; } // no source signal → not graded
+			$checks[] = array( 'id' => $id, 'label' => $label, 'source' => $source, 'converted' => $converted, 'pass' => (bool) $pass, 'note' => $note );
+		};
+
+		// Container width — source content width vs emitted lg tier (±8% tolerance).
+		$src_w = self::detect_site_content_width( $html );
+		if ( $src_w > 0 ) {
+			$conv_w = isset( $gl['layout_container_width']['lg']['value'] ) ? (int) $gl['layout_container_width']['lg']['value'] : 0;
+			$pass   = $conv_w > 0 && abs( $conv_w - $src_w ) <= $src_w * 0.08;
+			$add( 'container_width', 'Container width (px)', $src_w, $conv_w ?: '—', $pass, 'tolerance ±8%' );
+		}
+		// Border/divider colour — source mode vs emitted layout_border_color.custom.
+		$src_bc = self::detect_border_color( $html );
+		if ( $src_bc !== '' ) {
+			$conv_bc = isset( $gl['layout_border_color']['custom'] ) ? (string) $gl['layout_border_color']['custom'] : '';
+			$add( 'border_color', 'Border / divider colour', $src_bc, $conv_bc ?: '—', $conv_bc !== '', '' );
+		}
+		// Roundness bucket.
+		$src_r = self::detect_global_roundness( $html );
+		if ( $src_r !== '' ) {
+			$conv_r = isset( $gl['layout_roundness'] ) ? (string) $gl['layout_roundness'] : '';
+			$add( 'roundness', 'Corner roundness', $src_r, $conv_r ?: '—', $conv_r === $src_r, '' );
+		}
+		// Section density.
+		$src_d = self::detect_section_density( $html );
+		if ( $src_d !== '' ) {
+			$conv_d = isset( $gl['layout_section_spacing'] ) ? (string) $gl['layout_section_spacing'] : '';
+			$add( 'density', 'Content density', $src_d, $conv_d ?: '—', $conv_d === $src_d, '' );
+		}
+		// Body link underline.
+		$src_u = self::detect_link_underline( $html );
+		if ( $src_u !== '' ) {
+			$conv_u = isset( $gt['body_link_underline'] ) ? (string) $gt['body_link_underline'] : '';
+			$add( 'link_underline', 'Body link underline', $src_u, $conv_u ?: 'hover (default)', $conv_u === $src_u, '' );
+		}
+		// Scroll-spy (one-page anchor nav).
+		$src_spy = self::nav_scrollspy_targets( $html ) ? 'yes' : null;
+		if ( $src_spy !== null ) {
+			$conv_spy = isset( $hl['nav_scrollspy'] ) ? (string) $hl['nav_scrollspy'] : 'no';
+			$add( 'scrollspy', 'One-page Scroll Spy', 'yes', $conv_spy, $conv_spy === 'yes', '' );
+		}
+		// Section count — source <section> tags vs emitted builder top-level sections (informational ±1).
+		$dom = self::load_dom( $html );
+		if ( $dom ) {
+			$src_sec = $dom->getElementsByTagName( 'section' )->length;
+			if ( $src_sec > 0 ) {
+				$conv_sec = 0;
+				if ( $pages && isset( $pages[0]['builder'] ) && is_array( $pages[0]['builder'] ) ) { $conv_sec = count( $pages[0]['builder'] ); }
+				elseif ( $pages && isset( $pages[0]['content'] ) && is_string( $pages[0]['content'] ) ) { $conv_sec = substr_count( $pages[0]['content'], '"type":"section"' ); }
+				$add( 'section_count', 'Section count', $src_sec, $conv_sec ?: '—', $conv_sec > 0 && abs( $conv_sec - $src_sec ) <= 1, 'tolerance ±1' );
+			}
+			// Header + footer presence.
+			$src_hdr = self::header_root( $dom ) instanceof DOMElement;
+			$add( 'header', 'Header chrome', $src_hdr ? 'present' : null, isset( $values['header_logo'] ) ? 'mapped' : '—', isset( $values['header_logo'] ), '' );
+			$has_footer = $dom->getElementsByTagName( 'footer' )->item( 0 ) instanceof DOMElement;
+			$has_conv_footer = isset( $values['main_footer_columns'] ) || isset( $values['pre_footer_columns'] ) || isset( $values['footer_columns'] );
+			$add( 'footer', 'Footer chrome', $has_footer ? 'present' : null, $has_conv_footer ? 'mapped' : '—', $has_conv_footer, '' );
+		}
+
+		$total  = count( $checks );
+		$passed = 0;
+		foreach ( $checks as $c ) { if ( $c['pass'] ) { $passed++; } }
+		return array(
+			'schema' => 'unysonplus-conversion-parity/1',
+			'score'  => $total > 0 ? (int) round( $passed / $total * 100 ) : 100,
+			'passed' => $passed,
+			'total'  => $total,
+			'checks' => $checks,
+		);
 	}
 
 	/* ---------------------------------------------------------------------- *
