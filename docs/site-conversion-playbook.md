@@ -1190,6 +1190,8 @@ Two different decisions — only one is ever proactive:
   - a **single image** → **`media_image`**, NOT `gallery` (galleries are for multiple images) and NOT a code_block
   - a **video** (self-hosted or provider iframe) → **`media_video`**
   - a **hero scroll cue** (label + animated chevron) → **`scroll_indicator`**
+  - a **logo / "trusted by" strip** (a row of brand logos) → **`logo_grid`**, NOT a code_block
+  - a **CTA band** (centered heading + subtext + one button) → **`call_to_action`**, NOT assembled heading+text+button
 - **Effect addition** — motion the source does NOT have (parallax, scroll reveals, entrance animations,
   extra hover flourishes). **NEVER add proactively — only when the user asks "add animations."**
 

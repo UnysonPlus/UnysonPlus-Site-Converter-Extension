@@ -511,7 +511,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	private function run_convert_file() {
 		// New generic field names, with back-compat for the old `fw_sc_stitch_*` names.
 		$action = ( ( $_POST['fw_sc_convert_action'] ?? $_POST['fw_sc_stitch_action'] ?? '' ) === 'download' ) ? 'download' : 'import';
-		$opts   = array( 'dynamic_chrome' => true ); // faithful source look + EDITABLE chrome (logo/menu/footer widgets)
+		$opts   = array( 'dynamic_chrome' => true, 'hifi_css' => self::sc_hifi_opt() ); // faithful source look + EDITABLE chrome + hi-fi base
 		$html   = (string) wp_unslash( $_POST['fw_sc_file_html'] ?? $_POST['fw_sc_stitch_html'] ?? '' );
 		$title  = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? $_POST['fw_sc_stitch_title'] ?? 'Home' ) );
 		if ( $title === '' ) { $title = 'Home'; }
@@ -679,6 +679,15 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		if ( ! isset( $opts['dynamic_chrome'] ) ) {
 			$opts['dynamic_chrome'] = true; // faithful source look + EDITABLE chrome (parity with the admin path)
 		}
+		if ( ! isset( $opts['hifi_css'] ) ) {
+			$opts['hifi_css'] = true; // high-fidelity faithful base ON by default (build_from_html → build_bundle reads it)
+		}
+
+		// Pre-rendered HTML (from the capture service's headless-Chrome render) may be supplied by the
+		// dashboard so client-rendered / SPA sites convert from their FULLY RENDERED DOM instead of the
+		// empty SPA shell a raw wp_remote_get returns. When present, use it directly and skip the fetch.
+		$rendered_html = isset( $opts['rendered_html'] ) ? (string) $opts['rendered_html'] : '';
+		unset( $opts['rendered_html'] );
 
 		$source_url = trim( (string) $source_url );
 		if ( $source_url === '' || ! preg_match( '#^https?://#i', $source_url ) ) {
@@ -691,29 +700,34 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			return $out;
 		}
 
-		// Fetch the source HTML server-side (browser UA + follow redirects), reusing the media class's
-		// shared browser UA so the fetch matches the rest of the converter.
-		$ua   = class_exists( 'FW_Site_Converter_Media' ) ? FW_Site_Converter_Media::BROWSER_UA : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-		$resp = wp_remote_get( $source_url, array(
-			'timeout'     => 45,
-			'redirection' => 5,
-			'sslverify'   => false,
-			'user-agent'  => $ua,
-			'headers'     => array( 'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' ),
-		) );
-		if ( is_wp_error( $resp ) ) {
-			$out['error'] = sprintf( __( 'Could not fetch the source URL: %s', 'fw' ), $resp->get_error_message() );
-			return $out;
-		}
-		$code = (int) wp_remote_retrieve_response_code( $resp );
-		if ( $code === 0 || $code >= 400 ) {
-			$out['error'] = sprintf( __( 'The source URL returned HTTP %d.', 'fw' ), $code );
-			return $out;
-		}
-		$html = (string) wp_remote_retrieve_body( $resp );
-		if ( trim( $html ) === '' ) {
-			$out['error'] = __( 'The source URL returned an empty document.', 'fw' );
-			return $out;
+		if ( trim( $rendered_html ) !== '' ) {
+			// Use the pre-rendered HTML directly (SPA-safe path).
+			$html = $rendered_html;
+		} else {
+			// Fetch the source HTML server-side (browser UA + follow redirects), reusing the media class's
+			// shared browser UA so the fetch matches the rest of the converter.
+			$ua   = class_exists( 'FW_Site_Converter_Media' ) ? FW_Site_Converter_Media::BROWSER_UA : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+			$resp = wp_remote_get( $source_url, array(
+				'timeout'     => 45,
+				'redirection' => 5,
+				'sslverify'   => false,
+				'user-agent'  => $ua,
+				'headers'     => array( 'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' ),
+			) );
+			if ( is_wp_error( $resp ) ) {
+				$out['error'] = sprintf( __( 'Could not fetch the source URL: %s', 'fw' ), $resp->get_error_message() );
+				return $out;
+			}
+			$code = (int) wp_remote_retrieve_response_code( $resp );
+			if ( $code === 0 || $code >= 400 ) {
+				$out['error'] = sprintf( __( 'The source URL returned HTTP %d.', 'fw' ), $code );
+				return $out;
+			}
+			$html = (string) wp_remote_retrieve_body( $resp );
+			if ( trim( $html ) === '' ) {
+				$out['error'] = __( 'The source URL returned an empty document.', 'fw' );
+				return $out;
+			}
 		}
 
 		// Derive a page title from <title> (fallback to the host).
@@ -860,8 +874,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'callback'            => array( $this, '_rest_convert' ),
 			'permission_callback' => array( $this, '_rest_authorize' ),
 			'args'                => array(
-				'source_url' => array( 'required' => true, 'type' => 'string' ),
-				'dry_run'    => array( 'required' => false, 'type' => 'boolean', 'default' => false ),
+				'source_url'    => array( 'required' => true, 'type' => 'string' ),
+				'dry_run'       => array( 'required' => false, 'type' => 'boolean', 'default' => false ),
+				'hifi_css'      => array( 'required' => false, 'type' => 'boolean', 'default' => true ),
+				'rendered_html' => array( 'required' => false, 'type' => 'string' ),
 			),
 		) );
 		register_rest_route( 'fw-sc/v1', '/ping', array(
@@ -888,8 +904,21 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			return new WP_REST_Response( array( 'ok' => false, 'error' => __( 'source_url is required.', 'fw' ) ), 400 );
 		}
 		$dry_run = (bool) $request->get_param( 'dry_run' );
+		// High-fidelity CSS faithful base — default ON when the param is absent (parity with the admin
+		// checkbox default + build_bundle's own default). Reproduces the source's exact look as an
+		// editable, specificity-0 base (theme settings / presets still override).
+		$hifi = ( null === $request->get_param( 'hifi_css' ) ) ? true : (bool) $request->get_param( 'hifi_css' );
 
-		$result = $this->run_url_conversion( $source_url, array( 'dynamic_chrome' => true, 'dry_run' => $dry_run ) );
+		// Optional pre-rendered HTML from the capture service's headless render (SPA-safe). When present,
+		// run_url_conversion uses it directly instead of a raw wp_remote_get of the SPA shell.
+		$rendered_html = (string) $request->get_param( 'rendered_html' );
+
+		$result = $this->run_url_conversion( $source_url, array(
+			'dynamic_chrome' => true,
+			'dry_run'        => $dry_run,
+			'hifi_css'       => $hifi,
+			'rendered_html'  => $rendered_html,
+		) );
 
 		if ( empty( $result['ok'] ) ) {
 			// A bad source URL / unreachable host = client-ish (400); anything else = server-side (500).
@@ -1002,7 +1031,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$html  = (string) wp_unslash( $_POST['fw_sc_file_html'] ?? '' );
 		$title = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? 'Home' ) );
 		if ( $title === '' ) { $title = 'Home'; }
-		$opts  = array( 'dynamic_chrome' => true ); // faithful source look + EDITABLE chrome (same as the direct submit path)
+		$opts  = array( 'dynamic_chrome' => true, 'hifi_css' => self::sc_hifi_opt() ); // faithful source look + EDITABLE chrome + hi-fi base
 
 		$bundle = null;
 		$file   = $_FILES['fw_sc_file'] ?? null;
@@ -1104,6 +1133,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			? FW_Site_Converter_Tailwind::parse_config( (string) $stash['html'] )
 			: array();
 		FW_Site_Converter_Mapper::set_style_config( $cfg );
+
+		// Re-enable the hi-fi faithful base for the REBUILD (the mapper's hifi flag is OFF between requests;
+		// build_bundle set it during prepare, but build_pages runs standalone here). Honor the panel's
+		// "High-fidelity CSS" checkbox (posted opt_hifi='1'/'0'); default ON when absent.
+		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_hifi_css' ) ) {
+			$hifi_build = ! ( isset( $_POST['opt_hifi'] ) && '0' === (string) $_POST['opt_hifi'] );
+			FW_Site_Converter_Mapper::set_hifi_css( $hifi_build );
+		}
 
 		$__am = get_transient( $this->assets_key() );
 		FW_Site_Converter_Mapper::set_assets( is_array( $__am ) ? $__am : array() ); // "Attach media" uploads → used by the mapper
@@ -1537,6 +1574,25 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			if ( '' !== $t && ctype_digit( $t ) ) { $out[] = (int) $t; }
 		}
 		return $out;
+	}
+
+	/**
+	 * Read the "High-fidelity CSS" convert option from the posted request. The Convert panel's checkbox
+	 * posts `fw_sc_hifi` (=1 when checked, absent when unchecked) alongside a hidden `fw_sc_hifi_present`
+	 * that always posts, so an ABSENT `fw_sc_hifi` with the present-flag = the user unchecked it (→ false);
+	 * a request with NEITHER field (a programmatic / back-compat caller) defaults ON. The service/URL flow
+	 * posts `fw_sc_hifi` explicitly as '1'/'0'. DEFAULT ON — parity with build_bundle's own default.
+	 *
+	 * @return bool whether the hi-fi faithful base is requested.
+	 */
+	private static function sc_hifi_opt() {
+		if ( isset( $_POST['fw_sc_hifi_present'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+			return ! empty( $_POST['fw_sc_hifi'] ) && '0' !== (string) $_POST['fw_sc_hifi']; // phpcs:ignore WordPress.Security.NonceVerification
+		}
+		if ( isset( $_POST['fw_sc_hifi'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+			return '1' === (string) $_POST['fw_sc_hifi'] || 'true' === (string) $_POST['fw_sc_hifi']; // phpcs:ignore WordPress.Security.NonceVerification
+		}
+		return true; // default ON
 	}
 
 	/**
@@ -2215,6 +2271,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-header" checked> <?php esc_html_e( 'Capture header', 'fw' ); ?></label>
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-footer" checked> <?php esc_html_e( 'Capture footer', 'fw' ); ?></label>
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-media" checked> <?php esc_html_e( 'Import images', 'fw' ); ?></label>
+						<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-hifi" name="fw_sc_hifi" value="1" checked> <?php esc_html_e( 'High-fidelity CSS (faithful base)', 'fw' ); ?></label>
+						<input type="hidden" name="fw_sc_hifi_present" value="1">
+						<span style="display:block;color:#646970;font-size:12px;margin:.15em 0 .3em"><?php esc_html_e( 'Reproduces the source’s exact look as an editable, low-priority base (theme settings/presets still override). Off = leaner, purely-native output.', 'fw' ); ?></span>
 						<span style="color:#646970;font-size:12px"><?php esc_html_e( 'Runtime-CSS builder exports (Google Stitch / Tailwind CDN, Lovable, v0) are rendered in a real browser automatically when the capture service is running — no option needed. A “source bundle” (.zip of already-rendered HTML + media) always converts offline.', 'fw' ); ?></span>
 				</p>
 				<p style="margin:.2em 0 1.1em">
@@ -2383,6 +2442,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						fd.append( 'opt_media',  optEl( 'fw-sc-opt-media' ) );
 						fd.append( 'opt_header', optEl( 'fw-sc-opt-header' ) );
 						fd.append( 'opt_footer', optEl( 'fw-sc-opt-footer' ) );
+						fd.append( 'opt_hifi',   optEl( 'fw-sc-opt-hifi' ) );
 					if ( aiCss ) { fd.append( 'ai_css', aiCss ); }
 						if ( aiHeader ) { fd.append( 'ai_header_html', aiHeader ); }
 						if ( aiFooter ) { fd.append( 'ai_footer_html', aiFooter ); }
@@ -2438,6 +2498,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						var fd = new FormData();
 						fd.append( 'action', 'fw_sc_convert_prepare' ); fd.append( '_wpnonce', nonce );
 						fd.append( 'fw_sc_file_html', renderedHtml );
+						// Carry the "High-fidelity CSS" choice into the prepare step (this manual FormData does
+						// not include the form's named fields). present-flag + value = default-ON, unchecked→off.
+						( function () { var e = document.getElementById( 'fw-sc-opt-hifi' ); fd.append( 'fw_sc_hifi_present', '1' ); fd.append( 'fw_sc_hifi', ( ! e || e.checked ) ? '1' : '0' ); } )();
 						// URL flow only: the captured source screenshot (base64 PNG) rides along so the generated
 						// theme gets a real Appearance → Themes thumbnail. One-shot — cleared after use so a later
 						// file conversion doesn't reuse a stale shot.

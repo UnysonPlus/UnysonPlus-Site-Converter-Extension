@@ -255,6 +255,14 @@ class FW_Site_Converter_Tailwind {
 		}
 		if ( isset( $fixed[ $u ] ) ) { return $fixed[ $u ]; }
 
+		// --- scale-N transform (scale-0 … scale-150) — the general Tailwind scale utility. Covers the common
+		// button micro-interaction `hover:scale-105` / `active:scale-95` (the fixed map above only had scale-95),
+		// so a source button's grow-on-hover survives (compile_class_set routes the `hover:` variant to :hover).
+		if ( preg_match( '/^scale-(\d{1,3})$/', $u, $m ) ) {
+			$s = rtrim( rtrim( sprintf( '%.2f', (int) $m[1] / 100 ), '0' ), '.' );
+			return 'transform:scale(' . $s . ')';
+		}
+
 		// --- border-radius with an arbitrary value: rounded-[24px], rounded-t-[..], rounded-l-[..] ---
 		if ( preg_match( '/^rounded(?:-(t|b|l|r|tl|tr|bl|br))?-(\[[^\]]+\])$/', $u, $m ) ) {
 			$v    = self::len( $m[2] );

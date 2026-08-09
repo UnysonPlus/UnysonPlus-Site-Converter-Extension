@@ -169,6 +169,9 @@ class FW_Site_Converter_Theme_Generator {
 				),
 			),
 			'custom_css' => isset( $c['custom_css'] ) ? (string) $c['custom_css'] : '',
+			// Source site favicon (absolute URL). Downloaded at build time into favicon.<ext> and used as
+			// the WP Site Icon (raster) + a self-contained <head> link fallback. '' → no favicon emitted.
+			'favicon'    => isset( $c['favicon'] ) && $c['favicon'] !== '' ? esc_url_raw( (string) $c['favicon'] ) : '',
 			// Captured WordPress theme screenshot (1200×900 PNG, base64 — no data: prefix). Travels through
 			// the URL-conversion flow (capture service → admin JS → WP POST) so a URL-converted theme gets a
 			// real Appearance → Themes thumbnail. Carried verbatim; written to screenshot.png in install()/build_zip.
@@ -222,6 +225,9 @@ class FW_Site_Converter_Theme_Generator {
 				// `.sc-scrolled` rule + a scroll toggle in interactivity.js.
 				'header_scroll' => ( isset( $raw_chrome_src['header_scroll'] ) && is_array( $raw_chrome_src['header_scroll'] ) ) ? $raw_chrome_src['header_scroll'] : array(),
 			),
+			// CONVERSION DEBUG MAP (hash → what the converter did/dropped per node) — carried verbatim from
+			// the bundle's theme-design.json so build_files() can emit it as conversion-map.json.
+			'conversion_map' => ( isset( $c['conversion_map'] ) && is_array( $c['conversion_map'] ) ) ? $c['conversion_map'] : array(),
 		);
 	}
 
@@ -601,6 +607,244 @@ class FW_Site_Converter_Theme_Generator {
 		return '';
 	}
 
+	/* ---------------------------------------------------------------------- *
+	 * Pass #1 — web-font rehosting.
+	 * ---------------------------------------------------------------------- */
+
+	/**
+	 * Download the source's webfonts and self-host them in the theme.
+	 *
+	 * Gathers every font stylesheet the conversion knows about — the picked Google
+	 * Fonts css2 URL plus any googleapis link in the raw-chrome linked_css — expands
+	 * each to its @font-face rules (fetched with a modern browser UA so gstatic serves
+	 * woff2), and also pulls any @font-face already present in the carried CSS. Every
+	 * url() inside those faces is downloaded and rewritten to a local relative path
+	 * (url(fonts/<name>)). Returns the binary files + the rewritten @font-face CSS.
+	 *
+	 * Best-effort and non-fatal: on any network failure it returns an empty result and
+	 * the caller keeps the remote <link> (today's behaviour). Bounded to MAX faces so a
+	 * pathological source can't stall the install.
+	 *
+	 * @param array $cfg Normalized config.
+	 * @return array { files: array<relpath,binary>, css: string, families: string[] }
+	 */
+	private static function rehost_fonts( array $cfg ) {
+		$out = array( 'files' => array(), 'css' => '', 'families' => array() );
+		if ( ! function_exists( 'wp_remote_get' ) ) {
+			return $out;
+		}
+
+		// 1. Collect font stylesheet URLs (Google css2), skipping icon fonts.
+		$sheets = array();
+		$g = isset( $cfg['fonts']['google'] ) ? (string) $cfg['fonts']['google'] : '';
+		if ( $g !== '' ) {
+			$sheets[] = $g;
+		}
+		$linked = isset( $cfg['raw_chrome']['linked_css'] ) && is_array( $cfg['raw_chrome']['linked_css'] ) ? $cfg['raw_chrome']['linked_css'] : array();
+		foreach ( $linked as $u ) {
+			$u = (string) $u;
+			if ( stripos( $u, 'fonts.googleapis.com/css' ) !== false
+				&& stripos( $u, 'Material+Symbols' ) === false
+				&& stripos( $u, 'Material+Icons' ) === false ) {
+				$sheets[] = $u;
+			}
+		}
+		$sheets = array_values( array_unique( $sheets ) );
+
+		// 2. Assemble the raw @font-face CSS: expand each stylesheet, then add any
+		//    @font-face already carried inline (self-hosted origin fonts).
+		$facecss = '';
+		foreach ( $sheets as $u ) {
+			$css = self::http_get_text( $u );
+			if ( $css !== '' ) {
+				$facecss .= "\n" . $css;
+			}
+		}
+		foreach ( array( 'base_css', 'css' ) as $k ) {
+			$src = isset( $cfg['raw_chrome'][ $k ] ) ? (string) $cfg['raw_chrome'][ $k ] : '';
+			if ( $src !== '' && stripos( $src, '@font-face' ) !== false ) {
+				$facecss .= "\n" . self::extract_font_faces( $src );
+			}
+		}
+		if ( trim( $facecss ) === '' ) {
+			return $out;
+		}
+
+		// 3. Download each url() face and rewrite it to a local relative path. Dedup by URL.
+		$seen = array();
+		$idx  = 0;
+		$max  = 40;
+		$fams = array();
+		$rewritten = preg_replace_callback(
+			'/url\(\s*([\'"]?)([^\'")]+)\1\s*\)/i',
+			function ( $m ) use ( &$out, &$seen, &$idx, &$max, $cfg ) {
+				$url = trim( $m[2] );
+				if ( $url === '' || stripos( $url, 'data:' ) === 0 ) {
+					return $m[0];
+				}
+				$abs = self::abs_font_url( $url, $cfg );
+				$ext = self::font_ext( $abs );
+				if ( $abs === '' || $ext === '' ) {
+					return $m[0]; // not a downloadable font file → leave the reference alone.
+				}
+				if ( isset( $seen[ $abs ] ) ) {
+					return "url(fonts/" . $seen[ $abs ] . ")";
+				}
+				if ( $idx >= $max ) {
+					return $m[0]; // safety cap reached — keep remote.
+				}
+				$bin = self::http_get_bin( $abs );
+				if ( $bin === '' ) {
+					return $m[0];
+				}
+				$name = 'sc-font-' . ( ++$idx ) . '.' . $ext;
+				$out['files'][ 'fonts/' . $name ] = $bin;
+				$seen[ $abs ] = $name;
+				return "url(fonts/" . $name . ")";
+			},
+			$facecss
+		);
+
+		if ( empty( $out['files'] ) ) {
+			return $out; // downloaded nothing → caller keeps the remote link.
+		}
+		// Family names (for reference / future Custom-Font registration).
+		if ( preg_match_all( '/font-family\s*:\s*([\'"]?)([^\'";}]+)\1/i', $rewritten, $fm ) ) {
+			$fams = array_values( array_unique( array_map( 'trim', $fm[2] ) ) );
+		}
+		$out['families'] = $fams;
+		$out['css'] = "/* Site Converter — self-hosted webfonts (rehosted from source; no CDN dependency). */\n"
+			. trim( $rewritten ) . "\n\n";
+		return $out;
+	}
+
+	/** Pull just the @font-face { … } blocks out of a CSS string. */
+	private static function extract_font_faces( $css ) {
+		if ( ! preg_match_all( '/@font-face\s*\{[^}]*\}/i', (string) $css, $m ) ) {
+			return '';
+		}
+		return implode( "\n", $m[0] );
+	}
+
+	/** Resolve a font url() to an absolute http(s) URL (protocol-relative → https; origin-relative → source origin). */
+	private static function abs_font_url( $url, array $cfg ) {
+		$url = trim( (string) $url );
+		if ( $url === '' ) {
+			return '';
+		}
+		if ( preg_match( '#^https?://#i', $url ) ) {
+			return $url;
+		}
+		if ( strpos( $url, '//' ) === 0 ) {
+			return 'https:' . $url;
+		}
+		// Origin-relative (/fonts/x.woff2) → resolve against the captured source origin.
+		$src = isset( $cfg['source_url'] ) ? (string) $cfg['source_url'] : '';
+		$origin = $src !== '' ? self::origin( $src ) : '';
+		if ( $origin !== '' && strlen( $url ) && $url[0] === '/' ) {
+			return $origin . $url;
+		}
+		return ''; // relative-to-CSS paths aren't resolvable here — skip (keep remote).
+	}
+
+	/** File extension of a font URL (woff2/woff/ttf/otf/eot), or '' if not a font. */
+	private static function font_ext( $url ) {
+		if ( preg_match( '/\.(woff2|woff|ttf|otf|eot)(?:$|[?#])/i', (string) $url, $m ) ) {
+			return strtolower( $m[1] );
+		}
+		return '';
+	}
+
+	/** GET a text resource (CSS) with a desktop-Chrome UA so Google Fonts serves woff2. '' on failure. */
+	private static function http_get_text( $url ) {
+		$res = wp_remote_get(
+			(string) $url,
+			array(
+				'timeout'    => 12,
+				'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+			)
+		);
+		if ( is_wp_error( $res ) || (int) wp_remote_retrieve_response_code( $res ) !== 200 ) {
+			return '';
+		}
+		return (string) wp_remote_retrieve_body( $res );
+	}
+
+	/** GET a binary resource (font/image file). '' on failure or an implausible size. */
+	private static function http_get_bin( $url, $max = 5242880 ) {
+		$res = wp_remote_get( (string) $url, array( 'timeout' => 15 ) );
+		if ( is_wp_error( $res ) || (int) wp_remote_retrieve_response_code( $res ) !== 200 ) {
+			return '';
+		}
+		$body = (string) wp_remote_retrieve_body( $res );
+		if ( strlen( $body ) < 32 || strlen( $body ) > (int) $max ) {
+			return ''; // implausible size — skip.
+		}
+		return $body;
+	}
+
+	/* ---------------------------------------------------------------------- *
+	 * Pass #3 — background-image & asset rehosting.
+	 * ---------------------------------------------------------------------- */
+
+	/**
+	 * Rewrite every image url() inside a CSS string to a locally-bundled copy.
+	 *
+	 * Downloads each referenced background/asset image into the theme (assets/img/…)
+	 * and rewrites the reference to a relative path, so the converted theme is fully
+	 * self-contained (no hotlinks to the source origin). Fonts (woff/ttf/…) and data:
+	 * URIs are left untouched — fonts are handled by rehost_fonts(). Shared accumulators
+	 * (&$files, &$seen, &$idx) dedupe across every CSS block in one build.
+	 *
+	 * @param string $css   CSS text.
+	 * @param array  $files (ref) relpath => binary map to append downloaded files to.
+	 * @param array  $seen  (ref) absolute-url => local-name dedupe map.
+	 * @param int    $idx   (ref) running file counter.
+	 * @param array  $cfg   Normalized config (for origin resolution).
+	 * @return string Rewritten CSS.
+	 */
+	private static function rehost_css_assets( $css, array &$files, array &$seen, &$idx, array $cfg ) {
+		$max = 30;
+		return preg_replace_callback(
+			'/url\(\s*([\'"]?)([^\'")]+)\1\s*\)/i',
+			function ( $m ) use ( &$files, &$seen, &$idx, $max, $cfg ) {
+				$url = trim( $m[2] );
+				if ( $url === '' || stripos( $url, 'data:' ) === 0 ) {
+					return $m[0];
+				}
+				$abs = self::abs_font_url( $url, $cfg ); // generic http/protocol-/origin-relative resolver.
+				$ext = self::image_ext( $abs );
+				if ( $abs === '' || $ext === '' ) {
+					return $m[0]; // not a bundleable image (or a font — left for rehost_fonts).
+				}
+				if ( isset( $seen[ $abs ] ) ) {
+					return "url(assets/img/" . $seen[ $abs ] . ")";
+				}
+				if ( $idx >= $max ) {
+					return $m[0];
+				}
+				$bin = self::http_get_bin( $abs, 8 * 1024 * 1024 );
+				if ( $bin === '' ) {
+					return $m[0];
+				}
+				$name = 'sc-bg-' . ( ++$idx ) . '.' . $ext;
+				$files[ 'assets/img/' . $name ] = $bin;
+				$seen[ $abs ] = $name;
+				return "url(assets/img/" . $name . ")";
+			},
+			(string) $css
+		);
+	}
+
+	/** File extension of an image URL (theme asset — SVG allowed, unlike the WP media library). '' if not an image. */
+	private static function image_ext( $url ) {
+		if ( preg_match( '/\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)(?:$|[?#])/i', (string) $url, $m ) ) {
+			$e = strtolower( $m[1] );
+			return $e === 'jpeg' ? 'jpg' : $e;
+		}
+		return '';
+	}
+
 	/** Origin (scheme://host[:port]) of a URL, or '' if unparseable. */
 	private static function origin( $url ) {
 		$p = wp_parse_url( (string) $url );
@@ -976,10 +1220,71 @@ class FW_Site_Converter_Theme_Generator {
 	 * @return array<string,string> relpath => file contents
 	 */
 	public static function build_files( array $cfg ) {
+		// Pass #1 — WEB-FONT REHOSTING. Download the source's webfonts (Google Fonts
+		// stylesheets + any carried @font-face) into the theme and self-host them, so the
+		// converted site has NO runtime dependency on the origin / Google CDN. On success
+		// the rewritten @font-face CSS is injected into style.css (relative url(fonts/…)),
+		// the binary faces are added to the file map, and functions.php skips the remote
+		// enqueue. Falls back to the remote link silently if nothing could be downloaded.
+		$font_files = array();
+		if ( empty( $cfg['no_rehost_fonts'] ) ) {
+			$reh = self::rehost_fonts( $cfg );
+			if ( $reh['css'] !== '' && ! empty( $reh['files'] ) ) {
+				$cfg['rehosted_fonts'] = array(
+					'css'      => $reh['css'],
+					'families' => $reh['families'],
+				);
+				$font_files = $reh['files'];
+			}
+		}
+
+		// Pass #3 — BACKGROUND-IMAGE & ASSET REHOSTING. Sideload every image url() in the
+		// carried chrome CSS into the theme (assets/img/…) and rewrite the reference to a
+		// relative path, so the exported theme is fully self-contained (no origin hotlinks).
+		// Must run BEFORE style_css()/chrome_css() reads the raw_chrome CSS.
+		$asset_files = array();
+		if ( empty( $cfg['no_rehost_assets'] ) && ! empty( $cfg['raw_chrome'] ) && is_array( $cfg['raw_chrome'] ) ) {
+			$seen = array();
+			$aidx = 0;
+			foreach ( array( 'base_css', 'util_css', 'header_css', 'footer_css', 'css' ) as $k ) {
+				if ( ! empty( $cfg['raw_chrome'][ $k ] ) && is_string( $cfg['raw_chrome'][ $k ] ) ) {
+					$cfg['raw_chrome'][ $k ] = self::rehost_css_assets( $cfg['raw_chrome'][ $k ], $asset_files, $seen, $aidx, $cfg );
+				}
+			}
+		}
+
+		// FAVICON — download the source favicon into the theme as favicon.<ext>. On success the file is
+		// bundled and $cfg['favicon_file']/['favicon_raster'] flag functions.php to emit the Site Icon seed
+		// + <head> link. Best-effort: any download/size failure just skips (no favicon, never fatal).
+		$favicon_file = '';
+		$favicon_bin  = '';
+		if ( ! empty( $cfg['favicon'] ) ) {
+			$ext = self::image_ext( (string) $cfg['favicon'] );
+			if ( $ext === '' || ! in_array( $ext, array( 'png', 'jpg', 'gif', 'webp', 'avif', 'ico' ), true ) ) {
+				$ext = 'png';
+			}
+			$bin = self::http_get_bin( (string) $cfg['favicon'], 2 * 1024 * 1024 );
+			if ( $bin !== '' ) {
+				$favicon_file = 'favicon.' . $ext;
+				$favicon_bin  = $bin;
+				$cfg['favicon_file']   = $favicon_file;
+				$cfg['favicon_raster'] = in_array( $ext, array( 'png', 'jpg', 'gif', 'webp', 'avif' ), true );
+			}
+		}
+
 		$files = array(
 			'style.css'                         => self::style_css( $cfg ),
 			'functions.php'                     => self::functions_php( $cfg ),
 		);
+		if ( $favicon_file !== '' ) {
+			$files[ $favicon_file ] = $favicon_bin; // binary — written verbatim by write_files()/zip.
+		}
+		foreach ( $font_files as $rel => $bin ) {
+			$files[ $rel ] = $bin; // fonts/<name>.woff2 — binary, written verbatim by write_files()/zip.
+		}
+		foreach ( $asset_files as $rel => $bin ) {
+			$files[ $rel ] = $bin; // assets/img/<name> — bundled background/asset images.
+		}
 
 		// CHROME via Theme Settings → NEAR-EMPTY child theme: skip baking header.php/footer.php +
 		// the chrome template parts entirely, so get_header()/get_footer() fall back to the PARENT
@@ -1008,6 +1313,26 @@ class FW_Site_Converter_Theme_Generator {
 		if ( self::has_raw_chrome( $cfg ) ) {
 			$files['assets/js/interactivity.js'] = self::interactivity_js();
 		}
+
+		// CROSS-ORIGIN-SAFE INSPECTOR — a self-contained vanilla script bundled into EVERY converted
+		// theme. It stays dormant on the live site and only activates when the page URL carries
+		// `?upw-inspect=1` (the dashboard adds it to the embedded iframe). Because it runs INSIDE the
+		// converted page it is same-origin to the page + its conversion-map.json, so the hover-inspector
+		// and the footer-gap/height report work where the parent dashboard (a different origin) cannot.
+		// Always emitted; the query-param guard (here + the functions.php enqueue) keeps it inert live.
+		$files['assets/inspector.js'] = self::inspector_js();
+
+		// CONVERSION DEBUG MAP — bundle the per-node conversion-map.json (hash → { sc, mapped, src_cls,
+		// dropped, custom_css }) into the theme so the dashboard hover-inspector can fetch it same-origin at
+		// <site>/wp-content/themes/<slug>/conversion-map.json. Best-effort: a failure must never break the
+		// theme build, and it rides BOTH the install and zip paths (both feed off build_files()).
+		if ( ! empty( $cfg['conversion_map'] ) && is_array( $cfg['conversion_map'] ) ) {
+			$json = function_exists( 'wp_json_encode' ) ? wp_json_encode( $cfg['conversion_map'] ) : json_encode( $cfg['conversion_map'] );
+			if ( is_string( $json ) && $json !== '' ) {
+				$files['conversion-map.json'] = $json;
+			}
+		}
+
 		return $files;
 	}
 
@@ -1158,6 +1483,204 @@ class FW_Site_Converter_Theme_Generator {
 JS;
 	}
 
+	/**
+	 * Cross-origin-safe in-page inspector. Runs INSIDE the converted page (so it is same-origin to the
+	 * page + its conversion-map.json). Dormant unless the URL carries `?upw-inspect` (the dashboard adds
+	 * it to the embedded iframe). When active it: (a) injects a no-fill <style> so the sticky footer sits
+	 * right after content (kills the viewport-fill gap); (b) measures content height and postMessages it
+	 * to the parent dashboard so it can size the iframe cross-origin-safely; (c) loads the conversion map;
+	 * (d) draws a hover outline + a tooltip describing each node's shortcode/mapped/dropped/CSS + live
+	 * computed styles. Pure vanilla JS, no deps.
+	 *
+	 * @return string
+	 */
+	private static function inspector_js() {
+		return <<<'JS'
+/* Unyson+ Site Converter — cross-origin-safe in-page inspector. Activates ONLY when the URL carries
+   `upw-inspect` (the dashboard adds `?upw-inspect=1` to the embedded iframe), so it never affects the
+   live site. Runs inside the converted page → same-origin to the page + conversion-map.json. */
+( function () {
+	'use strict';
+	try {
+		var q = String( location.search || '' );
+		if ( q.indexOf( 'upw-inspect' ) === -1 ) { return; }
+		// Truthy check: `upw-inspect` (bare) or `upw-inspect=1` activates; `upw-inspect=0`/`false` does not.
+		var m = q.match( /[?&]upw-inspect(?:=([^&]*))?/ );
+		if ( m && m[1] !== undefined ) {
+			var v = decodeURIComponent( m[1] ).toLowerCase();
+			if ( v === '0' || v === 'false' || v === 'no' || v === 'off' ) { return; }
+		}
+	} catch ( e ) { return; }
+
+	var doc = document, HASH = /\bu([0-9a-f]{8})\b/, map = null;
+
+	/* (a) Neutralise the sticky-footer viewport-fill so the footer sits right after content (no gap). */
+	function injectNoFill() {
+		if ( doc.getElementById( '__upw_nofill' ) ) { return; }
+		var st = doc.createElement( 'style' );
+		st.id = '__upw_nofill';
+		st.textContent = 'html,body{min-height:0!important;height:auto!important}'
+			+ '#page,.site,#wrapper,.site-wrapper,#content,.site-content,#main,main,.site-main,.fw-page,'
+			+ '.content-area,.hfeed,#primary,.fw-main,.fw-body{min-height:0!important;height:auto!important;flex:0 1 auto!important}';
+		( doc.head || doc.documentElement ).appendChild( st );
+	}
+
+	/* (b) Measure content height and post it to the parent dashboard so it can size the iframe. */
+	function measure() {
+		return Math.max(
+			doc.body ? doc.body.scrollHeight : 0,
+			doc.documentElement ? doc.documentElement.offsetHeight : 0
+		);
+	}
+	function post() {
+		try {
+			if ( window.parent && window.parent !== window ) {
+				window.parent.postMessage( { type: 'upw-inspect', height: measure() }, '*' );
+			}
+		} catch ( e ) {}
+	}
+
+	/* (c) Load the conversion map (same-origin now, so it just works). */
+	function loadMap() {
+		var urls = [];
+		try {
+			var lk = doc.querySelector( 'link[rel="unysonplus-conversion-map"]' );
+			if ( lk && lk.getAttribute( 'href' ) ) { urls.push( new URL( lk.getAttribute( 'href' ), doc.baseURI ).href ); }
+			if ( ! urls.length ) {
+				var els = doc.querySelectorAll( 'link[href],script[src],img[src]' );
+				for ( var i = 0; i < els.length; i++ ) {
+					var u = els[ i ].getAttribute( 'href' ) || els[ i ].getAttribute( 'src' ) || '';
+					var mm = u.match( /^(.*\/wp-content\/themes\/[^\/]+)\// );
+					if ( mm ) { urls.push( new URL( mm[1] + '/conversion-map.json', doc.baseURI ).href ); break; }
+				}
+			}
+		} catch ( e ) {}
+		( function next( idx ) {
+			if ( idx >= urls.length ) { return; }
+			try {
+				fetch( urls[ idx ], { cache: 'no-store' } ).then( function ( r ) {
+					return r && r.ok ? r.json() : null;
+				} ).then( function ( j ) {
+					if ( j && typeof j === 'object' ) { map = j; } else { next( idx + 1 ); }
+				} ).catch( function () { next( idx + 1 ); } );
+			} catch ( e ) { next( idx + 1 ); }
+		} )( 0 );
+	}
+
+	/* (d) Hover inspector — outline overlay + tooltip. */
+	var box, tip;
+	function ui() {
+		if ( box ) { return; }
+		box = doc.createElement( 'div' );
+		box.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483646;display:none;'
+			+ 'border:2px solid #16b981;background:rgba(22,185,129,.12);border-radius:3px';
+		tip = doc.createElement( 'div' );
+		tip.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;display:none;max-width:340px;'
+			+ 'background:rgba(18,22,30,.97);border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:10px 12px;'
+			+ 'box-shadow:0 12px 34px rgba(0,0,0,.5);font:12px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#e7eaf0';
+		doc.body.appendChild( box );
+		doc.body.appendChild( tip );
+	}
+	function esc( s ) { return String( s ).replace( /[&<>"]/g, function ( c ) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ c ]; } ); }
+	function classOf( el ) { return ( el && typeof el.className === 'string' ) ? el.className : ( ( el && el.getAttribute && el.getAttribute( 'class' ) ) || '' ); }
+	function inferSc( el ) {
+		var cn = classOf( el );
+		if ( /\bheading(-|\b)/.test( cn ) ) { return 'special_heading'; }
+		if ( /\btext-block\b/.test( cn ) ) { return 'text_block'; }
+		if ( /\bicon-box\b/.test( cn ) ) { return 'icon_box'; }
+		if ( /\b(btn|button)\b/.test( cn ) ) { return 'button'; }
+		if ( /\bbadge\b/.test( cn ) ) { return 'badge'; }
+		return '';
+	}
+	function liveHtml( el ) {
+		var cs;
+		try { cs = el.ownerDocument.defaultView.getComputedStyle( el ); } catch ( e ) { return ''; }
+		if ( ! cs ) { return ''; }
+		var rows = [], push = function ( k, v ) { if ( v != null && v !== '' ) { rows.push( [ k, v ] ); } };
+		push( 'font-size', cs.fontSize ); push( 'font-weight', cs.fontWeight ); push( 'line-height', cs.lineHeight );
+		push( 'color', cs.color );
+		var bg = cs.backgroundColor; if ( bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent' ) { push( 'background', bg ); }
+		push( 'margin', cs.margin ); push( 'padding', cs.padding );
+		if ( cs.borderRadius && cs.borderRadius !== '0px' ) { push( 'border-radius', cs.borderRadius ); }
+		push( 'text-align', cs.textAlign );
+		return '<div style="border-top:1px solid rgba(255,255,255,.1);margin-top:6px;padding-top:6px">'
+			+ '<div style="color:#8a93a3;font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Live computed</div>'
+			+ rows.map( function ( r ) { return '<div style="display:flex;gap:8px"><span style="color:#a7b0c0;min-width:86px">' + r[0] + '</span><span style="font-family:monospace;color:#e7eaf0">' + esc( String( r[1] ).slice( 0, 44 ) ) + '</span></div>'; } ).join( '' )
+			+ '</div>';
+	}
+	function tipHtml( hash, el ) {
+		var rec = ( hash && map && map[ hash ] ) || null;
+		var sc = ( rec && rec.sc ) || inferSc( el ) || '—';
+		var h = '<div style="font-weight:700;color:#16b981;margin-bottom:6px;font-family:monospace;font-size:12px">' + esc( sc )
+			+ ( hash ? ' <span style="color:#8a93a3;font-weight:400">#' + esc( hash ) + '</span>' : '' ) + '</div>';
+		if ( rec ) {
+			var mapped = ( rec.mapped && typeof rec.mapped === 'object' ) ? Object.keys( rec.mapped ) : [];
+			if ( mapped.length ) {
+				h += '<div style="margin-bottom:5px">' + mapped.map( function ( k ) {
+					return '<div style="color:#16b981"><span style="opacity:.85">✓</span> <span style="color:#a7b0c0">' + esc( k ) + ':</span> <span style="font-family:monospace">' + esc( String( rec.mapped[ k ] ).slice( 0, 60 ) ) + '</span></div>';
+				} ).join( '' ) + '</div>';
+			}
+			if ( Array.isArray( rec.dropped ) && rec.dropped.length ) {
+				h += '<div style="margin-bottom:5px;color:#f0616d">' + rec.dropped.map( function ( d ) {
+					return '<div><span style="opacity:.85">✗</span> <span style="font-family:monospace">' + esc( String( d ).slice( 0, 60 ) ) + '</span></div>';
+				} ).join( '' ) + '</div>';
+			}
+			if ( rec.src_cls ) { h += '<div style="font-family:monospace;color:#8a93a3;font-size:11px;margin-bottom:5px;word-break:break-word">' + esc( String( rec.src_cls ).slice( 0, 120 ) ) + '</div>'; }
+			if ( rec.custom_css ) { h += '<div style="font-family:monospace;font-size:11px;color:#a7b0c0;background:rgba(0,0,0,.35);border-radius:6px;padding:5px 7px;margin-bottom:5px;white-space:pre-wrap;word-break:break-word">' + esc( String( rec.custom_css ).slice( 0, 200 ) ) + '</div>'; }
+		}
+		h += liveHtml( el );
+		return h;
+	}
+	function hashOf( el ) {
+		while ( el && el.nodeType === 1 ) {
+			var mm = classOf( el ).match( HASH );
+			if ( mm ) { return { el: el, hash: mm[1] }; }
+			el = el.parentElement;
+		}
+		return null;
+	}
+	function clear() { if ( box ) { box.style.display = 'none'; } if ( tip ) { tip.style.display = 'none'; } }
+	var raf = 0, lastE = null;
+	function handle( e ) {
+		var t = e.target;
+		if ( ! t || t.nodeType !== 1 || t === box || t === tip ) { clear(); return; }
+		ui();
+		var found = hashOf( t ) || { el: t, hash: null };
+		var el = found.el, rect = el.getBoundingClientRect();
+		box.style.display = 'block';
+		box.style.left = rect.left + 'px'; box.style.top = rect.top + 'px';
+		box.style.width = rect.width + 'px'; box.style.height = rect.height + 'px';
+		tip.innerHTML = tipHtml( found.hash, el );
+		tip.style.display = 'block';
+		var vw = doc.documentElement.clientWidth, vh = doc.documentElement.clientHeight;
+		var tw = tip.offsetWidth, th = tip.offsetHeight;
+		var tx = e.clientX + 14, ty = e.clientY + 14;
+		if ( tx + tw > vw ) { tx = Math.max( 4, vw - tw - 6 ); }
+		if ( ty + th > vh ) { ty = Math.max( 4, e.clientY - th - 14 ); }
+		tip.style.left = tx + 'px'; tip.style.top = ty + 'px';
+	}
+	function onMove( e ) { lastE = e; if ( raf ) { return; } raf = requestAnimationFrame( function () { raf = 0; if ( lastE ) { handle( lastE ); } } ); }
+
+	function init() {
+		injectNoFill();
+		ui();
+		loadMap();
+		doc.addEventListener( 'mousemove', onMove, { passive: true } );
+		doc.addEventListener( 'mouseleave', clear );
+		doc.addEventListener( 'mouseout', function ( e ) { if ( ! e.relatedTarget ) { clear(); } } );
+		// Height reporting: now + on load + on body resize + a couple of delayed ticks (images).
+		post();
+		if ( window.ResizeObserver && doc.body ) { try { new ResizeObserver( post ).observe( doc.body ); } catch ( e ) {} }
+		window.addEventListener( 'load', post );
+		setTimeout( post, 400 ); setTimeout( post, 1200 ); setTimeout( post, 2500 );
+	}
+
+	if ( doc.readyState === 'loading' ) { doc.addEventListener( 'DOMContentLoaded', init ); }
+	else { init(); }
+} )();
+JS;
+	}
+
 	/** style.css — the theme header block + the generated chrome CSS. */
 	private static function style_css( array $cfg ) {
 		$t        = $cfg['theme'];
@@ -1185,7 +1708,14 @@ JS;
 			$imports .= trim( $m[0] ) . "\n";
 			return '';
 		}, $body );
-		return $head . $imports . $body;
+		// Pass #1: self-hosted @font-face block (rehosted from source). Placed after any
+		// @import (which must lead the file) but before the body rules. When we've rehosted,
+		// drop the remote Google-Fonts @import so the CDN isn't fetched redundantly.
+		$face = ! empty( $cfg['rehosted_fonts']['css'] ) ? (string) $cfg['rehosted_fonts']['css'] : '';
+		if ( $face !== '' && $imports !== '' ) {
+			$imports = preg_replace( '/@import\s+url\([^)]*fonts\.googleapis\.com[^)]*\)\s*;[\t ]*\n?/i', '', $imports );
+		}
+		return $head . $imports . $face . $body;
 	}
 
 	/**
@@ -1293,6 +1823,122 @@ JS;
 					}
 					$out .= implode( ', ', $scoped ) . '{' . implode( ';', $decls ) . ';}';
 				}
+			} else { $buf .= $ch; $i++; }
+		}
+		return $out;
+	}
+
+	/**
+	 * True if a single declaration's PROPERTY is in the APPEARANCE set (color / border / radius /
+	 * shadow / fill / stroke / opacity / text-decoration / outline / background incl. the gradient-text
+	 * clip + `--tw-*` custom props Tailwind uses to plumb those values). Anything NOT matched here —
+	 * every layout / box-model / positioning / motion prop — makes its rule ineligible (see below).
+	 */
+	private static function is_appearance_prop( $prop ) {
+		$prop = strtolower( trim( $prop ) );
+		if ( $prop === '' ) { return false; }
+		// `--tw-*` (and any custom prop) are value-plumbing for the appearance utilities (bg-opacity,
+		// shadow rings, gradient stops) — inert on their own, so they never make a rule "layout".
+		if ( strpos( $prop, '--' ) === 0 ) { return true; }
+		return (bool) preg_match(
+			'/^('
+			. 'color'
+			. '|opacity'
+			. '|fill|stroke|stroke-[a-z-]+'
+			. '|box-shadow|-webkit-box-shadow'
+			. '|border(-.+)?'                       // border, border-*-width/style/color, border-radius, …
+			. '|(-webkit-)?background(-.+)?'         // background, -color, -image, -clip (gradient text), …
+			. '|(-webkit-)?text-decoration(-.+)?|text-underline-offset|text-decoration-[a-z-]+'
+			. '|-webkit-text-fill-color|text-fill-color'
+			. '|outline(-.+)?'
+			. '|accent-color|caret-color'
+			. ')$/',
+			$prop
+		);
+	}
+
+	/**
+	 * APPEARANCE-ONLY reconciliation of the carried source utility CSS onto the converted BODY.
+	 *
+	 * The carried Tailwind utilities are scoped to `.sc-tw` (the raw-chrome mirror wrapper) so they
+	 * style header/footer only. The page BODY lives under `.fw-page-builder-content`, so body elements
+	 * that keep source classes (`text-primary`, `bg-primary`, `rounded-full`, `shadow-soft`,
+	 * `blob-shape`, `fill-primary`, …) have NO rule connected to them → they render unstyled.
+	 *
+	 * This re-emits ONLY the APPEARANCE-eligible carried rules, scoped to `:where(.fw-page-builder-content)`.
+	 * A rule qualifies only if EVERY declaration is an appearance prop (single-purpose utilities are
+	 * cleanly one-or-the-other; a rule that declares ANY layout/box-model/positioning/motion prop —
+	 * display, position, inset/top/…, float, flex*, grid*, gap, justify/align/place, width/height,
+	 * min/max, margin*, padding*, transform, translate/scale/rotate, transition*, animation*, overflow*,
+	 * z-index, visibility, white-space — is treated as LAYOUT and SKIPPED so we never move body geometry).
+	 *
+	 * Scoped through `:where()` (specificity 0,1,0 — the class alone) so native theme-settings / component
+	 * presets still OVERRIDE it: a faithful base, never a clobber. No `!important`. Global selectors
+	 * (:root/html/body/*) are dropped (tokens live in base_css; we only reconnect class utilities).
+	 */
+	public static function appearance_reconcile_css( $css ) {
+		$css = (string) $css;
+		if ( trim( $css ) === '' ) { return ''; }
+		$out = ''; $buf = ''; $i = 0; $len = strlen( $css );
+		$scope = ':where(.fw-page-builder-content)';
+		while ( $i < $len ) {
+			$ch = $css[ $i ];
+			if ( $ch === '{' ) {
+				$prelude = trim( $buf ); $buf = '';
+				$depth = 1; $i++; $body = '';
+				while ( $i < $len && $depth > 0 ) { $c = $css[ $i ]; if ( $c === '{' ) { $depth++; } elseif ( $c === '}' ) { $depth--; if ( $depth === 0 ) { break; } } $body .= $c; $i++; }
+				$i++; // consume closing }
+				if ( $prelude !== '' && $prelude[0] === '@' ) {
+					// @media/@supports: recurse so the inner appearance rules get reconnected too; keep the
+					// wrapper only if it produced any body-scoped rule. Drop @font-face/@keyframes/@import.
+					if ( preg_match( '/^@(media|supports)/i', $prelude ) ) {
+						$inner = self::appearance_reconcile_css( $body );
+						if ( trim( $inner ) !== '' ) { $out .= $prelude . '{' . $inner . '}'; }
+					}
+					continue;
+				}
+				// A DECORATIVE ::before / ::after flourish (a content glyph + colour/background/border/
+				// radius/box-shadow) is appearance too — generalize the single hero-blob case: allow the
+				// pseudo rule through when its ONLY non-appearance declaration is a NON-EMPTY `content`
+				// glyph. Any layout/geometry decl (position/inset/width/height/display/…) still fails the
+				// appearance test below → the whole rule is skipped, so a positioned/sized pseudo (a
+				// structural spacer/backdrop) never leaks. Empty `content:''` is refused (it only paints
+				// with the positioning/size we deliberately exclude → an inert 0×0 rule).
+				$is_pseudo = (bool) preg_match( '/::?(before|after)\b/i', $prelude );
+				// Classify: every declaration must be an appearance prop, else the WHOLE rule is skipped.
+				$decls = array(); $ok = true; $has = false;
+				foreach ( explode( ';', $body ) as $d ) {
+					$d = trim( $d );
+					if ( $d === '' ) { continue; }
+					$cp = strpos( $d, ':' );
+					if ( $cp === false ) { $ok = false; break; }
+					$prop = substr( $d, 0, $cp );
+					if ( ! self::is_appearance_prop( $prop ) ) {
+						if ( $is_pseudo && strtolower( trim( $prop ) ) === 'content' ) {
+							$cv = trim( substr( $d, $cp + 1 ) );
+							$cvl = strtolower( $cv );
+							// Refuse empty / valueless content (renders nothing without geometry we exclude).
+							if ( $cvl === '' || $cvl === 'none' || $cvl === 'normal' || preg_match( '/^([\'"])\s*\1$/', $cv ) ) { $ok = false; break; }
+							$decls[] = $d; $has = true; // a visible glyph is real paint
+							continue;
+						}
+						$ok = false; break;
+					}
+					// A bare custom-prop-only rule carries no paint of its own — require ≥1 real appearance prop.
+					if ( strpos( trim( $prop ), '--' ) !== 0 ) { $has = true; }
+					$decls[] = $d;
+				}
+				if ( ! $ok || ! $has || empty( $decls ) ) { continue; }
+				$parts = array_filter( array_map( 'trim', explode( ',', $prelude ) ) );
+				$scoped = array();
+				foreach ( $parts as $s ) {
+					// Skip globals — they set tokens, not per-class paint; reconnecting them under a scope
+					// would either duplicate :root vars or wrongly repaint the whole content wrapper.
+					if ( preg_match( '/^(:root|html|body|\*)\b/i', $s ) ) { continue; }
+					$scoped[] = $scope . ' ' . $s;
+				}
+				if ( empty( $scoped ) ) { continue; }
+				$out .= implode( ', ', $scoped ) . '{' . implode( ';', $decls ) . ';}';
 			} else { $buf .= $ch; $i++; }
 		}
 		return $out;
@@ -1740,18 +2386,25 @@ JS;
 			// Tailwind utilities win over the plugin's same-named utilities (`.px-6` = 24px vs 56px) — the
 			// mirror is the only `.sc-tw` on the page, so this is safe and confines the source CSS to it.
 			// base_css (globals / typography / :root vars) stays UNSCOPED so it can set body/root tokens.
-			$util = self::scope_selectors( self::clean_carried( isset( $rc['util_css'] ) ? $rc['util_css'] : '' ), '.sc-tw' );
+			$util_clean = self::clean_carried( isset( $rc['util_css'] ) ? $rc['util_css'] : '' );
+			$util = self::scope_selectors( $util_clean, '.sc-tw' );
 			$head = self::scope_selectors( self::clean_carried( isset( $rc['header_css'] ) ? $rc['header_css'] : '' ), '.sc-tw' );
 			// Back-compat: older bundles only carried a single `css` blob (uncategorized).
 			if ( $base === '' && $util === '' && $head === '' && ! empty( $rc['css'] ) ) {
-				$util = self::scope_selectors( self::clean_carried( (string) $rc['css'] ), '.sc-tw' );
+				$util_clean = self::clean_carried( (string) $rc['css'] );
+				$util = self::scope_selectors( $util_clean, '.sc-tw' );
 			}
+			// Class↔CSS reconciliation: the util rules above are `.sc-tw`-scoped (chrome only), so BODY
+			// elements that keep source classes render unstyled. Re-emit the APPEARANCE-only rules scoped
+			// to the converted content wrapper at specificity 0,1,0 (a base presets/theme-settings override).
+			$util_recon = self::appearance_reconcile_css( $util_clean );
 			$out  = self::typography_layer( $cfg );
 			$out .= self::button_layer( $cfg );
 			$out .= $reset;
 			if ( $base !== '' ) { $out .= "/* ============ Base & typography (source) ============ */\n" . $base . "\n\n"; }
 			if ( $util !== '' ) { $out .= "/* ============ Globals & utilities (source) ============ */\n" . $util . "\n\n"; }
 			if ( $head !== '' ) { $out .= "/* ============ Header ============ */\n" . $head . "\n\n"; }
+			if ( $util_recon !== '' ) { $out .= "/* ==== Appearance reconciliation — carried body utilities (color/border/radius/shadow/fill), scoped to the content wrapper at specificity 0,1,0 so presets/theme-settings still override ==== */\n" . $util_recon . "\n\n"; }
 			$out .= self::header_scroll_css( $cfg );
 			$sc_menu = self::sc_menu_css( $cfg );
 			if ( $sc_menu !== '' ) { $out .= "/* ============ Dynamic menu (wp_nav_menu .sc-menu) ============ */\n" . $sc_menu . "\n\n"; }
@@ -1974,7 +2627,10 @@ JS;
 		// functions.php, so it must be self-guarding and not redeclare parent funcs.
 		$out .= "/** Webfonts + chrome stylesheet (priority 20 → loads after the parent). */\n";
 		$out .= "function {$fn}_assets() {\n";
-		if ( $google !== '' ) {
+		// Pass #1: when the webfonts were rehosted into the theme (self-hosted @font-face in
+		// style.css), do NOT enqueue the remote Google stylesheet — the faces load locally.
+		$rehosted = ! empty( $cfg['rehosted_fonts']['css'] );
+		if ( $google !== '' && ! $rehosted ) {
 			$out .= "\twp_enqueue_style( '{$slug}-fonts', '" . esc_url_raw( $google ) . "', array(), null );\n";
 		}
 		$icons = isset( $cfg['fonts']['icons'] ) ? $cfg['fonts']['icons'] : '';
@@ -2018,6 +2674,74 @@ JS;
 		}
 		$out .= "}\n";
 		$out .= "add_action( 'wp_enqueue_scripts', '{$fn}_assets', 20 );\n\n";
+
+		// CROSS-ORIGIN-SAFE INSPECTOR — enqueue the bundled inspector.js ONLY when the page URL carries
+		// `?upw-inspect` (the dashboard adds it to the embedded iframe). The script itself re-guards on the
+		// query param, so it stays inert on the live site. Loaded on BOTH the raw-chrome + normal paths.
+		$out .= "/** In-page inspector — only when the URL carries ?upw-inspect (dashboard-embedded). */\n";
+		$out .= "function {$fn}_inspector() {\n";
+		$out .= "\tif ( ! isset( \$_GET['upw-inspect'] ) ) { return; }\n";
+		$out .= "\twp_enqueue_script( '{$slug}-inspector', get_theme_file_uri( 'assets/inspector.js' ), array(), wp_get_theme()->get( 'Version' ), true );\n";
+		$out .= "}\n";
+		$out .= "add_action( 'wp_enqueue_scripts', '{$fn}_inspector', 30 );\n\n";
+
+		// FAVICON — the source site's favicon, bundled into the theme as favicon.<ext>.
+		//  • A self-contained <head> link (every format, incl. .ico) shown ONLY while no WP Site Icon is set,
+		//    so the browser tab is correct immediately and it steps aside once a Site Icon exists.
+		//  • For a RASTER favicon, a one-time seed sideloads it into the media library and sets it as the
+		//    proper WP Site Icon (Customizer-editable, rendered by core) — after which has_site_icon() is
+		//    true and the head link above suppresses itself (no double favicon).
+		$favicon_file = isset( $cfg['favicon_file'] ) ? (string) $cfg['favicon_file'] : '';
+		// Conversion-map <head> link — lets the AI Dev Kit dashboard inspector locate this theme's
+		// conversion-map.json regardless of theme slug or asset-optimizer combining (which strips any
+		// /themes/<slug>/ URL from the page). Best-effort; a 404 just disables the inspector map.
+		$out .= "/** Points the Site-Converter inspector at this theme's conversion map. */\n";
+		$out .= "function {$fn}_conversion_map_link() {\n";
+		$out .= "\t\$sc_map = get_theme_file_path( 'conversion-map.json' );\n";
+		$out .= "\tif ( \$sc_map && file_exists( \$sc_map ) ) {\n";
+		$out .= "\t\techo '<link rel=\"unysonplus-conversion-map\" href=\"' . esc_url( get_theme_file_uri( 'conversion-map.json' ) ) . '\">' . \"\\n\";\n";
+		$out .= "\t}\n";
+		$out .= "}\n";
+		$out .= "add_action( 'wp_head', '{$fn}_conversion_map_link' );\n\n";
+
+		if ( $favicon_file !== '' ) {
+			$out .= "/** Self-contained favicon <head> link — only while no WP Site Icon is set. */\n";
+			$out .= "function {$fn}_favicon_link() {\n";
+			$out .= "\tif ( function_exists( 'has_site_icon' ) && has_site_icon() ) { return; }\n";
+			$out .= "\techo '<link rel=\"icon\" href=\"' . esc_url( get_theme_file_uri( '" . self::esc_php( $favicon_file ) . "' ) ) . '\">' . \"\\n\";\n";
+			$out .= "}\n";
+			$out .= "add_action( 'wp_head', '{$fn}_favicon_link' );\n\n";
+
+			if ( ! empty( $cfg['favicon_raster'] ) ) {
+				$out .= "/** Seed the WP Site Icon from the bundled favicon (once per theme, raster only). Seeds when\n";
+				$out .= " *  there is NO Site Icon, OR when the current one was set by a PREVIOUS conversion (tracked in\n";
+				$out .= " *  _upw_conv_site_icon) — so re-converting a DIFFERENT source replaces the old favicon, while a\n";
+				$out .= " *  Site Icon the USER chose is never clobbered. */\n";
+				$out .= "function {$fn}_seed_favicon() {\n";
+				$out .= "\tif ( get_option( '{$fn}_favicon_seeded' ) ) { return; }\n";
+				$out .= "\tif ( ! is_admin() && ! ( defined( 'WP_CLI' ) && WP_CLI ) ) { return; }\n"; // media_handle_sideload needs wp-admin includes
+				$out .= "\t\$sc_cur = (int) get_option( 'site_icon' );\n";
+				$out .= "\t\$sc_own = (int) get_option( '_upw_conv_site_icon' );\n";
+				$out .= "\tif ( ! \$sc_cur || ( \$sc_own && \$sc_cur === \$sc_own ) ) {\n";
+				$out .= "\t\t\$sc_fav = get_theme_file_path( '" . self::esc_php( $favicon_file ) . "' );\n";
+				$out .= "\t\tif ( \$sc_fav && file_exists( \$sc_fav ) ) {\n";
+				$out .= "\t\t\trequire_once ABSPATH . 'wp-admin/includes/media.php';\n";
+				$out .= "\t\t\trequire_once ABSPATH . 'wp-admin/includes/file.php';\n";
+				$out .= "\t\t\trequire_once ABSPATH . 'wp-admin/includes/image.php';\n";
+				$out .= "\t\t\t\$sc_tmp = wp_tempnam( basename( \$sc_fav ) );\n";
+				$out .= "\t\t\tif ( \$sc_tmp && @copy( \$sc_fav, \$sc_tmp ) ) {\n";
+				$out .= "\t\t\t\t\$sc_fa = array( 'name' => basename( \$sc_fav ), 'tmp_name' => \$sc_tmp );\n";
+				$out .= "\t\t\t\t\$sc_id = media_handle_sideload( \$sc_fa, 0 );\n";
+				$out .= "\t\t\t\tif ( is_wp_error( \$sc_id ) ) { @unlink( \$sc_tmp ); }\n";
+				$out .= "\t\t\t\telse { update_option( 'site_icon', (int) \$sc_id ); update_option( '_upw_conv_site_icon', (int) \$sc_id ); }\n";
+				$out .= "\t\t\t}\n";
+				$out .= "\t\t}\n";
+				$out .= "\t}\n";
+				$out .= "\tupdate_option( '{$fn}_favicon_seeded', 1 );\n";
+				$out .= "}\n";
+				$out .= "add_action( 'wp_loaded', '{$fn}_seed_favicon', 20 );\n\n";
+			}
+		}
 
 		// Raw-chrome mode now drives the DYNAMIC header + footer the mirror relies on: the nav
 		// mapper's tree → a real WP menu (the <!--SC_NAV--> spot renders it via wp_nav_menu); the
@@ -2520,7 +3244,7 @@ JS;
 		// leftover demo header/menu/logo without needing a manual theme re-activation.
 		if ( function_exists( 'delete_option' ) ) {
 			$fnp = self::fn_prefix( $slug );
-			foreach ( array( '_logo_seeded', '_header_menu_assigned', '_footer_menu_assigned', '_footer_widgets_seeded' ) as $flag ) {
+			foreach ( array( '_logo_seeded', '_header_menu_assigned', '_footer_menu_assigned', '_footer_widgets_seeded', '_favicon_seeded' ) as $flag ) {
 				delete_option( $fnp . $flag );
 			}
 		}

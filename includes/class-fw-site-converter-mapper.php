@@ -37,6 +37,63 @@ class FW_Site_Converter_Mapper {
 	private static $style_count = array(); // base name → count
 	private static $sec_presets = array(); // [{ slug, rgb:[r,g,b] }] — Section Style presets for band-fill linking
 
+	/**
+	 * Conversion debug map — per-node record of what the deterministic converter DID and DROPPED.
+	 * Keyed by the SAME 8-char element hash the renderer stamps as the `u<hash>` scope class (see
+	 * sc_element_scope_class), so the dashboard hover-inspector can look a rendered element up by
+	 * that class. Populated best-effort where the mapper already discards source utility classes
+	 * (headings, text blocks, icon boxes), then merged into the post-pass in build_conversion_map().
+	 * Reset at the start of every build_pages() so re-conversions never accumulate.
+	 *
+	 * @var array<string,array{src_cls?:string,dropped?:string[]}>
+	 */
+	public static $conv_debug = array();
+
+	/** The 8-char element hash for a unique_id — identical to sc_element_scope_class()'s slug (sans the `u`). */
+	private static function conv_hash( $uid ) {
+		$uid = (string) $uid;
+		if ( $uid === '' ) { return ''; }
+		if ( function_exists( 'sanitize_key' ) ) {
+			$slug = substr( sanitize_key( strtolower( preg_replace( '/\s+/', '-', trim( $uid ) ) ) ), 0, 8 );
+		} else {
+			$slug = substr( strtolower( preg_replace( '/[^a-z0-9_\-]/i', '', $uid ) ), 0, 8 );
+		}
+		return $slug;
+	}
+
+	/**
+	 * Record what source classes a node carried (src_cls) and which the mapper did NOT turn into an
+	 * option (dropped). Best-effort — merges into any existing record for the same hash. $dropped may
+	 * be an array or a space string; empties are skipped.
+	 */
+	private static function conv_debug_record( $uid, $src_cls, $dropped ) {
+		$hash = self::conv_hash( $uid );
+		if ( $hash === '' ) { return; }
+		$src_cls = trim( (string) $src_cls );
+		if ( ! is_array( $dropped ) ) { $dropped = preg_split( '/\s+/', (string) $dropped, -1, PREG_SPLIT_NO_EMPTY ); }
+		$dropped = array_values( array_unique( array_filter( array_map( 'strval', $dropped ) ) ) );
+		if ( $src_cls === '' && ! $dropped ) { return; }
+		if ( ! isset( self::$conv_debug[ $hash ] ) ) { self::$conv_debug[ $hash ] = array(); }
+		if ( $src_cls !== '' ) {
+			$prev = isset( self::$conv_debug[ $hash ]['src_cls'] ) ? self::$conv_debug[ $hash ]['src_cls'] : '';
+			// Concatenate distinct source-class strings (a heading has overline/title/subtitle parts).
+			$merged = trim( $prev . ' ' . $src_cls );
+			$toks   = array_values( array_unique( preg_split( '/\s+/', $merged, -1, PREG_SPLIT_NO_EMPTY ) ) );
+			self::$conv_debug[ $hash ]['src_cls'] = implode( ' ', $toks );
+		}
+		if ( $dropped ) {
+			$prev = isset( self::$conv_debug[ $hash ]['dropped'] ) ? self::$conv_debug[ $hash ]['dropped'] : array();
+			self::$conv_debug[ $hash ]['dropped'] = array_values( array_unique( array_merge( $prev, $dropped ) ) );
+		}
+	}
+
+	/** Tokens present in $original but absent from $kept (both space-separated class strings). */
+	private static function conv_dropped_diff( $original, $kept ) {
+		$o = preg_split( '/\s+/', (string) $original, -1, PREG_SPLIT_NO_EMPTY );
+		$k = preg_split( '/\s+/', (string) $kept, -1, PREG_SPLIT_NO_EMPTY );
+		return array_values( array_diff( $o, $k ) );
+	}
+
 	/** Enable the box CSS Class Mapper for this build + reset its registry. Pass the parsed tailwind config. */
 	public static function set_style_config( $cfg ) {
 		self::$style_cfg   = is_array( $cfg ) ? $cfg : array();
@@ -184,6 +241,60 @@ class FW_Site_Converter_Mapper {
 				'radius' => $num( 'border_radius' ),
 			);
 		}
+	}
+
+	/* ---------------------------------------------------------------------- *
+	 * TEXT STYLE (font_sizes) preset linking — the SAME Text Style presets
+	 * theme-settings.json carries (Stitch::build_text_styles), so a converted
+	 * BODY text block can reference an editable size preset (`font_size_preset`
+	 * = the preset's CLASS: `lead` / `font-subtitle` / `font-small` / …) instead
+	 * of freezing its own px in Custom CSS. Only BODY presets participate —
+	 * Display N (headings) + the style-only Eyebrow are excluded, so a 20px lead
+	 * paragraph maps to `lead`, never to a 20px `display-*`.
+	 * ---------------------------------------------------------------------- */
+	private static $text_presets = array(); // [{ class, size:float }] — body size presets only
+
+	/**
+	 * Give the mapper the built Text Style presets for THIS conversion. Keeps only the BODY size roles
+	 * (a real px size + a non-`display-*`, non-empty class), so text_preset_for() matches a paragraph's
+	 * computed size to Lead/Subtitle/Small/Caption — never to a Display or the style-only Eyebrow.
+	 *
+	 * @param array $presets the `font_sizes` list (each with name/size/class).
+	 */
+	public static function set_text_presets( $presets ) {
+		self::$text_presets = array();
+		foreach ( (array) $presets as $e ) {
+			if ( ! is_array( $e ) ) { continue; }
+			$class = isset( $e['class'] ) ? trim( (string) $e['class'] ) : '';
+			if ( $class === '' || strpos( $class, 'display-' ) === 0 ) { continue; } // body roles only
+			$size = ( isset( $e['size'] ) && is_numeric( $e['size'] ) ) ? (float) $e['size'] : 0;
+			if ( $size <= 0 ) { continue; }
+			self::$text_presets[] = array( 'class' => $class, 'size' => $size );
+		}
+	}
+
+	/** Match a text block's computed font-size (px) → the nearest BODY size-preset CLASS within ±1.5px, or ''. */
+	private static function text_preset_for( $px ) {
+		if ( $px === null || empty( self::$text_presets ) ) { return ''; }
+		$px = (float) $px;
+		$best = ''; $bestd = PHP_INT_MAX;
+		foreach ( self::$text_presets as $p ) {
+			$d = abs( $p['size'] - $px );
+			if ( $d < $bestd ) { $bestd = $d; $best = $p['class']; }
+		}
+		return ( $bestd <= 1.5 ) ? $best : '';
+	}
+
+	/** Is a computed `color` value the plain DEFAULT text ink (pure black / empty / inherit / currentColor)?
+	 *  Such a colour carries no distinctive tone, so a text block keeps INHERITING the theme body colour
+	 *  instead of pinning it as an editable custom option. A muted tone (rgb(41,61,54)) or any alpha'd rgba
+	 *  is NOT default ink → it becomes a real text_color. */
+	private static function is_default_ink( $v ) {
+		$v = strtolower( trim( (string) $v ) );
+		$v = preg_replace( '/\s+/', '', $v ); // rgb(0, 0, 0) → rgb(0,0,0)
+		if ( '' === $v ) { return true; }
+		if ( in_array( $v, array( 'inherit', 'initial', 'currentcolor', 'transparent', 'unset', 'black', '#000', '#000000', '#000000ff', 'rgb(0,0,0)', 'rgba(0,0,0,1)', 'rgba(0,0,0,0)' ), true ) ) { return true; }
+		return false;
 	}
 
 	/** The color-preset slug whose role matches $role ('primary'/'secondary'/'outline'/'fill'), or ''. */
@@ -409,6 +520,138 @@ class FW_Site_Converter_Mapper {
 		return $out;
 	}
 
+	/* ---------------------------------------------------------------------- *
+	 * HI-FI FAITHFUL BASE (Pass-2) + SPACING → NATIVE (Pass-1)
+	 *
+	 * "Faithful base + spacing→native" fidelity upgrade. For every APPEARANCE property the native
+	 * shortcode/preset mapping does NOT already reproduce, emit a SPECIFICITY-0 `:where(selector){…}`
+	 * rule so the element looks EXACTLY like the source, while theme-settings / presets / builder edits
+	 * (all specificity >= 0,1,0) still override. Union of (native-mapped) + (faithful base) covers 100%
+	 * of the element's appearance = "nothing dropped, no drift". Layout/structure (display/position/
+	 * size/flex/grid) is NOT carried — that stays native (row/column mapping); spacing (margin) maps to
+	 * the shortcode's NATIVE spacing option instead of raw CSS.
+	 * ---------------------------------------------------------------------- */
+
+	/** APPEARANCE properties the faithful base reproduces (Pass-2). Layout/structure + spacing are
+	 *  intentionally EXCLUDED (display, position, top/left/width/height, the flex- and grid- families,
+	 *  justify, align, gap, margin, padding) — spacing maps natively; layout is handled by structural mapping. */
+	private static $cs_appearance = array(
+		'background-color', 'background-image', 'color', 'font-family', 'font-size', 'font-weight',
+		'line-height', 'letter-spacing', 'text-align', 'text-transform', 'text-decoration-line',
+		'border', 'border-radius', 'box-shadow', 'opacity', 'transform',
+		// Gradient TEXT (background-clip:text) — the clip + transparent fill that make a
+		// gradient background paint the TEXT instead of a block. Only present when the source
+		// actually paints gradient text (capture harvests them guarded), and cs_value_inert()
+		// drops any non-`text` clip / non-transparent fill, so a normal element carries none.
+		'-webkit-background-clip', 'background-clip', '-webkit-text-fill-color',
+	);
+
+	/** Faithful-base master switch for THIS build. DEFAULT ON; set from build_bundle's `hifi_css` opt. */
+	private static $hifi_on = false;
+
+	/** Enable/disable the hi-fi faithful base for this build. */
+	public static function set_hifi_css( $on ) { self::$hifi_on = (bool) $on; }
+
+	/** Is the faithful base active? */
+	public static function hifi_on() { return self::$hifi_on; }
+
+	/** Is a computed appearance value visually INERT (a browser initial value that carries no look)? So the
+	 *  base stays lean — an element at the CSS default for a prop gets no rule for it. */
+	private static function cs_value_inert( $prop, $v ) {
+		$v = trim( strtolower( (string) $v ) );
+		if ( '' === $v ) { return true; }
+		switch ( $prop ) {
+			case 'background-color':     return in_array( $v, array( 'transparent', 'rgba(0, 0, 0, 0)' ), true );
+			case 'background-image':     return 'none' === $v;
+			case 'box-shadow':           return 'none' === $v;
+			case 'transform':            return 'none' === $v;
+			case 'opacity':              return '1' === $v;
+			case 'border':               return 0 === strpos( $v, '0px' ) || false !== strpos( $v, ' none ' ) || preg_match( '/^0(px)?\s/', $v );
+			case 'border-radius':        return '0px' === $v || '0' === $v;
+			case 'text-transform':       return 'none' === $v;
+			case 'text-decoration-line': return 'none' === $v;
+			case 'letter-spacing':       return 'normal' === $v;
+			case 'line-height':          return 'normal' === $v;
+			case 'font-weight':          return '400' === $v || 'normal' === $v;
+			case 'text-align':           return 'start' === $v || 'left' === $v;
+			// Gradient-text clip: only `text` carries a look; the default `border-box` is inert.
+			case '-webkit-background-clip':
+			case 'background-clip':        return 'text' !== $v;
+			// The transparent fill is what reveals the gradient through the glyphs; any solid fill is
+			// just the element's own colour (already carried by `color`) → inert here.
+			case '-webkit-text-fill-color': return 'transparent' !== $v && 'rgba(0, 0, 0, 0)' !== $v;
+		}
+		return false;
+	}
+
+	/**
+	 * Pass-2 FAITHFUL BASE — the specificity-0 `:where(selector){…}` rule of every appearance property in
+	 * the element's computed style ($cs) that the native mapping ($already = props the node already
+	 * reproduced) did NOT cover, minus visually-inert defaults. '' when nothing remains (hi-fi off / no
+	 * cs / everything already covered).
+	 *
+	 * @param string $cs      the element's data-sc-cs (computed style) string
+	 * @param array  $already property names the node already reproduces natively (skip them → lean base)
+	 * @return string a `:where(selector){…}` rule, or ''
+	 */
+	public static function hifi_base_css( $cs, array $already = array() ) {
+		if ( ! self::$hifi_on || '' === (string) $cs ) { return ''; }
+		$decls = self::cs_decls( (string) $cs, self::$cs_appearance );
+		if ( ! $decls ) { return ''; }
+		$flip = array();
+		foreach ( $already as $p ) { $flip[ $p ] = true; }
+		$body = '';
+		foreach ( $decls as $pr => $v ) {
+			if ( isset( $flip[ $pr ] ) ) { continue; }
+			if ( self::cs_value_inert( $pr, $v ) ) { continue; }
+			$body .= $pr . ':' . $v . ';';
+		}
+		return '' === $body ? '' : ':where(selector){' . $body . '}';
+	}
+
+	/** Append a faithful base (built from $cs minus $already) to a node's Custom CSS (additive). Returns the node. */
+	private static function apply_hifi_base( $node, $cs, array $already = array() ) {
+		if ( ! is_array( $node ) || ! isset( $node['atts'] ) || ! is_array( $node['atts'] ) ) { return $node; }
+		$base = self::hifi_base_css( $cs, $already );
+		if ( '' === $base ) { return $node; }
+		$cur = isset( $node['atts']['custom_css'] ) ? (string) $node['atts']['custom_css'] : '';
+		$node['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . $base );
+		return $node;
+	}
+
+	/** A px length → the nearest spacing-scale slug (reuses the rem scale; px = rem × 16). */
+	private static function spacing_px_to_slug( $px ) {
+		return self::rem_to_spacing_slug( (float) $px / 16.0 );
+	}
+
+	/**
+	 * Pass-1 SPACING → NATIVE — read the element's computed vertical MARGIN from $cs and map each side to
+	 * the nearest spacing-scale token, merged into a native `spacing` option box (only sides not already
+	 * set from source classes). Returns the updated spacing box, or the input unchanged. Horizontal margin
+	 * / padding stay structural (handled by the column / box preset), so they are NOT carried here.
+	 *
+	 * @param array  $spacing an existing native spacing att (def_spacing()/empty_spacing() shape)
+	 * @param string $cs      the element's data-sc-cs
+	 * @return array the (possibly updated) spacing att
+	 */
+	private static function apply_native_margin( $spacing, $cs ) {
+		if ( ! self::$hifi_on || '' === (string) $cs || ! is_array( $spacing ) || ! isset( $spacing['margin'] ) ) { return $spacing; }
+		$m = self::cs_decls( (string) $cs, array( 'margin-top', 'margin-bottom' ) );
+		$pairs = array( 'margin-top' => array( 'top', 'mt' ), 'margin-bottom' => array( 'bottom', 'mb' ) );
+		foreach ( $pairs as $prop => $meta ) {
+			list( $side, $pref ) = $meta;
+			if ( ! isset( $m[ $prop ] ) ) { continue; }
+			if ( isset( $spacing['margin'][ $side ] ) && '' !== $spacing['margin'][ $side ] ) { continue; } // don't overwrite a class-mapped side
+			if ( false !== strpos( $m[ $prop ], 'var(' ) || false !== strpos( $m[ $prop ], 'auto' ) ) { continue; }
+			$px = self::px_of( $m[ $prop ] );
+			if ( $px < 6 ) { continue; } // ignore hairline/zero margins
+			$slug = self::spacing_px_to_slug( $px );
+			if ( '0' === $slug ) { continue; }
+			$spacing['margin'][ $side ] = $pref . '-' . $slug;
+		}
+		return $spacing;
+	}
+
 	/**
 	 * From a section direct-child "layer" (class / inline style / computed style), return its SOLID,
 	 * opaque background-COLOR if it qualifies as a full-bleed band fill to hoist onto the section — else ''.
@@ -621,7 +864,21 @@ class FW_Site_Converter_Mapper {
 				$col['atts']['content_direction'] = 'row';
 				$gap = ( $grp && preg_match( '/gap:\s*([0-9.]+)px/', (string) ( $grp['cs'] ?? '' ), $gm ) ) ? self::gap_slug( $gm[1] ) : '';
 				$col['atts']['content_gap'] = array( 'base' => ( $gap !== '' ? $gap : '3' ), 'md' => '', 'lg' => '' );
-				$col['atts']['content_h'] = 'center';
+				// Horizontal placement = the SOURCE button container's real flex main-axis alignment (NOT a blind
+				// center). Read the captured `justify-content` first, then the `justify-*` utility classes; a flex
+				// row's unset/`normal` default is flex-start = LEFT — so a left-aligned hero CTA group stays left.
+				$gcs = (string) ( $grp['cs'] ?? '' );
+				$gcl = ' ' . strtolower( (string) ( $grp['cls'] ?? '' ) ) . ' ';
+				$jc  = '';
+				if ( preg_match( '/justify-content:\s*([a-z-]+)/', $gcs, $jm ) ) { $jc = $jm[1]; }
+				if ( $jc === '' || $jc === 'normal' ) {
+					if ( strpos( $gcl, ' justify-center ' ) !== false )       { $jc = 'center'; }
+					elseif ( strpos( $gcl, ' justify-end ' ) !== false )      { $jc = 'flex-end'; }
+					elseif ( strpos( $gcl, ' justify-start ' ) !== false )    { $jc = 'flex-start'; }
+					elseif ( strpos( $gcl, ' justify-between ' ) !== false )  { $jc = 'space-between'; }
+				}
+				$jc_map = array( 'center' => 'center', 'flex-end' => 'right', 'end' => 'right', 'right' => 'right', 'flex-start' => 'left', 'start' => 'left', 'left' => 'left', 'normal' => 'left' );
+				$col['atts']['content_h'] = isset( $jc_map[ $jc ] ) ? $jc_map[ $jc ] : 'left';
 				$out[] = $col;
 			} else {
 				foreach ( $run as $r ) { $out[] = $strip( $r ); }
@@ -734,7 +991,9 @@ class FW_Site_Converter_Mapper {
 				$used_subtitle = false;
 				foreach ( $blocks as &$b ) {
 					$role = self::suggest( $b, $rules );
-					if ( $role === 'text' && $after_title && ! $used_subtitle ) {
+					// First short intro paragraph right after a title → subtitle (brevity-guarded so real body
+					// copy stays a Text Block; same guard as the decomposed-column path).
+					if ( $role === 'text' && $after_title && ! $used_subtitle && self::is_heading_subtitle( $b ) ) {
 						$role = 'subtitle';
 						$used_subtitle = true;
 					}
@@ -906,6 +1165,37 @@ class FW_Site_Converter_Mapper {
 		);
 	}
 
+	/**
+	 * Wire a HERO full-bleed background <img> onto a built section node's `background.image`, with a dark
+	 * overlay scrim so overlaid (typically white) hero text stays legible — the source used a charcoal
+	 * gradient over the photo. A viewport-tall source hero (`$bg['hero']`) also gets a tall min-height +
+	 * the content's vertical placement, so the band reads as a real hero instead of a short image strip.
+	 *
+	 * @param array $node Section node (by ref).
+	 * @param array $bg   { src, hero, valign }
+	 */
+	private static function apply_bg_image( array &$node, array $bg ) {
+		$src = trim( (string) ( $bg['src'] ?? '' ) );
+		if ( $src === '' || ! isset( $node['atts']['background'] ) || ! is_array( $node['atts']['background'] ) ) { return; }
+		$node['atts']['background']['image'] = array(
+			'src'        => array( 'attachment_id' => 0, 'url' => $src ),
+			'position'   => 'center center',
+			'size'       => array( 'selected' => 'cover', 'custom' => '' ),
+			'repeat'     => 'no-repeat',
+			'attachment' => 'scroll',
+		);
+		// Dark scrim (background-pro `overlay`) → white heading/overline/CTA stay readable over the photo.
+		$node['atts']['background']['overlay'] = array(
+			'color'    => 'rgba(0, 0, 0, 0.35)',
+			'gradient' => array( 'type' => 'linear', 'angle' => 90, 'stops' => array() ),
+		);
+		if ( ! empty( $bg['hero'] ) ) {
+			$node['atts']['min_height']     = array( 'preset' => '80vh', 'custom' => array( 'custom_height' => array( 'value' => '', 'unit' => 'px' ) ) );
+			$vmap = array( 'top' => 'top', 'middle' => 'middle', 'bottom' => 'bottom' );
+			$node['atts']['content_valign'] = $vmap[ (string) ( $bg['valign'] ?? 'middle' ) ] ?? 'middle';
+		}
+	}
+
 	private static function n_section( $css_class, $css_id, $css, array $items, $fullwidth ) {
 		// NOTE: section CSS is NOT written to `custom_css` (that routes through the dynamic-CSS
 		// aggregator, defeating the clean-child-theme goal). It's emitted into style.css via
@@ -917,6 +1207,11 @@ class FW_Site_Converter_Mapper {
 				'is_fullwidth'   => (bool) $fullwidth,
 				'min_height'     => array( 'preset' => 'auto', 'custom' => array( 'custom_height' => array( 'value' => '', 'unit' => 'px' ) ) ),
 				'content_valign' => 'top',
+				// Section-level CSS text-align ('' = Inherit; 'center'/'right' faithfully carry a
+				// centered source band so its heading + paragraph + buttons all read centered as
+				// one, since text-align is inherited). Set by the caller from the section's own
+				// centering signal (section_center). '' by default so nothing is forced.
+				'text_align'     => '',
 				'background'     => array(
 					'color'    => array( 'value' => array( 'predefined' => '', 'custom' => '' ) ),
 					'gradient' => array( 'data' => array( 'type' => 'linear', 'angle' => 90, 'stops' => array() ) ),
@@ -961,7 +1256,7 @@ class FW_Site_Converter_Mapper {
 			'atts'   => array(
 				'full_height' => 'no', 'mobile_order' => '', 'w_phone' => $pick( 'w_phone' ), 'w_tablet' => $pick( 'w_tablet' ), 'w_desktop' => $pick( 'w_desktop' ),
 				'offset_phone' => 'none', 'offset_tablet' => 'none', 'offset_desktop' => 'none', 'align_self' => 'default',
-				'content_v' => 'default', 'content_h' => 'default', 'position' => '', 'z_index' => 0,
+				'content_v' => 'default', 'content_h' => 'default', 'text_align' => '', 'position' => '', 'z_index' => 0,
 				'bg_color' => array( 'predefined' => '', 'custom' => '' ), 'border_preset' => '',
 				'spacing' => self::def_spacing(), 'animation' => self::def_animation(),
 				'unique_id' => self::uid(), 'css_id' => '', 'css_class' => (string) $css_class, 'inner_class' => '',
@@ -994,6 +1289,22 @@ class FW_Site_Converter_Mapper {
 		$d = $lg !== '' ? $lg : ( $md !== '' ? $md : ( $sm !== '' ? $sm : $xs ) );
 		return array( 'width' => self::frac12( $d ) );
 	}
+	/**
+	 * A source wrapper/cell's OWN explicit horizontal text-alignment → 'center' | 'right' | ''
+	 * (left / inherit). PHP twin of Stitch::wrapper_align — reads a Tailwind/Bootstrap
+	 * `text-center` / `text-right` / `text-left` class; explicit left → '' (the inherited default,
+	 * nothing to force). Used to carry a text-* wrapper's alignment onto the builder column's
+	 * native `text_align` option when that wrapper decomposes into the column.
+	 *
+	 * @param string $cls
+	 * @return string
+	 */
+	public static function cls_text_align( $cls ) {
+		$c = ' ' . (string) $cls . ' ';
+		if ( strpos( $c, ' text-center ' ) !== false ) { return 'center'; }
+		if ( strpos( $c, ' text-right ' ) !== false )  { return 'right'; }
+		return ''; // text-left / none = inherited default.
+	}
 	/** Bootstrap column span (1–12) → the page-builder width fraction (full 12-grid). */
 	private static function frac12( $n ) {
 		$map = array(
@@ -1018,28 +1329,70 @@ class FW_Site_Converter_Mapper {
 		if ( $d < 1 || $d > 12 ) { return null; }
 		return array( 'width' => self::frac12( $d ) );
 	}
-	private static function n_text( $html, $max_width = '', $align = '' ) {
+	private static function n_text( $html, $max_width = '', $align = '', $cs = '' ) {
 		$html      = (string) $html;
 		$centered  = in_array( $align, array( 'center', 'right' ), true );
 		$mw        = self::max_width_att( (string) $max_width );
 		$use_att   = ( $mw !== null );
-		// A centered band (source `text-center`) carries onto its sub-text paragraph. Wrap the content so the
-		// text lines centre too (the column's flex-centering only centres the block, not its inline text). When
-		// the paragraph ALSO has a source max-width (`max-w-2xl mx-auto`), bake that width + `margin:auto` into
-		// the SAME wrapper so the constrained box is CENTERED (mx-auto), not pinned to the column's left edge —
-		// then drop the max_width att (it would left-pin the box). Otherwise keep the native att.
-		if ( $centered ) {
-			$style = 'text-align:' . $align . ';';
-			if ( $mw !== null ) {
-				$m = $mw['custom']['custom_width'] ?? array();
-				if ( ! empty( $m['value'] ) ) { $style .= 'max-width:' . $m['value'] . ( $m['unit'] ?? 'px' ) . ';margin-left:auto;margin-right:auto;'; $use_att = false; }
-			}
-			$html = '<div style="' . $style . '">' . $html . '</div>';
+		// PASS #2 NATIVE STRUCTURE PROMOTION — a centered/right paragraph's horizontal alignment maps to the
+		// text_block's NATIVE, editable `text_align` option (which renders as a Bootstrap `text-*` class on the
+		// block wrapper — node-scoped, never inline nor body-wide) instead of a hardcoded inline `<div
+		// style="text-align">`. EXCEPTION: when the paragraph ALSO carries a source max-width (`max-w-2xl
+		// mx-auto`) we keep the proven inline mx-auto wrapper — the constrained box must be CENTERED with
+		// `margin:auto` (the native max_width att would left-pin it), and its inline text-align rides along —
+		// so that delicate path is unchanged.
+		$text_align = '';
+		if ( $centered && $mw !== null && ! empty( ( $mw['custom']['custom_width'] ?? array() )['value'] ) ) {
+			$m     = $mw['custom']['custom_width'];
+			$style = 'text-align:' . $align . ';max-width:' . $m['value'] . ( $m['unit'] ?? 'px' ) . ';margin-left:auto;margin-right:auto;';
+			$html  = '<div style="' . $style . '">' . $html . '</div>';
+			$use_att = false;
+		} elseif ( $centered ) {
+			$text_align = $align; // pure alignment (no constrained-width box) → the native, editable option
 		}
+		// TEXT STYLE preset — match the block's OWN computed font-size (data-sc-cs) to the nearest BODY
+		// size preset (Lead/Subtitle/Small/Caption) so the text references an editable preset CLASS instead
+		// of a frozen px. Base (16) or no match within tolerance → '' (Default, the theme base).
+		$font_size_preset = '';
+		if ( $cs !== '' && preg_match( '/font-size:\s*([0-9.]+)px/i', (string) $cs, $fm ) ) {
+			$font_size_preset = self::text_preset_for( (float) $fm[1] );
+		}
+		$uid  = self::uid();
 		$atts = array(
 			'text' => self::map_accent_classes( $html ), 'animation' => self::def_animation(),
-			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
+			'font_size_preset' => $font_size_preset,
+			'unique_id' => $uid, 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		);
+		// CONVERSION DEBUG (best-effort) — the paragraph's source classes (from a `<p class="…">` in the
+		// html) that became NO option: size/leading/color utilities are now owned by the Text Style preset /
+		// text_color / spacing options → "represented"; the rest are "dropped".
+		if ( stripos( $html, 'class=' ) !== false && preg_match( '/class\s*=\s*"([^"]*)"/i', $html, $cm ) ) {
+			$src_cls = trim( $cm[1] );
+			self::conv_debug_record( $uid, $src_cls, self::conv_dropped_diff( $src_cls, self::strip_inert_utilities( $src_cls ) ) );
+		}
+		// Native horizontal alignment (a `text-*` class on the block wrapper) — only for an explicit
+		// center/right; left/start is the inherit default, so it stays unset.
+		if ( $text_align !== '' ) { $atts['text_align'] = $text_align; }
+		// TEXT COLOR → the block's NATIVE `text_color` option (rendered on the wrapper by the global
+		// sc_build_wrapper_attr styling wiring). Parse the computed `color` from the block's own $cs and,
+		// when it's a REAL non-default tone (a muted body ink like rgb(41,61,54), or any alpha'd rgba),
+		// carry it as an editable custom colour — instead of freezing it in the section-scoped unified
+		// styler. Plain default ink (pure black / empty / inherit) stays unset so a normal paragraph
+		// keeps inheriting the theme body colour.
+		if ( $cs !== '' ) {
+			$col = self::cs_decls( (string) $cs, array( 'color' ) );
+			$cv  = isset( $col['color'] ) ? trim( $col['color'] ) : '';
+			if ( $cv !== '' && ! self::is_default_ink( $cv ) ) {
+				$atts['text_color'] = array( 'predefined' => '', 'custom' => $cv );
+			}
+		}
+		// MARGIN → the block's NATIVE `spacing` option. Seed an empty spacing box then map the source's
+		// computed vertical margins (margin-top / margin-bottom, e.g. the 32px `mb-8`) onto the spacing
+		// scale — so the source rhythm lands on the editable native option rather than being frozen in the
+		// unified styler. Horizontal margins stay structural.
+		if ( $cs !== '' ) {
+			$atts['spacing'] = self::apply_native_margin( self::empty_spacing(), (string) $cs );
+		}
 		// Source max-width on the text (from a class, an inline style, OR a stylesheet rule — detected in
 		// the engine) → the Text Block's "Custom Max Width" option, so a constrained paragraph stays
 		// constrained + centered (matches the source measure).
@@ -1207,10 +1560,10 @@ class FW_Site_Converter_Mapper {
 		return $src;
 	}
 
-	/** Build the badge shortcode node (recognizer/role token stays announcement_pill) from a recognized hero pill block (sub-tag + message +
+	/** Build the badge shortcode node (role token now 'badge') from a recognized hero pill block (sub-tag + message +
 	 *  optional trailing icon + optional link). Full att shape so the editor opens it cleanly; colours stay
 	 *  neutral (user themes them). The trailing icon reuses icon_value() like buttons. */
-	private static function n_announcement_pill( array $b ) {
+	private static function n_badge( array $b ) {
 		$none_icon  = array( 'type' => 'none', 'icon-class' => '', 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false );
 		$none_color = array( 'predefined' => '', 'custom' => '' );
 		$trail = trim( (string) ( $b['icon'] ?? '' ) );
@@ -1587,6 +1940,81 @@ class FW_Site_Converter_Mapper {
 		return array( 'type' => 'simple', 'shortcode' => 'feature_list', '_items' => array(), 'atts' => $atts );
 	}
 
+	/**
+	 * A native `logo_grid` shortcode node from a captured logo / "trusted by" strip (recognizer block
+	 * `{ logos:[{url,name,link_url,link_target,svg}] }`). Each mark → one editable logo (image URL + alt
+	 * name + enclosing link); the media phase localizes the URLs to imported attachments. Grid layout,
+	 * grayscale→colour-on-hover default. See logo-grid options.php.
+	 */
+	private static function n_logo_grid( array $b ) {
+		$src   = ( isset( $b['logos'] ) && is_array( $b['logos'] ) ) ? $b['logos'] : array();
+		$logos = array();
+		foreach ( $src as $l ) {
+			$url = trim( (string) ( $l['url'] ?? '' ) );
+			$svg = trim( (string) ( $l['svg'] ?? '' ) );
+			if ( '' === $url && '' === $svg ) { continue; }
+			$logos[] = array(
+				'image'       => array( 'attachment_id' => '', 'url' => $url ),
+				'svg'         => $svg,
+				'name'        => (string) ( $l['name'] ?? '' ),
+				'no_label'    => 'no',
+				'link_url'    => (string) ( $l['link_url'] ?? '' ),
+				'link_target' => in_array( ( $l['link_target'] ?? '' ), array( '_blank', '_self' ), true ) ? $l['link_target'] : '_blank',
+			);
+		}
+		if ( count( $logos ) < 1 ) { return self::n_code( (string) ( $b['html'] ?? '' ) ); }
+		return self::finalize_widget( 'logo_grid', array(
+			'logos'       => $logos,
+			'design'      => 'grid',
+			'columns'     => (string) min( 6, max( 2, count( $logos ) ) ),
+			'grayscale'   => 'yes',
+			'show_labels' => 'no',
+		) );
+	}
+
+	/**
+	 * A native `call_to_action` shortcode node from a captured CTA band (recognizer block `{ title,
+	 * message(html), button_label/link/target }`). Title is PLAIN TEXT (the view esc_html's it); message is
+	 * HTML (wp_kses_post'd). One button slot (a 2-button CTA never reaches here — it stays assembled). See
+	 * call-to-action options.php.
+	 */
+	private static function n_cta( array $b ) {
+		$overlay = array(
+			'title'         => trim( (string) ( $b['title'] ?? '' ) ),
+			'message'       => (string) ( $b['message'] ?? '' ),
+			'button_label'  => trim( (string) ( $b['button_label'] ?? '' ) ),
+			'button_link'   => (string) ( $b['button_link'] ?? '#' ),
+			'button_target' => in_array( ( $b['button_target'] ?? '' ), array( '_blank', '_self' ), true ) ? $b['button_target'] : '_self',
+		);
+		// Reproduce the source button's distinctive fill on the CTA's `.btn.btn-1` via scoped Custom CSS,
+		// so a non-default (e.g. amber/secondary) button keeps its exact look instead of the shortcode's
+		// default. The call_to_action has no button-preset field, so the fill rides on the node's custom_css.
+		$btn_css = self::cta_button_css( (string) ( $b['btn_cls'] ?? '' ), (string) ( $b['btn_cs'] ?? '' ) );
+		if ( '' !== $btn_css ) { $overlay['custom_css'] = $btn_css; }
+		return self::finalize_widget( 'call_to_action', $overlay );
+	}
+
+	/** Scoped Custom CSS painting the CTA button (`selector .btn.btn-1`) from the source button's fill. */
+	private static function cta_button_css( $cls, $cs ) {
+		$d = array();
+		if ( '' !== $cs ) { $d = self::cs_decls( $cs, array( 'background-color', 'color', 'border', 'border-radius', 'padding', 'font-size', 'font-weight' ) ); }
+		if ( '' === (string) ( $d['background-color'] ?? '' ) && '' !== (string) $cls ) {
+			// No computed style (Tailwind-only capture) — resolve a semantic fill class to a concrete colour.
+			$bg = self::resolve_color_classes( '<x class="' . esc_attr( $cls ) . '">' );
+			if ( preg_match( '/color:\s*([^"\';]+)/', $bg, $m ) ) { $d['color'] = trim( $m[1] ); }
+		}
+		if ( empty( $d ) || ( '' === (string) ( $d['background-color'] ?? '' ) && '' === (string) ( $d['border'] ?? '' ) ) ) { return ''; }
+		$body = '';
+		if ( ! empty( $d['background-color'] ) ) { $body .= 'background-color:' . $d['background-color'] . ' !important;border-color:' . $d['background-color'] . ' !important;'; }
+		if ( ! empty( $d['color'] ) )            { $body .= 'color:' . $d['color'] . ' !important;'; }
+		if ( ! empty( $d['border'] ) && empty( $d['background-color'] ) ) { $body .= 'border:' . $d['border'] . ' !important;'; }
+		if ( ! empty( $d['border-radius'] ) )    { $body .= 'border-radius:' . $d['border-radius'] . ';'; }
+		if ( ! empty( $d['padding'] ) )          { $body .= 'padding:' . $d['padding'] . ';'; }
+		if ( ! empty( $d['font-size'] ) )        { $body .= 'font-size:' . $d['font-size'] . ';'; }
+		if ( ! empty( $d['font-weight'] ) )      { $body .= 'font-weight:' . $d['font-weight'] . ';'; }
+		return '' !== $body ? 'selector .btn.btn-1{' . $body . '}' : '';
+	}
+
 	/** The icon-v2 "no icon" value shared by the widget item builders. */
 	private static function icon_none() {
 		return array( 'type' => 'none', 'icon-class' => '', 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false );
@@ -1754,7 +2182,7 @@ class FW_Site_Converter_Mapper {
 		) );
 	}
 
-	private static function n_button( $label, $link, $cls = '', $icon = '', $icon_pos = 'after', $cs = '', $group_cls = '', $group_cs = '' ) {
+	private static function n_button( $label, $link, $cls = '', $icon = '', $icon_pos = 'after', $cs = '', $group_cls = '', $group_cs = '', $icon_svg = '' ) {
 		// Converted buttons use the 'Default' style (value '') = the bare `.btn` base. The child
 		// theme carries the source's primary-button rules (rewritten onto `.btn` in page_css,
 		// base + :hover); the user can switch to a Color Preset later. Full att shape per the
@@ -1786,8 +2214,14 @@ class FW_Site_Converter_Mapper {
 		$preset = self::button_preset_for( (string) $cls, (string) $cs );
 		if ( '' !== $preset['style'] ) { $atts['style'] = $preset['style']; }
 		if ( '' !== $preset['size'] )  { $atts['size']  = $preset['size']; }
-		$icon = trim( (string) $icon );
-		if ( $icon !== '' ) {
+		$icon     = trim( (string) $icon );
+		$icon_svg = trim( (string) $icon_svg );
+		if ( $icon_svg !== '' ) {
+			// An inline <svg> CTA icon (a lucide arrow, etc.) carried verbatim — icon-v2 renders inline SVG via
+			// currentColor, so it inherits the button's text colour. Same value shape as the heading overline icon.
+			$atts['icon']          = array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => $icon_svg );
+			$atts['icon_position'] = in_array( $icon_pos, array( 'before', 'after' ), true ) ? $icon_pos : 'after';
+		} elseif ( $icon !== '' ) {
 			$atts['icon']          = self::icon_value( $icon );
 			$atts['icon_position'] = in_array( $icon_pos, array( 'before', 'after' ), true ) ? $icon_pos : 'after';
 		}
@@ -1881,6 +2315,56 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/**
+	 * Build an IMAGE CARD (product / collection / any photo-card) as a stacked column of native nodes:
+	 * the photo (media_image) + the title (special_heading) + the body text (text_block, e.g. category /
+	 * price / description) + an optional CTA button. Used when a captured card carries a real content
+	 * <img> — so the source photo actually renders, instead of an icon_box that would drop it. A garbled
+	 * wrapper-link "button" (the whole card is an <a>, so its label concatenated all the card text) is
+	 * discarded: a real CTA is short and distinct from the title, not the entire card contents.
+	 *
+	 * @param array $card { image:{src,alt}, title, titleTag, text, button }
+	 * @return array list of builder nodes (media_image, special_heading, text_block[, button])
+	 */
+	private static function n_image_card( array $card ) {
+		$items = array();
+		$img   = isset( $card['image'] ) && is_array( $card['image'] ) ? $card['image'] : array();
+		$src   = trim( (string) ( $img['src'] ?? '' ) );
+		if ( $src !== '' ) {
+			$alt = esc_attr( (string) ( $img['alt'] ?? '' ) );
+			// A card photo must FILL the card width (the source uses `w-full object-cover`), not render at its
+			// small natural size. Reproduce the source's aspect ratio when it declares one (`aspect-square`,
+			// `aspect-[4/5]`, `aspect-video`) so the product/collection grid stays uniform; else natural height.
+			$icls = ' ' . strtolower( (string) ( $img['cls'] ?? '' ) ) . ' ';
+			$ar   = '';
+			if ( strpos( $icls, ' aspect-square ' ) !== false )     { $ar = '1 / 1'; }
+			elseif ( strpos( $icls, ' aspect-video ' ) !== false )  { $ar = '16 / 9'; }
+			elseif ( preg_match( '/\saspect-\[([0-9.]+)\/([0-9.]+)\]/', $icls, $am ) ) { $ar = $am[1] . ' / ' . $am[2]; }
+			$decl = 'width:100%;display:block;' . ( $ar !== '' ? 'aspect-ratio:' . $ar . ';object-fit:cover;' : 'height:auto;' );
+			$items[] = self::n_media_image( '<img src="' . esc_url( $src ) . '" alt="' . $alt . '" />', 'selector img{' . $decl . '}' );
+		}
+		$title = trim( wp_strip_all_tags( (string) ( $card['title'] ?? '' ) ) );
+		if ( $title !== '' ) {
+			$tag = strtolower( (string) ( $card['titleTag'] ?? 'h3' ) );
+			$lvl = ( preg_match( '/^h([2-6])$/', $tag, $lm ) ) ? (int) $lm[1] : 3;
+			$items[] = self::n_heading( array( 'title' => $title, 'level' => $lvl, 'title_class' => (string) ( $card['titleClass'] ?? '' ) ) );
+		}
+		$text = trim( (string) ( $card['text'] ?? '' ) );
+		if ( $text !== '' ) { $items[] = self::n_text( $text ); }
+		// Optional CTA — only a REAL button (short label, not the whole-card link whose label is the title
+		// or the concatenated card text). A card that is entirely wrapped in one <a> is linked via its image.
+		if ( ! empty( $card['button'] ) && is_array( $card['button'] ) ) {
+			$bt  = $card['button'];
+			$lbl = trim( wp_strip_all_tags( (string) ( $bt['label'] ?? '' ) ) );
+			$is_wrapper = ( $lbl === '' || mb_strlen( $lbl ) > 32 || ( $title !== '' && stripos( $lbl, $title ) !== false ) );
+			if ( ! $is_wrapper ) {
+				$items[] = self::n_button( $lbl, (string) ( $bt['href'] ?? '#' ), (string) ( $bt['cls'] ?? '' ), (string) ( $bt['icon'] ?? '' ), 'after', (string) ( $bt['cs'] ?? '' ) );
+			}
+		}
+		if ( ! $items ) { $items[] = self::n_code( '' ); }
+		return $items;
+	}
+
+	/**
 	 * Build an icon_box node from a captured icon-card (.about-item: icon + heading + text [+ link]).
 	 * Starts from the shortcode's real defaults (full shape) and overlays the mapped values. The
 	 * source card wrapper class (e.g. `about-item`) goes on the icon_box CSS Class, so the carried
@@ -1959,6 +2443,31 @@ class FW_Site_Converter_Mapper {
 			$atts['icon_badge_color'] = array( 'predefined' => '', 'custom' => $ibc );
 		}
 
+		// Reproduce the SOURCE icon-chip's full DESIGN on the badge element as scoped CSS: the fill, radius,
+		// SHADOW and SIZE. The icon_badge option renders a flat shape, so a source chip like
+		// `w-16 h-16 bg-white rounded-2xl shadow-sm` (a white chip lifted off the card by its shadow) would
+		// otherwise render as a bare icon — the shadow + dimensions are the "badge design". Uses the chip's
+		// computed skin (authoritative) + its Tailwind size class; scoped to `.icon-box__icon` on this node.
+		$chip_cs = (string) ( $card['iconChipCs'] ?? '' );
+		if ( '' !== $chip_cs ) {
+			$cd    = self::cs_decls( $chip_cs, array( 'background-color', 'border-radius', 'box-shadow' ) );
+			$decls = array();
+			$cbg2  = isset( $cd['background-color'] ) ? (string) $cd['background-color'] : '';
+			if ( '' !== $cbg2 && 'transparent' !== $cbg2 && ! preg_match( '/rgba\([^)]*,\s*0?\.?0*\)$/', $cbg2 ) ) { $decls[] = 'background:' . $cbg2; }
+			if ( ! empty( $cd['border-radius'] ) && '0px' !== $cd['border-radius'] ) { $decls[] = 'border-radius:' . $cd['border-radius']; }
+			if ( ! empty( $cd['box-shadow'] ) && 'none' !== $cd['box-shadow'] ) { $decls[] = 'box-shadow:' . $cd['box-shadow']; }
+			// Size from the chip's Tailwind w-N/h-N class (Tailwind unit = N × 0.25rem).
+			$chip_cls = (string) ( $card['iconChipCls'] ?? '' );
+			if ( preg_match( '/(?:^|\s)w-(\d+)(?:\s|$)/', $chip_cls, $wm ) ) {
+				$sz = ( (int) $wm[1] * 0.25 ) . 'rem';
+				$decls[] = 'width:' . $sz; $decls[] = 'height:' . $sz; $decls[] = 'min-height:' . $sz; $decls[] = 'flex:0 0 auto';
+			}
+			if ( $decls ) {
+				$badge_css = 'selector .icon-box__icon{' . implode( ';', $decls ) . ';display:flex;align-items:center;justify-content:center;}';
+				$atts['custom_css'] = trim( ( isset( $atts['custom_css'] ) ? (string) $atts['custom_css'] : '' ) . ' ' . $badge_css );
+			}
+		}
+
 		// css_class = source ALIGNMENT (sc-ib-left unless the card is centered) + the gray icon "image" box
 		// (if the source had one). The cell's own box classes are NOT carried here — box styling lives on the
 		// column (with-button card) or is added separately (simple card), so this stays clean (no double border).
@@ -1969,8 +2478,25 @@ class FW_Site_Converter_Mapper {
 		}
 		$atts['css_class'] = $ibcls;
 		$atts['unique_id'] = self::uid();
+		// CONVERSION DEBUG (best-effort) — the card's source classes that didn't become an option (its box
+		// fill/border/radius went to the column Inner Wrapper Class + native icon/typography options).
+		if ( ! empty( $card['cls'] ) ) {
+			self::conv_debug_record( $atts['unique_id'], (string) $card['cls'], self::conv_dropped_diff( (string) $card['cls'], self::strip_inert_utilities( (string) $card['cls'] ) ) );
+		}
 
-		return array( 'type' => 'simple', 'shortcode' => 'icon_box', 'atts' => $atts, '_items' => array() );
+		// Pass-1: the card's source vertical margin → the icon_box NATIVE spacing option (editable).
+		$card_cs = (string) ( $card['cs'] ?? '' );
+		if ( isset( $atts['spacing'] ) && is_array( $atts['spacing'] ) ) { $atts['spacing'] = self::apply_native_margin( $atts['spacing'], $card_cs ); }
+		$node = array( 'type' => 'simple', 'shortcode' => 'icon_box', 'atts' => $atts, '_items' => array() );
+		// Pass-2: faithful base of the card's REMAINING appearance. The card BOX (fill / border / radius /
+		// shadow) is reproduced by the column's Inner Wrapper Class / box_style_class, and the icon colour +
+		// title typography are native/themed — those are $already; the base only fills the rest (a decorative
+		// background-image, letter-spacing, transform, …), so it never double-draws the card border.
+		$node = self::apply_hifi_base( $node, $card_cs, array(
+			'background-color', 'border', 'border-radius', 'box-shadow', 'color',
+			'font-family', 'font-size', 'font-weight', 'line-height',
+		) );
+		return $node;
 	}
 
 	/** A column's content rebuilt as the reviewer-chosen role (overrides the auto-detected shortcode). */
@@ -2134,6 +2660,50 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/**
+	 * #3 — drop INERT Tailwind utility classes from a carried part-class list.
+	 *
+	 * A native heading/text element is NOT under the `.sc-tw` scope, so carried source utilities
+	 * (`text-3xl`, `font-bold`, `text-lg`, spacing `mb-4`) resolve to nothing — and responsive
+	 * variants arrive mangled (`md:text-4xl` → `mdtext-4xl`, `text-foreground/70` → `text-foreground70`)
+	 * because `:`/`/` are stripped from class attributes, so they're pure noise. Their VISUAL intent
+	 * (size / weight / family / color / spacing) is already reproduced by the per-node computed base
+	 * (`:where(selector){…}` from data-sc-cs) and native options. So strip the typographic / spacing /
+	 * sizing / generic-color utilities and their mangled responsive forms, but KEEP semantic ACCENT
+	 * utilities (`text-primary` / `-secondary` / `-accent`, `fill-*`) — those resolve to the editable
+	 * Color-Preset CSS variables — and KEEP any genuinely custom (non-Tailwind) class untouched.
+	 *
+	 * @param string $cls
+	 * @return string
+	 */
+	private static function strip_inert_utilities( $cls ) {
+		$keep = array();
+		foreach ( preg_split( '/\s+/', (string) self::keep_classes( $cls ) ) as $c ) {
+			if ( $c === '' ) { continue; }
+			// KEEP semantic accent utilities (resolve to editable Color-Preset variables).
+			if ( preg_match( '/^(text|fill|stroke|bg|border)-(primary|secondary|accent|tertiary)$/i', $c ) ) { $keep[] = $c; continue; }
+			// DROP any Tailwind VARIANT-prefixed token (responsive/state) — inert on a native element, and
+			// often arrives mangled (`md:text-4xl` → `mdtext-4xl`). Catches the clean colon form here.
+			if ( preg_match( '/^(sm|md|lg|xl|2xl|hover|focus|active|group-hover|group-focus|focus-within|focus-visible|disabled|dark|motion-safe|motion-reduce|first|last|odd|even|before|after):/i', $c ) ) { continue; }
+			// DROP inert Tailwind typographic / spacing / sizing / generic-color utilities…
+			if ( preg_match( '#^text-(xs|sm|base|lg|xl|[0-9]xl|\[.*\]|left|center|right|justify|start|end|nowrap|wrap|balance|pretty|clip|ellipsis|foreground[0-9/]*|muted[0-9/]*|(?:gray|grey|slate|zinc|neutral|stone|white|black)[0-9/]*)$#i', $c )
+				|| preg_match( '/^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black|sans|serif|mono|heading|body|display)$/i', $c )
+				|| preg_match( '/^(leading|tracking|indent)-(\d|\[|none|tight|snug|normal|relaxed|loose|wide|wider|widest|tighter)/i', $c )
+				// Spacing/sizing: only when the value is number/auto/px/fraction/keyword — so a custom name
+				// like `my-brand-title` (looks like margin-y) or `header-widget` is NOT mistaken for one.
+				|| preg_match( '/^-?(m|p)[trblxyse]?-(\d|\[|auto|px|full|screen|min|max|fit|\d*\.?\d+)/i', $c )
+				|| preg_match( '/^(max-w|min-w|max-h|min-h|w|h)-(\d|\[|auto|px|full|screen|min|max|fit|prose|none|\d*\.?\d+)/i', $c )
+				|| preg_match( '/^(gap|space-[xy])-(\d|\[|px|\d*\.?\d+)/i', $c )
+				|| preg_match( '/^opacity-(\d|\[)/i', $c )
+				|| preg_match( '/^(antialiased|subpixel-antialiased|italic|not-italic|uppercase|lowercase|capitalize|normal-case|truncate|underline|line-through|no-underline)$/i', $c )
+				// …and mangled responsive forms (`md:text-4xl` → `mdtext-4xl`, `lg:font-bold` → `lgfont-bold`).
+				|| preg_match( '/^(sm|md|lg|xl|2xl)(text|font|leading|tracking|m[trblxyse]?|p[trblxyse]?|max|min|w|h|flex|grid|block|inline|hidden|gap|space|order|col|row|justify|items|content|self|opacity)\S*$/i', $c )
+			) { continue; }
+			$keep[] = $c; // unknown / genuinely custom class → keep it.
+		}
+		return implode( ' ', array_unique( $keep ) );
+	}
+
+	/**
 	 * Rewrite a source "primary text color" utility inside inline HTML (e.g. the
 	 * `<span class="text-color-primary">` highlight in a heading title) to the Primary
 	 * COLOR PRESET's own text utility (`text-primary`). The preset engine emits
@@ -2160,7 +2730,85 @@ class FW_Site_Converter_Mapper {
 			}
 			return $m[0];
 		}, $html );
+		// Resolve the source SEMANTIC colour utilities (text-primary / text-secondary /
+		// text-foreground / fill-primary…) to CONCRETE inline colours from the extracted palette, so
+		// the two-tone heading span AND the hand-drawn underline `<svg><path stroke="currentColor">`
+		// render the brand accents on the PAGE BODY — the `.text-primary { color: … }` CSS the source
+		// relies on only lives under the `.sc-tw` chrome scope (not on the body), so on the body those
+		// classes would otherwise inherit BLACK. See resolve_color_classes().
+		$html = self::resolve_color_classes( $html );
 		return $html;
+	}
+
+	/**
+	 * A source semantic colour token ('primary'/'secondary'/'foreground'/'white'/'black') → its
+	 * concrete hex from the extracted palette ($style_cfg['colors'], populated via set_style_config()
+	 * from FW_Site_Converter_Tailwind::extract_semantic_colors()), or '' when the palette has no real
+	 * value for it. Pure/near-pure black is REJECTED for the accent tokens (a black "accent" means the
+	 * extraction failed — resolving to black would mask nothing and we'd rather leave the class alone).
+	 */
+	private static function color_token_hex( $token ) {
+		if ( $token === 'white' ) { return '#ffffff'; }
+		if ( $token === 'black' ) { return '#000000'; }
+		$cols = ( isset( self::$style_cfg['colors'] ) && is_array( self::$style_cfg['colors'] ) ) ? self::$style_cfg['colors'] : array();
+		$hex  = isset( $cols[ $token ] ) ? trim( (string) $cols[ $token ] ) : '';
+		if ( $hex === '' ) { return ''; }
+		// Normalise rgb()/rgba() → #hex so it's usable inline.
+		if ( stripos( $hex, 'rgb' ) === 0 && preg_match( '/rgba?\(\s*(\d{1,3})[,\s]+(\d{1,3})[,\s]+(\d{1,3})/', $hex, $mm ) ) {
+			$hex = sprintf( '#%02x%02x%02x', (int) $mm[1], (int) $mm[2], (int) $mm[3] );
+		}
+		if ( ! preg_match( '/^#[0-9a-fA-F]{3,8}$/', $hex ) ) { return ''; }
+		// Reject an accent that resolves to (near-)black — extraction miss, not a real accent.
+		if ( preg_match( '/^#(000|000000)$/i', $hex ) ) { return ''; }
+		return $hex;
+	}
+
+	/**
+	 * Resolve the source's SEMANTIC colour utility classes (`text-primary`, `text-secondary`,
+	 * `text-foreground`, `text-white`/`text-black`, and the SVG `fill-primary`/`fill-secondary`…)
+	 * to CONCRETE inline `color:`/`fill:` declarations MERGED additively onto the element carrying
+	 * the class. The source class is KEPT (harmless, and preserves golden assertions that check the
+	 * class survives) — the inline style is what actually paints on the page body, independent of the
+	 * `.sc-tw`-scoped CSS that never lands on the body. Idempotent: unknown / unpalettable classes are
+	 * left untouched, and a second pass is a no-op (the classes stay but the palette lookup is stable).
+	 *
+	 * The key case is the two-tone hero heading: `<span class="text-primary …">Second Home <svg
+	 * class="… text-secondary"><path stroke="currentColor" …></svg></span>` — the span gets
+	 * `color:<primary>` (green) and the underline svg gets `color:<secondary>` (amber) so its
+	 * `stroke="currentColor"` strokes amber instead of inheriting black.
+	 *
+	 * @param string $html verbatim-carried heading/accent HTML
+	 * @return string
+	 */
+	private static function resolve_color_classes( $html ) {
+		$html = (string) $html;
+		if ( $html === '' || stripos( $html, 'class' ) === false ) { return $html; }
+		return preg_replace_callback( '/<[a-zA-Z][a-zA-Z0-9]*\b[^>]*\bclass="[^"]*"[^>]*>/', function ( $tag ) {
+			$whole = $tag[0];
+			if ( ! preg_match( '/\bclass="([^"]*)"/', $whole, $cm ) ) { return $whole; }
+			$color = ''; $fill = '';
+			foreach ( preg_split( '/\s+/', trim( $cm[1] ) ) as $c ) {
+				if ( preg_match( '/^text-(primary|secondary|foreground|white|black)$/', $c, $t ) ) {
+					$h = self::color_token_hex( $t[1] );
+					if ( $h !== '' && $color === '' ) { $color = $h; }
+				} elseif ( preg_match( '/^fill-(primary|secondary|foreground|white|black)$/', $c, $t ) ) {
+					$h = self::color_token_hex( $t[1] );
+					if ( $h !== '' && $fill === '' ) { $fill = $h; }
+				}
+			}
+			if ( $color === '' && $fill === '' ) { return $whole; }
+			$decls = '';
+			if ( $color !== '' ) { $decls .= 'color:' . $color . ';'; }
+			if ( $fill !== '' )  { $decls .= 'fill:' . $fill . ';'; }
+			// Merge into an existing style="" additively; else add one before the closing '>'.
+			if ( preg_match( '/\bstyle="[^"]*"/', $whole ) ) {
+				return preg_replace_callback( '/\bstyle="([^"]*)"/', function ( $sm ) use ( $decls ) {
+					$ex = rtrim( trim( $sm[1] ), ';' );
+					return 'style="' . ( $ex !== '' ? $ex . ';' : '' ) . $decls . '"';
+				}, $whole, 1 );
+			}
+			return substr( $whole, 0, -1 ) . ' style="' . $decls . '">';
+		}, $html );
 	}
 
 	/**
@@ -2243,7 +2891,55 @@ class FW_Site_Converter_Mapper {
 	 * @param array $blocks role-annotated blocks (from stitch collect_blocks on the cell)
 	 * @return array page-builder item nodes
 	 */
+	/**
+	 * PRE-PASS — a BADGE chip immediately FOLLOWED BY A HEADING is that heading's eyebrow/OVERLINE, not a
+	 * floating component. Walk the blocks; for each `badge`, find the next MEANINGFUL block (skip
+	 * include===false / role 'skip'); if it is a 'title'/'heading', transform the badge IN PLACE into an
+	 * `overline` block (text = tag_text + message, plus the pill metadata `overline_svg` / `overline_pill` /
+	 * `overline_color`) so the existing overline-merge branch folds it into the special_heading — matching
+	 * the JS capture-service path, which already renders the hero pill as the overline. A chip with NO
+	 * heading after it is left untouched → stays a standalone `badge`.
+	 */
+	private static function transform_badge_overlines( array $blocks ) {
+		$keys = array_keys( $blocks );
+		$n    = count( $keys );
+		for ( $i = 0; $i < $n; $i++ ) {
+			$b = $blocks[ $keys[ $i ] ];
+			if ( ! is_array( $b ) || 'badge' !== (string) ( $b['role'] ?? '' ) ) { continue; }
+			// Next meaningful block (skip omitted / skip).
+			$next = null;
+			for ( $j = $i + 1; $j < $n; $j++ ) {
+				$nb = $blocks[ $keys[ $j ] ];
+				if ( ! is_array( $nb ) ) { continue; }
+				if ( isset( $nb['include'] ) && ! $nb['include'] ) { continue; }
+				if ( 'skip' === (string) ( $nb['role'] ?? '' ) ) { continue; }
+				$next = $nb; break;
+			}
+			if ( null === $next ) { continue; }
+			if ( ! in_array( (string) ( $next['role'] ?? '' ), array( 'title', 'heading' ), true ) ) { continue; }
+
+			$tag_text = trim( (string) ( $b['tag_text'] ?? '' ) );
+			$message  = trim( (string) ( $b['message'] ?? '' ) );
+			$text     = '' !== $tag_text ? trim( $tag_text . ' ' . $message ) : $message;
+			$color    = '';
+			$pill_cs  = (string) ( $b['pillCs'] ?? $b['cs'] ?? '' );
+			if ( '' !== $pill_cs ) {
+				$cd = self::cs_decls( $pill_cs, array( 'color' ) );
+				if ( isset( $cd['color'] ) && '' !== $cd['color'] ) { $color = $cd['color']; }
+			}
+			$b['role']           = 'overline';
+			$b['text']           = $text;
+			$b['cls']            = (string) ( $b['msgCls'] ?? $b['cls'] ?? '' );
+			$b['overline_svg']   = (string) ( $b['leadingSvg'] ?? '' );
+			$b['overline_pill']  = true;
+			$b['overline_color'] = $color;
+			$blocks[ $keys[ $i ] ] = $b;
+		}
+		return $blocks;
+	}
+
 	private static function build_cell_items( array $blocks ) {
+		$blocks = self::transform_badge_overlines( $blocks ); // chip-before-heading → overline
 		$items = array();
 		$head  = null;
 		$flush_head = function () use ( &$head, &$items ) {
@@ -2255,21 +2951,51 @@ class FW_Site_Converter_Mapper {
 			$role = isset( $b['role'] ) ? (string) $b['role'] : 'code';
 			if ( $role === 'skip' ) { continue; }
 
+			// A SHORT intro paragraph right after a title folds into the heading's SUBTITLE (brevity-guarded).
+			// build_cell_items() handles DECOMPOSED content columns (e.g. the hero), so this is what makes the
+			// hero's "Fresh, fun, and safe boarding…" line become the subtitle instead of a standalone Text
+			// Block. Same routing as the section loop; parity mirrored in JS to-pages coalesceHeadingGroups.
+			if ( $role === 'text' && $head !== null && '' !== (string) ( $head['title'] ?? '' ) && '' === (string) ( $head['subtitle'] ?? '' )
+				&& self::is_heading_subtitle( $b ) ) {
+				$role = 'subtitle';
+			}
 			if ( in_array( $role, array( 'overline', 'title', 'subtitle' ), true ) ) {
-				$val   = $role === 'title' ? (string) ( $b['html'] ?? $b['text'] ?? '' ) : trim( (string) ( $b['text'] ?? '' ) );
-				$fresh = array( 'overline' => '', 'title' => '', 'subtitle' => '', 'overline_class' => '', 'title_class' => '', 'subtitle_class' => '', 'css_class' => '', 'level' => (int) ( $b['level'] ?? 2 ), 'align' => $b['align'] ?? '' );
+				// title + subtitle keep INLINE html (links / <strong> / <em>); a subtitle's outer <p> is stripped.
+				$val   = in_array( $role, array( 'title', 'subtitle' ), true )
+					? self::heading_part_inline_html( (string) ( $b['html'] ?? $b['text'] ?? '' ), $role )
+					: trim( (string) ( $b['text'] ?? '' ) );
+				$fresh = array( 'overline' => '', 'title' => '', 'subtitle' => '', 'overline_class' => '', 'title_class' => '', 'subtitle_class' => '', 'css_class' => '', 'level' => (int) ( $b['level'] ?? 2 ), 'align' => $b['align'] ?? '', 'wrapMaxW' => (string) ( $b['wrapMaxW'] ?? '' ) );
 				if ( $head === null ) { $head = $fresh; }
 				if ( $head[ $role ] !== '' ) { $flush_head(); $head = $fresh; }
 				$head[ $role ]            = $val;
 				$head[ $role . '_class' ] = (string) ( $b['cls'] ?? '' );
+				// Carry chip-before-heading pill metadata onto the head so n_heading emits the filled-pill overline.
+				if ( 'overline' === $role ) {
+					if ( isset( $b['overline_svg'] ) )   { $head['overline_svg']   = (string) $b['overline_svg']; }
+					if ( ! empty( $b['overline_pill'] ) ) { $head['overline_pill']  = true; }
+					if ( isset( $b['overline_color'] ) ) { $head['overline_color'] = (string) $b['overline_color']; }
+				}
 				if ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
-					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight' ) );
+					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight', 'font-size', 'color' ) );
 					if ( isset( $cw['font-weight'] ) ) { $head[ $role . '_weight' ] = $cw['font-weight']; }
+					// Capture the part's computed font-size (px) so n_heading can assign the matching Text
+					// Style preset (e.g. an 18px subtitle → the `font-subtitle` preset) instead of losing its
+					// size when the source utility class is stripped.
+					if ( isset( $cw['font-size'] ) && preg_match( '/^([0-9.]+)px$/', (string) $cw['font-size'], $fm ) ) {
+						$head[ $role . '_fs' ] = (float) $fm[1];
+					}
+					// Capture the part's computed COLOR so n_heading can set the native subtitle/title/overline
+					// color option — a muted subtitle (e.g. text-foreground/70 → rgba(41,61,54,.7)) was rendering
+					// at the theme default because the color was dropped.
+					if ( isset( $cw['color'] ) && trim( (string) $cw['color'] ) !== '' ) {
+						$head[ $role . '_color_src' ] = trim( (string) $cw['color'] );
+					}
 				}
 				if ( $role === 'title' ) {
 					$head['level'] = (int) ( $b['level'] ?? 2 );
 					$head['align'] = $b['align'] ?? $head['align'];
 					if ( ! empty( $b['wrapCls'] ) ) { $head['css_class'] = (string) $b['wrapCls']; }
+					if ( ! empty( $b['wrapMaxW'] ) ) { $head['wrapMaxW'] = (string) $b['wrapMaxW']; }
 				}
 				continue;
 			}
@@ -2302,11 +3028,104 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/**
+	 * Pass #5 SPACING-SCALE DISTILLATION — a px length → the spacing-scale utility CLASS for `$prefix`
+	 * (pt/pb/mt/mb…). An EXACT scale step (within 1px) becomes the clean, named slug (`pt-3`); an
+	 * off-scale value becomes a LOSSLESS Tailwind ARBITRARY value (`pt-[96px]`) which the shortcodes'
+	 * per-page dynamic CSS renders exactly and the spacing dropdown lists as an editable option. This is
+	 * the DISTILLATION that snaps the source's measured rhythm onto the shared scale without a ±12px
+	 * snap error. Byte-for-byte mirror of the JS to-pages spacingToken(); the scale = SPACING_SCALE (JS)
+	 * = rem_to_spacing_slug()'s ladder (×16 → px).
+	 *
+	 * @param string $prefix the utility prefix (pt/pb/mt/mb/pl/pr…)
+	 * @param float  $px      the measured length in pixels
+	 * @return string the utility class (e.g. `pt-3` or `pt-[96px]`)
+	 */
+	private static function spacing_token( $prefix, $px ) {
+		$px    = (int) round( (float) $px );
+		$scale = array( array( 0, '0' ), array( 4, '1' ), array( 8, '2' ), array( 16, '3' ), array( 24, '4' ), array( 48, '5' ), array( 56, '6' ), array( 64, '7' ), array( 72, '8' ), array( 80, '9' ), array( 96, '10' ), array( 112, '11' ), array( 128, '12' ) );
+		foreach ( $scale as $e ) { if ( abs( $e[0] - $px ) <= 1 ) { return $prefix . '-' . $e[1]; } }
+		return $prefix . '-[' . $px . 'px]';
+	}
+
+	/**
+	 * Pass #6 — PER-BREAKPOINT RESPONSIVE CARRY (visibility).
+	 *
+	 * Derive the native `responsive_hide` selection (hide-xs / hide-sm / hide-md — rendered onto the
+	 * wrapper by the global sc_build_wrapper_attr filter and backed by builder/static/css/frontend-grid.css)
+	 * from a source element's Tailwind responsive VISIBILITY utilities that are ALREADY in the carried
+	 * markup. Class-derived only — NO extra capture pass, NO body-wide CSS, NO invented option.
+	 *
+	 * Native tiers: hide-xs = <768, hide-sm = 768–991, hide-md = ≥992. Tailwind's ladder (sm 640 /
+	 * md 768 / lg 1024 / xl 1280) is snapped onto them approximately. Two clean, unambiguous single-toggle
+	 * families are recognised; anything else returns array() (no guess):
+	 *   A) base `hidden` + `{bp}:{display}`  → visible only from {bp} up → HIDE BELOW {bp}
+	 *        sm/md → hide-xs ; lg/xl/2xl → hide-xs + hide-sm
+	 *   B) base visible + `{bp}:hidden`      → hidden from {bp} up
+	 *        sm/md → hide-sm + hide-md ; lg/xl/2xl → hide-md
+	 * A bare `hidden` with NO responsive un-hide is deliberately IGNORED (that's a fully removed element,
+	 * not a per-breakpoint change — carrying it would silently drop content). A class set that BOTH hides
+	 * and re-shows at different bps (`hidden md:flex lg:hidden`) is ambiguous → skipped.
+	 *
+	 * @param string $cls a source element's raw class attribute
+	 * @return array responsive_hide-shaped map ({ 'hide-xs' => true, … }) or array() when there's no clear toggle
+	 */
+	public static function responsive_hide_from_classes( $cls ) {
+		$cls = ' ' . strtolower( trim( preg_replace( '/\s+/', ' ', (string) $cls ) ) ) . ' ';
+		if ( trim( $cls ) === '' ) { return array(); }
+		$disp        = 'block|flex|grid|inline|inline-block|inline-flex|table|inline-table|flow-root|contents';
+		$base_hidden = (bool) preg_match( '/ hidden /', $cls );
+		$has_show    = (bool) preg_match( '/ (sm|md|lg|xl|2xl):(' . $disp . ') /', $cls );
+		$has_bphide  = (bool) preg_match( '/ (sm|md|lg|xl|2xl):hidden /', $cls );
+
+		// Family A — hide below the breakpoint (base hidden, re-shown from {bp} up). Skip if it ALSO
+		// re-hides at a larger bp (ambiguous mid-band-only visibility).
+		if ( $base_hidden && $has_show && ! $has_bphide && preg_match( '/ (sm|md|lg|xl|2xl):(' . $disp . ') /', $cls, $m ) ) {
+			return ( 'sm' === $m[1] || 'md' === $m[1] )
+				? array( 'hide-xs' => true )
+				: array( 'hide-xs' => true, 'hide-sm' => true );
+		}
+		// Family B — hide from the breakpoint up (base visible). Skip if it ALSO re-shows at a larger bp.
+		if ( ! $base_hidden && $has_bphide && ! $has_show && preg_match( '/ (sm|md|lg|xl|2xl):hidden /', $cls, $m ) ) {
+			return ( 'sm' === $m[1] || 'md' === $m[1] )
+				? array( 'hide-sm' => true, 'hide-md' => true )
+				: array( 'hide-md' => true );
+		}
+		return array();
+	}
+
+	/**
 	 * Translate a heading-group wrapper's Tailwind LAYOUT/SPACING classes into NATIVE special_heading
 	 * options (parity with the JS to-pages headingNode) — otherwise they sit dead on css_class (no
 	 * Tailwind runtime in the builder) and the heading renders with the wrong spacing. Returns the
 	 * native atts + the leftover (unmapped) class string.
 	 */
+	/**
+	 * Is this text block a heading SUBTITLE (a short intro line) rather than body copy? A subtitle is a
+	 * single short paragraph — no block-level structure (lists, sub-headings, tables, multiple paragraphs)
+	 * and under a two-sentence length cap. Longer / structured copy stays a Text Block (the design intent:
+	 * "keep it to a sentence or two; for longer copy use a Text Block").
+	 */
+	private static function is_heading_subtitle( $b ) {
+		$html = (string) ( $b['html'] ?? $b['text'] ?? '' );
+		if ( preg_match( '/<(ul|ol|h[1-6]|table|blockquote|figure|hr|div)\b/i', $html ) ) { return false; }
+		if ( preg_match_all( '/<p\b/i', $html ) > 1 ) { return false; } // more than one paragraph = body copy
+		$plain = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $html ) ) );
+		if ( $plain === '' ) { return false; }
+		return mb_strlen( $plain ) <= 220; // a sentence or two; longer reads as body copy
+	}
+
+	/**
+	 * Inline HTML for a heading part. Title is returned verbatim; a subtitle's single outer <p>…</p> wrapper
+	 * is unwrapped (the view re-wraps it in <p class="heading-subtitle">) so only its inline content —
+	 * links / <strong> / <em> / <br> — carries into the subtitle field.
+	 */
+	private static function heading_part_inline_html( $html, $role ) {
+		$html = (string) $html;
+		if ( $role !== 'subtitle' ) { return $html; }
+		if ( preg_match( '/^\s*<p\b[^>]*>([\s\S]*)<\/p>\s*$/i', $html, $m ) ) { return trim( $m[1] ); }
+		return trim( $html );
+	}
+
 	private static function heading_layout( $cls ) {
 		$tw_maxw = array( 'sm' => 24, 'md' => 28, 'lg' => 32, 'xl' => 36, '2xl' => 42, '3xl' => 48, '4xl' => 56, '5xl' => 64, '6xl' => 72, '7xl' => 80 );
 		$out = array( 'alignment' => '', 'element_spacing' => '', 'block_max_width' => array( 'value' => '', 'unit' => 'px' ), 'spacing' => null, 'css_class' => '' );
@@ -2383,10 +3202,51 @@ class FW_Site_Converter_Mapper {
 		$lvl = isset( $h['level'] ) && $h['level'] >= 1 && $h['level'] <= 6 ? (int) $h['level'] : 2;
 		// Translate the wrapper's Tailwind layout/spacing classes into native options (parity w/ JS).
 		$layout = self::heading_layout( (string) ( $h['css_class'] ?? '' ) );
+		// #1: an intermediate wrapper's constrained measure (`max-w-* mx-auto`) carried by the section
+		// walk (wrapMaxW) fills block_max_width when the heading's own classes didn't set one — so a
+		// centered `<div class="text-center max-w-2xl mx-auto"><h2>…</h2><p>…</p></div>` keeps its width.
+		if ( empty( $layout['block_max_width']['value'] ) && ! empty( $h['wrapMaxW'] )
+			&& preg_match( '/^(\d*\.?\d+)(px|rem|em|%|vw|ch)$/', (string) $h['wrapMaxW'], $wm ) ) {
+			$layout['block_max_width'] = array( 'value' => $wm[1], 'unit' => $wm[2] );
+		}
+		// The source's vertical margin often lives on the h-tag ITSELF (`<h2 class="… mb-6">`), not a wrapper.
+		// WHERE it belongs depends on whether a subtitle renders:
+		//  • WITH a subtitle → the title's bottom margin is the TITLE→SUBTITLE gap, so it drives
+		//    `element_spacing` (the dedicated control for that internal rhythm). Left at Normal it would use
+		//    the theme's font-size-relative default (much larger than the source, e.g. ~30px vs a 16px source).
+		//    `element_spacing` is a COARSE select, so snap to the nearest: tight ≤6px, relaxed 7–20px, else Normal.
+		//  • WITHOUT a subtitle → the title's margin IS the block's bottom gap → the outer `spacing` option
+		//    (Margin & Padding), as before, so `.heading{margin-bottom:1em}` doesn't take over.
+		// The px comes from the source title's `mb-*` utility (Tailwind: N × 4px). Parity mirrored in JS to-pages.
+		$has_subtitle = '' !== trim( (string) ( $h['subtitle'] ?? '' ) );
+		$title_mb_px  = preg_match( '/\bmb-(\d+(?:\.\d+)?)\b/', (string) ( $h['title_class'] ?? '' ), $tmb ) ? (float) $tmb[1] * 4 : null;
+		if ( $has_subtitle && $title_mb_px !== null ) {
+			if ( '' === $layout['element_spacing'] ) {
+				$layout['element_spacing'] = $title_mb_px <= 6 ? 'tight' : ( $title_mb_px <= 20 ? 'relaxed' : '' );
+			}
+		} elseif ( $layout['spacing'] === null ) {
+			$title_layout = self::heading_layout( (string) ( $h['title_class'] ?? '' ) );
+			if ( $title_layout['spacing'] !== null ) { $layout['spacing'] = $title_layout['spacing']; }
+		}
 		// Default to inherit ('') — `left`/`start` is the computed default for almost all content, so
 		// treat it as inherit (no `text-start`) and only force a class for an explicit center/right.
 		$align = $layout['alignment'] !== '' ? $layout['alignment']
 			: ( isset( $h['align'] ) && in_array( $h['align'], array( 'center', 'right' ), true ) ? $h['align'] : '' );
+		// #2 — assign the SUBTITLE's Text Style preset from its captured source size (e.g. 18px →
+		// `font-subtitle`, 20px → `lead`). The special_heading's `subtitle_size` value IS the preset class,
+		// so the subtitle keeps its scale via the editable Text Style preset even though the size utility
+		// class was stripped (the fix for section subtitles collapsing to the 16px base).
+		$subtitle_size = ( isset( $h['subtitle_fs'] ) && $h['subtitle_fs'] !== '' ) ? self::text_preset_for( (float) $h['subtitle_fs'] ) : '';
+		// Part COLORS — set the native subtitle/title color option from the source's captured computed colour
+		// (e.g. a muted `text-foreground/70` → rgba(41,61,54,.7) subtitle), so it isn't dropped to the theme
+		// default. Skip the plain default ink (a normal-black title stays inherit). Overline colour is owned by
+		// the pill/overline path above, so it's left alone here.
+		$mk_color = function ( $src ) {
+			$src = trim( (string) $src );
+			return ( $src !== '' && ! self::is_default_ink( $src ) ) ? array( 'predefined' => '', 'custom' => $src ) : self::empty_color();
+		};
+		$subtitle_color = $mk_color( $h['subtitle_color_src'] ?? '' );
+		$title_color    = $mk_color( $h['title_color_src'] ?? '' );
 		// overline_uppercase — reproduce the source kicker casing (parity with the JS mapper): Yes when
 		// the source overline is text-transform:uppercase OR its text is literally all-caps; else No.
 		$ol_plain = trim( wp_strip_all_tags( (string) ( $h['overline'] ?? '' ) ) );
@@ -2402,19 +3262,53 @@ class FW_Site_Converter_Mapper {
 			$ov_icon_pos = ( strpos( $ov_raw, $svg_m[0] ) + strlen( $svg_m[0] ) >= strlen( rtrim( $ov_raw ) ) ) ? 'after' : 'before';
 			$ov_raw      = trim( preg_replace( '/<svg\b[\s\S]*?<\/svg>/i', '', $ov_raw ) );
 		}
+		// CHIP-BEFORE-HEADING PILL: a badge chip that sat directly above this heading became its overline.
+		// Its leading inline <svg> drives overline_icon (takes precedence over any html-extracted svg), it
+		// renders as a FILLED PILL, and the pill tint + text follow the Overline Color (the chip's text
+		// colour). This reproduces the source chip 100% and mirrors the JS capture-service path.
+		if ( isset( $h['overline_svg'] ) && '' !== trim( (string) $h['overline_svg'] ) ) {
+			$ov_icon     = array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => (string) $h['overline_svg'] );
+			$ov_icon_pos = 'before';
+		}
+		$overline_container = ! empty( $h['overline_pill'] ) ? 'pill' : '';
+		$overline_color     = ( ! empty( $h['overline_color'] ) )
+			? array( 'predefined' => '', 'custom' => (string) $h['overline_color'] )
+			: array( 'predefined' => '', 'custom' => '' );
+		$overline_class = self::strip_inert_utilities( $h['overline_class'] ?? '' );
+		$title_class    = self::strip_inert_utilities( $h['title_class'] ?? '' );
+		$subtitle_class = self::strip_inert_utilities( $h['subtitle_class'] ?? '' );
+		$uid = self::uid();
+		// CONVERSION DEBUG — record the heading's ORIGINAL per-part source classes (src_cls) and the
+		// utilities strip_inert_utilities() DID NOT turn into an option (dropped: text-5xl, lg:text-7xl,
+		// leading-[1.1], …). The wrapper css_class contributes its keep_classes-dropped tokens too.
+		$src_all = trim( implode( ' ', array_filter( array(
+			(string) ( $h['overline_class'] ?? '' ), (string) ( $h['title_class'] ?? '' ),
+			(string) ( $h['subtitle_class'] ?? '' ), (string) ( $layout['css_class'] ?? '' ),
+		) ) ) );
+		$kept_all = trim( $overline_class . ' ' . $title_class . ' ' . $subtitle_class . ' ' . self::keep_classes( $layout['css_class'] ?? '' ) );
+		self::conv_debug_record( $uid, $src_all, self::conv_dropped_diff( $src_all, $kept_all ) );
 		return array(
 			'type' => 'simple', 'shortcode' => 'special_heading', '_items' => array(),
 			'atts' => array(
-				'unique_id' => self::uid(), 'css_id' => '',
+				'unique_id' => $uid, 'css_id' => '',
 				// Only UNMAPPED wrapper classes remain on css_class; keep_classes drops animation noise.
 				'css_class' => self::keep_classes( $layout['css_class'] ),
 				// Re-assert each part's SOURCE font-weight on its own element (wins over the theme's
 				// hN.heading-title tag rule when no heading-weight token is set) — parity with JS to-pages.
-				'custom_css' => self::heading_weight_css( $h ),
+				'custom_css' => self::heading_weight_css( $h )
+				// NO subtitle: the theme's default hN bottom margin leaks as the block's below-gap and DOMINATES
+				// the (source-derived) outer Margin & Padding value — e.g. a 48px h1 default over the source's
+				// 24px. `.heading-title` is never reset by the shortcode (only its top margin is), so reset the
+				// bottom here for lone headings; the outer `spacing` option then IS the faithful gap. (Headings
+				// WITH a subtitle keep their title→subtitle rhythm via element_spacing above.) Mirror in JS to-pages.
+				. ( '' === trim( (string) ( $h['subtitle'] ?? '' ) ) ? 'selector .heading-title{margin-bottom:0 !important;}' : '' ),
 				'overline' => self::map_accent_classes( $ov_raw ),
 				'overline_uppercase' => $ol_upper ? 'yes' : 'no',
 				'overline_icon' => $ov_icon,
 				'overline_icon_position' => $ov_icon_pos,
+				// Chip-before-heading pill (empty '' / neutral color for a normal heading, so unaffected).
+				'overline_container' => $overline_container,
+				'overline_color' => $overline_color,
 				'title'    => self::map_accent_classes( (string) ( $h['title'] ?? '' ) ),
 				'subtitle' => self::map_accent_classes( (string) ( $h['subtitle'] ?? '' ) ),
 				'heading'  => 'h' . $lvl,
@@ -2424,9 +3318,12 @@ class FW_Site_Converter_Mapper {
 				'spacing' => $layout['spacing'] !== null ? $layout['spacing'] : self::empty_spacing(),
 				// Per-part source classes mapped onto the special heading's class inputs (the
 				// source's overline/title/subtitle carried their own utility classes).
-				'overline_class' => self::keep_classes( $h['overline_class'] ?? '' ),
-				'title_class'    => self::keep_classes( $h['title_class'] ?? '' ),
-				'subtitle_class' => self::keep_classes( $h['subtitle_class'] ?? '' ),
+				'overline_class' => $overline_class,
+				'title_class'    => $title_class,
+				'subtitle_class' => $subtitle_class,
+				'subtitle_size'  => $subtitle_size, // Text Style preset for the subtitle (from its source size)
+				'subtitle_color' => $subtitle_color, // source subtitle colour (e.g. muted text-foreground/70)
+				'title_color'    => $title_color,    // source title colour when it's a real non-default tone
 			),
 		);
 	}
@@ -2610,6 +3507,7 @@ class FW_Site_Converter_Mapper {
 	 * @return array[] pages
 	 */
 	public static function build_pages( array $mapping ) {
+		self::$conv_debug = array(); // fresh per build — re-conversions must not accumulate collector records
 		$out = array();
 		$pages = isset( $mapping['pages'] ) && is_array( $mapping['pages'] ) ? $mapping['pages'] : array();
 		foreach ( $pages as $page ) {
@@ -2630,6 +3528,145 @@ class FW_Site_Converter_Mapper {
 			);
 		}
 		return $out;
+	}
+
+	/* ---------------------------------------------------------------------- *
+	 * Conversion debug map — powers the dashboard hover-inspector.
+	 * ---------------------------------------------------------------------- */
+
+	/**
+	 * Build the conversion-map: for every builder node in the built page tree, record what the
+	 * deterministic converter DID (`sc` = shortcode, `mapped` = its meaningful non-empty atts,
+	 * `custom_css` = its scoped base CSS) and — merged from the per-node collector ($conv_debug) —
+	 * what SOURCE classes it carried (`src_cls`) and DROPPED (`dropped`). Keyed by the 8-char element
+	 * hash that the renderer stamps as the element's `u<hash>` scope class, so the dashboard can look
+	 * an element up by that class.
+	 *
+	 * Call AFTER build_pages() (so $conv_debug is populated) with its returned $pages array.
+	 *
+	 * @param array $pages build_pages() output (each page has a nested `builder` node tree)
+	 * @return array<string,array> hash → record
+	 */
+	public static function build_conversion_map( array $pages ) {
+		$map = array();
+		foreach ( $pages as $page ) {
+			$nodes = isset( $page['builder'] ) && is_array( $page['builder'] ) ? $page['builder'] : array();
+			self::walk_conv_nodes( $nodes, $map );
+		}
+		// Merge the per-node collector (src_cls / dropped) recorded during the build.
+		foreach ( self::$conv_debug as $hash => $dbg ) {
+			if ( ! isset( $map[ $hash ] ) ) { $map[ $hash ] = array(); }
+			if ( ! empty( $dbg['src_cls'] ) ) { $map[ $hash ]['src_cls'] = (string) $dbg['src_cls']; }
+			if ( ! empty( $dbg['dropped'] ) ) { $map[ $hash ]['dropped'] = array_values( $dbg['dropped'] ); }
+		}
+		return $map;
+	}
+
+	/** Recursively walk a builder node tree, adding an `sc`/`mapped`/`custom_css` record per node with a unique_id. */
+	private static function walk_conv_nodes( array $nodes, array &$map ) {
+		foreach ( $nodes as $node ) {
+			if ( ! is_array( $node ) ) { continue; }
+			$atts = isset( $node['atts'] ) && is_array( $node['atts'] ) ? $node['atts'] : array();
+			$uid  = isset( $atts['unique_id'] ) ? (string) $atts['unique_id'] : '';
+			$hash = self::conv_hash( $uid );
+			if ( $hash !== '' ) {
+				// Shortcode name: leaf widgets carry `shortcode`; structural nodes carry `type` (section/column).
+				$sc  = isset( $node['shortcode'] ) && $node['shortcode'] !== ''
+					? (string) $node['shortcode']
+					: ( isset( $node['type'] ) ? (string) $node['type'] : '' );
+				$rec = array( 'sc' => $sc, 'mapped' => self::condense_atts( $atts ) );
+				$ccss = isset( $atts['custom_css'] ) ? trim( (string) $atts['custom_css'] ) : '';
+				if ( $ccss !== '' ) { $rec['custom_css'] = self::conv_cap( preg_replace( '/\s+/', ' ', $ccss ), 600 ); }
+				// Keep any earlier collector-recorded keys if this hash somehow repeats.
+				$map[ $hash ] = isset( $map[ $hash ] ) ? array_merge( $map[ $hash ], $rec ) : $rec;
+			}
+			foreach ( array( '_items' ) as $ck ) {
+				if ( ! empty( $node[ $ck ] ) && is_array( $node[ $ck ] ) ) {
+					self::walk_conv_nodes( $node[ $ck ], $map );
+				}
+			}
+		}
+	}
+
+	/** Cap a scalar/string to $max chars for the debug map (never truncate mid-record shape). */
+	private static function conv_cap( $v, $max = 120 ) {
+		$v = (string) $v;
+		return ( strlen( $v ) > $max ) ? ( substr( $v, 0, $max - 1 ) . '…' ) : $v;
+	}
+
+	/**
+	 * Condense a node's atts into a flat, human-relevant map for the inspector: keeps NON-EMPTY
+	 * scalars + short values, flattens the common option shapes ({predefined,custom} color →
+	 * effective value, {value,unit} → "24px", {type,...icon} → the icon id/type), and DROPS noise
+	 * (unique_id, empty strings/arrays, animation defaults, responsive_hide, huge blobs, custom_css —
+	 * surfaced separately).
+	 *
+	 * @param array $atts
+	 * @return array
+	 */
+	private static function condense_atts( array $atts ) {
+		$skip = array(
+			'unique_id' => 1, 'css_id' => 1, 'custom_css' => 1, 'responsive_hide' => 1,
+			'custom_attrs' => 1, 'animation' => 1, 'spacing' => 1,
+		);
+		$out = array();
+		foreach ( $atts as $k => $v ) {
+			if ( isset( $skip[ $k ] ) ) { continue; }
+			$flat = self::condense_val( $v );
+			if ( $flat === '' || $flat === null || $flat === array() ) { continue; }
+			// Drop obvious defaults that carry no signal.
+			if ( $flat === 'default' || $flat === 'none' || $flat === 'no' || $flat === 'inherit' ) { continue; }
+			$out[ (string) $k ] = is_string( $flat ) ? self::conv_cap( $flat ) : $flat;
+		}
+		return $out;
+	}
+
+	/** Flatten a single att value to a scalar/short representation (or '' when it's empty/noise). */
+	private static function condense_val( $v ) {
+		if ( is_bool( $v ) ) { return $v ? true : ''; }
+		if ( is_int( $v ) || is_float( $v ) ) { return ( (float) $v === 0.0 ) ? '' : $v; }
+		if ( is_string( $v ) ) { return trim( $v ); }
+		if ( ! is_array( $v ) ) { return ''; }
+		// {predefined, custom} color → the effective value.
+		if ( array_key_exists( 'predefined', $v ) || array_key_exists( 'custom', $v ) ) {
+			$pre = isset( $v['predefined'] ) && $v['predefined'] !== '' ? (string) $v['predefined'] : '';
+			$cus = isset( $v['custom'] ) && is_string( $v['custom'] ) && $v['custom'] !== '' ? (string) $v['custom'] : '';
+			$val = $pre !== '' ? $pre : $cus;
+			if ( $val !== '' ) { return $val; }
+			// else fall through (may be a nested color shape)
+		}
+		// {value, unit} → "24px".
+		if ( array_key_exists( 'value', $v ) && array_key_exists( 'unit', $v ) ) {
+			$val = is_scalar( $v['value'] ) ? trim( (string) $v['value'] ) : '';
+			return $val === '' ? '' : ( $val . (string) $v['unit'] );
+		}
+		// Icon shape {type, ...}.
+		if ( isset( $v['type'] ) && is_string( $v['type'] ) ) {
+			$t = $v['type'];
+			if ( $t === 'none' || $t === '' ) { return ''; }
+			if ( ! empty( $v['icon-class'] ) ) { return (string) $v['icon-class']; }
+			if ( ! empty( $v['svg-id'] ) ) { return 'svg:' . (string) $v['svg-id']; }
+			if ( $t === 'svg' ) { return 'svg'; }
+			return (string) $t;
+		}
+		// {preset, custom} shape (min_height / max_width) → the preset unless custom carries a value.
+		if ( array_key_exists( 'preset', $v ) ) {
+			$p = isset( $v['preset'] ) ? (string) $v['preset'] : '';
+			if ( $p !== '' && $p !== 'auto' && $p !== 'custom' ) { return $p; }
+			if ( isset( $v['custom'] ) && is_array( $v['custom'] ) ) {
+				$c = self::condense_val( reset( $v['custom'] ) );
+				if ( $c !== '' && $c !== null ) { return $c; }
+			}
+			return '';
+		}
+		// Generic small array of scalars → compact CSV; skip anything large/nested.
+		$scalars = array();
+		foreach ( $v as $iv ) {
+			if ( is_scalar( $iv ) && (string) $iv !== '' ) { $scalars[] = (string) $iv; }
+			else { return ''; } // nested/complex → not inspector-relevant
+		}
+		if ( ! $scalars || count( $scalars ) > 6 ) { return ''; }
+		return self::conv_cap( implode( ',', $scalars ) );
 	}
 
 	/**
@@ -2898,13 +3935,41 @@ class FW_Site_Converter_Mapper {
 	private static function register_builtin_builders() {
 		self::register_builder( 'heading', function ( $b ) {
 			$cw = ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) ? self::cs_decls( (string) $b['cs'], array( 'font-weight' ) ) : array();
-			return self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'title_weight' => isset( $cw['font-weight'] ) ? $cw['font-weight'] : '', 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
+			$node = self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'title_weight' => isset( $cw['font-weight'] ) ? $cw['font-weight'] : '', 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
+			$cs = (string) ( $b['cs'] ?? '' );
+			// Pass-1: source vertical margin → the special_heading's NATIVE spacing option (fill only sides
+			// the class mapping left empty). Pass-2: the typography/color the unified styler already re-asserts
+			// (`#sec h1{…}`) + native alignment/weight are $already; the base fills the remaining appearance
+			// (a heading with a gradient text fill, underline, box-shadow, border, …).
+			if ( isset( $node['atts']['spacing'] ) ) { $node['atts']['spacing'] = self::apply_native_margin( $node['atts']['spacing'], $cs ); }
+			$node = self::apply_hifi_base( $node, $cs, array( 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-transform', 'text-align' ) );
+			return $node;
 		} );
 		self::register_builder( 'text', function ( $b ) {
-			return self::n_text( (string) ( $b['html'] ?? $b['text'] ?? '' ), (string) ( $b['maxWidth'] ?? '' ), (string) ( $b['align'] ?? '' ) );
+			$cs   = (string) ( $b['cs'] ?? '' );
+			$node = self::n_text( (string) ( $b['html'] ?? $b['text'] ?? '' ), (string) ( $b['maxWidth'] ?? '' ), (string) ( $b['align'] ?? '' ), $cs );
+			// SINGLE SOURCE OF TRUTH per property: the Text Style preset owns font-size, the native
+			// `text_color` option owns colour, the native `spacing` option owns vertical margins, and the
+			// unified styler owns line-height + font-family (no native option). So ALL of those are $already
+			// (EXCLUDED from the faithful base). The base fills only what nothing else covers (font-weight,
+			// letter-spacing, text-transform, background, border, …).
+			// FONT-SIZE de-dup: EXCLUDE font-size from the base ONLY when a preset is assigned (the preset
+			// owns the size — no frozen per-node px shadowing it). With NO preset, EMIT font-size in the base
+			// as the faithful px fallback.
+			$props = array( 'font-family', 'line-height', 'color', 'text-align', 'margin-top', 'margin-bottom' );
+			if ( ! empty( $node['atts']['font_size_preset'] ) ) {
+				$props[] = 'font-size';
+			}
+			$node = self::apply_hifi_base( $node, $cs, $props );
+			return $node;
 		} );
 		self::register_builder( 'button', function ( $b ) {
-			return self::n_button( (string) ( $b['label'] ?? $b['text'] ?? 'Button' ), (string) ( $b['href'] ?? '#' ), (string) ( $b['srcCls'] ?? $b['cls'] ?? '' ), (string) ( $b['icon'] ?? '' ), (string) ( $b['iconPos'] ?? 'after' ), (string) ( $b['srcCs'] ?? $b['cs'] ?? '' ), (string) ( $b['groupCls'] ?? '' ), (string) ( $b['groupCs'] ?? '' ) );
+			$node = self::n_button( (string) ( $b['label'] ?? $b['text'] ?? 'Button' ), (string) ( $b['href'] ?? '#' ), (string) ( $b['srcCls'] ?? $b['cls'] ?? '' ), (string) ( $b['icon'] ?? '' ), (string) ( $b['iconPos'] ?? 'after' ), (string) ( $b['srcCs'] ?? $b['cs'] ?? '' ), (string) ( $b['groupCls'] ?? '' ), (string) ( $b['groupCs'] ?? '' ), (string) ( $b['iconSvg'] ?? '' ) );
+			// The color/size preset + the `.btn-fill` semantic class already reproduce the button's exact
+			// fill / text color / border / radius / padding / typography (safety-net Custom CSS) = $already; the
+			// base only fills leftover appearance (background-image gradient, opacity, transform, …).
+			$node = self::apply_hifi_base( $node, (string) ( $b['srcCs'] ?? $b['cs'] ?? '' ), array( 'background-color', 'color', 'border', 'border-radius', 'box-shadow', 'font-family', 'font-size', 'font-weight', 'letter-spacing', 'text-transform' ) );
+			return $node;
 		} );
 		self::register_builder( 'code', function ( $b ) {
 			return self::n_code( (string) ( $b['html'] ?? '' ) );
@@ -2918,8 +3983,13 @@ class FW_Site_Converter_Mapper {
 			// native media_image reproduces the look without falling back to a verbatim code_block.
 			return self::n_media_image( (string) ( $b['html'] ?? '' ), (string) ( $b['skinCss'] ?? '' ) );
 		} );
-		self::register_builder( 'announcement_pill', function ( $b ) {
-			return self::n_announcement_pill( $b );
+		self::register_builder( 'badge', function ( $b ) {
+			$node = self::n_badge( $b );
+			// The pill's colours are left neutral (user themes them); the faithful base re-asserts the
+			// SOURCE fill / border / radius / text colour at specificity 0 so it looks right out of the box,
+			// still overridable. Margins stay on the unified styler (.fw-announce) = $already.
+			$node = self::apply_hifi_base( $node, (string) ( $b['pillCs'] ?? $b['cs'] ?? '' ), array() );
+			return $node;
 		} );
 		self::register_builder( 'avatar', function ( $b ) {
 			return self::n_avatar( $b );
@@ -2994,8 +4064,15 @@ class FW_Site_Converter_Mapper {
 			'heading'  => array( 'sel' => '{h}',                        'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-transform' ) ),
 			'subtitle' => array( 'sel' => '.special-heading__subtitle', 'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'color', 'max-width' ) ),
 			'overline' => array( 'sel' => '.special-heading__overline', 'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-transform' ) ),
-			'text'     => array( 'sel' => '.text-block',                'props' => array( 'font-family', 'font-size', 'line-height', 'color', 'max-width', 'margin-top', 'margin-bottom' ) ),
-			'announcement_pill' => array( 'sel' => '.fw-announce',       'props' => array( 'margin-top', 'margin-bottom' ) ),
+			// text_block now carries font-size (Text Style preset), colour (native text_color option) and
+			// vertical margins (native spacing option) as EDITABLE node options — so the styler must NOT
+			// re-assert them (that would double-apply / override the preset). It keeps only what has no
+			// native option: font-family, line-height, and the constrained max-width.
+			'text'     => array( 'sel' => '.text-block',                'props' => array( 'font-family', 'line-height', 'max-width' ) ),
+			// A call_to_action band carries its heading's scale/colour onto the section-scoped `{h}` (the CTA
+			// view renders the title as an <h2>), so a converted CTA keeps the source heading's large type.
+			'cta'      => array( 'sel' => '{h}',                        'props' => array( 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-transform', 'max-width' ) ),
+			'badge' => array( 'sel' => '.fw-announce',       'props' => array( 'margin-top', 'margin-bottom' ) ),
 		);
 	}
 
@@ -3099,6 +4176,7 @@ class FW_Site_Converter_Mapper {
 		$css = self::flatten_css( $css );
 
 		$blocks = isset( $sec['blocks'] ) && is_array( $sec['blocks'] ) ? $sec['blocks'] : array();
+		$blocks = self::transform_badge_overlines( $blocks ); // chip-before-heading → the heading's overline
 
 		// A full-screen background <video> (extractor-flagged `bg` = absolute + object-cover behind the
 		// content) becomes the SECTION's background video — not a content media_video block. Pull it out
@@ -3110,6 +4188,18 @@ class FW_Site_Converter_Mapper {
 			if ( $bt === 'video' && ! empty( $bb['bg'] ) ) { $bg_video = $bb; unset( $blocks[ $bi ] ); break; }
 		}
 		$blocks = array_values( $blocks );
+
+		// HERO full-bleed BACKGROUND image → the section Background (below), NOT a tiny inline media_image.
+		// Drop the duplicate content image block whose src matches the detected background photo.
+		$bg_image = ( isset( $sec['sectionBgImage'] ) && is_array( $sec['sectionBgImage'] ) && ! empty( $sec['sectionBgImage']['src'] ) ) ? $sec['sectionBgImage'] : null;
+		if ( $bg_image ) {
+			$bsrc = (string) $bg_image['src'];
+			foreach ( $blocks as $bi => $bb ) {
+				$bt = isset( $bb['t'] ) ? $bb['t'] : ( isset( $bb['role'] ) ? $bb['role'] : '' );
+				if ( $bt === 'image' && strpos( wp_json_encode( $bb ), $bsrc ) !== false ) { unset( $blocks[ $bi ] ); break; }
+			}
+			$blocks = array_values( $blocks );
+		}
 
 		$items = array();   // section's columns
 		$buf   = array();   // pending stacked items for a 1_1 column
@@ -3137,13 +4227,33 @@ class FW_Site_Converter_Mapper {
 				$buf = self::group_buttons( $buf ); // consecutive buttons → one side-by-side flex-row group
 				$w = ( $col_lay !== null ) ? $col_lay['width'] : '1_1';
 				$col = self::n_column( $w, $buf, '', $col_lay !== null ? $col_lay : array() );
+				// A buffered FLOATING CARD (an image-composite icon_box positioned `absolute` via its scoped
+				// posCss) needs a POSITIONED ANCESTOR, or it anchors to the section/page and lands top-left.
+				// Make this column the containing block. (P0-C fidelity fix; parity with the cols path + JS.)
+				foreach ( $buf as $bn ) {
+					if ( is_array( $bn ) && ( $bn['shortcode'] ?? '' ) === 'icon_box'
+						&& strpos( (string) ( $bn['atts']['custom_css'] ?? '' ), 'position:absolute' ) !== false ) {
+						$cur = isset( $col['atts']['custom_css'] ) ? (string) $col['atts']['custom_css'] : '';
+						$col['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . 'selector{position:relative;}' );
+						break;
+					}
+				}
 				if ( $inner_wrap !== '' ) { $col['atts']['inner_class'] = $inner_wrap; }
-				if ( $center ) { $col['atts']['content_h'] = 'center'; }
+				if ( $center ) {
+					$col['atts']['content_h'] = 'center';
+					// The centered source wrapper (its `text-center` class) that decomposes into this
+					// intro column holds MIXED children (heading + paragraph + buttons) — set the
+					// column's native `text_align='center'` so text-align cascades to all of them
+					// (content_h is the flexbox axis, a different concern). Redundant-but-safe with
+					// the section text_align; both are the inherited property, so idempotent.
+					$col['atts']['text_align'] = 'center';
+				}
 				$items[] = $col;
 				$buf = array();
 			}
 		};
 
+		$grid_gap_px = 0.0; // Pass #5: the section's first grid/row inter-column gap → section Gap option
 		foreach ( $blocks as $b ) {
 			if ( isset( $b['include'] ) && ! $b['include'] ) { continue; } // unchecked → omit
 			$role = isset( $b['role'] ) ? $b['role'] : 'code';
@@ -3186,6 +4296,25 @@ class FW_Site_Converter_Mapper {
 			if ( ( $b['t'] ?? '' ) === 'testimonials' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
 				$flush_buf();
 				$node = self::n_testimonials( $b['items'] );
+				self::apply_block_anim( $node, $b );
+				$items[] = self::n_column( '1_1', array( $node ) );
+				continue;
+			}
+
+			// A logo / "trusted by" strip → the native `logo_grid` shortcode in its own full-width column.
+			if ( ( $b['t'] ?? '' ) === 'logo_grid' && ! empty( $b['logos'] ) && is_array( $b['logos'] ) ) {
+				$flush_buf();
+				$node = self::n_logo_grid( $b );
+				self::apply_block_anim( $node, $b );
+				$items[] = self::n_column( '1_1', array( $node ) );
+				continue;
+			}
+
+			// A CALL-TO-ACTION band (heading + subtext + one button) → the native `call_to_action` shortcode
+			// in its own full-width column. The section's own band fill still lands as variant/native bg.
+			if ( ( $b['t'] ?? '' ) === 'cta' ) {
+				$flush_buf();
+				$node = self::n_cta( $b );
 				self::apply_block_anim( $node, $b );
 				$items[] = self::n_column( '1_1', array( $node ) );
 				continue;
@@ -3240,20 +4369,52 @@ class FW_Site_Converter_Mapper {
 				continue;
 			}
 
+			// Reliable heading intro: a plain paragraph RIGHT AFTER a title (head open, title set, no subtitle
+			// yet) reads as the heading's SUBTITLE — but ONLY a short single paragraph (a genuine intro line,
+			// not body copy). This also fires on DECOMPOSED content columns (hero / CTA), which never went
+			// through suggest_mapping's subtitle pass — the reason the subtitle was "almost never used". Longer
+			// / multi-paragraph / block-level copy stays a Text Block. Parity mirrored in JS to-pages.
+			if ( $role === 'text' && $head !== null && '' !== (string) ( $head['title'] ?? '' ) && '' === (string) ( $head['subtitle'] ?? '' )
+				&& self::is_heading_subtitle( $b ) ) {
+				$role = 'subtitle';
+			}
 			if ( in_array( $role, array( 'overline', 'title', 'subtitle' ), true ) ) {
-				$val = $role === 'title' ? (string) ( $b['html'] ?? $b['text'] ?? '' ) : trim( (string) ( $b['text'] ?? '' ) );
-				$fresh = array( 'overline' => '', 'title' => '', 'subtitle' => '', 'overline_class' => '', 'title_class' => '', 'subtitle_class' => '', 'css_class' => '', 'level' => (int) ( $b['level'] ?? 2 ), 'align' => $b['align'] ?? '' );
+				// title + subtitle keep INLINE html (links / <strong> / <em> survive into the minimal wp-editor
+				// subtitle field, which the view renders via wp_kses_post); a subtitle's outer <p> wrapper is
+				// stripped since the view re-wraps it in <p class="heading-subtitle">.
+				$val = in_array( $role, array( 'title', 'subtitle' ), true )
+					? self::heading_part_inline_html( (string) ( $b['html'] ?? $b['text'] ?? '' ), $role )
+					: trim( (string) ( $b['text'] ?? '' ) );
+				$fresh = array( 'overline' => '', 'title' => '', 'subtitle' => '', 'overline_class' => '', 'title_class' => '', 'subtitle_class' => '', 'css_class' => '', 'level' => (int) ( $b['level'] ?? 2 ), 'align' => $b['align'] ?? '', 'wrapMaxW' => (string) ( $b['wrapMaxW'] ?? '' ) );
 				if ( $head === null ) { $head = $fresh; }
 				// A second value for an already-filled slot starts a fresh heading.
 				if ( $head[ $role ] !== '' ) { $flush_head(); $head = $fresh; }
 				$head[ $role ] = $val;
 				// Carry the source part's own classes onto the matching class input.
 				$head[ $role . '_class' ] = (string) ( $b['cls'] ?? '' );
+				// Carry chip-before-heading pill metadata onto the head so n_heading emits the filled-pill overline.
+				if ( 'overline' === $role ) {
+					if ( isset( $b['overline_svg'] ) )   { $head['overline_svg']   = (string) $b['overline_svg']; }
+					if ( ! empty( $b['overline_pill'] ) ) { $head['overline_pill']  = true; }
+					if ( isset( $b['overline_color'] ) ) { $head['overline_color'] = (string) $b['overline_color']; }
+				}
 				// Carry the part's RESOLVED computed font-weight (data-sc-cs) so the heading re-asserts its
 				// real weight even on a NON-Tailwind source (where the class carries no font-* utility).
 				if ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
-					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight' ) );
+					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight', 'font-size', 'color' ) );
 					if ( isset( $cw['font-weight'] ) ) { $head[ $role . '_weight' ] = $cw['font-weight']; }
+					// Capture the part's computed font-size (px) so n_heading can assign the matching Text
+					// Style preset (e.g. an 18px subtitle → the `font-subtitle` preset) instead of losing its
+					// size when the source utility class is stripped.
+					if ( isset( $cw['font-size'] ) && preg_match( '/^([0-9.]+)px$/', (string) $cw['font-size'], $fm ) ) {
+						$head[ $role . '_fs' ] = (float) $fm[1];
+					}
+					// Capture the part's computed COLOR so n_heading can set the native subtitle/title/overline
+					// color option — a muted subtitle (e.g. text-foreground/70 → rgba(41,61,54,.7)) was rendering
+					// at the theme default because the color was dropped.
+					if ( isset( $cw['color'] ) && trim( (string) $cw['color'] ) !== '' ) {
+						$head[ $role . '_color_src' ] = trim( (string) $cw['color'] );
+					}
 				}
 				// The heading-group wrapper class (source `<div class="heading">`) → the special
 				// heading's own wrapper (css_class). Carried from the title block (the wrapper holds
@@ -3262,6 +4423,7 @@ class FW_Site_Converter_Mapper {
 					$head['level'] = (int) ( $b['level'] ?? 2 );
 					$head['align'] = $b['align'] ?? $head['align'];
 					if ( ! empty( $b['wrapCls'] ) ) { $head['css_class'] = (string) $b['wrapCls']; }
+					if ( ! empty( $b['wrapMaxW'] ) ) { $head['wrapMaxW'] = (string) $b['wrapMaxW']; }
 				}
 				continue;
 			}
@@ -3269,6 +4431,9 @@ class FW_Site_Converter_Mapper {
 
 			if ( $role === 'columns' && isset( $b['cols'] ) && is_array( $b['cols'] ) ) {
 				$flush_buf();
+				// Pass #5: remember this section's grid gap (source `gap-8`/computed column-gap) so the
+				// distillation below can snap it onto the section's NATIVE Gap option (first grid wins).
+				if ( $grid_gap_px <= 0 && isset( $b['gap'] ) && (float) $b['gap'] > 0 ) { $grid_gap_px = (float) $b['gap']; }
 				// A PRODUCT-CARD grid (≥60% of cells = image + price) → ONE wc_products grid, not N
 				// icon_boxes (parity with the JS to-pages recognizer). Configure Source to your products.
 				$prod_cells = 0;
@@ -3295,6 +4460,17 @@ class FW_Site_Converter_Mapper {
 				foreach ( $b['cols'] as $c ) {
 					$box_on_column = ''; // box class for this column's Inner Wrapper Class (box card WITH a button)
 						$btn_row_on_column = ''; // .btn-row class for a CTA button-group cell (side-by-side buttons)
+						// A cell whose decomposed blocks include a FLOATING CARD (image-composite decompose:
+						// media_image + an absolutely-positioned icon_box) needs a POSITIONED ANCESTOR, or the
+						// card's `position:absolute; top/left` resolves against the section/page and lands at the
+						// page's top-left (overlapping the logo). Marking the containing COLUMN position:relative
+						// anchors the card to the image area. (P0-C fidelity fix; parity with JS to-pages.)
+						$col_relative = false;
+						if ( isset( $c['blocks'] ) && is_array( $c['blocks'] ) ) {
+							foreach ( $c['blocks'] as $cbk ) {
+								if ( is_array( $cbk ) && isset( $cbk['role'] ) && 'floating_card' === $cbk['role'] ) { $col_relative = true; break; }
+							}
+						}
 					// Cell content: a nested card-grid → a CSS-grid column of icon_boxes; a text cell
 					// → special_heading (+ text); a single icon card → icon_box; else the verbatim
 					// HTML as a code-block.
@@ -3327,6 +4503,16 @@ class FW_Site_Converter_Mapper {
 						if ( $clbl !== '' ) { $inner_items[] = self::n_text( '<p>' . esc_html( $clbl ) . '</p>' ); }
 					} elseif ( isset( $c['text'] ) && is_array( $c['text'] ) ) {
 						$inner_items = self::n_text_cell( $c['text'] );
+					} elseif ( isset( $c['card'] ) && is_array( $c['card'] ) && ! empty( $c['card']['image']['src'] ) ) {
+						// IMAGE / PRODUCT / COLLECTION card — a real photo + title + text (+ optional CTA). Rendered
+						// as a stacked column (media_image + special_heading + text_block + button) so the source
+						// photo actually shows, instead of an icon_box that drops it. The box skin (border/radius/
+						// shadow) moves to the column's Inner Wrapper Class so it wraps the whole card.
+						$card = $c['card'];
+						$cc   = (string) ( $card['cls'] ?? '' );
+						$ccs  = (string) ( $card['cs'] ?? '' );
+						$inner_items = self::n_image_card( $card );
+						if ( self::is_box_class( $cc ) || self::cs_is_box( $ccs ) ) { $box_on_column = self::box_style_class( $cc, $ccs ); }
 					} elseif ( isset( $c['card'] ) && is_array( $c['card'] ) ) {
 						$card = $c['card'];
 						$cc   = (string) ( $card['cls'] ?? '' );
@@ -3377,6 +4563,20 @@ class FW_Site_Converter_Mapper {
 						$width = ( $lay !== null ) ? $lay['width'] : self::cell_width( $c['width'] ?? '1_3' );
 					}
 					$col   = self::n_column( $width, $inner_items );
+					// Floating-card cell → make the column the positioned ancestor for the absolute icon_box
+					// (its `selector{position:absolute;top/left}` now resolves against this column = the image
+					// area, not the page). Without this the badge lands at the page top-left over the logo.
+					$col_decl = array();
+					if ( $col_relative ) { $col_decl[] = 'position:relative'; }
+					// Source cell max-width (e.g. a hero text column's `max-w-2xl`) → constrain the column's
+					// content so its paragraph wraps like the source (a full-width 50% track wraps too few lines).
+					if ( ! empty( $c['maxw'] ) && preg_match( '/^[0-9.]+(?:px|rem|em|%|ch|vw)$/', (string) $c['maxw'] ) ) {
+						$col_decl[] = 'max-width:' . (string) $c['maxw'];
+					}
+					if ( $col_decl ) {
+						$cur = isset( $col['atts']['custom_css'] ) ? (string) $col['atts']['custom_css'] : '';
+						$col['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . 'selector{' . implode( ';', $col_decl ) . ';}' );
+					}
 					// Box card WITH a button → the box styling is on the COLUMN's Inner Wrapper Class so it
 					// wraps the icon_box AND the button (a simple box card put it on the icon_box instead).
 					if ( $box_on_column !== '' ) { $col['atts']['inner_class'] = trim( $col['atts']['inner_class'] . ' ' . $box_on_column ); }
@@ -3387,6 +4587,12 @@ class FW_Site_Converter_Mapper {
 						$col['atts']['content_h'] = 'center';
 					}
 					if ( $row_valign !== '' && empty( $c['grid'] ) ) { $col['atts']['content_v'] = $row_valign; }
+					// A grid CELL that centers/right-aligns its own text (source `text-center` / `text-right`
+					// on the cell wrapper) → the column's native `text_align`, so the cell's mixed content
+					// (heading + prose + buttons) inherits that alignment as one. '' (text-left / none) forces
+					// nothing. PHP twin of the JS to-pages per-column text-align pass.
+					$cell_ta = self::cls_text_align( (string) ( $c['cls'] ?? '' ) );
+					if ( $cell_ta !== '' ) { $col['atts']['text_align'] = $cell_ta; }
 					// Counter cells center their content via the column's own alignment (the source
 					// `.counter-item text-center`), instead of carrying a text-center wrapper class.
 					if ( ! empty( $c['counter'] ) ) { $col['atts']['content_h'] = 'center'; }
@@ -3421,7 +4627,13 @@ class FW_Site_Converter_Mapper {
 		// NOT `sc-mirror` (whose reset would nuke the container back to full width). The section
 		// element is still full-width, so a section background still spans edge to edge.
 		$sec_node = self::n_section( $src_cls_str, $css_id, $css, $items, false );
+		// A CENTERED source band (flex items-center / text-center, detected by Stitch::section_center
+		// and carried here as $sec['align']) → the section's native `text_align='center'`. text-align
+		// is INHERITED, so this centers the whole band's heading + paragraph + buttons together (the
+		// per-heading special_heading `alignment` stays on Inherit and cascades from here). '' otherwise.
+		if ( $center && isset( $sec_node['atts'] ) ) { $sec_node['atts']['text_align'] = 'center'; }
 		if ( $bg_video !== null ) { self::apply_bg_video( $sec_node, $bg_video ); } // full-screen <video> → section background
+		if ( $bg_image !== null ) { self::apply_bg_image( $sec_node, $bg_image ); } // hero full-bleed <img> → section background image + dark scrim
 		// Reproduce the source section's FULL container styling — not just vertical rhythm. Its Tailwind
 		// classes (`max-w-[..] mx-auto px-.. py-.. border-y border-<color> rounded-.. bg-..`) describe a
 		// centered, bordered, padded BOX, which maps onto the builder's centered `.fw-container`; the
@@ -3429,6 +4641,13 @@ class FW_Site_Converter_Mapper {
 		// the decompose path dropped borders / max-width / horizontal padding (only py/mb survived) — e.g.
 		// the Stitch "trusted by" strip lost its `border-y` + `max-w-[1280px]`.
 		$raw_cls = (string) ( isset( $sec['sectionRawClass'] ) ? $sec['sectionRawClass'] : '' );
+		// Pass #6 — carry a source band's responsive VISIBILITY (Tailwind `hidden md:*` / `md:hidden` …)
+		// onto the section's native `responsive_hide` option (class-derived; empty for the common case →
+		// byte-identical output for sections with no responsive toggle).
+		if ( '' !== $raw_cls && isset( $sec_node['atts'] ) ) {
+			$rhide = self::responsive_hide_from_classes( $raw_cls );
+			if ( ! empty( $rhide ) ) { $sec_node['atts']['responsive_hide'] = $rhide; }
+		}
 		$base    = array();
 		if ( '' !== $raw_cls && self::$style_on && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
 			$cm   = FW_Site_Converter_Tailwind::compile_class_set( $raw_cls, self::$style_cfg );
@@ -3536,16 +4755,74 @@ class FW_Site_Converter_Mapper {
 			}
 		}
 
+		// -------------------------------------------------------------------------------------------------
+		// PASS #5 - SPACING-SCALE PRESET DISTILLATION. Distill the section's MEASURED vertical rhythm
+		// (top/bottom padding + the section's own top/bottom margin, folded in - the Section shortcode has
+		// no margin lever) into the NATIVE, editable Top/Bottom Spacing options, snapped onto the shared
+		// spacing scale. Before this the rhythm was frozen into `.fw-container` CSS (or lost entirely on
+		// non-Tailwind AI-builder sections whose padding lives only in computed style), so section rhythm
+		// fell back to theme defaults. Now it lands as a durable, user-tunable option. Byte-for-byte mirror
+		// of the JS to-pages sectionLayout() (same BASE_CAP clamp + spacingToken).
+		$vspace_native = false;
+		if ( self::$style_on ) {
+			$pt = $pb = $mt = $mb = 0.0;
+			// Priority: the section's OWN computed padding/margin (data-sc-cs) - works for ANY site,
+			// including non-Tailwind builders whose spacing never appears as a utility class.
+			$scs = (string) ( $sec['sectionCs'] ?? '' );
+			if ( '' !== $scs ) {
+				$pm = self::cs_decls( $scs, array( 'padding-top', 'padding-bottom', 'margin-top', 'margin-bottom' ) );
+				if ( isset( $pm['padding-top'] ) )    { $pt = self::px_of( $pm['padding-top'] ); }
+				if ( isset( $pm['padding-bottom'] ) ) { $pb = self::px_of( $pm['padding-bottom'] ); }
+				if ( isset( $pm['margin-top'] ) )     { $mt = self::px_of( $pm['margin-top'] ); }
+				if ( isset( $pm['margin-bottom'] ) )  { $mb = self::px_of( $pm['margin-bottom'] ); }
+			}
+			// Fallback: the Tailwind-derived container vertical padding + the section's vertical-margin
+			// utilities (py-*/pt-*/pb-*, mt-*/mb-*) - only for the sides the computed pass left at zero.
+			if ( $pt <= 0 && isset( $cont['padding-top'] ) )    { $pt = self::px_of( $cont['padding-top'] ); }
+			if ( $pb <= 0 && isset( $cont['padding-bottom'] ) ) { $pb = self::px_of( $cont['padding-bottom'] ); }
+			if ( $mt <= 0 && $mb <= 0 ) {
+				$vs = self::section_vspace( $raw_cls );
+				$mt = $vs['mt']; $mb = $vs['mb'];
+				if ( $pt <= 0 && $pb <= 0 ) { $pt = $vs['pt']; $pb = $vs['pb']; }
+			}
+			$top = $pt + $mt; $bottom = $pb + $mb;
+			// The capture samples ONE (desktop) viewport, so a source `lg:pt-48` (192px) would otherwise
+			// over-space phones. Keep the exact value on `lg` and CLAMP the base (mobile) layer.
+			$cap     = 112.0;
+			$mklayer = function ( $prefix, $v ) use ( $cap ) {
+				$b = min( $v, $cap );
+				return array( 'base' => self::spacing_token( $prefix, $b ), 'md' => '', 'lg' => ( $b < $v ? self::spacing_token( $prefix, $v ) : '' ) );
+			};
+			if ( $top > 0 )    { $sec_node['atts']['padding_top']    = $mklayer( 'pt', $top );    $vspace_native = true; }
+			if ( $bottom > 0 ) { $sec_node['atts']['padding_bottom'] = $mklayer( 'pb', $bottom ); $vspace_native = true; }
+			// The rhythm now lives on the NATIVE option - drop it from the container CSS so it is not
+			// double-applied. Horizontal container padding stays (that is the structural gutter).
+			if ( $vspace_native ) { unset( $cont['padding-top'], $cont['padding-bottom'] ); }
+			// Inter-element (grid column) gap -> the section's NATIVE Gap option, snapped onto the Gap
+			// Scale (Bootstrap $spacers). Empty Gap = inherit the Theme Settings Default Gap, so only set
+			// it when the source actually declared a meaningful grid gap.
+			if ( $grid_gap_px > 0 ) {
+				$gslug = self::gap_slug( $grid_gap_px . 'px' );
+				if ( '' !== $gslug ) { $sec_node['atts']['gap'] = array( 'base' => $gslug, 'md' => '', 'lg' => '' ); }
+			}
+		}
+
 		if ( $cont || $secd ) {
 			if ( $secd ) { self::register_section_rule( $css_id, '', $secd ); }
 			if ( $cont ) { self::register_section_rule( $css_id, '.fw-container', $cont ); }
 		} else {
-			// Fallback (non-Tailwind source / mapper off): vertical-rhythm only, as before.
+			// Fallback (non-Tailwind source / mapper off): vertical-rhythm only, as before - but only when
+			// Pass #5 did NOT already fold the rhythm into the section's native Top/Bottom Spacing (else the
+			// same padding would be applied twice: once natively, once as raw section CSS).
 			$vs = self::section_vspace( $raw_cls );
-			$sv = array( 'padding-top' => round( $vs['pt'] ) . 'px', 'padding-bottom' => round( $vs['pb'] ) . 'px' );
-			if ( $vs['mt'] > 0 ) { $sv['margin-top']    = round( $vs['mt'] ) . 'px'; }
-			if ( $vs['mb'] > 0 ) { $sv['margin-bottom'] = round( $vs['mb'] ) . 'px'; }
-			self::register_section_rule( $css_id, '', $sv );
+			$sv = array();
+			if ( ! $vspace_native ) {
+				$sv['padding-top']    = round( $vs['pt'] ) . 'px';
+				$sv['padding-bottom'] = round( $vs['pb'] ) . 'px';
+				if ( $vs['mt'] > 0 ) { $sv['margin-top']    = round( $vs['mt'] ) . 'px'; }
+				if ( $vs['mb'] > 0 ) { $sv['margin-bottom'] = round( $vs['mb'] ) . 'px'; }
+			}
+			if ( $sv ) { self::register_section_rule( $css_id, '', $sv ); }
 		}
 		return $sec_node;
 	}
