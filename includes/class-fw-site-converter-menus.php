@@ -73,6 +73,96 @@ class FW_Site_Converter_Menus {
 	}
 
 	/**
+	 * MEGA MENUS — turn detected mega panels into Mega Menu extension structure ON the existing primary menu.
+	 * Each detected menu names a TRIGGER already present as a top-level primary-menu item (e.g. "Collections");
+	 * we attach the panel under it as the extension's proven hierarchy — trigger(enabled) → column items →
+	 * link items (with the native Description field for each item's sub-text) — and set the `enabled` meta that
+	 * makes the extension's walker render the `.mega-menu` panel. Idempotent: a re-run clears the trigger's
+	 * children first. Requires the Mega Menu extension to be active (the importer activates it).
+	 *
+	 * @param array  $data     { menus: [ { trigger, cols, columns:[ [ {label,url,desc} ] ] } ] }
+	 * @param string $location the theme menu location holding the triggers (default 'primary')
+	 * @return array{ built:int, error:string }
+	 */
+	public static function import_mega( $data, $location = 'primary' ) {
+		$out = array( 'built' => 0, 'error' => '' );
+		$menus = ( isset( $data['menus'] ) && is_array( $data['menus'] ) ) ? $data['menus'] : ( self::is_list( $data ) ? $data : array() );
+		if ( ! $menus ) { return $out; }
+		if ( ! function_exists( 'fw_ext_mega_menu_update_meta' ) || ! function_exists( 'wp_update_nav_menu_item' ) ) {
+			$out['error'] = __( 'Mega Menu extension is not active.', 'fw' );
+			return $out;
+		}
+		$locs    = get_theme_mod( 'nav_menu_locations', array() );
+		$menu_id = ( is_array( $locs ) && ! empty( $locs[ $location ] ) ) ? (int) $locs[ $location ] : 0;
+		if ( ! $menu_id ) { $out['error'] = __( 'No menu assigned to the primary location.', 'fw' ); return $out; }
+		$items = wp_get_nav_menu_items( $menu_id, array( 'post_status' => 'any' ) );
+		if ( ! is_array( $items ) ) { return $out; }
+
+		foreach ( $menus as $mm ) {
+			$trigger = trim( (string) ( $mm['trigger'] ?? '' ) );
+			$columns = isset( $mm['columns'] ) && is_array( $mm['columns'] ) ? $mm['columns'] : array();
+			if ( $trigger === '' || ! $columns ) { continue; }
+			// Find the top-level primary item whose label matches the trigger.
+			$trigger_id = 0;
+			foreach ( $items as $it ) {
+				if ( (int) $it->menu_item_parent === 0 && strcasecmp( trim( wp_strip_all_tags( $it->title ) ), $trigger ) === 0 ) { $trigger_id = (int) $it->ID; break; }
+			}
+			// Missing (a <button> mega trigger the extractor didn't capture, or a stale menu built before this
+			// fix)? CREATE it as a top-level item so the mega panel has something to hang on. Prepend it (mega
+			// triggers usually lead the nav) by giving it menu_order 1 and nudging existing tops down.
+			if ( ! $trigger_id ) {
+				$new = wp_update_nav_menu_item( $menu_id, 0, array(
+					'menu-item-title' => $trigger, 'menu-item-url' => '#', 'menu-item-status' => 'publish',
+					'menu-item-type' => 'custom', 'menu-item-parent-id' => 0, 'menu-item-position' => 1,
+				) );
+				if ( is_wp_error( $new ) || ! $new ) { continue; }
+				$trigger_id = (int) $new;
+				// Mega triggers lead the nav (the source's first nav item is the mega trigger). `position => 1`
+				// alone only TIES with the existing first item's menu_order, so the new item sorts SECOND. Force
+				// it truly FIRST by explicitly renumbering: the trigger = 1, existing top-level items shift to
+				// 2, 3, … in their current order.
+				$existing_tops = array();
+				foreach ( $items as $it ) { if ( (int) $it->menu_item_parent === 0 && (int) $it->ID !== $trigger_id ) { $existing_tops[] = $it; } }
+				usort( $existing_tops, function ( $a, $b ) { return (int) ( $a->menu_order ?? 0 ) - (int) ( $b->menu_order ?? 0 ); } );
+				wp_update_post( array( 'ID' => $trigger_id, 'menu_order' => 1 ) );
+				$ord = 2;
+				foreach ( $existing_tops as $it ) { wp_update_post( array( 'ID' => (int) $it->ID, 'menu_order' => $ord++ ) ); }
+				$items[] = (object) array( 'ID' => $trigger_id, 'menu_item_parent' => 0, 'title' => $trigger, 'menu_order' => 1 );
+			}
+			// Idempotent rebuild: drop any existing descendants of the trigger.
+			$drop = function ( $pid ) use ( &$drop, $items ) {
+				foreach ( $items as $it ) { if ( (int) $it->menu_item_parent === (int) $pid ) { $drop( (int) $it->ID ); wp_delete_post( (int) $it->ID, true ); } }
+			};
+			$drop( $trigger_id );
+			// Column items (direct children = level-2 columns) → link items (level-3, with Description).
+			foreach ( $columns as $col ) {
+				if ( ! is_array( $col ) || ! $col ) { continue; }
+				$col_id = wp_update_nav_menu_item( $menu_id, 0, array(
+					'menu-item-title' => ' ', // headerless column (source columns carry no visible header)
+					'menu-item-url' => '#', 'menu-item-status' => 'publish', 'menu-item-type' => 'custom', 'menu-item-parent-id' => $trigger_id,
+				) );
+				if ( is_wp_error( $col_id ) ) { continue; }
+				foreach ( $col as $link ) {
+					$label = trim( (string) ( $link['label'] ?? '' ) );
+					if ( $label === '' ) { continue; }
+					wp_update_nav_menu_item( $menu_id, 0, array(
+						'menu-item-title' => $label, 'menu-item-url' => ( ! empty( $link['url'] ) ? (string) $link['url'] : '#' ),
+						'menu-item-status' => 'publish', 'menu-item-type' => 'custom', 'menu-item-parent-id' => (int) $col_id,
+						'menu-item-description' => (string) ( $link['desc'] ?? '' ),
+					) );
+				}
+			}
+			fw_ext_mega_menu_update_meta( $trigger_id, array( 'enabled' => 1 ) );
+			$out['built']++;
+		}
+		// Bust the extension's mega-item cache so the walker re-derives levels on the next render.
+		if ( function_exists( 'fw_ext' ) && fw_ext( 'megamenu' ) && class_exists( 'FW_Cache' ) ) {
+			try { FW_Cache::del( fw_ext( 'megamenu' )->get_cache_key( '/mm_item' ) ); } catch ( \Exception $e ) {}
+		}
+		return $out;
+	}
+
+	/**
 	 * Convenience: parse a raw JSON string then import.
 	 *
 	 * @param string $json

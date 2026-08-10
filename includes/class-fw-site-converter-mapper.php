@@ -49,6 +49,10 @@ class FW_Site_Converter_Mapper {
 	 */
 	public static $conv_debug = array();
 
+	/** Library (download-on-demand) shortcodes the conversion emitted and that the target must install
+	 *  (e.g. 'instagram'). Slug => true. Written to theme-design.json + required-shortcodes.json by Stitch. */
+	public static $required_shortcodes = array();
+
 	/** The 8-char element hash for a unique_id — identical to sc_element_scope_class()'s slug (sans the `u`). */
 	private static function conv_hash( $uid ) {
 		$uid = (string) $uid;
@@ -548,7 +552,7 @@ class FW_Site_Converter_Mapper {
 	private static $cs_appearance = array(
 		'background-color', 'background-image', 'color', 'font-family', 'font-size', 'font-weight',
 		'line-height', 'letter-spacing', 'text-align', 'text-transform', 'text-decoration-line',
-		'border', 'border-radius', 'box-shadow', 'opacity', 'transform',
+		'border', 'border-radius', 'box-shadow', 'opacity', 'transform', 'transition',
 		// Gradient TEXT (background-clip:text) — the clip + transparent fill that make a
 		// gradient background paint the TEXT instead of a block. Only present when the source
 		// actually paints gradient text (capture harvests them guarded), and cs_value_inert()
@@ -575,6 +579,8 @@ class FW_Site_Converter_Mapper {
 			case 'background-image':     return 'none' === $v;
 			case 'box-shadow':           return 'none' === $v;
 			case 'transform':            return 'none' === $v;
+			// Only a REAL transition carries motion; the CSS initial (all/none at 0s) is inert.
+			case 'transition':           return 'none' === $v || 'all 0s ease 0s' === $v || 'none 0s ease 0s' === $v || (bool) preg_match( '/^all 0s /', $v );
 			case 'opacity':              return '1' === $v;
 			case 'border':               return 0 === strpos( $v, '0px' ) || false !== strpos( $v, ' none ' ) || preg_match( '/^0(px)?\s/', $v );
 			case 'border-radius':        return '0px' === $v || '0' === $v;
@@ -739,6 +745,13 @@ class FW_Site_Converter_Mapper {
 			if ( ! isset( $cm['base']['padding'] ) && ! isset( $cm['base']['padding-left'] ) && ! isset( $cm['base']['padding-top'] ) ) { $cm['base']['padding'] = '0'; }
 		} elseif ( 'outline' === $btn_kind && ! $has_bg ) {
 			$cm['base']['background-color'] = 'transparent';
+		}
+		// A FILLED button (primary/light/fill) whose SOURCE has no border must explicitly SHED the button
+		// base's zero-specificity default outline (`:where(.btn){border:1px solid #ced4da}`) — otherwise a
+		// borderless source button rendered with a stray grey 1px ring. Mirrors the `link` treatment above.
+		if ( in_array( $btn_kind, array( 'primary', 'light', 'fill' ), true ) && ! isset( $cm['base']['border-width'] ) ) {
+			$cm['base']['border-width'] = '0';
+			$cm['base']['border-style'] = 'none';
 		}
 		$key = md5( $hint . '|' . wp_json_encode( array( $cm['base'], $cm['hover'] ) ) );
 		if ( isset( self::$style_key[ $key ] ) ) { return self::$style_key[ $key ]; }
@@ -1956,6 +1969,44 @@ class FW_Site_Converter_Mapper {
 	 * name + enclosing link); the media phase localizes the URLs to imported attachments. Grid layout,
 	 * grayscale→colour-on-hover default. See logo-grid options.php.
 	 */
+	/**
+	 * A native `instagram` shortcode node from a detected Instagram FEED (recognizer block
+	 * `{ username, count, columns }`). Instagram is a download-on-demand LIBRARY shortcode, so its atts are
+	 * built explicitly here (its defaults can't be read — it isn't installed at convert time) and the slug
+	 * is recorded on self::$required_shortcodes so the importer installs it from the Library. The access
+	 * token can't be captured from a source, so it's left empty — the shortcode renders its placeholder
+	 * until the site owner adds their own token. See the instagram Library shortcode's options.php.
+	 */
+	private static function n_instagram( array $b ) {
+		self::$required_shortcodes['instagram'] = true;
+		$user  = ltrim( trim( (string) ( $b['username'] ?? '' ) ), '@' );
+		$count = max( 1, min( 18, (int) ( $b['count'] ?? 6 ) ) );
+		$cols  = max( 1, min( 6, (int) ( $b['columns'] ?? 3 ) ) );
+		return array(
+			'type'      => 'simple',
+			'shortcode' => 'instagram',
+			'_items'    => array(),
+			'atts'      => array(
+				'unique_id'    => self::uid(),
+				'css_id'       => '',
+				'css_class'    => '',
+				'username'     => $user,
+				'access_token' => '',
+				'count'        => (string) $count,
+				'columns'      => (string) $cols,
+				'gap'          => '',
+				'max_width'    => array( 'value' => '', 'unit' => 'px' ),
+				'align'        => 'center',
+				'aspect'       => array( 'ratio' => '1-1' ),
+				'rounding'     => 'small',
+				'hover_zoom'   => 'yes',
+				'show_caption' => 'no',
+				'link_to_post' => 'yes',
+				'new_tab'      => 'yes',
+			),
+		);
+	}
+
 	private static function n_logo_grid( array $b ) {
 		$src   = ( isset( $b['logos'] ) && is_array( $b['logos'] ) ) ? $b['logos'] : array();
 		$logos = array();
@@ -2192,7 +2243,117 @@ class FW_Site_Converter_Mapper {
 		) );
 	}
 
-	private static function n_button( $label, $link, $cls = '', $icon = '', $icon_pos = 'after', $cs = '', $group_cls = '', $group_cs = '', $icon_svg = '' ) {
+	/**
+	 * Classify a button's captured hover/pseudo CSS (data-sc-hover) into the nearest native `.btnfx-*`
+	 * hover-animation preset — deterministic fingerprinting against a FINITE effect vocabulary, so a source
+	 * button's custom hover motion maps to a real Theme-Settings hover animation instead of being dropped.
+	 * Returns a slug like 'btnfx-fill-up' or '' when nothing is close (caller then carries the raw CSS).
+	 *
+	 * The payload is `state{decl;decl}|state{…}` where state ∈ self|before|after|hover-self|hover-before|
+	 * hover-after (from capture.mjs). We look at what CHANGES between rest and hover.
+	 *
+	 * @param string $hover data-sc-hover payload
+	 * @return string btnfx slug or ''
+	 */
+	private static function classify_hover_animation( $hover ) {
+		$hover = (string) $hover;
+		if ( $hover === '' ) { return ''; }
+		// Parse into state => decls map.
+		$states = array();
+		foreach ( explode( '|', $hover ) as $chunk ) {
+			if ( ! preg_match( '/^([a-z-]+)\{(.*)\}$/s', trim( $chunk ), $m ) ) { continue; }
+			$states[ $m[1] ] = strtolower( $m[2] );
+		}
+		if ( ! $states ) { return ''; }
+		$get   = function ( $k ) use ( $states ) { return isset( $states[ $k ] ) ? $states[ $k ] : ''; };
+		$decl  = function ( $css, $prop ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $prop, '/' ) . '\s*:\s*([^;]+)/', (string) $css, $mm ) ? trim( $mm[1] ) : ''; };
+
+		// (1) OVERLAY-FILL family — a ::before/::after overlay that is HIDDEN at rest (translate off / scale 0)
+		// and REVEALED on hover (translate 0 / scale 1). The reveal DIRECTION picks the preset.
+		foreach ( array( 'before', 'after' ) as $ps ) {
+			$rest = $get( $ps ); $hov = $get( 'hover-' . $ps );
+			if ( $rest === '' && $hov === '' ) { continue; }
+			// The at-rest hidden signature.
+			$ty = $decl( $rest, '--tw-translate-y' ); $tx = $decl( $rest, '--tw-translate-x' );
+			$sy = $decl( $rest, '--tw-scale-y' );      $sx = $decl( $rest, '--tw-scale-x' );
+			$origin = $decl( $rest, 'transform-origin' );
+			$tf     = $decl( $rest, 'transform' );
+			$hidden_down  = strpos( $ty, '100%' ) !== false || preg_match( '/translatey\(\s*100%/', $tf );
+			$hidden_up    = strpos( $ty, '-100%' ) !== false || preg_match( '/translatey\(\s*-100%/', $tf );
+			$hidden_left  = strpos( $tx, '-100%' ) !== false || preg_match( '/translatex\(\s*-100%/', $tf );
+			$hidden_right = strpos( $tx, '100%' ) !== false || preg_match( '/translatex\(\s*100%/', $tf );
+			$scaley0 = ( $sy === '0' || strpos( $tf, 'scaley(0' ) !== false );
+			$scalex0 = ( $sx === '0' || strpos( $tf, 'scalex(0' ) !== false );
+			$scale0  = ( strpos( $tf, 'scale(0' ) !== false );
+			// Only treat as a fill overlay when hover actually MOVES it back (a real reveal).
+			$reveals = $hov !== '' && ( strpos( $hov, 'translate' ) !== false || strpos( $hov, 'scale' ) !== false || strpos( $decl( $hov, '--tw-translate-y' ), '0' ) !== false || strpos( $decl( $hov, '--tw-scale-y' ), '1' ) !== false );
+			if ( ! $reveals ) { continue; }
+			if ( $hidden_down || ( $scaley0 && strpos( $origin, 'bottom' ) !== false ) ) { return 'btnfx-fill-up'; }
+			if ( $hidden_up   || ( $scaley0 && strpos( $origin, 'top' ) !== false ) )    { return 'btnfx-fill-up'; } // nearest available (fill from vertical edge)
+			if ( $hidden_left  || ( $scalex0 && strpos( $origin, 'left' ) !== false ) )  { return 'btnfx-fill-right'; }
+			if ( $hidden_right || ( $scalex0 && strpos( $origin, 'right' ) !== false ) ) { return 'btnfx-fill-right'; }
+			if ( $scale0 || $scaley0 || $scalex0 ) { return 'btnfx-fill-center'; }
+		}
+
+		// (2) ELEMENT-level transforms on :hover (no overlay) — scale/lift/skew/rotate.
+		$hs = $get( 'hover-self' );
+		if ( $hs !== '' ) {
+			$tf = $decl( $hs, 'transform' );
+			if ( preg_match( '/scale\(\s*1\.0*[1-9]/', $tf ) )                 { return 'btnfx-grow'; }   // scale up
+			if ( preg_match( '/translatey\(\s*-\d/', $tf ) )                    { return 'btnfx-lift'; }   // move up
+			if ( strpos( $tf, 'skew' ) !== false )                             { return 'btnfx-skew'; }
+			if ( strpos( $tf, 'rotate' ) !== false )                           { return 'btnfx-rotate'; }
+			if ( $decl( $hs, 'box-shadow' ) !== '' && strpos( $tf, 'translate' ) !== false ) { return 'btnfx-lift'; }
+			if ( $decl( $hs, 'box-shadow' ) !== '' )                           { return 'btnfx-glow'; }   // shadow-only glow
+		}
+		// (3) An animated underline bar (::after that grows in width/scaleX on hover).
+		$ua = $get( 'after' ); $uah = $get( 'hover-after' );
+		if ( ( strpos( $ua, 'height:2px' ) !== false || strpos( $ua, 'bottom:0' ) !== false ) && $uah !== '' && ( strpos( $uah, 'width' ) !== false || strpos( $uah, 'scalex' ) !== false ) ) {
+			return 'btnfx-underline';
+		}
+		return '';
+	}
+
+	/** Rebuild one hover-state's declarations into portable CSS: reconstruct `transform` from Tailwind's
+	 *  `--tw-translate/scale/rotate` vars (useless standalone), drop those vars, keep everything else. */
+	private static function hover_rebuild_decls( $css ) {
+		$css = (string) $css;
+		$g = function ( $p ) use ( $css ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $p, '/' ) . '\s*:\s*([^;]+)/', $css, $m ) ? trim( $m[1] ) : ''; };
+		$tx = $g( '--tw-translate-x' ); $ty = $g( '--tw-translate-y' );
+		$sx = $g( '--tw-scale-x' );     $sy = $g( '--tw-scale-y' ); $rot = $g( '--tw-rotate' );
+		$out = array();
+		foreach ( explode( ';', $css ) as $d ) {
+			$d = trim( $d ); if ( $d === '' ) { continue; }
+			$cp = strpos( $d, ':' ); if ( $cp === false ) { continue; }
+			$prop = trim( substr( $d, 0, $cp ) );
+			if ( strpos( $prop, '--tw-' ) === 0 ) { continue; }                 // internal Tailwind var — drop
+			if ( $prop === 'transform' && ( $tx || $ty || $sx || $sy || $rot ) ) { continue; } // rebuilt below
+			$out[] = $prop . ':' . trim( substr( $d, $cp + 1 ) );
+		}
+		if ( $tx || $ty || $sx || $sy || $rot ) {
+			$t = 'translate(' . ( $tx ?: '0' ) . ',' . ( $ty ?: '0' ) . ')';
+			if ( $rot ) { $t .= ' rotate(' . $rot . ')'; }
+			if ( $sx || $sy ) { $t .= ' scale(' . ( $sx ?: '1' ) . ',' . ( $sy ?: '1' ) . ')'; }
+			$out[] = 'transform:' . $t;
+		}
+		return implode( ';', $out );
+	}
+
+	/** Fallback: reproduce the source button's hover/pseudo rules verbatim as `{{SELECTOR}}`-scoped Custom CSS
+	 *  (used only when classify_hover_animation found no native preset), so a bespoke effect is never dropped. */
+	private static function hover_verbatim_css( $hover ) {
+		$map = array( 'self' => '{{SELECTOR}}', 'before' => '{{SELECTOR}}::before', 'after' => '{{SELECTOR}}::after',
+			'hover-self' => '{{SELECTOR}}:hover', 'hover-before' => '{{SELECTOR}}:hover::before', 'hover-after' => '{{SELECTOR}}:hover::after' );
+		$out = array();
+		foreach ( explode( '|', (string) $hover ) as $chunk ) {
+			if ( ! preg_match( '/^([a-z-]+)\{(.*)\}$/s', trim( $chunk ), $m ) || ! isset( $map[ $m[1] ] ) ) { continue; }
+			$decls = self::hover_rebuild_decls( $m[2] );
+			if ( $decls !== '' ) { $out[] = $map[ $m[1] ] . ' { ' . $decls . '; }'; }
+		}
+		return $out ? implode( "\n", $out ) : '';
+	}
+
+	private static function n_button( $label, $link, $cls = '', $icon = '', $icon_pos = 'after', $cs = '', $group_cls = '', $group_cs = '', $icon_svg = '', $hover = '' ) {
 		// Converted buttons use the 'Default' style (value '') = the bare `.btn` base. The child
 		// theme carries the source's primary-button rules (rewritten onto `.btn` in page_css,
 		// base + :hover); the user can switch to a Color Preset later. Full att shape per the
@@ -2224,6 +2385,19 @@ class FW_Site_Converter_Mapper {
 		$preset = self::button_preset_for( (string) $cls, (string) $cs );
 		if ( '' !== $preset['style'] ) { $atts['style'] = $preset['style']; }
 		if ( '' !== $preset['size'] )  { $atts['size']  = $preset['size']; }
+		// HOVER ANIMATION — classify the source button's captured :hover/::before/::after motion into a native
+		// `.btnfx-*` preset (deterministic fingerprint). When nothing matches but the source DID declare a hover
+		// effect, carry its rules verbatim as scoped Custom CSS (rewriting the pseudo states onto {{SELECTOR}}),
+		// so a bespoke animation is reproduced rather than dropped. Nothing added when the button has no hover fx.
+		if ( '' !== (string) $hover ) {
+			$fx = self::classify_hover_animation( (string) $hover );
+			if ( $fx !== '' ) {
+				$atts['hover_animation'] = $fx;
+			} else {
+				$verbatim = self::hover_verbatim_css( (string) $hover );
+				if ( $verbatim !== '' ) { $atts['custom_css'] = trim( $atts['custom_css'] . "\n" . $verbatim ); }
+			}
+		}
 		$icon     = trim( (string) $icon );
 		$icon_svg = trim( (string) $icon_svg );
 		if ( $icon_svg !== '' ) {
@@ -2727,7 +2901,14 @@ class FW_Site_Converter_Mapper {
 	 */
 	private static function map_accent_classes( $html ) {
 		$html = (string) $html;
-		if ( $html === '' || stripos( $html, 'class' ) === false ) { return $html; }
+		if ( $html === '' ) { return $html; }
+		// Strip CAPTURE-ONLY attributes first — the capture service stamps `data-sc-cs` / `data-sc-hover`
+		// / `data-sc-*` on every element for the converter to READ; they must never survive into rendered
+		// content (an inline `<span data-sc-cs="color:…;font-size:128px;…">` inside a heading leaks the
+		// whole computed-style blob into the page). Their visual intent is already reproduced by the node's
+		// options + faithful base, so once read they're pure noise.
+		$html = self::strip_capture_attrs( $html );
+		if ( stripos( $html, 'class' ) === false ) { return self::fold_inline_presentational( $html ); }
 		$html = preg_replace( '/\b(?:text-color-primary|color-primary)\b/', 'text-primary', $html );
 		// An arbitrary Tailwind color class (text-[#hex]) is DEAD in the builder (no Tailwind runtime)
 		// → convert it to an inline color so the accent survives (parity with the JS richHeading fix).
@@ -2747,7 +2928,66 @@ class FW_Site_Converter_Mapper {
 		// relies on only lives under the `.sc-tw` chrome scope (not on the body), so on the body those
 		// classes would otherwise inherit BLACK. See resolve_color_classes().
 		$html = self::resolve_color_classes( $html );
+		// Fold PRESENTATIONAL-ONLY utility classes (italic / font-weight / decoration / transform) that are
+		// DEAD in the builder (no Tailwind runtime) into an equivalent inline style, so a two-tone heading's
+		// `<span class="italic font-normal">` keeps its italic + weight instead of losing them silently.
+		$html = self::fold_inline_presentational( $html );
 		return $html;
+	}
+
+	/** Remove capture-only `data-sc-*` attributes (double/single quoted) from carried inline HTML. */
+	private static function strip_capture_attrs( $html ) {
+		$html = (string) $html;
+		if ( false === stripos( $html, 'data-sc-' ) ) { return $html; }
+		$html = preg_replace( '/\s+data-sc-[a-z0-9-]+="[^"]*"/i', '', $html );
+		$html = preg_replace( "/\s+data-sc-[a-z0-9-]+='[^']*'/i", '', $html );
+		return (string) $html;
+	}
+
+	/**
+	 * Convert PRESENTATIONAL-ONLY Tailwind utilities on carried inline elements into an equivalent inline
+	 * `style` (merged additively into any existing style), then drop the now-inert tokens from `class`
+	 * (dropping the attribute entirely when nothing else remains). Only italic / font-weight-name /
+	 * text-decoration / text-transform utilities are folded — they have no native builder equivalent and
+	 * would otherwise render nothing (no Tailwind runtime on a native element). Anything else is left on
+	 * the class untouched. Per-tag + style-merge mirrors resolve_color_classes so two folds never collide.
+	 */
+	private static function fold_inline_presentational( $html ) {
+		$html = (string) $html;
+		if ( '' === $html || stripos( $html, 'class="' ) === false ) { return $html; }
+		$wmap = array( 'thin' => '100', 'extralight' => '200', 'light' => '300', 'normal' => '400', 'medium' => '500', 'semibold' => '600', 'bold' => '700', 'extrabold' => '800', 'black' => '900' );
+		return preg_replace_callback( '/<[a-zA-Z][a-zA-Z0-9]*\b[^>]*\bclass="[^"]*"[^>]*>/', function ( $tag ) use ( $wmap ) {
+			$whole = $tag[0];
+			if ( ! preg_match( '/\bclass="([^"]*)"/', $whole, $cm ) ) { return $whole; }
+			$keep  = array();
+			$decls = array();
+			foreach ( preg_split( '/\s+/', trim( $cm[1] ) ) as $c ) {
+				if ( '' === $c ) { continue; }
+				$l = strtolower( $c );
+				if ( 'italic' === $l )            { $decls['font-style'] = 'italic'; }
+				elseif ( 'not-italic' === $l )    { $decls['font-style'] = 'normal'; }
+				elseif ( 'underline' === $l )     { $decls['text-decoration'] = 'underline'; }
+				elseif ( 'line-through' === $l )  { $decls['text-decoration'] = 'line-through'; }
+				elseif ( 'no-underline' === $l )  { $decls['text-decoration'] = 'none'; }
+				elseif ( 'uppercase' === $l )     { $decls['text-transform'] = 'uppercase'; }
+				elseif ( 'lowercase' === $l )     { $decls['text-transform'] = 'lowercase'; }
+				elseif ( 'capitalize' === $l )    { $decls['text-transform'] = 'capitalize'; }
+				elseif ( preg_match( '/^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black)$/', $l, $w ) ) { $decls['font-weight'] = $wmap[ $w[1] ]; }
+				else { $keep[] = $c; }
+			}
+			if ( ! $decls ) { return $whole; }
+			$decl_str = '';
+			foreach ( $decls as $k => $v ) { $decl_str .= $k . ':' . $v . ';'; }
+			$new_class = trim( implode( ' ', $keep ) );
+			$whole = preg_replace( '/\s*\bclass="[^"]*"/', ( '' !== $new_class ? ' class="' . $new_class . '"' : '' ), $whole, 1 );
+			if ( preg_match( '/\bstyle="[^"]*"/', $whole ) ) {
+				return preg_replace_callback( '/\bstyle="([^"]*)"/', function ( $sm ) use ( $decl_str ) {
+					$ex = rtrim( trim( $sm[1] ), ';' );
+					return 'style="' . ( '' !== $ex ? $ex . ';' : '' ) . rtrim( $decl_str, ';' ) . '"';
+				}, $whole, 1 );
+			}
+			return substr( $whole, 0, -1 ) . ' style="' . rtrim( $decl_str, ';' ) . '">';
+		}, $html );
 	}
 
 	/**
@@ -3208,6 +3448,60 @@ class FW_Site_Converter_Mapper {
 		return $css;
 	}
 
+	/**
+	 * NEVER-DROP rule for a heading part's constrained MEASURE. A merged subtitle/title part often
+	 * carries `max-w-* mx-auto` (a centered content measure). Because that part is folded INTO the
+	 * special_heading — its standalone block is consumed — the section styler (collect_section_style)
+	 * never sees it, so the width would be SILENTLY DROPPED. Instead we reproduce it as scoped Custom
+	 * CSS on the part's own rendered element (`.heading-subtitle` / `.heading-title`), specificity kept
+	 * low via the `selector ` prefix (→ `.uHASH`) so a native option / user edit still wins. LAYOUT
+	 * (max-width/centering) is exactly what the appearance-only faithful base excludes, so this is its
+	 * layout counterpart. Returns array( 'css' => string, 'tokens' => string[] ) — `tokens` are the
+	 * source utilities it CARRIED, recorded as kept so the dropped-class guard doesn't flag them.
+	 * Mirrors heading_weight_css; parity intended in the JS to-pages path.
+	 */
+	/** A source element's constrained MEASURE → a CSS length. Prefers a Tailwind `max-w-*` (named tier
+	 *  from the same table heading_layout uses, or an arbitrary `max-w-[…]`), then a computed max-width
+	 *  from the part's data-sc-cs. Returns '' when there's no real constraint. (The Tailwind class
+	 *  compiler does NOT emit max-width, so this local table is the resolver — mirrors heading_layout.) */
+	private static function part_max_width_val( $cls, $cs = '' ) {
+		$tw_maxw = array( 'sm' => 24, 'md' => 28, 'lg' => 32, 'xl' => 36, '2xl' => 42, '3xl' => 48, '4xl' => 56, '5xl' => 64, '6xl' => 72, '7xl' => 80 );
+		foreach ( preg_split( '/\s+/', trim( (string) $cls ) ) as $c ) {
+			if ( preg_match( '/^max-w-(?:\[(.+)\]|(sm|md|lg|xl|[2-7]xl))$/', $c, $m ) ) {
+				if ( ! empty( $m[2] ) && isset( $tw_maxw[ $m[2] ] ) ) { return $tw_maxw[ $m[2] ] . 'rem'; }
+				if ( ! empty( $m[1] ) && preg_match( '/^(\d*\.?\d+)(px|rem|em|%|vw|ch)$/', $m[1], $u ) ) { return $u[1] . $u[2]; }
+			}
+		}
+		if ( '' !== (string) $cs ) {
+			$d  = self::cs_decls( (string) $cs, array( 'max-width' ) );
+			$mw = trim( (string) ( $d['max-width'] ?? '' ) );
+			if ( '' !== $mw && 'none' !== $mw && '0px' !== $mw && '0' !== $mw ) { return $mw; }
+		}
+		return '';
+	}
+
+	private static function heading_measures( $h ) {
+		$parts = array( 'title' => '.heading-title', 'subtitle' => '.heading-subtitle', 'overline' => '.heading-overline' );
+		$css   = '';
+		$toks  = array();
+		foreach ( $parts as $part => $sel ) {
+			if ( '' === trim( (string) ( $h[ $part ] ?? '' ) ) ) { continue; }
+			$cls = (string) ( $h[ $part . '_class' ] ?? '' );
+			$mw  = self::part_max_width_val( $cls, (string) ( $h[ $part . '_cs' ] ?? '' ) );
+			if ( '' === $mw ) { continue; } // only a real content-measure is carried
+			$center = (bool) preg_match( '/(?:^|\s)mx-auto(?:\s|$)/', ' ' . $cls . ' ' );
+			$body = 'max-width:' . $mw . ' !important;';
+			if ( $center ) { $body .= 'margin-left:auto !important;margin-right:auto !important;'; }
+			$css .= 'selector ' . $sel . '{' . $body . '}';
+			// Record the utilities we honored so conv_dropped_diff() counts them as kept, not dropped.
+			if ( preg_match_all( '/(?:^|\s)((?:max-w|min-w)-\S+)/', ' ' . $cls . ' ', $mm ) ) {
+				foreach ( $mm[1] as $t ) { $toks[] = $t; }
+			}
+			if ( $center ) { $toks[] = 'mx-auto'; }
+		}
+		return array( 'css' => $css, 'tokens' => $toks );
+	}
+
 	private static function n_heading( $h ) {
 		$lvl = isset( $h['level'] ) && $h['level'] >= 1 && $h['level'] <= 6 ? (int) $h['level'] : 2;
 		// Translate the wrapper's Tailwind layout/spacing classes into native options (parity w/ JS).
@@ -3295,7 +3589,10 @@ class FW_Site_Converter_Mapper {
 			(string) ( $h['overline_class'] ?? '' ), (string) ( $h['title_class'] ?? '' ),
 			(string) ( $h['subtitle_class'] ?? '' ), (string) ( $layout['css_class'] ?? '' ),
 		) ) ) );
-		$kept_all = trim( $overline_class . ' ' . $title_class . ' ' . $subtitle_class . ' ' . self::keep_classes( $layout['css_class'] ?? '' ) );
+		// NEVER-DROP: reproduce each part's constrained measure (`max-w-* mx-auto`) as scoped Custom CSS,
+		// and count the utilities it carried as KEPT so the dropped-class guard doesn't flag them.
+		$measures = self::heading_measures( $h );
+		$kept_all = trim( $overline_class . ' ' . $title_class . ' ' . $subtitle_class . ' ' . self::keep_classes( $layout['css_class'] ?? '' ) . ' ' . implode( ' ', $measures['tokens'] ) );
 		self::conv_debug_record( $uid, $src_all, self::conv_dropped_diff( $src_all, $kept_all ) );
 		return array(
 			'type' => 'simple', 'shortcode' => 'special_heading', '_items' => array(),
@@ -3306,6 +3603,7 @@ class FW_Site_Converter_Mapper {
 				// Re-assert each part's SOURCE font-weight on its own element (wins over the theme's
 				// hN.heading-title tag rule when no heading-weight token is set) — parity with JS to-pages.
 				'custom_css' => self::heading_weight_css( $h )
+				. $measures['css'] // NEVER-DROP: per-part constrained measure (max-w-* mx-auto → scoped max-width)
 				// NO subtitle: the theme's default hN bottom margin leaks as the block's below-gap and DOMINATES
 				// the (source-derived) outer Margin & Padding value — e.g. a 48px h1 default over the source's
 				// 24px. `.heading-title` is never reset by the shortcode (only its top margin is), so reset the
@@ -3518,6 +3816,7 @@ class FW_Site_Converter_Mapper {
 	 */
 	public static function build_pages( array $mapping ) {
 		self::$conv_debug = array(); // fresh per build — re-conversions must not accumulate collector records
+		self::$required_shortcodes = array(); // fresh per build — the Library shortcodes this conversion needs
 		$out = array();
 		$pages = isset( $mapping['pages'] ) && is_array( $mapping['pages'] ) ? $mapping['pages'] : array();
 		foreach ( $pages as $page ) {
@@ -3974,7 +4273,7 @@ class FW_Site_Converter_Mapper {
 			return $node;
 		} );
 		self::register_builder( 'button', function ( $b ) {
-			$node = self::n_button( (string) ( $b['label'] ?? $b['text'] ?? 'Button' ), (string) ( $b['href'] ?? '#' ), (string) ( $b['srcCls'] ?? $b['cls'] ?? '' ), (string) ( $b['icon'] ?? '' ), (string) ( $b['iconPos'] ?? 'after' ), (string) ( $b['srcCs'] ?? $b['cs'] ?? '' ), (string) ( $b['groupCls'] ?? '' ), (string) ( $b['groupCs'] ?? '' ), (string) ( $b['iconSvg'] ?? '' ) );
+			$node = self::n_button( (string) ( $b['label'] ?? $b['text'] ?? 'Button' ), (string) ( $b['href'] ?? '#' ), (string) ( $b['srcCls'] ?? $b['cls'] ?? '' ), (string) ( $b['icon'] ?? '' ), (string) ( $b['iconPos'] ?? 'after' ), (string) ( $b['srcCs'] ?? $b['cs'] ?? '' ), (string) ( $b['groupCls'] ?? '' ), (string) ( $b['groupCs'] ?? '' ), (string) ( $b['iconSvg'] ?? '' ), (string) ( $b['srcHover'] ?? '' ) );
 			// The color/size preset + the `.btn-fill` semantic class already reproduce the button's exact
 			// fill / text color / border / radius / padding / typography (safety-net Custom CSS) = $already; the
 			// base only fills leftover appearance (background-image gradient, opacity, transform, …).
@@ -4203,12 +4502,34 @@ class FW_Site_Converter_Mapper {
 		// Drop the duplicate content image block whose src matches the detected background photo.
 		$bg_image = ( isset( $sec['sectionBgImage'] ) && is_array( $sec['sectionBgImage'] ) && ! empty( $sec['sectionBgImage']['src'] ) ) ? $sec['sectionBgImage'] : null;
 		if ( $bg_image ) {
+			// Remove the same <img> from the CONTENT so it isn't ALSO emitted as a media_image (the hero photo
+			// is now the section's background). RECURSIVE — the img may be nested inside a column/row, not a
+			// top-level block. Slash-insensitive — `wp_json_encode` escapes `/`→`\/`, so a plain `https://…`
+			// never matched the escaped form and the duplicate media_image survived.
 			$bsrc = (string) $bg_image['src'];
-			foreach ( $blocks as $bi => $bb ) {
-				$bt = isset( $bb['t'] ) ? $bb['t'] : ( isset( $bb['role'] ) ? $bb['role'] : '' );
-				if ( $bt === 'image' && strpos( wp_json_encode( $bb ), $bsrc ) !== false ) { unset( $blocks[ $bi ] ); break; }
-			}
-			$blocks = array_values( $blocks );
+			$needles = array( $bsrc, str_replace( '/', '\/', $bsrc ) );
+			$strip = function ( array &$list ) use ( &$strip, $needles ) {
+				$done = false;
+				foreach ( $list as $k => &$blk ) {
+					if ( ! is_array( $blk ) ) { continue; }
+					$bt = isset( $blk['t'] ) ? $blk['t'] : ( isset( $blk['role'] ) ? $blk['role'] : '' );
+					if ( $bt === 'image' ) {
+						$enc = wp_json_encode( $blk );
+						foreach ( $needles as $n ) { if ( $n !== '' && strpos( $enc, $n ) !== false ) { unset( $list[ $k ] ); $done = true; break 2; } }
+					}
+					// Recurse into nested containers (column cells → 'blocks'; rows → 'cols').
+					if ( ! $done && isset( $blk['blocks'] ) && is_array( $blk['blocks'] ) ) { if ( $strip( $blk['blocks'] ) ) { $done = true; break; } }
+					if ( ! $done && isset( $blk['cols'] ) && is_array( $blk['cols'] ) ) {
+						foreach ( $blk['cols'] as &$col ) { if ( is_array( $col ) && isset( $col['blocks'] ) && is_array( $col['blocks'] ) && $strip( $col['blocks'] ) ) { $done = true; break; } }
+						unset( $col );
+						if ( $done ) { break; }
+					}
+				}
+				unset( $blk );
+				return $done;
+			};
+			$strip( $blocks );
+			$blocks = array_values( array_filter( $blocks ) );
 		}
 
 		$items = array();   // section's columns
@@ -4360,13 +4681,14 @@ class FW_Site_Converter_Mapper {
 			// The interactive / structured native widgets — each recognized as its own block type and rendered
 			// in its own full-width column: tabs / steps / timeline / progress / pricing-table / lottie / svg-draw.
 			$native_own = array(
-				'tabs'     => 'n_tabs',
-				'steps'    => 'n_steps',
-				'timeline' => 'n_timeline',
-				'progress' => 'n_progress',
-				'pricing'  => 'n_pricing',
-				'lottie'   => 'n_lottie',
-				'svg_draw' => 'n_svg_draw',
+				'tabs'      => 'n_tabs',
+				'steps'     => 'n_steps',
+				'timeline'  => 'n_timeline',
+				'progress'  => 'n_progress',
+				'pricing'   => 'n_pricing',
+				'lottie'    => 'n_lottie',
+				'svg_draw'  => 'n_svg_draw',
+				'instagram' => 'n_instagram', // detected Instagram feed → the [instagram] Library shortcode
 			);
 			$bt_native = $b['t'] ?? '';
 			if ( isset( $native_own[ $bt_native ] ) ) {
@@ -4644,6 +4966,11 @@ class FW_Site_Converter_Mapper {
 		if ( $center && isset( $sec_node['atts'] ) ) { $sec_node['atts']['text_align'] = 'center'; }
 		if ( $bg_video !== null ) { self::apply_bg_video( $sec_node, $bg_video ); } // full-screen <video> → section background
 		if ( $bg_image !== null ) { self::apply_bg_image( $sec_node, $bg_image ); } // hero full-bleed <img> → section background image + dark scrim
+		// Container Width — the source's content-band cap (e.g. `container-narrow` = 64rem) → a shared named
+		// Container Width preset (Components → Section Styles → Container Widths), so the whole site reuses it.
+		if ( isset( $sec['sectionContainerW'] ) && is_array( $sec['sectionContainerW'] ) && isset( $sec_node['atts'] ) ) {
+			$sec_node['atts']['container_width'] = $sec['sectionContainerW'];
+		}
 		// Reproduce the source section's FULL container styling — not just vertical rhythm. Its Tailwind
 		// classes (`max-w-[..] mx-auto px-.. py-.. border-y border-<color> rounded-.. bg-..`) describe a
 		// centered, bordered, padded BOX, which maps onto the builder's centered `.fw-container`; the

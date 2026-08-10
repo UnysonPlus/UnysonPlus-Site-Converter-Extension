@@ -248,6 +248,31 @@ class FW_Site_Converter_Bundle {
 			$out['sections'][] = 'menus';
 		}
 
+		// --- Phase 5b: MEGA MENUS — activate the Mega Menu extension + attach detected mega panels to the
+		// primary menu's triggers. Only when the source actually has a mega menu (mega-menus.json present). ---
+		$mega = self::read_json( $dir, array( 'mega-menus.json' ) );
+		if ( $do_pages && is_array( $mega ) && ! empty( $mega['menus'] ) && class_exists( 'FW_Site_Converter_Menus' ) ) {
+			// Auto-activate the bundled Mega Menu extension (persists it for front-end renders — its walker
+			// injects on every wp_nav_menu once active).
+			if ( ! function_exists( 'fw_ext' ) || ! fw_ext( 'megamenu' ) ) {
+				if ( function_exists( 'fw' ) && fw()->extensions->manager->can_activate() ) {
+					fw()->extensions->manager->activate_extensions( array( 'megamenu' => array() ) );
+				}
+			}
+			// Activation only sets the option — the extension's files don't hot-load THIS request. Manually
+			// require its meta helpers so import_mega can write `enabled` + the hierarchy right now.
+			if ( ! function_exists( 'fw_ext_mega_menu_update_meta' ) ) {
+				$mm_dir = dirname( dirname( __DIR__ ) ) . '/megamenu';
+				foreach ( array( '/includes/functions.php', '/helpers.php' ) as $f ) {
+					if ( is_file( $mm_dir . $f ) ) { require_once $mm_dir . $f; }
+				}
+			}
+			if ( function_exists( 'fw_ext_mega_menu_update_meta' ) ) {
+				$out['mega']       = FW_Site_Converter_Menus::import_mega( $mega );
+				$out['sections'][] = 'mega-menus';
+			}
+		}
+
 		if ( ! $out['sections'] ) {
 			$out['error'] = __( 'The bundle had no recognized sections (media.json, presets.json, theme-settings.json, pages.json, menus.json).', 'fw' );
 		}

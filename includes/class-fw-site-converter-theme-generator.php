@@ -303,10 +303,25 @@ class FW_Site_Converter_Theme_Generator {
 		$heading_face = isset( $logo['computed']['fontFamily'] ) ? $logo['computed']['fontFamily'] : self::section_heading_face( $cap );
 		$heading_font = self::first_family( $heading_face );
 		$body_font    = self::first_family( isset( $body['fontFamily'] ) ? $body['fontFamily'] : '' );
+		// Fall back to the design-config's own `fonts` block (the PHP conversion path fills these from the
+		// source's computed font-family — detect_computed_fonts — where the nested logo/section computed
+		// fields the JS capture uses aren't present). Without this the Google-Fonts enqueue below stayed empty
+		// for self-hosted-font sources, so the family in the carried CSS never actually loaded.
+		$cfg_fonts = isset( $cap['fonts'] ) && is_array( $cap['fonts'] ) ? $cap['fonts'] : array();
+		if ( $heading_font === '' && ! empty( $cfg_fonts['heading'] ) ) { $heading_font = self::first_family( (string) $cfg_fonts['heading'] ); }
+		if ( $body_font === '' && ! empty( $cfg_fonts['body'] ) )       { $body_font = self::first_family( (string) $cfg_fonts['body'] ); }
 		$google       = self::pick_google_fonts(
 			isset( $assets['fonts'] ) ? (array) $assets['fonts'] : array(),
 			array( $heading_font, $body_font )
 		);
+		// FALLBACK: the source may SELF-HOST a Google family (e.g. Lovable ships "Cormorant Garamond"
+		// as a bundled webfont, with no fonts.googleapis.com <link>), so pick_google_fonts finds nothing
+		// and the family name is used in CSS but never loaded — the browser silently falls back to a system
+		// serif. Synthesize a css2 URL for the detected heading/body families so the real font actually loads
+		// (rehost then self-hosts it). Best-effort: a non-Google family 400s harmlessly and the stack falls back.
+		if ( $google === '' ) {
+			$google = self::synth_google_fonts_url( array( $heading_font, $body_font ) );
+		}
 
 		// Icon webfont (Material Symbols) — only carried when the page uses icon-ligature
 		// cards, so a non-icon site doesn't load it for nothing.
@@ -579,6 +594,33 @@ class FW_Site_Converter_Theme_Generator {
 	 * @param string[] $families Family names to match (e.g. Fraunces, Manrope).
 	 * @return string
 	 */
+	/**
+	 * Build a Google Fonts css2 URL for named families the source used but did NOT ship a googleapis <link>
+	 * for (self-hosted webfonts). Skips generics/websafe families and non-name tokens. Requests the common
+	 * weight range so headings/body render at the right weight. '' when no family is a real named font.
+	 *
+	 * @param string[] $families
+	 * @return string
+	 */
+	public static function synth_google_fonts_url( array $families ) {
+		$websafe = array( 'arial', 'helvetica', 'helvetica neue', 'times', 'times new roman', 'georgia', 'garamond',
+			'courier', 'courier new', 'verdana', 'tahoma', 'trebuchet ms', 'segoe ui', 'segoe', 'roboto',
+			'-apple-system', 'blinkmacsystemfont', 'ui-monospace', 'ui-sans-serif', 'ui-serif', 'menlo', 'monaco', 'consolas' );
+		$seen = array(); $parts = array();
+		foreach ( $families as $fam ) {
+			$fam = trim( (string) $fam, " \t\n\r\0\x0B\"'" );
+			if ( $fam === '' ) { continue; }
+			$lc = strtolower( $fam );
+			if ( in_array( $lc, $websafe, true ) || isset( $seen[ $lc ] ) ) { continue; }
+			// Only a real named family (letters/digits/spaces) — never a CSS var, quoted stack or generic.
+			if ( ! preg_match( '/^[A-Za-z][A-Za-z0-9 ]+$/', $fam ) ) { continue; }
+			$seen[ $lc ] = true;
+			$parts[] = 'family=' . str_replace( ' ', '+', $fam ) . ':ital,wght@0,300;0,400;0,500;0,600;0,700;1,400';
+		}
+		if ( ! $parts ) { return ''; }
+		return 'https://fonts.googleapis.com/css2?' . implode( '&', $parts ) . '&display=swap';
+	}
+
 	private static function pick_google_fonts( array $fonts, array $families ) {
 		$families = array_filter( array_map( 'trim', $families ) );
 		foreach ( $fonts as $url ) {
@@ -1077,7 +1119,7 @@ class FW_Site_Converter_Theme_Generator {
 		return $out;
 	}
 
-	private static function menu_bootstrap_code( $fn, $suffix, $menu_name, $location, array $items ) {
+	private static function menu_bootstrap_code( $fn, $suffix, $menu_name, $location, array $items, array $mega = array() ) {
 		$literal = self::php_menu_literal( $items );
 		$out  = "/**\n * Build the \"{$menu_name}\" menu from the converted links and assign it to the\n";
 		$out .= " * '{$location}' location on activation. Idempotent (reuses an existing menu);\n";
@@ -1125,6 +1167,27 @@ class FW_Site_Converter_Theme_Generator {
 		$out .= "\t\tset_theme_mod( 'nav_menu_locations', \$locations );\n";
 		$out .= "\t\tupdate_option( '{$fn}_{$suffix}_assigned', 1 );\n";
 		$out .= "\t}\n";
+		// MEGA MENU — the source has a mega dropdown: activate the Mega Menu extension + attach the detected
+		// panel to this menu's trigger (once, via a flag). Works on the theme-DOWNLOAD path too, since it runs
+		// from the theme itself. No-op when the Site Converter helper / framework isn't present.
+		if ( $mega ) {
+			// var_export → a valid PHP literal for the nested mega structure ({trigger,cols,columns:[[…]]});
+			// php_menu_literal only understands flat menu items. The data is pure scalars/arrays, so it's safe.
+			$mega_literal = var_export( array_values( $mega ), true );
+			$out .= "\tif ( ! get_option( '{$fn}_{$suffix}_mega' ) && class_exists( 'FW_Site_Converter_Menus' ) && method_exists( 'FW_Site_Converter_Menus', 'import_mega' ) && function_exists( 'fw' ) ) {\n";
+			$out .= "\t\tif ( ( ! function_exists( 'fw_ext' ) || ! fw_ext( 'megamenu' ) ) && fw()->extensions->manager->can_activate() ) {\n";
+			$out .= "\t\t\tfw()->extensions->manager->activate_extensions( array( 'megamenu' => array() ) );\n";
+			$out .= "\t\t}\n";
+			$out .= "\t\tif ( ! function_exists( 'fw_ext_mega_menu_update_meta' ) && function_exists( 'fw_get_framework_directory' ) ) {\n";
+			$out .= "\t\t\t\$mm = fw_get_framework_directory( '/extensions/megamenu' );\n";
+			$out .= "\t\t\tforeach ( array( '/includes/functions.php', '/helpers.php' ) as \$mf ) { if ( is_file( \$mm . \$mf ) ) { require_once \$mm . \$mf; } }\n";
+			$out .= "\t\t}\n";
+			$out .= "\t\tif ( function_exists( 'fw_ext_mega_menu_update_meta' ) ) {\n";
+			$out .= "\t\t\t\$r = FW_Site_Converter_Menus::import_mega( array( 'menus' => {$mega_literal} ), '" . self::esc_php( $location ) . "' );\n";
+			$out .= "\t\t\tif ( is_array( \$r ) && empty( \$r['error'] ) && ! empty( \$r['built'] ) ) { update_option( '{$fn}_{$suffix}_mega', 1 ); }\n";
+			$out .= "\t\t}\n";
+			$out .= "\t}\n";
+		}
 		$out .= "}\n";
 		// wp_loaded (not after_switch_theme): runs once via the assigned-flag, AND re-applies after a
 		// re-convert (which clears the flag) without needing a manual theme re-activation.
@@ -2764,10 +2827,11 @@ JS;
 		// custom logo (the mirror's brand <img> → the_custom_logo); and the footer columns →
 		// the parent's footer-N widget areas + a child "Footer Copyright" area, each seeded with a
 		// Custom HTML placeholder (the <!--SC_FCOL_i-->/<!--SC_FCOPY--> spots render dynamic_sidebar).
+		$mega_menus = isset( $cfg['mega_menus'] ) && is_array( $cfg['mega_menus'] ) ? $cfg['mega_menus'] : array();
 		if ( $raw ) {
 			$nav_items = self::nav_tree_items( isset( $cfg['raw_chrome']['nav_tree'] ) ? $cfg['raw_chrome']['nav_tree'] : array() );
 			if ( $nav_items ) {
-				$out .= self::menu_bootstrap_code( $fn, 'header_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header', $loc, $nav_items );
+				$out .= self::menu_bootstrap_code( $fn, 'header_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header', $loc, $nav_items, $mega_menus );
 			}
 			$logo_src = isset( $cfg['header']['logo_src'] ) ? (string) $cfg['header']['logo_src'] : '';
 			if ( $cfg['theme']['mode'] === 'child' && $logo_src !== '' ) {
@@ -2814,7 +2878,7 @@ JS;
 		// as the footer, which sidesteps the theme-switch nav_menu_locations reset).
 		$header_menu = isset( $cfg['header']['menu'] ) && is_array( $cfg['header']['menu'] ) ? $cfg['header']['menu'] : array();
 		if ( $header_menu ) {
-			$out .= self::menu_bootstrap_code( $fn, 'header_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header', $loc, $header_menu );
+			$out .= self::menu_bootstrap_code( $fn, 'header_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header', $loc, $header_menu, $mega_menus );
 		}
 		if ( $footer_menu ) {
 			$out .= self::menu_bootstrap_code( $fn, 'footer_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Footer', 'sc_footer', $footer_menu );
@@ -3260,7 +3324,7 @@ JS;
 		// leftover demo header/menu/logo without needing a manual theme re-activation.
 		if ( function_exists( 'delete_option' ) ) {
 			$fnp = self::fn_prefix( $slug );
-			foreach ( array( '_logo_seeded', '_header_menu_assigned', '_footer_menu_assigned', '_footer_widgets_seeded', '_favicon_seeded' ) as $flag ) {
+			foreach ( array( '_logo_seeded', '_header_menu_assigned', '_footer_menu_assigned', '_header_menu_mega', '_footer_widgets_seeded', '_favicon_seeded' ) as $flag ) {
 				delete_option( $fnp . $flag );
 			}
 		}

@@ -1308,6 +1308,164 @@ $wi_neg = $sc_nodes_of( '<section id="wl"><div class="max-w-2xl"><h2>Left headin
 $wi_nsh = $first_sc( $wi_neg, 'special_heading' );
 ga_eq( "wrapper-inherit: non-centered wrapper → alignment stays inherit ('')", '', $wi_nsh['atts']['alignment'] ?? null );
 ga_eq( "wrapper-inherit: no mx-auto → no wrapper max-width carried", '', (string) ( $wi_nsh['atts']['block_max_width']['value'] ?? '' ) );
+/* NEVER-DROP: a SUBTITLE part carrying its OWN `max-w-* mx-auto` (not the wrapper) must not be
+ * silently dropped — it's reproduced as scoped Custom CSS on `.heading-subtitle`, and the utility
+ * is recorded as KEPT (absent from the conversion-map `dropped`). Layout the appearance base excludes. */
+$nd_html = '<section id="nd"><div class="text-center"><h2 class="text-4xl font-bold">About Our Studio</h2>'
+	. '<p class="text-muted-foreground leading-relaxed max-w-2xl mx-auto mb-10">We craft calm, considered spaces.</p></div></section>';
+$nd_nodes = $sc_nodes_of( $nd_html );
+$nd_sh    = $first_sc( $nd_nodes, 'special_heading' );
+$nd_css   = (string) ( $nd_sh['atts']['custom_css'] ?? '' );
+ga( "never-drop: subtitle max-w-2xl → scoped .heading-subtitle max-width:42rem in custom_css",
+	false !== strpos( $nd_css, '.heading-subtitle{max-width:42rem' ), $nd_css );
+ga( "never-drop: carried subtitle centering (margin-left:auto) in custom_css",
+	false !== strpos( $nd_css, 'margin-left:auto' ), $nd_css );
+$nd_hash = FW_Site_Converter_Mapper::build_conversion_map( array( array( 'builder' => $nd_nodes ) ) );
+$nd_drop = array();
+foreach ( $nd_hash as $r ) { if ( ! empty( $r['dropped'] ) ) { $nd_drop = array_merge( $nd_drop, (array) $r['dropped'] ); } }
+ga( "never-drop: max-w-2xl NOT in dropped (recorded as kept)", ! in_array( 'max-w-2xl', $nd_drop, true ), wp_json_encode( $nd_drop ) );
+/* CLEAN CONTENT: capture-only `data-sc-cs` never survives into carried inline HTML, and a
+ * presentational-only utility (`italic`/`font-normal`) folds to an inline style so it isn't lost. */
+$mac = new ReflectionMethod( 'FW_Site_Converter_Mapper', 'map_accent_classes' );
+$mac->setAccessible( true );
+$mac_in  = 'Objects of<br><span class="italic font-normal" data-sc-cs="color:rgb(255,255,255);font-size:128px">Quiet Beauty</span>';
+$mac_out = (string) $mac->invoke( null, $mac_in );
+ga( "clean-content: data-sc-cs stripped from carried inline HTML", false === strpos( $mac_out, 'data-sc-cs' ), $mac_out );
+ga( "clean-content: italic folded to inline style:font-style:italic", false !== strpos( $mac_out, 'font-style:italic' ), $mac_out );
+ga( "clean-content: font-normal folded to font-weight:400", false !== strpos( $mac_out, 'font-weight:400' ), $mac_out );
+/* TWO-COLUMN image|text band: a `grid md:grid-cols-2` with an image cell (whose own `absolute inset-0`
+ * gradient overlay makes it LOOK like an image composite) beside a text cell must split into TWO columns
+ * — NOT get eaten by the image-composite / image-overlay recognizer (which dropped the whole text column
+ * or froze the band in a verbatim code_block). Image-dominant guard = the fix. */
+$tc_html = '<section class="py-20"><div class="container-full"><div class="grid md:grid-cols-2 gap-8 items-center">'
+	. '<div class="relative aspect-[4/5] overflow-hidden group"><img src="https://ex.com/a.jpg?w=1920&amp;q=80" alt="Lighting" class="w-full h-full object-cover"><div class="absolute inset-0 bg-gradient-to-t"></div></div>'
+	. '<div class="md:py-12"><p class="uppercase text-primary mb-4">Featured Collection</p><h2 class="text-4xl mb-6">Lighting</h2><p class="mb-8 max-w-md">Sculptural forms.</p>'
+	. '<a class="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium bg-primary text-primary-foreground hover:bg-primary/90 h-11 rounded-none px-10 py-6 text-sm tracking-[0.15em] uppercase btn-premium" href="/x">Shop Lighting<svg viewBox="0 0 24 24" class="lucide"><path d="M5 12h14"></path></svg></a></div></div></div></section>';
+$tc_nodes = $sc_nodes_of( $tc_html );
+$tc_codes = $codes_of( $tc_nodes );
+ga( "two-col band: keeps the image (media_image present)", in_array( 'media_image', $tc_codes, true ), wp_json_encode( $tc_codes ) );
+ga( "two-col band: keeps the heading (special_heading present — text column NOT dropped)", in_array( 'special_heading', $tc_codes, true ), wp_json_encode( $tc_codes ) );
+ga( "two-col band: keeps the button (Shop Lighting)", in_array( 'button', $tc_codes, true ), wp_json_encode( $tc_codes ) );
+ga( "two-col band: NOT frozen as a verbatim code_block", ! in_array( 'code_block', $tc_codes, true ), wp_json_encode( $tc_codes ) );
+
+/* FOOTER BANDS: a footer with a `border-b` PRE-band (brand | newsletter, 2 cells) above a 4-column
+ * link grid above a © line must split into pre_footer (2 cols: brand | newsletter) + main_footer
+ * (4 cols) — NOT collapse (the 4-col grid was mis-flagged copyright and dropped, then the pre-band was
+ * merged into one column). Regression guard for band_is_copyright + the brand|newsletter split. */
+$fb_html = '<!DOCTYPE html><html><head><title>T</title></head><body><main><section><h1>H</h1></section></main>'
+	. '<footer class="bg-foreground text-background">'
+	. '<div class="border-b border-background/10"><div class="container-full py-12"><div class="flex md:flex-row justify-between gap-8">'
+	. '<div><a class="text-3xl" href="/">Maison</a><p class="mt-3 max-w-xs">Curated home objects and lifestyle pieces for considered living.</p></div>'
+	. '<div class="max-w-sm w-full"><p class="uppercase mb-3">Stay Connected</p><form class="flex"><input type="email" placeholder="Your email"><button type="submit"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button></form></div></div></div></div>'
+	. '<div class="container-full py-16"><div class="grid grid-cols-2 md:grid-cols-4 gap-8">'
+	. '<div><h4 class="uppercase mb-4">Shop</h4><ul><li><a href="/a">Lighting</a></li><li><a href="/b">Furniture</a></li></ul></div>'
+	. '<div><h4 class="uppercase mb-4">About</h4><ul><li><a href="/c">Story</a></li><li><a href="/c2">Team</a></li></ul></div>'
+	. '<div><h4 class="uppercase mb-4">Help</h4><ul><li><a href="/d">Contact</a></li><li><a href="/d2">FAQ</a></li></ul></div>'
+	. '<div><h4 class="uppercase mb-4">Legal</h4><ul><li><a href="/e">Privacy</a></li><li><a href="/e2">Terms</a></li></ul></div></div></div>'
+	. '<div class="container-full py-6"><p>© 2026 Maison</p></div></footer></body></html>';
+$fb_ts   = FW_Site_Converter_Sources::build_from_html( $fb_html, 'Foot', array( 'dynamic_chrome' => false ) )['files']['theme-settings.json']['values'] ?? array();
+$fb_cols = function ( $bar ) use ( $fb_ts ) {
+	$v = $fb_ts[ $bar . '_columns' ] ?? array(); $cnt = (string) ( $v['count'] ?? '' );
+	$band = $v[ $cnt ] ?? array(); $out = array();
+	foreach ( $band as $k => $col ) { if ( is_array( $col ) && strpos( (string) $k, $bar . '_col_' ) === 0 ) { $out[] = array_map( function ( $e ) { return $e['element_type']['element'] ?? '?'; }, $col ); } }
+	return $out;
+};
+$fb_pre  = $fb_cols( 'pre_footer' );
+$fb_main = $fb_cols( 'main_footer' );
+ga( "footer bands: pre_footer has 2 columns (brand | newsletter)", count( $fb_pre ) === 2, wp_json_encode( $fb_pre ) );
+ga( "footer bands: pre col1 = brand (logo)", isset( $fb_pre[0] ) && in_array( 'logo', $fb_pre[0], true ), wp_json_encode( $fb_pre ) );
+ga( "footer bands: pre col2 = newsletter", isset( $fb_pre[1] ) && in_array( 'newsletter', $fb_pre[1], true ), wp_json_encode( $fb_pre ) );
+ga( "footer bands: main link grid kept as 4 columns (not mis-flagged copyright)", count( $fb_main ) === 4, wp_json_encode( $fb_main ) );
+
+/* INSTAGRAM FEED → the [instagram] Library shortcode. A feed (marker/CDN images/@handle grid) emits a
+ * native instagram element with the detected @handle + column count, and records `instagram` as a required
+ * Library shortcode. A lone Instagram social LINK/icon (no image grid) must NOT trigger it. */
+$ig_codes_of = function ( $html ) {
+	$bd = FW_Site_Converter_Sources::build_from_html( '<!DOCTYPE html><html><head><title>T</title></head><body><main>' . $html . '</main></body></html>', 'IG', array( 'dynamic_chrome' => false ) );
+	$cm = $bd['files']['theme-design.json']['conversion_map'] ?? array();
+	$codes = array(); $ig = null;
+	foreach ( $cm as $r ) { $codes[] = $r['sc'] ?? '?'; if ( ( $r['sc'] ?? '' ) === 'instagram' ) { $ig = $r['mapped'] ?? array(); } }
+	return array( 'codes' => $codes, 'ig' => $ig, 'req' => $bd['files']['theme-design.json']['required_shortcodes'] ?? array() );
+};
+$ig_feed = $ig_codes_of(
+	'<section id="insta"><h2>Follow us on Instagram <a href="https://instagram.com/maison_home/">@maison_home</a></h2>'
+	. '<div class="instagram-feed grid md:grid-cols-4 gap-2">'
+	. '<a href="https://instagram.com/p/A0/"><img src="https://scontent.cdninstagram.com/x0.jpg"></a>'
+	. '<a href="https://instagram.com/p/A1/"><img src="https://scontent.cdninstagram.com/x1.jpg"></a>'
+	. '<a href="https://instagram.com/p/A2/"><img src="https://scontent.cdninstagram.com/x2.jpg"></a>'
+	. '<a href="https://instagram.com/p/A3/"><img src="https://scontent.cdninstagram.com/x3.jpg"></a></div></section>'
+);
+ga( "instagram: feed → [instagram] shortcode emitted", in_array( 'instagram', $ig_feed['codes'], true ), wp_json_encode( $ig_feed['codes'] ) );
+ga_eq( "instagram: detected @handle", 'maison_home', is_array( $ig_feed['ig'] ) ? ( $ig_feed['ig']['username'] ?? '' ) : '' );
+ga_eq( "instagram: columns from md:grid-cols-4", '4', is_array( $ig_feed['ig'] ) ? (string) ( $ig_feed['ig']['columns'] ?? '' ) : '' );
+ga( "instagram: recorded as a required Library shortcode", in_array( 'instagram', $ig_feed['req'], true ), wp_json_encode( $ig_feed['req'] ) );
+$ig_link = $ig_codes_of( '<section><h2>Contact</h2><p>Find us.</p><a href="https://instagram.com/maison_home/" aria-label="Instagram"><svg class="lucide-instagram"></svg></a></section>' );
+ga( "instagram: a lone social link/icon is NOT a feed (no [instagram])", ! in_array( 'instagram', $ig_link['codes'], true ), wp_json_encode( $ig_link['codes'] ) );
+
+/* MENU NEVER-DROP: a nav with uppercase + letter-spacing (`tracking-*`) links maps to the native
+ * menu_link_uppercase + menu_link_letter_spacing options — and the large BRAND wordmark link is NOT
+ * sampled as a nav item (it would pollute the menu font-size/letter-spacing). */
+$mn_html = '<header><a href="/" data-sc-cs="font-size:30px;letter-spacing:-0.75px;font-family:&quot;Cormorant Garamond&quot;,serif;color:rgb(42,38,34)">Maison</a>'
+	. '<nav><a href="/products" data-sc-cs="font-size:12px;font-weight:500;letter-spacing:1.8px;text-transform:uppercase;color:rgb(124,115,106)">Shop All</a>'
+	. '<a href="/about" data-sc-cs="font-size:12px;font-weight:500;letter-spacing:1.8px;text-transform:uppercase;color:rgb(124,115,106)">About</a></nav></header>'
+	. '<main><section><h1>Home</h1></section></main>';
+$mn_ts = FW_Site_Converter_Sources::build_from_html( '<!DOCTYPE html><html><head><title>T</title></head><body>' . $mn_html . '</body></html>', 'Menu', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values']['header_menu'] ?? array();
+ga_eq( "menu never-drop: uppercase mapped to menu_link_uppercase", 'yes', $mn_ts['menu_link_uppercase'] ?? '' );
+ga_eq( "menu never-drop: letter-spacing 1.8px (tracking) captured", '1.8', is_array( $mn_ts['menu_link_letter_spacing'] ?? null ) ? (string) $mn_ts['menu_link_letter_spacing']['value'] : '' );
+ga_eq( "menu never-drop: font-size is the NAV 12px, not the 30px brand wordmark", '12', is_array( $mn_ts['menu_link_font_size'] ?? null ) ? (string) $mn_ts['menu_link_font_size']['value'] : '' );
+
+/* FOOTER never-drop: column-heading typography (uppercase + tracking + weight/size/colour) has no native
+ * footer-heading option → carried as a scoped `.footer-links-title` rule in the misc_custom_css residual. */
+$fh_html = '<!DOCTYPE html><html><head><title>T</title></head><body><main><section><h1>H</h1></section></main>'
+	. '<footer class="bg-foreground"><div class="container py-16"><div class="grid grid-cols-4 gap-8">'
+	. '<div><h4 data-sc-cs="text-transform:uppercase;letter-spacing:2.75px;font-weight:600;font-size:11px;color:rgba(250,248,245,0.4)">Shop</h4><ul><li><a href="/a">Lighting</a></li><li><a href="/b">Furniture</a></li></ul></div>'
+	. '<div><h4 data-sc-cs="text-transform:uppercase;letter-spacing:2.75px">About</h4><ul><li><a href="/c">Story</a></li><li><a href="/c2">Team</a></li></ul></div>'
+	. '<div><h4 data-sc-cs="text-transform:uppercase">Help</h4><ul><li><a href="/d">Contact</a></li><li><a href="/d2">FAQ</a></li></ul></div>'
+	. '<div><h4 data-sc-cs="text-transform:uppercase">Legal</h4><ul><li><a href="/e">Privacy</a></li><li><a href="/e2">Terms</a></li></ul></div></div></div>'
+	. '<div class="container py-6"><p>© 2026 Maison</p></div></footer></body></html>';
+$fh_mc = FW_Site_Converter_Sources::build_from_html( $fh_html, 'FootH', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values']['misc_custom_css']['custom_css'] ?? '';
+ga( "footer never-drop: .footer-links-title rule emitted", false !== strpos( $fh_mc, '.footer-links-title{' ), $fh_mc );
+ga( "footer never-drop: uppercase carried", (bool) preg_match( '/\.footer-links-title\{[^}]*text-transform:uppercase/', $fh_mc ), $fh_mc );
+ga( "footer never-drop: tracking (2.75px) carried", (bool) preg_match( '/\.footer-links-title\{[^}]*letter-spacing:2\.75px/', $fh_mc ), $fh_mc );
+
+/* CHROME QA GATE (dropped_chrome): the never-drop gate extended to logo/menu/footer. It PASSES when the
+ * chrome typography is carried (native option or scoped CSS), and FAILS listing the offenders when a
+ * visually-significant class lands nowhere — so remaining chrome drops surface as data, not guesswork. */
+$chrome_check = function ( $html ) {
+	$pr = FW_Site_Converter_Sources::build_from_html( $html, array( 'slug' => 'cg', 'dynamic_chrome' => true ) )['files']['conversion-parity.json']['checks'] ?? array();
+	foreach ( $pr as $c ) { if ( ( $c['id'] ?? '' ) === 'dropped_chrome' ) { return $c; } }
+	return null;
+};
+$cg_bad = $chrome_check( '<!DOCTYPE html><html><head><title>T</title></head><body><header><a class="italic" href="/" data-sc-cs="font-style:italic;color:rgb(20,20,20)">Brand</a><nav><a class="italic" href="/shop" data-sc-cs="font-style:italic;font-size:14px;color:rgb(90,90,90)">Shop</a></nav></header><main><section><h1>H</h1></section></main></body></html>' );
+ga( "chrome gate: catches an uncarried class (italic) — pass=false", is_array( $cg_bad ) && $cg_bad['pass'] === false, wp_json_encode( $cg_bad ) );
+ga( "chrome gate: names the offenders (logo:italic)", is_array( $cg_bad ) && false !== strpos( (string) $cg_bad['converted'], 'logo:italic' ), wp_json_encode( $cg_bad ) );
+$cg_ok = $chrome_check( '<!DOCTYPE html><html><head><title>T</title></head><body><header><a href="/" data-sc-cs="font-family:&quot;Cormorant Garamond&quot;,serif;letter-spacing:-0.75px;color:rgb(42,38,34)" class="font-serif tracking-tight text-foreground">Maison</a><nav><a href="/shop" class="uppercase tracking-[0.15em] text-muted-foreground" data-sc-cs="font-size:12px;text-transform:uppercase;letter-spacing:1.8px;color:rgb(124,115,106)">Shop</a></nav></header><main><section><h1>H</h1></section></main></body></html>' );
+ga( "chrome gate: PASSES when logo+menu typography is carried", is_array( $cg_ok ) && $cg_ok['pass'] === true, wp_json_encode( $cg_ok ) );
+
+/* FOOTER LINK never-drop: a footer nav link's font-size + hover colour → scoped `.footer-menu a` +
+ * `.footer-menu a:hover` rules (hover mapped to the Color-Preset var). Surfaced by the chrome gate. */
+$fl_html = '<!DOCTYPE html><html><head><title>T</title></head><body><main><section><h1>H</h1></section></main>'
+	. '<footer class="bg-foreground"><div class="container py-16"><div class="grid grid-cols-2 gap-8">'
+	. '<div><h4 data-sc-cs="text-transform:uppercase">Shop</h4><ul>'
+	. '<li><a href="/a" class="hover:text-background" data-sc-cs="font-size:14px;font-weight:400;color:rgba(250,248,245,0.5)">Lighting</a></li>'
+	. '<li><a href="/b" class="hover:text-background" data-sc-cs="font-size:14px;font-weight:400;color:rgba(250,248,245,0.5)">Furniture</a></li></ul></div>'
+	. '<div><h4 data-sc-cs="text-transform:uppercase">About</h4><ul><li><a href="/c">Story</a></li><li><a href="/c2">Team</a></li></ul></div></div></div>'
+	. '<div class="container py-6"><p>© 2026 Maison</p></div></footer></body></html>';
+$fl_mc = FW_Site_Converter_Sources::build_from_html( $fl_html, 'FootL', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values']['misc_custom_css']['custom_css'] ?? '';
+ga( "footer link never-drop: .footer-menu a font-size carried", (bool) preg_match( '/\.footer-menu a\{[^}]*font-size:14px/', $fl_mc ), $fl_mc );
+ga( "footer link never-drop: hover → var(--color-background)", false !== strpos( $fl_mc, '.footer-menu a:hover{color:var(--color-background)}' ), $fl_mc );
+
+/* FOOTER TAGLINE never-drop: the brand tagline <p>'s size / line-height / muted colour → a scoped
+ * `.footer-tagline` rule (the emit tags the paragraph with that class). */
+$tg_html = '<!DOCTYPE html><html><head><title>T</title></head><body><main><section><h1>H</h1></section></main>'
+	. '<footer class="bg-foreground"><div class="border-b"><div class="container py-12"><div class="flex md:flex-row justify-between gap-8">'
+	. '<div><a class="text-3xl" href="/">Maison</a><p class="text-sm max-w-xs" data-sc-cs="font-size:14px;line-height:22.75px;color:rgba(250,248,245,0.5)">Curated home objects and lifestyle pieces for considered living.</p></div>'
+	. '<div class="max-w-sm"><p class="uppercase mb-3">Stay Connected</p><form class="flex"><input type="email" placeholder="Your email"><button type="submit">Go</button></form></div></div></div></div>'
+	. '<div class="container py-16"><div class="grid grid-cols-2 gap-8"><div><h4>Shop</h4><ul><li><a href="/a">Lighting</a></li><li><a href="/b">Furniture</a></li></ul></div><div><h4>About</h4><ul><li><a href="/c">Story</a></li><li><a href="/c2">Team</a></li></ul></div></div></div>'
+	. '<div class="container py-6"><p>© 2026 Maison</p></div></footer></body></html>';
+$tg_mc = FW_Site_Converter_Sources::build_from_html( $tg_html, 'FootT', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values']['misc_custom_css']['custom_css'] ?? '';
+ga( "tagline never-drop: .footer-tagline rule emitted", false !== strpos( $tg_mc, '.footer-tagline{' ), $tg_mc );
+ga( "tagline never-drop: muted colour carried", (bool) preg_match( '/\.footer-tagline\{[^}]*color:rgba\(250,\s*248,\s*245,\s*0\.5\)/', $tg_mc ), $tg_mc );
 
 /* --------------------------------------------------------------------- *
  * [18] CONTAINER-LEVEL text_align — a centered source band carries its
