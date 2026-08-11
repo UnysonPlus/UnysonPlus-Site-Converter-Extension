@@ -105,6 +105,14 @@ class FW_Site_Converter_Bundle {
 
 		$dir = self::locate_root( $dir );
 
+		// DETERMINISTIC bundle carrying the captured DOM (rendered.html) → re-run the (superior, maintained)
+		// PHP build_from_html on it and OVERWRITE the JS-produced files, so the import uses the PHP engine's
+		// decomposition. This closes the JS↔PHP converter divergence — a deterministic capture no longer
+		// loses elements (hero video, feature cards → icon_box, tables, headings, buttons) that the JS
+		// to-pages path dropped to code_block. AI-refined bundles and older bundles (no rendered.html) are
+		// left untouched (keep their pages.json). See capture.mjs (converter:'deterministic' + rendered.html).
+		self::maybe_reconvert_with_php( $dir );
+
 		// Phase gating for the review-first flow: 'design' applies the design system
 		// (media, presets, theme settings, theme + the Style Guide page) and defers the
 		// content pages; 'pages' applies only pages + menus. '' (default) = everything.
@@ -278,6 +286,46 @@ class FW_Site_Converter_Bundle {
 		}
 
 		return $out;
+	}
+
+	/**
+	 * If this is a DETERMINISTIC capture-service bundle that carries the rendered DOM (rendered.html with
+	 * data-sc-cs), re-run the PHP build_from_html converter on it and overwrite the JS-produced bundle files
+	 * in place, so import_dir() below consumes the PHP engine's (superior, maintained) decomposition.
+	 *
+	 * Why: the JS to-pages converter had drifted behind PHP build_from_html — on real captures it dumped the
+	 * hero, feature cards, tables and buttons to raw code_block where PHP maps them to media_video / icon_box /
+	 * table / special_heading / button. Rather than chase perpetual JS↔PHP parity, a deterministic bundle is
+	 * re-converted through the PHP engine once, here. NO-OP when: the converter isn't available; the bundle is
+	 * AI-refined (`converter:'ai'` / `ai:true` in bundle.json — its pages.json carries the AI mapping and must
+	 * be kept); or rendered.html is absent (older bundles → keep their pages.json, back-compat).
+	 *
+	 * @param string $dir bundle root (writable temp dir)
+	 */
+	private static function maybe_reconvert_with_php( $dir ) {
+		if ( ! class_exists( 'FW_Site_Converter_Sources' ) || ! method_exists( 'FW_Site_Converter_Sources', 'build_from_html' ) ) { return; }
+
+		$meta = self::read_json( $dir, self::FILE_MANIFEST );
+		$is_ai = is_array( $meta ) && ( ( isset( $meta['converter'] ) && $meta['converter'] === 'ai' ) || ! empty( $meta['ai'] ) );
+		if ( $is_ai ) { return; } // AI-refined pages.json wins — don't clobber the AI mapping.
+
+		$html_file = rtrim( $dir, '/\\' ) . '/rendered.html';
+		if ( ! is_file( $html_file ) ) { return; } // older bundle without the captured DOM → keep JS pages.
+		$html = (string) @file_get_contents( $html_file );
+		if ( trim( $html ) === '' || stripos( $html, 'data-sc-cs' ) === false ) { return; } // not a usable capture.
+
+		$title = ( is_array( $meta ) && ! empty( $meta['name'] ) ) ? (string) $meta['name'] : 'Home';
+		$res   = FW_Site_Converter_Sources::build_from_html( $html, $title, array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+		$files = ( is_array( $res ) && isset( $res['files'] ) && is_array( $res['files'] ) ) ? $res['files'] : array();
+		if ( empty( $files['pages.json'] ) ) { return; } // build produced nothing usable → leave the bundle as-is.
+
+		// Overwrite every JS-produced file the PHP engine also emits, so pages + design stay internally
+		// consistent (all from the PHP engine). Files the PHP build doesn't emit are left as the JS bundle had.
+		foreach ( array( 'pages.json', 'theme-design.json', 'theme-settings.json', 'presets.json', 'media.json', 'mega-menus.json', 'styleguide.json', 'conversion-parity.json' ) as $fn ) {
+			if ( isset( $files[ $fn ] ) ) {
+				@file_put_contents( rtrim( $dir, '/\\' ) . '/' . $fn, wp_json_encode( $files[ $fn ] ) );
+			}
+		}
 	}
 
 	/* ---------------------------------------------------------------------- *

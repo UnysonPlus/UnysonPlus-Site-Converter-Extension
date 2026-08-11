@@ -140,6 +140,240 @@ class FW_Site_Converter_Stitch {
 		return $out;
 	}
 
+	/* ====================================================================== *
+	 * BACKGROUND RESOLVER (seed) — the organized home for detecting the real
+	 * rendered background of a surface (body / section / header / footer) from
+	 * the source: computed styles (data-sc-cs), <style> rules, and inline style.
+	 * Currently: body background (solid color, incl. oklch/oklab/hsl). More
+	 * surfaces + gradient/image/pattern land here next, all normalized to hex so
+	 * they wire into native, editable options (never injected).
+	 * ====================================================================== */
+
+	/** Concatenate every <style> block's CSS in the document (for rule-based background detection). */
+	private static function all_style_css( $html ) {
+		if ( ! preg_match_all( '/<style[^>]*>(.*?)<\/style>/is', (string) $html, $sm ) ) { return ''; }
+		return implode( "\n", $sm[1] );
+	}
+
+	/**
+	 * Convert ANY CSS color form to `#rrggbb` (or '' if it isn't a resolvable solid color). Handles
+	 * hex (#rgb/#rrggbb/#rrggbbaa), rgb()/rgba(), hsl()/hsla(), oklch()/oklab(), and `transparent`. A
+	 * fully / near-transparent color (alpha ≤ 0.02) returns '' (no real fill). The theme's color tokens
+	 * are hex, so every detected background normalizes through here.
+	 */
+	private static function color_to_hex( $color ) {
+		$c = strtolower( trim( (string) $color ) );
+		if ( $c === '' || $c === 'transparent' || $c === 'none' || $c === 'currentcolor' || $c === 'inherit' ) { return ''; }
+		$clamp = function ( $x ) { return max( 0, min( 255, (int) round( $x ) ) ); };
+		// #hex (expand shorthand; drop alpha)
+		if ( $c[0] === '#' ) {
+			$h = ltrim( $c, '#' );
+			if ( preg_match( '/^[0-9a-f]{3}$/', $h ) ) { $h = $h[0] . $h[0] . $h[1] . $h[1] . $h[2] . $h[2]; }
+			if ( preg_match( '/^[0-9a-f]{8}$/', $h ) ) { $h = substr( $h, 0, 6 ); }
+			return preg_match( '/^[0-9a-f]{6}$/', $h ) ? '#' . $h : '';
+		}
+		// rgb()/rgba()
+		if ( preg_match( '/^rgba?\(\s*([0-9.]+)[,\s]+([0-9.]+)[,\s]+([0-9.]+)(?:[,\s\/]+([0-9.]+%?))?\s*\)$/', $c, $m ) ) {
+			if ( isset( $m[4] ) && $m[4] !== '' ) { $a = strpos( $m[4], '%' ) !== false ? (float) $m[4] / 100 : (float) $m[4]; if ( $a <= 0.02 ) { return ''; } }
+			return sprintf( '#%02x%02x%02x', $clamp( $m[1] ), $clamp( $m[2] ), $clamp( $m[3] ) );
+		}
+		// hsl()/hsla()
+		if ( preg_match( '/^hsla?\(\s*([0-9.]+)(?:deg)?[,\s]+([0-9.]+)%[,\s]+([0-9.]+)%(?:[,\s\/]+([0-9.]+%?))?\s*\)$/', $c, $m ) ) {
+			if ( isset( $m[4] ) && $m[4] !== '' ) { $a = strpos( $m[4], '%' ) !== false ? (float) $m[4] / 100 : (float) $m[4]; if ( $a <= 0.02 ) { return ''; } }
+			$h = fmod( (float) $m[1], 360 ) / 360; $s = (float) $m[2] / 100; $l = (float) $m[3] / 100;
+			$hue = function ( $p, $q, $t ) { if ( $t < 0 ) { $t += 1; } if ( $t > 1 ) { $t -= 1; } if ( $t < 1 / 6 ) { return $p + ( $q - $p ) * 6 * $t; } if ( $t < 1 / 2 ) { return $q; } if ( $t < 2 / 3 ) { return $p + ( $q - $p ) * ( 2 / 3 - $t ) * 6; } return $p; };
+			if ( $s == 0 ) { $r = $g = $b = $l; } else { $q = $l < 0.5 ? $l * ( 1 + $s ) : $l + $s - $l * $s; $p = 2 * $l - $q; $r = $hue( $p, $q, $h + 1 / 3 ); $g = $hue( $p, $q, $h ); $b = $hue( $p, $q, $h - 1 / 3 ); }
+			return sprintf( '#%02x%02x%02x', $clamp( $r * 255 ), $clamp( $g * 255 ), $clamp( $b * 255 ) );
+		}
+		// oklch(L C H) / oklab(L a b)
+		if ( preg_match( '/^okl(ch|ab)\(\s*([0-9.]+%?)[,\s]+(-?[0-9.]+)[,\s]+(-?[0-9.]+)(?:[,\s\/]+([0-9.]+%?))?\s*\)$/', $c, $m ) ) {
+			if ( isset( $m[5] ) && $m[5] !== '' ) { $a = strpos( $m[5], '%' ) !== false ? (float) $m[5] / 100 : (float) $m[5]; if ( $a <= 0.02 ) { return ''; } }
+			$L = (float) $m[2]; if ( strpos( $m[2], '%' ) !== false || $L > 1.5 ) { $L = $L / 100; }
+			if ( $m[1] === 'ch' ) { $C = (float) $m[3]; $H = deg2rad( (float) $m[4] ); $aa = $C * cos( $H ); $bb = $C * sin( $H ); } else { $aa = (float) $m[3]; $bb = (float) $m[4]; }
+			$l_ = $L + 0.3963377774 * $aa + 0.2158037573 * $bb;
+			$m_ = $L - 0.1055613458 * $aa - 0.0638541728 * $bb;
+			$s_ = $L - 0.0894841775 * $aa - 1.2914855480 * $bb;
+			$lc = $l_ ** 3; $mc = $m_ ** 3; $sc = $s_ ** 3;
+			$R = 4.0767416621 * $lc - 3.3077115913 * $mc + 0.2309699292 * $sc;
+			$G = -1.2684380046 * $lc + 2.6097574011 * $mc - 0.3413193965 * $sc;
+			$B = -0.0041960863 * $lc - 0.7034186147 * $mc + 1.7076147010 * $sc;
+			$gam = function ( $x ) { $x = max( 0.0, min( 1.0, $x ) ); return $x <= 0.0031308 ? 12.92 * $x : 1.055 * pow( $x, 1 / 2.4 ) - 0.055; };
+			return sprintf( '#%02x%02x%02x', $clamp( $gam( $R ) * 255 ), $clamp( $gam( $G ) * 255 ), $clamp( $gam( $B ) * 255 ) );
+		}
+		return '';
+	}
+
+	/** Extract the first SOLID color token from a `background`/`background-color` value (skips gradients
+	 *  + url() — those aren't a solid fill). Returns the raw color string (oklch/rgb/hsl/#hex) or ''. */
+	private static function first_color_token( $val ) {
+		$val = trim( (string) $val );
+		if ( $val === '' || preg_match( '/\b(?:linear|radial|conic)-gradient\s*\(/i', $val ) ) { return ''; }
+		if ( preg_match( '/\b(?:oklch|oklab|rgba?|hsla?)\s*\([^)]*\)/i', $val, $m ) ) { return $m[0]; }
+		if ( preg_match( '/#[0-9a-f]{3,8}\b/i', $val, $m ) ) { return $m[0]; }
+		return '';
+	}
+
+	/**
+	 * Detect the real rendered BODY (page) background COLOR of the source, as a raw color string
+	 * ('' if none / transparent). Order: (1) computed background-color on <body> then <html>
+	 * (data-sc-cs — already resolved, most reliable); (2) a `<style>` rule for body / html / :root
+	 * (`background`/`background-color`), which is where AI pages set a dark canvas (e.g.
+	 * `body{background:oklch(20% 0.08 280)}`) that no Tailwind class carries; (3) the <body> inline
+	 * style. This is the source-of-truth for the theme's global page background (Theme Settings).
+	 */
+	private static function detect_body_bg( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( $dom ) {
+			foreach ( array( 'body', 'html' ) as $tag ) {
+				$el = $dom->getElementsByTagName( $tag )->item( 0 );
+				if ( $el ) {
+					$c = self::sc_css( $el, 'background-color' );
+					if ( $c !== '' && stripos( $c, 'transparent' ) === false && ! preg_match( '/rgba\([^)]*,\s*0(?:\.0+)?\s*\)/', $c ) ) { return $c; }
+				}
+			}
+			$body = $dom->getElementsByTagName( 'body' )->item( 0 );
+			if ( $body ) {
+				$st = (string) $body->getAttribute( 'style' );
+				if ( preg_match( '/background(?:-color)?\s*:\s*([^;]+)/i', $st, $m ) ) {
+					$col = self::first_color_token( $m[1] );
+					if ( $col !== '' ) { return $col; }
+				}
+			}
+		}
+		$css = self::all_style_css( $html );
+		if ( $css !== '' ) {
+			foreach ( array( 'body', 'html', ':root' ) as $sel ) {
+				if ( preg_match( '/(?:^|[}\s,;])' . preg_quote( $sel, '/' ) . '\s*\{([^}]*)\}/i', $css, $mm ) ) {
+					if ( preg_match( '/background(?:-color)?\s*:\s*([^;]+)/i', $mm[1], $m ) ) {
+						$col = self::first_color_token( $m[1] );
+						if ( $col !== '' ) { return $col; }
+					}
+				}
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * Detect the real BODY (ink/text) COLOUR of the source, as a raw colour string ('' if none). Same
+	 * resolver order as detect_body_bg but reads `color`: computed on <body>/<html> (data-sc-cs), then a
+	 * `<style>` body / html / :root rule, then the <body> inline style. This is the authoritative ink for
+	 * the palette — a dark site sets `body{color:#f8fafc}` (light text), which no accent utility carries,
+	 * so without this the palette's Ink role defaulted to a dark near-black (the "text role inverted" bug).
+	 */
+	private static function detect_body_text( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( $dom ) {
+			foreach ( array( 'body', 'html' ) as $tag ) {
+				$el = $dom->getElementsByTagName( $tag )->item( 0 );
+				if ( $el ) {
+					$c = self::sc_css( $el, 'color' );
+					if ( $c !== '' && stripos( $c, 'transparent' ) === false ) { return $c; }
+				}
+			}
+			$body = $dom->getElementsByTagName( 'body' )->item( 0 );
+			if ( $body ) {
+				$st = (string) $body->getAttribute( 'style' );
+				if ( preg_match( '/(?<![-\w])color\s*:\s*([^;]+)/i', $st, $m ) ) {
+					$col = self::first_color_token( $m[1] );
+					if ( $col !== '' ) { return $col; }
+				}
+			}
+		}
+		$css = self::all_style_css( $html );
+		if ( $css !== '' ) {
+			foreach ( array( 'body', 'html', ':root' ) as $sel ) {
+				if ( preg_match( '/(?:^|[}\s,;])' . preg_quote( $sel, '/' ) . '\s*\{([^}]*)\}/i', $css, $mm ) ) {
+					if ( preg_match( '/(?<![-\w])color\s*:\s*([^;]+)/i', $mm[1], $m ) ) {
+						$col = self::first_color_token( $m[1] );
+						if ( $col !== '' ) { return $col; }
+					}
+				}
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * Last-resort INK sampler for sites that set their text colour via a `text-*` CLASS on <body> (so
+	 * neither body{color} nor a `foreground` semantic exists). Reads the DOMINANT computed `color` across
+	 * the page's real text elements — headings first (the foreground/ink), else paragraphs — from the
+	 * captured data-sc-cs. Returns '' when no element carries a computed colour (e.g. a non-captured fetch).
+	 */
+	private static function sample_ink( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return ''; }
+		foreach ( array( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ), array( 'p' ) ) as $group ) {
+			$counts = array();
+			foreach ( $group as $tg ) {
+				foreach ( $dom->getElementsByTagName( $tg ) as $el ) {
+					$c = self::color_to_hex( self::sc_css( $el, 'color' ) );
+					if ( $c !== '' ) { $counts[ $c ] = ( isset( $counts[ $c ] ) ? $counts[ $c ] : 0 ) + 1; }
+				}
+			}
+			if ( $counts ) { arsort( $counts ); return (string) key( $counts ); }
+		}
+		return '';
+	}
+
+	/**
+	 * Harvest a SECONDARY accent colour from the source's GRADIENTS (and their stops), distinct from the
+	 * primary. AI/Tailwind sites express their accent as the second half of a hero gradient (e.g.
+	 * `linear-gradient(to right, #4ade80, #facc15)` = green→yellow) or via a `yellow-400`/tinted utility,
+	 * NOT an `accent`-named class — so the semantic extractor misses it and the palette defaults the Accent
+	 * role to a stock colour. We scan every gradient's colour stops, drop ones too close to the primary
+	 * (same hue) and near-neutral greys, and return the most saturated remaining stop. '' if none.
+	 *
+	 * @param string $html
+	 * @param string $primary the already-resolved Primary hex/colour (to exclude its own hue)
+	 * @return string a colour string ('' if none)
+	 */
+	private static function scan_gradient_accent( $html, $primary ) {
+		$html = (string) $html;
+		if ( $html === '' ) { return ''; }
+		$hay = $html . "\n" . self::all_style_css( $html );
+		if ( ! preg_match_all( '/(?:linear|radial|conic)-gradient\s*\(([^;{}]*?)\)/i', $hay, $gm ) ) { return ''; }
+		$prgb = self::rgb_of_color( $primary );
+		$best = ''; $best_sat = -1.0;
+		foreach ( $gm[1] as $inside ) {
+			if ( ! preg_match_all( '/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|oklch\([^)]*\)|oklab\([^)]*\)/i', $inside, $cm ) ) { continue; }
+			foreach ( $cm[0] as $col ) {
+				$rgb = self::rgb_of_color( $col );
+				if ( $rgb === null ) { continue; }
+				list( $h, $s, $l ) = self::rgb_to_hsl( $rgb );
+				if ( $s < 0.35 || $l < 0.12 || $l > 0.92 ) { continue; }        // skip near-neutral / near-black / near-white stops
+				if ( $prgb !== null ) {
+					list( $ph ) = self::rgb_to_hsl( $prgb );
+					$dh = abs( $h - $ph ); if ( $dh > 180 ) { $dh = 360 - $dh; }
+					if ( $dh < 25 ) { continue; }                               // same hue family as the primary — not a distinct accent
+				}
+				if ( $s > $best_sat ) { $best_sat = $s; $best = $col; }
+			}
+		}
+		return $best;
+	}
+
+	/** A colour string → [r,g,b] (0-255) via the resolver's color_to_hex, or null. */
+	private static function rgb_of_color( $col ) {
+		$hex = self::color_to_hex( (string) $col );
+		if ( $hex === '' ) { return null; }
+		return array( hexdec( substr( $hex, 1, 2 ) ), hexdec( substr( $hex, 3, 2 ) ), hexdec( substr( $hex, 5, 2 ) ) );
+	}
+
+	/** [r,g,b] (0-255) → [h(0-360), s(0-1), l(0-1)]. */
+	private static function rgb_to_hsl( $rgb ) {
+		$r = $rgb[0] / 255; $g = $rgb[1] / 255; $b = $rgb[2] / 255;
+		$max = max( $r, $g, $b ); $min = min( $r, $g, $b ); $d = $max - $min;
+		$l = ( $max + $min ) / 2;
+		if ( $d == 0 ) { return array( 0.0, 0.0, $l ); }
+		$s = $d / ( 1 - abs( 2 * $l - 1 ) );
+		if ( $max == $r )      { $h = 60 * fmod( ( ( $g - $b ) / $d ), 6 ); }
+		elseif ( $max == $g )  { $h = 60 * ( ( ( $b - $r ) / $d ) + 2 ); }
+		else                   { $h = 60 * ( ( ( $r - $g ) / $d ) + 4 ); }
+		if ( $h < 0 ) { $h += 360; }
+		return array( $h, $s, $l );
+	}
+
 	/**
 	 * Merge a sibling `DESIGN.md` (the stitch-skill spec) frontmatter into a tokens array.
 	 * The YAML frontmatter carries `colors:`, `typography:`, `rounded:`, `spacing:` — handy when
@@ -257,7 +491,7 @@ class FW_Site_Converter_Stitch {
 	 * instead of a baked one. Consumed by FW_Site_Converter_Theme_Settings::import() (writes each
 	 * id via fw_set_db_settings_option); the importer accepts arbitrary keys and overlays them.
 	 *
-	 * Value shapes mirror the gold reference (Senkei's anime-header-footer.php):
+	 * Value shapes mirror the gold reference (the gold reference):
 	 *   header_logo   = { site_title, title_weight, color:{predefined,custom}, tagline,
 	 *                     logo_icon:{type,svg-source,svg-id}, logo_icon_position, logo_icon_color }
 	 *   header_main   = { main_left|center|right:[ element_type nodes ], main_custom_styling }
@@ -1396,7 +1630,7 @@ class FW_Site_Converter_Stitch {
 		// base colour utility (bg-primary / text-foreground / …) with that computed value → name => #hex. We
 		// harvest only KNOWN colour ROLES (primary / secondary / accent / foreground / background / muted /
 		// dark) so typography/layout utility names that leak through (text-sm, text-center, text-xl → sm /
-		// center / xl) are ignored. This is what recovers the FreshPaws green (#21c45d) + dark-green ink
+		// center / xl) are ignored. This is what recovers the golden fixture green (#21c45d) + dark-green ink
 		// (#293d36) that the neutral fallback used to miss.
 		$sem = ( $html !== '' && class_exists( 'FW_Site_Converter_Tailwind' ) && method_exists( 'FW_Site_Converter_Tailwind', 'extract_semantic_colors' ) )
 			? (array) FW_Site_Converter_Tailwind::extract_semantic_colors( (string) $html )
@@ -1415,7 +1649,14 @@ class FW_Site_Converter_Stitch {
 		// computed-style semantic primary/accent/brand; (3) a vivid markup accent scan; (4) the primary
 		// button's real fill (build_button_presets — the CTA bg IS the brand colour); (5) token tertiary/
 		// secondary/ink; (6) the neutral fallback ONLY if nothing vivid was found.
-		$ink    = $pick( array( 'text', 'on-background', 'on-surface' ), array( 'foreground', 'ink', 'text' ) );
+		// INK = the source's real BODY text colour when it declares one (a dark site sets
+		// `body{color:#f8fafc}` = light text — no accent utility carries that, so the semantic pass used to
+		// invert the role to a near-black default). Falls back to the semantic foreground/ink token.
+		$body_ink = self::color_to_hex( self::detect_body_text( (string) $html ) );
+		$ink    = $body_ink !== '' ? $body_ink : $pick( array( 'text', 'on-background', 'on-surface' ), array( 'foreground', 'ink', 'text' ) );
+		// Last resort (only when body{color} AND the semantic foreground are both absent — the class-based
+		// `<body class="text-white">` case): sample the dominant text colour off the page's headings.
+		if ( $ink === '' && $html !== '' ) { $ink = self::color_to_hex( self::sample_ink( (string) $html ) ); }
 		$accent = $pick( array( 'accent', 'primary', 'brand', 'cta' ), array( 'primary', 'accent', 'brand', 'cta' ) );
 		if ( $accent === '' && $html !== '' && method_exists( __CLASS__, 'scan_accent' ) ) { $accent = self::scan_accent( (string) $html ); }
 		if ( $accent === '' && $html !== '' && method_exists( __CLASS__, 'build_button_presets' ) ) {
@@ -1430,10 +1671,16 @@ class FW_Site_Converter_Stitch {
 		if ( $accent === '' ) { $accent = self::token_color( $tokens, array( 'tertiary', 'secondary', 'on-surface', 'on-background' ) ); }
 		if ( $accent === '' ) { $accent = $ink !== '' ? $ink : '#141414'; }
 
+		// ACCENT = the source's SECONDARY vivid colour. Prefer an `accent`-named semantic; else harvest it
+		// from the gradients (e.g. the yellow half of a green→yellow hero gradient), distinct from Primary —
+		// so the palette stops defaulting the Accent role to a stock colour the source never used.
+		$accent2 = $sem_of( array( 'accent' ) );
+		if ( $accent2 === '' ) { $accent2 = self::color_to_hex( self::scan_gradient_accent( (string) $html, (string) $accent ) ); }
+
 		$add( 'Primary',   $accent );
 		$add( 'Ink',       $ink !== '' ? $ink : '#1a1a1a' );
 		$add( 'Secondary', $pick( array( 'secondary', 'tertiary' ), array( 'secondary' ) ) );
-		$add( 'Accent',    $sem_of( array( 'accent' ) ) );
+		$add( 'Accent',    $accent2 );
 		$add( 'Dark',      $pick( array( 'deep-black', 'black', 'surface-container-lowest' ), array( 'dark' ) ) );
 		$add( 'Muted',     $pick( array( 'muted', 'on-surface-variant' ), array( 'muted' ) ) );
 		$add( 'Light',     $pick( array( 'page-bg', 'background', 'surface', 'white-soft' ), array( 'background', 'surface' ) ) );
@@ -1470,7 +1717,7 @@ class FW_Site_Converter_Stitch {
 	 * Derive ICON BADGE PRESETS (Theme Settings → Components → Icon Badges — the `icon_badge_presets` key,
 	 * the `.iconb-{slug}` tiles read by unysonplus_get_icon_badge_presets()) from the source's icon-in-a-tile
 	 * pattern: an icon (`<svg>` / `<i>`) inside a small, roughly-square container that has a background fill
-	 * (or a ring) and a corner radius — e.g. FreshPaws' feature-card heart/shield/clock in rounded tiles.
+	 * (or a ring) and a corner radius — e.g. the golden fixture's feature-card heart/shield/clock in rounded tiles.
 	 * Walks candidate tiles, compiles their Tailwind → fill / radius / size / border + the inner glyph colour,
 	 * clusters the distinct designs, and appends the top few (named by shape) to the plugin defaults. Same
 	 * DOM→Tailwind-compile→cluster pattern as build_box_presets(). Shape mirrors unysonplus_default_icon_badge_presets():
@@ -1694,20 +1941,20 @@ class FW_Site_Converter_Stitch {
 				$is = self::css_len_to_unit( $logo['icon_size'] );
 				if ( $is ) { $logo_custom['logo_icon_size'] = $is; }
 			}
-			// A colored tile behind the mark (e.g. FreshPaws' green paw tile) — shape inferred from its radius.
+			// A colored tile behind the mark (e.g. the golden fixture's green paw tile) — shape inferred from its radius.
 			if ( $logo['frame'] !== 'none' && $logo['frame_bg'] !== '' ) {
 				$logo_custom['logo_icon_frame']    = in_array( $logo['frame'], array( 'circle', 'squircle', 'rounded', 'square' ), true ) ? $logo['frame'] : 'rounded';
 				$logo_custom['logo_icon_frame_bg'] = $hex( $logo['frame_bg'] );
 			}
 		}
-		// TWO-TONE wordmark residual: a single `color` field can't split "Fresh"(dark)+"Paws"(accent). The base
+		// TWO-TONE wordmark residual: a single `color` field can't split a wordmark's ink part + accent part. The base
 		// tone maps natively above; emit the accent as scoped CSS on the wordmark's trailing text (documented
 		// residual path — header.md logo_custom_css hooks). Best-effort: colors the emphasized run if the theme
 		// wraps it; otherwise it is a no-op (never wrong, never double-applied to a native field).
 		if ( $logo['title_accent_color'] !== '' && $logo['title_accent_color'] !== $title_color ) {
 			$logo_custom['logo_custom_css'] = '.site-title-text .accent,.site-title-text b,.site-title-text strong{color:' . $logo['title_accent_color'] . '}';
 			// SPLIT the wordmark so the scoped CSS above has something to paint: wrap the measured accent run
-			// (e.g. "Paws") in `<span class="accent">`, leaving the ink part bare. The theme prints site_title
+			// (the accent run) in `<span class="accent">`, leaving the ink part bare. The theme prints site_title
 			// RAW inside `.site-title-text` (helpers.php), so this two-tone lockup renders natively — richer than
 			// a single-color `site_title`. Falls back to the plain wordmark when no accent run was measured.
 			$acc = $logo['title_accent_text'];
@@ -1818,7 +2065,13 @@ class FW_Site_Converter_Stitch {
 		// though detect_header already knows the pill/overlay): a rounded-full nav container → 'pill'; a header
 		// pinned (fixed/sticky) with a TRANSPARENT background sitting over the hero → 'transparent-overlay'.
 		$h_design   = ( isset( $hdr['style'] ) && 'pill' === $hdr['style'] ) ? 'pill' : 'classic';
-		$h_overlay  = ! empty( $hdr['sticky'] ) && ! isset( $hstyle['bg'] ); // fixed/sticky + transparent bg = overlay
+		// A pinned header is a TRANSPARENT-OVERLAY when it has no SOLID fill — either no bg at all, a
+		// SEMI-transparent one (`bg-[#020617]/40` = 40% opacity), or a glass/backdrop-blur nav sitting over
+		// the hero. Only a fully-opaque fill = a normal sticky bar. (Was: overlay only when there was NO bg
+		// — so a translucent glass nav was mis-read as plain sticky.)
+		$h_bg      = isset( $hstyle['bg'] ) ? (string) $hstyle['bg'] : '';
+		$h_solid   = $h_bg !== '' && empty( $hstyle['glass'] ) && ! preg_match( '/rgba?\([^)]*[,\/]\s*(0|0?\.\d+)\s*\)/i', $h_bg );
+		$h_overlay = ! empty( $hdr['sticky'] ) && ! $h_solid;
 		$h_behavior = $h_overlay ? 'transparent-overlay' : ( ! empty( $hdr['sticky'] ) ? 'sticky' : 'static' );
 		$values['header_layout'] = array(
 			'header_mode'          => array( 'mode' => 'top', 'top' => array( 'header_design' => array( 'design' => $h_design ) ) ),
@@ -1866,6 +2119,17 @@ class FW_Site_Converter_Stitch {
 		$values['footer_background'] = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => $footer_bg ) ) );
 		$values['footer_text_color'] = $hex( $footer_text );
 		$values['footer_link_color'] = $hex( $footer_text );
+
+		/* --- SITE (body/page) background → the editable Site Background option (General Layout). The
+		   background RESOLVER detected the source's real page canvas — including a `<style> body{background:…}`
+		   an AI page sets that no Tailwind token carries, with oklch/hsl normalized to hex — into the
+		   `background` token. Surface it as the NATIVE, editable `background-pro` option (→ --site-bg-color)
+		   instead of ONLY a baked body rule. The child theme's body fallback reads `var(--site-bg-color, …)`
+		   (no !important), so editing this option takes effect. Only set on a real detected canvas. --- */
+		$site_bg = self::token_color( $tokens, array( 'background', 'surface', 'surface-container-lowest' ) );
+		if ( $site_bg !== '' ) {
+			$values['site_background'] = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => $site_bg ) ) );
+		}
 
 		/* --- footer chrome (padding / top border) → native footer_layout options, from computed styles. --- */
 		$fchrome = self::detect_footer_chrome_styles( (string) $html );
@@ -2300,7 +2564,7 @@ class FW_Site_Converter_Stitch {
 		};
 
 		// BODY — the DOMINANT paragraph font-size: the size carrying the MOST total body text, not a
-		// single "densest paragraph" (one long 18/20px lead-in used to mis-set the whole base — FreshPaws
+		// single "densest paragraph" (one long 18/20px lead-in used to mis-set the whole base — the golden fixture
 		// is 16px base with a few 18–20px leads, so the base was wrongly detected as 20px). Accumulate
 		// text length per rounded-px size; read family/line-height/letter-spacing from the longest
 		// paragraph AT that dominant size.
@@ -2648,7 +2912,7 @@ class FW_Site_Converter_Stitch {
 		// Guard against grabbing the whole nav: a brand wordmark is short (<= 4 words).
 		if ( $txt !== '' && str_word_count( $txt ) <= 4 ) { $out['text'] = $txt; }
 		// The wordmark text color + SIZE + WEIGHT: the deepest element whose text STARTS the wordmark (the first
-		// <span>), plus — for a TWO-TONE wordmark (FreshPaws = "Fresh" dark + "Paws" green) — a later sibling span
+		// <span>), plus — for a TWO-TONE wordmark (an ink part + a later accent part) — a later sibling span
 		// whose color differs = the accent tone. The base `color` maps natively; the accent is a documented
 		// residual (a single color field can't split a wordmark), surfaced as title_accent_color for logo_custom_css.
 		$saw_base = false;
@@ -2665,7 +2929,7 @@ class FW_Site_Converter_Stitch {
 				$saw_base = true;
 			} elseif ( $c !== '' && $out['title_color'] !== '' && $c !== $out['title_color'] && $out['title_accent_color'] === '' ) {
 				$out['title_accent_color'] = $c;  // the second-tone (accent) span color
-				// The accent RUN text (e.g. "Paws" of "FreshPaws"): a proper trailing/embedded substring of the
+				// The accent RUN text (the trailing accent word of a two-tone wordmark): a proper trailing/embedded substring of the
 				// wordmark — so the emit can SPLIT the wordmark markup (ink part + <span class="accent">) and the
 				// scoped logo_custom_css actually paints it. Only keep it when it's a real sub-run (not the whole
 				// wordmark and not empty), so a single-tone wordmark never gets a spurious split.
@@ -2686,7 +2950,7 @@ class FW_Site_Converter_Stitch {
 
 		// Icon: an inline <svg> mark (kept VERBATIM — icon-v2 renders inline SVG via currentColor), plus its
 		// color + an optional colored frame TILE (a wrapper div with a background + rounded corners — the
-		// FreshPaws "green rounded paw tile" pattern). Fall back to a Lucide library id when no inline svg.
+		// the golden fixture "green rounded paw tile" pattern). Fall back to a Lucide library id when no inline svg.
 		$svg = null;
 		foreach ( $brand->getElementsByTagName( 'svg' ) as $s ) { $svg = $s; break; }
 		if ( $svg instanceof DOMElement ) {
@@ -2739,7 +3003,7 @@ class FW_Site_Converter_Stitch {
 	 * Infer the logo frame SHAPE (`circle` | `squircle` | `rounded` | `square`) from a tile's border-radius vs
 	 * its box size. A `%`/`50%` radius or a pill `9999px` is a true CIRCLE. For a FINITE px radius the key is
 	 * that CSS CLAMPS border-radius to HALF the box (`min(r, box/2)`), so a radius ≥ 50% of the box renders as
-	 * a FULL CIRCLE — e.g. FreshPaws' `rounded-2xl` = 24px on a 40px tile (ratio 0.6) clamps to a circle, so it
+	 * a FULL CIRCLE — e.g. the golden fixture's `rounded-2xl` = 24px on a 40px tile (ratio 0.6) clamps to a circle, so it
 	 * IS a circle, not a squircle. A large-but-sub-half corner (`rounded-xl`/`2xl`/`3xl`, ~0.22–0.5 ratio) is
 	 * the app-icon **squircle** look; a small finite radius → rounded; `0`/absent → square. Box unknown: a
 	 * moderate px radius (≥10px) reads as squircle, a small one as rounded.
@@ -2813,6 +3077,20 @@ class FW_Site_Converter_Stitch {
 		return '';
 	}
 
+	/** The ELEMENT that carries a Lucide/iconify icon inside $node — an `<iconify-icon icon="lucide:…">`,
+	 *  an `<i data-lucide>`/`<i class="lucide-…">`, or an inline `<svg>` — so its class + computed colour +
+	 *  chip can be read (a web-component icon has no light-DOM <svg>). Returns the DOMElement or null. */
+	private static function lucide_icon_el( $node ) {
+		if ( ! ( $node instanceof DOMElement ) ) { return null; }
+		foreach ( $node->getElementsByTagName( '*' ) as $e ) {
+			if ( trim( (string) $e->getAttribute( 'icon' ) ) !== '' ) { return $e; }
+			if ( trim( (string) $e->getAttribute( 'data-lucide' ) ) !== '' ) { return $e; }
+			if ( preg_match( '/\blucide-[a-z0-9-]+/', self::cls( $e ) ) ) { return $e; }
+			if ( 'svg' === strtolower( $e->tagName ) ) { return $e; }
+		}
+		return null;
+	}
+
 	/** The footer's copyright line (a © / "rights reserved" text node), or '' if none. */
 	private static function detect_footer_copyright( $html ) {
 		$dom = self::load_dom( $html );
@@ -2882,21 +3160,27 @@ class FW_Site_Converter_Stitch {
 	 */
 	private static function social_network_of( $a, $href ) {
 		$map = self::social_network_map();
-		// Haystack: the <a>'s own class/aria/title + every icon descendant's class + <use> hrefs.
+		// Haystack: the <a>'s own class/aria/title/icon + every descendant's class + icon-name attribute
+		// (`icon="lucide:twitter"` / `data-lucide` / `<use href>`). The `icon=` attribute is how an iconify
+		// `<Icon icon="lucide:twitter">` / `<iconify-icon>` carries the network — a rendered iconify <svg>
+		// has NO "twitter" in its class, so without reading `icon=` the footer socials went undetected and
+		// the theme's default profiles (Facebook…) stayed. `:` → `-` so the prefix match below fires.
+		$icon_attr = function ( $el ) { $v = strtolower( trim( (string) $el->getAttribute( 'icon' ) ) ); return $v !== '' ? ' ' . str_replace( ':', '-', $v ) : ''; };
 		$hay = ' ' . self::cls( $a ) . ' ' . strtolower( (string) $a->getAttribute( 'aria-label' ) )
-			. ' ' . strtolower( (string) $a->getAttribute( 'title' ) ) . ' ';
-		foreach ( array( 'svg', 'i', 'span', 'use' ) as $t ) {
-			foreach ( $a->getElementsByTagName( $t ) as $node ) {
-				$hay .= ' ' . self::cls( $node );
-				if ( $t === 'use' ) { $hay .= ' ' . strtolower( (string) $node->getAttribute( 'href' ) ) . ' ' . strtolower( (string) $node->getAttribute( 'xlink:href' ) ); }
-			}
+			. ' ' . strtolower( (string) $a->getAttribute( 'title' ) ) . $icon_attr( $a ) . ' ';
+		foreach ( $a->getElementsByTagName( '*' ) as $node ) {
+			$hay .= ' ' . self::cls( $node ) . $icon_attr( $node );
+			$dl = strtolower( trim( (string) $node->getAttribute( 'data-lucide' ) ) );
+			if ( $dl !== '' ) { $hay .= ' lucide-' . $dl; }
+			if ( strtolower( $node->tagName ) === 'use' ) { $hay .= ' ' . strtolower( (string) $node->getAttribute( 'href' ) ) . ' ' . strtolower( (string) $node->getAttribute( 'xlink:href' ) ); }
 		}
 		$hay = ' ' . preg_replace( '/\s+/', ' ', $hay ) . ' ';
 		foreach ( $map as $key => $icon ) {
 			$word = preg_quote( $key, '/' );
-			// A network icon class prefix (lucide-/fa-/fab-/bi-/icon-/ion-/social-), OR the network as a
-			// standalone word in a class/aria-label (only for names ≥4 chars, so a stray "x" can't match).
-			if ( preg_match( '/(?:lucide-|fa-|fab-|fa-brands.|bi-|icon-|ion-|social-)' . $word . '\b/', $hay )
+			// A network icon class/name prefix (lucide-/fa-/fab-/bi-/icon-/ion-/social-/simple-icons-/si-),
+			// OR the network as a standalone word in a class/aria-label (only for names ≥4 chars, so a stray
+			// "x" can't match).
+			if ( preg_match( '/(?:lucide-|fa-|fab-|fa-brands.|bi-|icon-|ion-|social-|simple-icons-|si-)' . $word . '\b/', $hay )
 				|| ( strlen( $key ) >= 4 && preg_match( '/\b' . $word . '\b/', $hay ) ) ) {
 				$k = ( $key === 'x-twitter' ) ? 'twitter' : $key;
 				return array( 'key' => $k, 'icon' => $icon );
@@ -2914,7 +3198,7 @@ class FW_Site_Converter_Stitch {
 	/**
 	 * Footer social links → social_profiles [{ name, link, new_tab, icon }], deduped by network. Detects each
 	 * link's network by its ICON (social_network_of), so placeholder `href="#"`/empty/missing hrefs still map
-	 * (the FreshPaws footer's `<a href="#"><svg class="lucide lucide-facebook">` pattern). The profile `link`
+	 * (the golden fixture footer's `<a href="#"><svg class="lucide lucide-facebook">` pattern). The profile `link`
 	 * is the real URL when present, else `#` — the theme's social element SKIPS an EMPTY link, so `#` keeps
 	 * the icon rendered.
 	 */
@@ -3781,14 +4065,37 @@ class FW_Site_Converter_Stitch {
 			// Ignore a transparent / fully-see-through footer (no real fill to reproduce).
 			if ( $c !== '' && stripos( $c, 'transparent' ) === false && ! preg_match( '/rgba\([^)]*,\s*0\s*\)/i', $c ) ) { $out['bg'] = $c; }
 		}
-		if ( preg_match( '/(?:^|;)\s*color\s*:\s*([^;]+)/i', $cs, $m ) ) { $out['text'] = trim( $m[1] ); }
+		// Footer TEXT colour: the <footer> element's OWN computed colour is usually just the inherited body
+		// ink (near-white on a dark footer), NOT the muted colour the footer content actually uses. Sample
+		// the dominant colour across the footer's real body text (links / list items / paragraphs) instead
+		// — the source's slate-400 links, not the inherited white. Fall back to the footer's own colour.
+		$text = self::sample_text_color( $footer );
+		if ( $text === '' && preg_match( '/(?:^|;)\s*color\s*:\s*([^;]+)/i', $cs, $m ) ) { $text = trim( $m[1] ); }
+		$out['text'] = $text;
 		return $out;
+	}
+
+	/** The DOMINANT computed text colour across an element's real body text (links, list items, paragraphs),
+	 *  from data-sc-cs. '' when nothing carries a computed colour. Used for the footer's default text colour. */
+	private static function sample_text_color( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		$counts = array();
+		foreach ( array( 'a', 'li', 'p' ) as $tg ) {
+			foreach ( $el->getElementsByTagName( $tg ) as $t ) {
+				$c = self::sc_css( $t, 'color' );
+				if ( $c === '' || stripos( $c, 'transparent' ) !== false ) { continue; }
+				$counts[ $c ] = ( isset( $counts[ $c ] ) ? $counts[ $c ] : 0 ) + 1;
+			}
+		}
+		if ( ! $counts ) { return ''; }
+		arsort( $counts );
+		return (string) key( $counts );
 	}
 
 	/**
 	 * Read a padding side ('top'|'bottom') from an element's computed style, handling BOTH the `padding-top`
 	 * longhand AND the `padding` shorthand (`padding:T R B L` / `T V` / `T RL B` — the capture often emits
-	 * the shorthand, e.g. FreshPaws footer `padding:64px 0px 32px`). Returns the length string or ''.
+	 * the shorthand, e.g. the golden fixture footer `padding:64px 0px 32px`). Returns the length string or ''.
 	 */
 	private static function sc_pad( $el, $side ) {
 		$long = self::sc_css( $el, 'padding-' . $side );
@@ -4294,7 +4601,7 @@ class FW_Site_Converter_Stitch {
 	 * weight it? Conservative — returns false (⇒ equal columns) unless there's a clear signal, so we NEVER
 	 * default to a wide first column. Signals: the brand column carries a Tailwind `col-span-{2..}` (it spans
 	 * multiple grid tracks), or the footer grid's captured `grid-template-columns` first track is ≥1.4x the
-	 * median of the others. FreshPaws is `grid-cols-4` (equal, no span) ⇒ false ⇒ equal split.
+	 * median of the others. the golden fixture is `grid-cols-4` (equal, no span) ⇒ false ⇒ equal split.
 	 */
 	private static function detect_footer_wide_brand( $html, $count ) {
 		if ( (int) $count < 3 ) { return false; }
@@ -4404,7 +4711,7 @@ class FW_Site_Converter_Stitch {
 		// Theme NAME = the site's BRAND, not the page role. The URL flow passes the generic page title
 		// 'Home', which produced a "Home (Child)" theme. When the passed title is empty or the 'Home'
 		// default, derive the brand from the source <title> (the segment before a  |  –  —  ·  separator)
-		// so the theme is named e.g. "FreshPaws" instead of "Home".
+		// so the theme is named e.g. "the golden fixture" instead of "Home".
 		$passed = trim( (string) $title );
 		if ( $passed === '' || 0 === strcasecmp( $passed, 'Home' ) ) {
 			$raw   = trim( (string) self::title_from_html( (string) $html, '' ) );
@@ -4904,6 +5211,19 @@ class FW_Site_Converter_Stitch {
 	public static $skip_sections = array();
 	public static $only_sections = array();
 
+	/**
+	 * STRUCTURAL-DROP LOG — the coverage instrument. Every content node the recognizer walker did NOT
+	 * claim (and whose subtree produced no blocks) is recorded here as { tag, class, kind, text }, where
+	 * kind is 'salvaged-text' / 'salvaged-image' (rescued by the safety net) or 'decorative' (no content,
+	 * intentionally not emitted). Surfaced as conversion-drops.json so each conversion tells us EXACTLY
+	 * what pattern to teach the converter next, ranked by frequency — instead of finding gaps by hand.
+	 * Reset at the start of every html_to_mapping().
+	 */
+	public static $drop_log = array();
+
+	/** Read + reset the accumulated drop log (called once the page tree is built). */
+	public static function get_drop_log() { return self::$drop_log; }
+
 	/** Collect `selector { … max-width:VAL … }` rules from the source's <style> blocks. */
 	private static function parse_style_max_width( $html ) {
 		$out = array();
@@ -5159,10 +5479,51 @@ class FW_Site_Converter_Stitch {
 	 */
 	private static function section_bg_image( $node ) {
 		if ( ! ( $node instanceof DOMElement ) ) { return array(); }
+		$scls   = ' ' . strtolower( self::cls( $node ) ) . ' ';
+		$hero   = (bool) preg_match( '/\b(h-screen|min-h-screen)\b|\bh-\[[0-9]+s?vh\]|\bmin-h-\[[0-9]+s?vh\]/', $scls );
+		// Vertical placement of the content = the content layer's flex alignment (justify-end → bottom).
+		$valign = 'middle';
+		$whole  = strtolower( $node->ownerDocument ? (string) $node->ownerDocument->saveHTML( $node ) : '' );
+		if ( strpos( $whole, 'justify-end' ) !== false )      { $valign = 'bottom'; }
+		elseif ( strpos( $whole, 'justify-start' ) !== false ) { $valign = 'top'; }
+		$ret = function ( $src ) use ( $hero, $valign ) { return array( 'src' => $src, 'hero' => $hero, 'valign' => $valign ); };
+
+		// A real image URL out of a computed `background-image` layer list (skips gradients + data:svg).
+		$url_of = function ( $bg ) {
+			if ( ! is_string( $bg ) || stripos( $bg, 'url(' ) === false ) { return ''; }
+			if ( preg_match( '/url\(\s*(["\']?)([^"\')]+)\1\s*\)/i', $bg, $m ) ) {
+				$u = trim( $m[2] );
+				return ( $u === '' || stripos( $u, 'data:image/svg' ) === 0 || stripos( $u, 'data:image/gif' ) === 0 ) ? '' : $u;
+			}
+			return '';
+		};
+
+		// (1) CSS `background-image:url()` on the SECTION ITSELF (computed, from data-sc-cs) — the most
+		// common hero pattern (`<section style="background-image:url(…)">` / a `bg-[url(…)]` utility). The
+		// old code only found <img> tags, so a CSS-background hero was missed and rendered as a blank band.
+		$own = $url_of( self::sc_css( $node, 'background-image' ) );
+		if ( $own !== '' ) { return $ret( $own ); }
+
+		// (2) A FULL-BLEED layer (absolute/fixed inset-0, by class OR computed position) whose computed
+		// `background-image` is a url() — the `<div class="absolute inset-0" style="background-image:url(…)">`
+		// bg-layer pattern. Bounded to descendants that actually cover the band.
+		foreach ( $node->getElementsByTagName( '*' ) as $el ) {
+			if ( ! ( $el instanceof DOMElement ) ) { continue; }
+			$ecls  = ' ' . strtolower( self::cls( $el ) ) . ' ';
+			$bleed = ( ( strpos( $ecls, ' absolute ' ) !== false || strpos( $ecls, ' fixed ' ) !== false ) && strpos( $ecls, 'inset-0' ) !== false );
+			if ( ! $bleed ) {
+				$pos = self::sc_css( $el, 'position' );
+				if ( $pos !== 'absolute' && $pos !== 'fixed' ) { continue; }
+			}
+			$bg = $url_of( self::sc_css( $el, 'background-image' ) );
+			if ( $bg !== '' ) { return $ret( $bg ); }
+		}
+
+		// (3) An <img object-cover/object-fill> inside a full-bleed background LAYER (absolute/fixed inset-0),
+		// not the content — the original detection path.
 		foreach ( $node->getElementsByTagName( 'img' ) as $img ) {
 			$icls = ' ' . strtolower( self::cls( $img ) ) . ' ';
 			if ( strpos( $icls, 'object-cover' ) === false && strpos( $icls, 'object-fill' ) === false ) { continue; }
-			// The img must live inside a full-bleed background LAYER (absolute/fixed + inset-0), not the content.
 			$anc = $img->parentNode instanceof DOMElement ? $img->parentNode : null; $is_bg = false; $depth = 0;
 			while ( $anc instanceof DOMElement && $anc !== $node && $depth < 4 ) {
 				$acls = ' ' . strtolower( self::cls( $anc ) ) . ' ';
@@ -5173,14 +5534,7 @@ class FW_Site_Converter_Stitch {
 			$src = trim( (string) $img->getAttribute( 'src' ) );
 			if ( $src === '' ) { $src = trim( (string) $img->getAttribute( 'data-src' ) ); }
 			if ( $src === '' || strpos( $src, 'data:image/svg' ) === 0 ) { continue; }
-			$scls = ' ' . strtolower( self::cls( $node ) ) . ' ';
-			$hero = (bool) preg_match( '/\b(h-screen|min-h-screen)\b|\bh-\[[0-9]+s?vh\]|\bmin-h-\[[0-9]+s?vh\]/', $scls );
-			// Vertical placement of the content = the content layer's flex alignment (justify-end → bottom).
-			$valign = 'middle';
-			$whole  = strtolower( $node->ownerDocument ? (string) $node->ownerDocument->saveHTML( $node ) : '' );
-			if ( strpos( $whole, 'justify-end' ) !== false )      { $valign = 'bottom'; }
-			elseif ( strpos( $whole, 'justify-start' ) !== false ) { $valign = 'top'; }
-			return array( 'src' => $src, 'hero' => $hero, 'valign' => $valign );
+			return $ret( $src );
 		}
 		return array();
 	}
@@ -5231,9 +5585,12 @@ class FW_Site_Converter_Stitch {
 	}
 
 	private static function section_roots( $body ) {
-		$main = null;
-		foreach ( $body->getElementsByTagName( 'main' ) as $m ) { $main = $m; break; }
-		$scope = $main ? $main : $body;
+		// Scan from <body>, not <main>. walk_section_roots() dives THROUGH <main> as a transparent
+		// wrapper (it only claims <section> + hero <header> and skips nav/footer), so a body scope still
+		// finds every in-<main> section AND catches a hero <header> that sits OUTSIDE <main> — the common
+		// AI-page shape `body > nav, header(hero + full-bleed bg video/image), main > sections…`. Scoping
+		// to <main> silently dropped that hero band (and its background video) whenever a <main> existed.
+		$scope = $body;
 		// The masthead header (so a hero <header> that ISN'T the masthead can be folded in as a body band).
 		$masthead      = $body->ownerDocument ? self::header_root( $body->ownerDocument ) : null;
 		$masthead_path = $masthead ? (string) $masthead->getNodePath() : '';
@@ -5314,6 +5671,15 @@ class FW_Site_Converter_Stitch {
 			function ( $el ) { return self::is_testimonials_grid( $el ); },
 			function ( $el ) { $rows = self::testimonials_items( $el ); return count( $rows ) >= 2 ? array( 't' => 'testimonials', 'items' => $rows ) : null; }
 		);
+		// A grid of IMAGE TILES (each cell a wrapper around an <img>, optional caption overlay, no headings)
+		// → the native `gallery` shortcode. Sits ABOVE card_grid so a photo grid becomes a real gallery
+		// instead of loose media_image blocks. Tight matcher (all cells carry an <img>, no headings) so a
+		// content card grid still falls through to card_grid (90). Carries each tile's col-span so a
+		// `md:col-span-2` feature tile keeps its wider slot.
+		self::register_recognizer( 'image_grid', 91,
+			function ( $el ) { return self::is_image_grid( $el ); },
+			function ( $el ) { return self::image_grid_build( $el ); }
+		);
 		// A grid/flex of uniform cards → one "columns" row (each cell → icon_box / text / code).
 		self::register_recognizer( 'card_grid', 90,
 			function ( $el ) { return self::is_card_grid( $el ); },
@@ -5391,8 +5757,25 @@ class FW_Site_Converter_Stitch {
 				// extractor's videoBlockOf `bg` flag.
 				$vcls   = strtolower( (string) $el->getAttribute( 'class' ) );
 				$vstyle = strtolower( (string) $el->getAttribute( 'style' ) );
-				$is_bg  = ( preg_match( '/\b(absolute|fixed)\b/', $vcls ) || preg_match( '/position\s*:\s*(absolute|fixed)/', $vstyle ) )
-					&& ( preg_match( '/\b(object-cover|inset-0)\b/', $vcls ) || preg_match( '/object-fit\s*:\s*cover/', $vstyle ) );
+				// Does the video FILL its box (cover)? object-cover / object-fit:cover, or a w-full+h-full pair.
+				$covers = preg_match( '/\b(object-cover)\b/', $vcls ) || preg_match( '/object-fit\s*:\s*cover/', $vstyle )
+					|| ( preg_match( '/\bw-full\b/', $vcls ) && preg_match( '/\bh-full\b/', $vcls ) );
+				// Is it positioned as a background layer — either ITSELF absolute/fixed, or (the common pattern)
+				// a cover-fill video INSIDE an `absolute/fixed inset-0` wrapper? Walk ancestors + read computed
+				// position (data-sc-cs) so `<div class="absolute inset-0"><video class="w-full h-full object-cover">`
+				// is caught, not just `<video class="absolute inset-0 object-cover">`. Mirrors section_bg_image.
+				$self_abs = preg_match( '/\b(absolute|fixed)\b/', $vcls ) || preg_match( '/position\s*:\s*(absolute|fixed)/', $vstyle )
+					|| in_array( self::sc_css( $el, 'position' ), array( 'absolute', 'fixed' ), true );
+				$anc_abs = false;
+				$anc = $el->parentNode instanceof DOMElement ? $el->parentNode : null; $vd = 0;
+				while ( $anc instanceof DOMElement && $vd < 4 ) {
+					$acls = ' ' . strtolower( self::cls( $anc ) ) . ' ';
+					$apos = self::sc_css( $anc, 'position' );
+					$abs  = ( strpos( $acls, ' absolute ' ) !== false || strpos( $acls, ' fixed ' ) !== false || $apos === 'absolute' || $apos === 'fixed' );
+					if ( $abs && ( strpos( $acls, 'inset-0' ) !== false || $apos === 'absolute' || $apos === 'fixed' ) ) { $anc_abs = true; break; }
+					$anc = $anc->parentNode; $vd++;
+				}
+				$is_bg = $covers && ( $self_abs || $anc_abs );
 				return array(
 					't' => 'video', 'role' => 'video', 'mode' => 'self_hosted', 'bg' => (bool) $is_bg,
 					'src' => $src, 'webm' => $webm, 'poster' => (string) $el->getAttribute( 'poster' ),
@@ -6517,6 +6900,14 @@ class FW_Site_Converter_Stitch {
 				$claimed = true;
 				break;
 			}
+			if ( ! $claimed && 'svg' === $tag ) {
+				// An unclaimed <svg> is an icon / decoration (a real drawing is claimed by svg_draw above).
+				// Don't walk its internals — else its <title>/<path>/<g> get salvaged as stray text. Treat it
+				// as one leaf so the safety net records it (decorative) and the VISIBLE label on its parent
+				// span is what gets rescued, not the svg's accessibility title.
+				self::salvage_dropped( $child, $tag, $blocks );
+				continue;
+			}
 			if ( ! $claimed ) {
 				$before = count( $blocks );
 				self::collect_blocks( $child, $blocks, $rules );
@@ -6561,9 +6952,107 @@ class FW_Site_Converter_Stitch {
 					// carry its animation intent onto the produced blocks that don't already carry their own.
 					$wai = self::anim_intent( $child );
 					if ( '' !== $wai ) { for ( $wi = $before, $wt = count( $blocks ); $wi < $wt; $wi++ ) { if ( empty( $blocks[ $wi ]['anim'] ) ) { $blocks[ $wi ]['anim'] = $wai; } } }
+				} else {
+					// SAFETY NET — this unclaimed node's whole subtree produced NO blocks, so it would be
+					// SILENTLY DROPPED here (the "elements went missing" class of bug). Record the miss for the
+					// drop report, and rescue any real content it carries as an editable block so nothing
+					// user-visible vanishes. Purely-decorative nodes (no text, no media) are recorded but NOT
+					// emitted, so blur blobs / spacers / empty overlays still fall away.
+					self::salvage_dropped( $child, $tag, $blocks );
 				}
 			}
 		}
+	}
+
+	/**
+	 * Safety net for an unclaimed content node whose subtree produced nothing (called from collect_blocks).
+	 * RESCUE any real content it carries as an editable block — a content <img> → media_image, substantial
+	 * visible text → text_block — so nothing user-visible is silently dropped; and RECORD the miss in the
+	 * drop log (always, incl. purely-decorative nodes) so the coverage report can rank the next detector to
+	 * build. Decorative nodes (no text, no media — blur blobs, spacers, empty overlays) are recorded but NOT
+	 * emitted. Conservative on text (needs a real word) so the output isn't polluted with stray glyphs.
+	 *
+	 * @param DOMNode $child
+	 * @param string  $tag
+	 * @param array   $blocks by-ref
+	 */
+	private static function salvage_dropped( $child, $tag, array &$blocks ) {
+		if ( ! ( $child instanceof DOMElement ) ) { return; }
+
+		// A real content image anywhere in the subtree (skip data-URIs + tracking pixels).
+		$img = null;
+		foreach ( $child->getElementsByTagName( 'img' ) as $im ) {
+			$src = trim( (string) $im->getAttribute( 'src' ) );
+			if ( $src === '' ) { $src = trim( (string) $im->getAttribute( 'data-src' ) ); }
+			if ( $src !== '' && stripos( $src, 'data:' ) !== 0 ) { $img = $im; break; }
+		}
+
+		// The node's OWN DIRECT text (immediate text-node children only) — NOT flattened descendant text.
+		// This is the key to not double-capturing: a container like `<div class="grid"><div>A</div>…` has
+		// no direct text (its text lives in children, which the walker already visited), so we don't emit a
+		// concatenated "ABC" blob for it; but a genuine leaf like `<span><svg/>Unity</span>` still yields
+		// its direct label "Unity". "Real" = a 2+ letter word (skips lone glyphs ×/→/• and digit spacers).
+		$direct = '';
+		foreach ( $child->childNodes as $cn ) {
+			if ( XML_TEXT_NODE === $cn->nodeType ) { $direct .= $cn->nodeValue; }
+		}
+		$txt     = trim( preg_replace( '/\s+/', ' ', $direct ) );
+		$hasWord = (bool) preg_match( '/[\p{L}]{2,}/u', $txt );
+
+		$kind = 'decorative';
+		if ( $img ) {
+			$blocks[] = array( 't' => 'image', 'role' => 'image', 'html' => self::img_html( $img ) );
+			$kind = 'salvaged-image';
+			if ( $hasWord ) { // a captioned image → keep the caption as a text block too
+				$blocks[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $child ), 'text' => $txt, 'html' => '<p>' . esc_html( $txt ) . '</p>' );
+			}
+		} elseif ( $hasWord ) {
+			$blocks[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $child ), 'cs' => (string) $child->getAttribute( 'data-sc-cs' ), 'text' => $txt, 'html' => '<p>' . esc_html( $txt ) . '</p>' );
+			$kind = 'salvaged-text';
+		}
+
+		if ( count( self::$drop_log ) < 800 ) {
+			self::$drop_log[] = array(
+				'tag'   => $tag,
+				'class' => mb_substr( (string) self::cls( $child ), 0, 160 ),
+				'kind'  => $kind,
+				'text'  => mb_substr( $txt, 0, 80 ),
+			);
+		}
+	}
+
+	/**
+	 * Summarize the drop log into a coverage report ranked by frequency: totals split by kind (how much
+	 * content the safety net had to rescue vs. decorative noise) and the top recurring dropped patterns
+	 * (tag + class signature + a text sample) so the next detector to build is obvious and data-driven.
+	 *
+	 * @return array
+	 */
+	private static function build_drop_report() {
+		$log      = self::$drop_log;
+		$by_kind  = array();
+		$patterns = array();
+		foreach ( $log as $d ) {
+			$k = isset( $d['kind'] ) ? $d['kind'] : 'decorative';
+			$by_kind[ $k ] = ( isset( $by_kind[ $k ] ) ? $by_kind[ $k ] : 0 ) + 1;
+			// Signature = tag + first few class tokens, so near-identical drops (e.g. every brand <span> in
+			// a logo strip) collapse into one ranked pattern.
+			$cls  = preg_split( '/\s+/', (string) ( isset( $d['class'] ) ? $d['class'] : '' ) );
+			$sig  = $d['tag'] . '|' . implode( ' ', array_slice( array_filter( $cls ), 0, 4 ) );
+			if ( ! isset( $patterns[ $sig ] ) ) {
+				$patterns[ $sig ] = array( 'count' => 0, 'tag' => $d['tag'], 'class' => $d['class'], 'kind' => $k, 'sample' => $d['text'] );
+			}
+			$patterns[ $sig ]['count']++;
+		}
+		uasort( $patterns, function ( $a, $b ) { return $b['count'] - $a['count']; } );
+		return array(
+			'total'        => count( $log ),
+			'rescued'      => ( isset( $by_kind['salvaged-text'] ) ? $by_kind['salvaged-text'] : 0 ) + ( isset( $by_kind['salvaged-image'] ) ? $by_kind['salvaged-image'] : 0 ),
+			'decorative'   => isset( $by_kind['decorative'] ) ? $by_kind['decorative'] : 0,
+			'by_kind'      => $by_kind,
+			'top_patterns' => array_slice( array_values( $patterns ), 0, 40 ),
+			'items'        => array_slice( $log, 0, 200 ),
+		);
 	}
 
 	/**
@@ -6706,13 +7195,99 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** A container that's just a strip of images (≥2 imgs, no headings/cards) — a logo / "trusted by" row. */
-	private static function is_logo_strip( $el ) {
+	/** A container's direct-child IMAGE TILES: each a wrapper (div/a/figure/li) around a real <img>. */
+	private static function image_grid_tiles( $el ) {
+		$tiles = array();
+		if ( ! ( $el instanceof DOMElement ) ) { return $tiles; }
+		foreach ( $el->childNodes as $ch ) {
+			if ( XML_ELEMENT_NODE !== $ch->nodeType ) { continue; }
+			if ( ! in_array( strtolower( $ch->tagName ), array( 'div', 'a', 'figure', 'li' ), true ) ) { continue; }
+			$img = $ch->getElementsByTagName( 'img' )->item( 0 );
+			if ( ! $img ) { continue; }
+			$src = trim( (string) $img->getAttribute( 'src' ) );
+			if ( '' === $src ) { $src = trim( (string) $img->getAttribute( 'data-src' ) ); }
+			if ( '' === $src || stripos( $src, 'data:' ) === 0 ) { continue; }
+			$tiles[] = array( 'el' => $ch, 'img' => $img, 'src' => $src );
+		}
+		return $tiles;
+	}
+
+	/**
+	 * Is $el a GALLERY grid — a grid/flex container whose children are ≥3 uniform image tiles (each a
+	 * wrapper around an <img>), with no headings? Tight so a content card grid (icon+heading+text) never
+	 * qualifies. The tiles must be the clear majority of the container's element children (a real photo
+	 * grid), not one stray image among text blocks.
+	 */
+	private static function is_image_grid( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
-		if ( $el->getElementsByTagName( 'img' )->length < 2 ) { return false; }
+		$c = ' ' . self::cls( $el ) . ' ';
+		$is_grid = strpos( $c, ' grid ' ) !== false || strpos( $c, 'grid-cols' ) !== false
+			|| preg_match( '/\bflex\b/', $c ) || in_array( self::sc_css( $el, 'display' ), array( 'grid', 'flex' ), true );
+		if ( ! $is_grid ) { return false; }
 		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
 			if ( $el->getElementsByTagName( $h )->length > 0 ) { return false; }
 		}
-		return true;
+		$tiles = self::image_grid_tiles( $el );
+		if ( count( $tiles ) < 3 ) { return false; }
+		$child_els = 0;
+		foreach ( $el->childNodes as $ch ) { if ( XML_ELEMENT_NODE === $ch->nodeType ) { $child_els++; } }
+		return count( $tiles ) >= max( 3, (int) ceil( $child_els * 0.7 ) );
+	}
+
+	/** Build the gallery block from an image-tile grid: { images:[{url,alt,span}], html } (span = the
+	 *  tile's col-span so a `md:col-span-2` tile keeps a wider slot in the mapped grid). */
+	private static function image_grid_build( $el ) {
+		$out = array();
+		foreach ( self::image_grid_tiles( $el ) as $t ) {
+			$span = 1;
+			$tc   = ' ' . self::cls( $t['el'] ) . ' ';
+			if ( preg_match( '/(?:^|\s)(?:[a-z]{2}:)?col-span-([2-6])(?:\s|$)/', $tc, $m ) ) { $span = (int) $m[1]; }
+			$out[] = array(
+				'url'  => $t['src'],
+				'alt'  => trim( (string) $t['img']->getAttribute( 'alt' ) ),
+				'span' => $span,
+			);
+		}
+		if ( count( $out ) < 3 ) { return null; } // let it fall through / be salvaged
+		$doc  = $el->ownerDocument;
+		$html = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) ) : '';
+		return array( 't' => 'gallery', 'role' => 'gallery', 'images' => $out, 'html' => $html );
+	}
+
+	private static function is_logo_strip( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		// A logo strip is chrome (brand marks in a row), never a content section — no headings inside.
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
+			if ( $el->getElementsByTagName( $h )->length > 0 ) { return false; }
+		}
+		// Classic: ≥2 <img> brand marks.
+		if ( $el->getElementsByTagName( 'img' )->length >= 2 ) { return true; }
+		// Inline-SVG / icon-font brand strip: ≥3 sibling items, each an icon + a short brand LABEL
+		// (`<span><svg/> Unity</span>` ×5 — the openhero/Tailwind "Trusted by" pattern). The label
+		// requirement separates a real logo row from a label-less social-icon row; the ≥3 count keeps a
+		// 1-2-icon accent from matching. Was image-only, so these strips were dropped (only the labels
+		// survived, via the safety net) instead of becoming a native logo_grid.
+		return self::logo_strip_icon_items( $el ) >= 3;
+	}
+
+	/**
+	 * Count a strip's icon+label brand items — direct children each carrying exactly one brand icon (inline
+	 * <svg> or an icon-font <i>) plus a SHORT text label (a brand name), and no button / heading / sentence.
+	 * The signal that a flex row is a "trusted by" logo strip rather than a nav / social row / feature list.
+	 */
+	private static function logo_strip_icon_items( $el ) {
+		$n = 0;
+		foreach ( $el->childNodes as $ch ) {
+			if ( XML_ELEMENT_NODE !== $ch->nodeType ) { continue; }
+			if ( ! in_array( strtolower( $ch->tagName ), array( 'span', 'div', 'a', 'li' ), true ) ) { continue; }
+			if ( ( $ch->getElementsByTagName( 'svg' )->length + $ch->getElementsByTagName( 'i' )->length ) < 1 ) { continue; }
+			if ( $ch->getElementsByTagName( 'button' )->length > 0 ) { continue; }
+			$txt = trim( preg_replace( '/\s+/', ' ', (string) self::text_no_icons( $ch ) ) );
+			$len = mb_strlen( $txt );
+			if ( $len < 2 || $len > 40 ) { continue; } // a short brand label — not empty, not a sentence
+			$n++;
+		}
+		return $n;
 	}
 
 	/** Extract a logo strip's marks (each <img> → { url, name, link_url, link_target, svg }) in document order. */
@@ -6739,13 +7314,36 @@ class FW_Site_Converter_Stitch {
 			}
 			$out[] = array( 'url' => $src, 'name' => $name, 'link_url' => $link, 'link_target' => $target, 'svg' => '' );
 		}
+		// Inline-SVG / icon brand strip (no <img>): each sibling item's brand icon svg + its text label.
+		if ( empty( $out ) ) {
+			foreach ( $el->childNodes as $ch ) {
+				if ( XML_ELEMENT_NODE !== $ch->nodeType ) { continue; }
+				if ( ! in_array( strtolower( $ch->tagName ), array( 'span', 'div', 'a', 'li' ), true ) ) { continue; }
+				$sv   = $ch->getElementsByTagName( 'svg' )->item( 0 );
+				$svg  = ( $sv && $ch->ownerDocument ) ? self::strip_cs( trim( (string) $ch->ownerDocument->saveHTML( $sv ) ) ) : '';
+				$name = trim( preg_replace( '/\s+/', ' ', (string) self::text_no_icons( $ch ) ) );
+				if ( $svg === '' && $name === '' ) { continue; }
+				$link = ''; $target = '_blank';
+				if ( strtolower( $ch->tagName ) === 'a' ) {
+					$link = trim( (string) $ch->getAttribute( 'href' ) );
+					if ( (string) $ch->getAttribute( 'target' ) === '_self' ) { $target = '_self'; }
+				} else {
+					$a = $ch->getElementsByTagName( 'a' )->item( 0 );
+					if ( $a ) { $link = trim( (string) $a->getAttribute( 'href' ) ); }
+				}
+				$out[] = array( 'url' => '', 'name' => $name, 'link_url' => $link, 'link_target' => $target, 'svg' => $svg );
+			}
+		}
 		return $out;
 	}
 
-	/** Build the logo-strip block: a native `logo_grid` when ≥2 logos extract, else the verbatim strip. */
+	/** Build the logo-strip block: a native `logo_grid` when ≥2 VISUAL logos (svg or img) extract, else the
+	 *  verbatim strip. (A name-only extraction — icon-font with no resolvable mark — falls to verbatim.) */
 	private static function logo_strip_build( $el ) {
-		$logos = self::logo_strip_items( $el );
-		if ( count( $logos ) >= 2 ) {
+		$logos  = self::logo_strip_items( $el );
+		$visual = 0;
+		foreach ( $logos as $l ) { if ( ! empty( $l['svg'] ) || ! empty( $l['url'] ) ) { $visual++; } }
+		if ( $visual >= 2 ) {
 			return array( 't' => 'logo_grid', 'role' => 'logo_grid', 'logos' => $logos );
 		}
 		// Fallback (NOTHING DROPPED): keep the strip verbatim if no logos could be extracted.
@@ -7178,7 +7776,7 @@ class FW_Site_Converter_Stitch {
 		if ( ! $heading ) { return null; } // no title → not an icon-card
 
 		// Icon: first material-symbol span, else first <svg>.
-		$icon = ''; $custom_icon = ''; $icon_box_cls = ''; $icon_box_cs = ''; $icon_cls = ''; $icon_chip_cls = ''; $icon_badge = ''; $icon_badge_color = ''; $icon_chip_cs = '';
+		$icon = ''; $custom_icon = ''; $icon_box_cls = ''; $icon_box_cs = ''; $icon_cls = ''; $icon_chip_cls = ''; $icon_badge = ''; $icon_badge_color = ''; $icon_chip_cs = ''; $icon_color = '';
 		foreach ( $cell->getElementsByTagName( 'span' ) as $sp ) {
 			if ( strpos( self::cls( $sp ), 'material-symbols' ) !== false ) {
 				$icon     = self::material_to_fa( trim( $sp->textContent ) );
@@ -7199,13 +7797,39 @@ class FW_Site_Converter_Stitch {
 		// Native Lucide (data-lucide / lucide-<name> class / <iconify-icon icon="lucide:zap">) → library icon id.
 		$lucide = '';
 		if ( $icon === '' ) { $lucide = self::detect_lucide_in( $cell ); }
+		// When the icon is a Lucide / iconify web component, the branch below (which reads the icon's class +
+		// colour off a light-DOM <svg>) never runs — an <iconify-icon> renders its svg in shadow DOM. Capture
+		// the icon element's class + COMPUTED colour + chip here, else every card's icon fell back to the
+		// shortcode's default preset (so a source's green/yellow/green icons all rendered the same).
+		if ( '' !== $lucide ) {
+			$icon_el = self::lucide_icon_el( $cell );
+			if ( $icon_el instanceof DOMElement ) {
+				if ( '' === $icon_cls ) { $icon_cls = self::cls( $icon_el ); }
+				$icon_color = self::sc_css( $icon_el, 'color' );
+				$sp = ( $icon_el->parentNode instanceof DOMElement ) ? $icon_el->parentNode : null;
+				if ( $sp && $sp !== $cell && '' === $icon_chip_cls ) {
+					$pcls = self::cls( $sp );
+					if ( strpos( $pcls, 'bg-' ) !== false && preg_match( '/(?:^|\s)(?:w-\d|h-\d|min-h-|aspect-|p-\d|rounded)/', $pcls ) ) {
+						$icon_chip_cls = $pcls;
+						$icon_chip_cs  = (string) $sp->getAttribute( 'data-sc-cs' );
+						$cbg = self::sc_css( $sp, 'background-color' );
+						if ( '' !== $cbg && 'transparent' !== $cbg && ! preg_match( '/rgba\([^)]*,\s*0?\.?0*\)$/', $cbg ) ) {
+							$icon_badge_color = $cbg;
+							$crad = self::sc_css( $sp, 'border-radius' );
+							$rn   = (float) $crad;
+							$icon_badge = ( $rn >= 9999 || strpos( $crad, '50%' ) !== false ) ? 'solid-circle' : ( $rn > 0 ? 'solid-rounded' : 'solid-square' );
+						}
+					}
+				}
+			}
+		}
 		if ( $icon === '' && $lucide === '' ) {
 			$svg = $cell->getElementsByTagName( 'svg' )->item( 0 );
 			if ( $svg && $cell->ownerDocument ) {
 				$custom_icon = (string) $cell->ownerDocument->saveHTML( $svg );
 				// Carry the icon's OWN color classes (e.g. `w-8 h-8 text-primary` / `text-secondary`) so
 				// n_icon_box resolves the icon color from the source token instead of leaving it inherit-dark
-				// — the FreshPaws feature chips are green / amber / green per card, not the card's body color.
+				// — the golden fixture feature chips are green / amber / green per card, not the card's body color.
 				if ( '' === $icon_cls ) { $icon_cls = self::cls( $svg ); }
 				// Capture the icon's CHIP wrapper — a filled, fixed-size container (`bg-*` + a w/h/aspect/pad
 				// sizing step, e.g. `w-16 h-16 bg-white rounded-2xl`) — as iconChipCls, so n_icon_box reproduces
@@ -7218,7 +7842,7 @@ class FW_Site_Converter_Stitch {
 						$icon_chip_cs  = (string) $sp->getAttribute( 'data-sc-cs' ); // full computed chip skin (fill/radius/shadow) → badge design
 						// Prefer the chip's CAPTURED computed background + radius (authoritative) over compiling
 						// the class — the Tailwind class compile was mis-resolving `bg-primary` to white. The
-						// rendered data-sc-cs is the source of truth (e.g. FreshPaws feature chips = green
+						// rendered data-sc-cs is the source of truth (e.g. the golden fixture feature chips = green
 						// rgb(33,196,93), rounded-2xl). Mirrors the about-item icon-chip path. A transparent /
 						// fully-alpha-0 fill is skipped so a bare icon stays a bare icon.
 						$cbg = self::sc_css( $sp, 'background-color' );
@@ -7272,6 +7896,7 @@ class FW_Site_Converter_Stitch {
 		return array(
 			'icon'       => $icon,
 			'iconCls'    => $icon_cls,
+			'iconColor'  => $icon_color, // the icon's COMPUTED colour (authoritative — resolves custom text-* tokens)
 			'customIcon' => $custom_icon,
 			'lucide'     => $lucide, // 'lucide/<name>' when the card icon is a native Lucide glyph → n_icon_box library icon
 			'image'      => $image, // { src, alt } when the card is an image/product/collection card → IMAGE card
@@ -7534,6 +8159,14 @@ class FW_Site_Converter_Stitch {
 		// Tokens come from the FIRST screen (a Stitch project shares one design system) + DESIGN.md.
 		$tokens = self::parse_tokens( $screens[0]['html'] );
 		$tokens = self::merge_design_md( $tokens, $design_md );
+		// BODY BACKGROUND (resolver) — the source's real page canvas often lives in a `<style>` rule
+		// (`body{background:oklch(20% 0.08 280)}`) that no tailwind.config token carries, so parse_tokens
+		// missed it and the page defaulted to light — making a dark, accent-heavy source read as
+		// "washed out / too much accent colour". Detect it + normalize to hex → the `background` token, so
+		// the theme's global page background (Theme Settings) matches the source. Only overrides when the
+		// source actually declares a body background (else the existing token / default stands).
+		$body_bg_hex = self::color_to_hex( self::detect_body_bg( $screens[0]['html'] ) );
+		if ( $body_bg_hex !== '' ) { $tokens['colors']['background'] = $body_bg_hex; }
 		$out['tokens'] = $tokens;
 		// The home screen's markup, for the optional AI companion (it refines the mapping + writes CSS
 		// against the original design). Capped so a huge page doesn't bloat the AJAX payload.
@@ -7544,6 +8177,7 @@ class FW_Site_Converter_Stitch {
 		$urls = array();
 		$pages = array();
 		$mapping_all = array( 'include_animations' => false, 'pages' => array() );
+		self::$drop_log = array(); // reset the structural-drop coverage instrument for this whole build
 
 		// MIRROR mode (the "grab the source's real CSS" path): carry each screen's body VERBATIM and
 		// reproduce its compiled Tailwind CSS offline, instead of decomposing into shortcodes. Pixel-
@@ -7622,6 +8256,10 @@ class FW_Site_Converter_Stitch {
 		$files = array();
 		$files['bundle.json'] = array( 'name' => 'Google Stitch import', 'source' => 'stitch', 'generated' => '' );
 		if ( $urls )  { $files['media.json'] = array( 'urls' => $urls ); }
+		// STRUCTURAL-DROP COVERAGE REPORT — what the recognizer walker did NOT claim on this source, so the
+		// next detector to build is data-driven (ranked by frequency) instead of found by hand. Salvaged
+		// nodes were rescued as editable blocks (nothing lost); decorative nodes are informational.
+		$files['conversion-drops.json'] = self::build_drop_report();
 		// theme-design.json → the bundle's theme phase generates a CHILD THEME carrying the Stitch
 		// palette/fonts/header+footer chrome (the plan's target), instead of dumping CSS on the active
 		// theme. The design-config's header.menu / footer.menu are built into real WP menus by the
@@ -8457,11 +9095,17 @@ class FW_Site_Converter_Stitch {
 		if ( ! in_array( $tag, array( 'div', 'span' ), true ) ) { return false; }
 		$cls = self::cls( $el );
 		if ( strpos( $cls, 'rounded-full' ) === false ) { return false; }
-		if ( strpos( $cls, 'inline-flex' ) === false && strpos( $cls, 'inline-block' ) === false ) { return false; }
 		if ( strpos( $cls, 'border' ) === false && strpos( $cls, 'bg-' ) === false ) { return false; }
+		if ( $el->getElementsByTagName( 'img' )->length > 0 ) { return false; } // an img chip → not a text tag
 		$txt = self::text( $el );
 		if ( $txt === '' || mb_strlen( $txt ) > 60 ) { return false; }
-		return $el->getElementsByTagName( 'span' )->length >= 1; // has the inner "New" tag
+		// COMPOUND badge: an inline-flex/inline-block chip with an inner sub-tag span ("New · v2.0 is live").
+		$inline = strpos( $cls, 'inline-flex' ) !== false || strpos( $cls, 'inline-block' ) !== false;
+		if ( $inline && $el->getElementsByTagName( 'span' )->length >= 1 ) { return true; }
+		// SIMPLE styled tag/pill: a padded rounded-full fill (`rounded-full border bg-white/20 px-4 py-2` =
+		// "Solar villas"). The px-/py-/p- padding is what separates a text chip from a rounded-full avatar /
+		// icon container (which carries no text). Carried verbatim so the tag's pill look survives.
+		return (bool) preg_match( '/(?:^|\s)(?:px-\d|py-\d|p-\d)/', $cls );
 	}
 
 	/** A hero BADGE: a rounded-full inline chip (sub-tag + message + optional icon) that maps to the native
@@ -8827,7 +9471,11 @@ class FW_Site_Converter_Stitch {
 		self::scrub( $clone );
 		$h = '';
 		foreach ( $clone->childNodes as $c ) { $h .= $clone->ownerDocument->saveHTML( $c ); }
-		return self::strip_cs( trim( $h ) );
+		$h = self::strip_cs( trim( $h ) );
+		// Collapse the source's newlines + indentation to single spaces (HTML renders any whitespace run as
+		// one space anyway) so a title like `Breathe life into your <br>\n   <span>worlds.</span>` stores as
+		// a clean one-line string in the builder instead of carrying stray \r\n. A real <br> survives.
+		return preg_replace( '/\s+/', ' ', $h );
 	}
 
 	/** Remove the Phase-2 `data-sc-cs` computed-style attribute from any HTML carried verbatim into output. */

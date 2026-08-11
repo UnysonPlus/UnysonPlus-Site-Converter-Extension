@@ -1185,7 +1185,39 @@ class FW_Site_Converter_Mapper {
 			'poster'       => empty( $post['url'] ) ? array() : $post,
 			'fallback'     => array(),
 			'loop'         => 'yes', 'autoplay' => 'yes', 'mute' => 'yes', 'playsinline' => 'yes',
+			// Match the canonical background-pro video shape (a manually-built section carries this too).
+			// Off = the background video is decorative and ignores clicks (no play/pause affordance).
+			'allow_interaction' => 'no',
 		);
+		// A full-bleed background <video> band IS a hero → frame it (tall min-height + vertical content
+		// placement) so the content keeps its top/bottom breathing room, exactly like an image-bg hero.
+		// Without this a video-bg hero collapsed to zero vertical spacing (its source height came from
+		// min-h-screen + flex-centering, which apply_bg_video didn't reproduce).
+		self::apply_hero_frame( $node, (string) ( $b['valign'] ?? 'middle' ) );
+	}
+
+	/**
+	 * Frame a full-bleed-background band as a HERO: a tall min-height + vertical content placement (+ a
+	 * left-flush container pin for a non-centered band) so the content sits with real top/bottom breathing
+	 * room over the media, instead of collapsing to zero height. Shared by BOTH background paths
+	 * (apply_bg_image + apply_bg_video) so an image-bg and a video-bg hero frame identically.
+	 *
+	 * @param array  $node   Section node (by ref).
+	 * @param string $valign top|middle|bottom (default middle).
+	 */
+	private static function apply_hero_frame( array &$node, $valign = 'middle' ) {
+		if ( ! isset( $node['atts'] ) || ! is_array( $node['atts'] ) ) { return; }
+		$node['atts']['min_height']     = array( 'preset' => '80vh', 'custom' => array( 'custom_height' => array( 'value' => '', 'unit' => 'px' ) ) );
+		$vmap = array( 'top' => 'top', 'middle' => 'middle', 'bottom' => 'bottom' );
+		$node['atts']['content_valign'] = isset( $vmap[ (string) $valign ] ) ? $vmap[ (string) $valign ] : 'middle';
+		// NEVER-DROP hero horizontal alignment: a LEFT-aligned viewport-tall hero should sit LEFT-FLUSH like
+		// the source, not in the theme's auto-centered max-width container. Skipped for a CENTERED band.
+		if ( 'center' !== (string) ( isset( $node['atts']['text_align'] ) ? $node['atts']['text_align'] : '' ) ) {
+			$cur = (string) ( isset( $node['atts']['custom_css'] ) ? $node['atts']['custom_css'] : '' );
+			if ( false === strpos( $cur, 'margin-left:0 !important' ) ) {
+				$node['atts']['custom_css'] = trim( $cur . ' selector .fw-container{margin-left:0 !important;margin-right:auto !important;}' );
+			}
+		}
 	}
 
 	/**
@@ -1200,8 +1232,15 @@ class FW_Site_Converter_Mapper {
 	private static function apply_bg_image( array &$node, array $bg ) {
 		$src = trim( (string) ( $bg['src'] ?? '' ) );
 		if ( $src === '' || ! isset( $node['atts']['background'] ) || ! is_array( $node['atts']['background'] ) ) { return; }
+		// Use the SIDELOADED media-library copy when one exists (upload_val matches by filename), so the
+		// Background Image picker shows + can edit it — instead of a bare external URL with attachment_id 0
+		// that the media widget can't preview (the "background looks empty / uneditable" bug).
+		$img_v = self::upload_val( $src );
 		$node['atts']['background']['image'] = array(
-			'src'        => array( 'attachment_id' => 0, 'url' => $src ),
+			'src'        => array(
+				'attachment_id' => ( isset( $img_v['attachment_id'] ) && $img_v['attachment_id'] !== '' ) ? $img_v['attachment_id'] : 0,
+				'url'           => isset( $img_v['url'] ) && $img_v['url'] !== '' ? $img_v['url'] : $src,
+			),
 			'position'   => 'center center',
 			'size'       => array( 'selected' => 'cover', 'custom' => '' ),
 			'repeat'     => 'no-repeat',
@@ -1213,9 +1252,7 @@ class FW_Site_Converter_Mapper {
 			'gradient' => array( 'type' => 'linear', 'angle' => 90, 'stops' => array() ),
 		);
 		if ( ! empty( $bg['hero'] ) ) {
-			$node['atts']['min_height']     = array( 'preset' => '80vh', 'custom' => array( 'custom_height' => array( 'value' => '', 'unit' => 'px' ) ) );
-			$vmap = array( 'top' => 'top', 'middle' => 'middle', 'bottom' => 'bottom' );
-			$node['atts']['content_valign'] = $vmap[ (string) ( $bg['valign'] ?? 'middle' ) ] ?? 'middle';
+			self::apply_hero_frame( $node, (string) ( $bg['valign'] ?? 'middle' ) );
 		}
 	}
 
@@ -2034,6 +2071,49 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/**
+	 * A native `gallery` shortcode node from a captured image-tile grid (recognizer block
+	 * `{ images:[{url,alt,span}] }`). Each image sideloads to a real attachment (upload_val) so the media
+	 * picker shows it; the source col-spans become the grid's per-column ratio (a `col-span-2` tile keeps a
+	 * double-width slot). Falls back to a verbatim code block if fewer than 3 images resolve.
+	 */
+	private static function n_gallery( array $b ) {
+		$src    = ( isset( $b['images'] ) && is_array( $b['images'] ) ) ? $b['images'] : array();
+		$images = array();
+		$spans  = array();
+		foreach ( $src as $im ) {
+			$url = trim( (string) ( $im['url'] ?? '' ) );
+			if ( '' === $url ) { continue; }
+			$uv = self::upload_val( $url );
+			$images[] = array(
+				'attachment_id' => ( isset( $uv['attachment_id'] ) && $uv['attachment_id'] !== '' ) ? $uv['attachment_id'] : '',
+				'url'           => ( isset( $uv['url'] ) && $uv['url'] !== '' ) ? $uv['url'] : $url,
+			);
+			$spans[] = max( 1, (int) ( $im['span'] ?? 1 ) );
+		}
+		if ( count( $images ) < 3 ) { return self::n_code( (string) ( $b['html'] ?? '' ) ); }
+		$count = count( $images );
+		$total = array_sum( $spans ); if ( $total < 1 ) { $total = $count; }
+		$ratio = array();
+		foreach ( $spans as $s ) { $ratio[] = array( 'w' => (int) round( $s / $total * 100 ) ); }
+
+		$atts = self::shortcode_default_atts( 'gallery' );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		$atts['images']       = $images;
+		$atts['click_action'] = 'lightbox';
+		$atts['rounded']      = 'rounded';
+		$atts['hover_zoom']   = 'yes';
+		if ( isset( $atts['design_settings']['grid'] ) && is_array( $atts['design_settings']['grid'] ) ) {
+			$atts['design_settings']['design']          = 'grid';
+			$atts['design_settings']['grid']['count']   = (string) $count;
+			$atts['design_settings']['grid']['columns'] = array( (string) $count => array( 'col_ratio' => $ratio ) );
+		}
+		$atts['unique_id'] = self::uid();
+		if ( ! isset( $atts['css_id'] ) )    { $atts['css_id'] = ''; }
+		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
+		return array( 'type' => 'simple', 'shortcode' => 'gallery', '_items' => array(), 'atts' => $atts );
+	}
+
+	/**
 	 * A native `call_to_action` shortcode node from a captured CTA band (recognizer block `{ title,
 	 * message(html), button_label/link/target }`). Title is PLAIN TEXT (the view esc_html's it); message is
 	 * HTML (wp_kses_post'd). One button slot (a 2-button CTA never reaches here — it stays assembled). See
@@ -2316,6 +2396,28 @@ class FW_Site_Converter_Mapper {
 
 	/** Rebuild one hover-state's declarations into portable CSS: reconstruct `transform` from Tailwind's
 	 *  `--tw-translate/scale/rotate` vars (useless standalone), drop those vars, keep everything else. */
+	/**
+	 * Normalize shadcn/Tailwind HSL-triplet color tokens into a form valid in the UnysonPlus theme.
+	 * Source frameworks store colours as bare HSL channels in `--primary` and write `hsl(var(--primary) / .9)`.
+	 * The converted theme defines `--primary` (etc.) as a FULL colour (aliased to `--color-primary`), so
+	 * `hsl(var(--primary) / .9)` is INVALID CSS — the browser drops the declaration. On a button :hover that
+	 * meant the source's "primary at 90% opacity" (a LIGHTEN) silently fell back to the shortcode's darken
+	 * default — the "hover is the opposite/darker" bug. Rewrite:
+	 *   hsl(var(--token) / <a>)  → color-mix(in srgb, var(--token) <a×100>%, transparent)   (opacity-preserving)
+	 *   hsl(var(--token))        → var(--token)
+	 */
+	private static function normalize_shadcn_color( $v ) {
+		$v = (string) $v;
+		if ( false === stripos( $v, 'hsl(var(' ) ) { return $v; }
+		$v = preg_replace_callback( '/hsl\(\s*var\((--[a-z0-9-]+)\)\s*\/\s*([0-9.]+%?)\s*\)/i', function ( $m ) {
+			$a = $m[2];
+			if ( '%' !== substr( $a, -1 ) ) { $a = rtrim( rtrim( sprintf( '%.2f', (float) $a * 100 ), '0' ), '.' ) . '%'; }
+			return 'color-mix(in srgb, var(' . $m[1] . ') ' . $a . ', transparent)';
+		}, $v );
+		$v = preg_replace( '/hsl\(\s*var\((--[a-z0-9-]+)\)\s*\)/i', 'var($1)', $v );
+		return $v;
+	}
+
 	private static function hover_rebuild_decls( $css ) {
 		$css = (string) $css;
 		$g = function ( $p ) use ( $css ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $p, '/' ) . '\s*:\s*([^;]+)/', $css, $m ) ? trim( $m[1] ) : ''; };
@@ -2328,7 +2430,7 @@ class FW_Site_Converter_Mapper {
 			$prop = trim( substr( $d, 0, $cp ) );
 			if ( strpos( $prop, '--tw-' ) === 0 ) { continue; }                 // internal Tailwind var — drop
 			if ( $prop === 'transform' && ( $tx || $ty || $sx || $sy || $rot ) ) { continue; } // rebuilt below
-			$out[] = $prop . ':' . trim( substr( $d, $cp + 1 ) );
+			$out[] = $prop . ':' . self::normalize_shadcn_color( trim( substr( $d, $cp + 1 ) ) );
 		}
 		if ( $tx || $ty || $sx || $sy || $rot ) {
 			$t = 'translate(' . ( $tx ?: '0' ) . ',' . ( $ty ?: '0' ) . ')';
@@ -2339,11 +2441,16 @@ class FW_Site_Converter_Mapper {
 		return implode( ';', $out );
 	}
 
-	/** Fallback: reproduce the source button's hover/pseudo rules verbatim as `{{SELECTOR}}`-scoped Custom CSS
+	/** Fallback: reproduce the source button's hover/pseudo rules verbatim as `selector`-scoped Custom CSS
 	 *  (used only when classify_hover_animation found no native preset), so a bespoke effect is never dropped. */
 	private static function hover_verbatim_css( $hover ) {
-		$map = array( 'self' => '{{SELECTOR}}', 'before' => '{{SELECTOR}}::before', 'after' => '{{SELECTOR}}::after',
-			'hover-self' => '{{SELECTOR}}:hover', 'hover-before' => '{{SELECTOR}}:hover::before', 'hover-after' => '{{SELECTOR}}:hover::after' );
+		// Scope onto the NODE placeholder `selector` (the builder replaces it with the element's own
+		// .u<hash> at render, exactly like the hifi `:where(selector){…}` base on the same node) — NOT the
+		// PRESET placeholder `{{SELECTOR}}`, which a node's Custom CSS never resolves. The old `{{SELECTOR}}`
+		// was left unresolved and then stripped to a BARE `:hover{…}` = a universal `*:hover` rule, so
+		// hovering ANY header / section / footer flashed the button's hover fill. (Node CSS = `selector`.)
+		$map = array( 'self' => 'selector', 'before' => 'selector::before', 'after' => 'selector::after',
+			'hover-self' => 'selector:hover', 'hover-before' => 'selector:hover::before', 'hover-after' => 'selector:hover::after' );
 		$out = array();
 		foreach ( explode( '|', (string) $hover ) as $chunk ) {
 			if ( ! preg_match( '/^([a-z-]+)\{(.*)\}$/s', trim( $chunk ), $m ) || ! isset( $map[ $m[1] ] ) ) { continue; }
@@ -2387,7 +2494,7 @@ class FW_Site_Converter_Mapper {
 		if ( '' !== $preset['size'] )  { $atts['size']  = $preset['size']; }
 		// HOVER ANIMATION — classify the source button's captured :hover/::before/::after motion into a native
 		// `.btnfx-*` preset (deterministic fingerprint). When nothing matches but the source DID declare a hover
-		// effect, carry its rules verbatim as scoped Custom CSS (rewriting the pseudo states onto {{SELECTOR}}),
+		// effect, carry its rules verbatim as scoped Custom CSS (rewriting the pseudo states onto `selector`),
 		// so a bespoke animation is reproduced rather than dropped. Nothing added when the button has no hover fx.
 		if ( '' !== (string) $hover ) {
 			$fx = self::classify_hover_animation( (string) $hover );
@@ -2592,7 +2699,11 @@ class FW_Site_Converter_Mapper {
 		// Icon color from the source (resolves inheritance) → the icon_box Icon Color, so it
 		// matches the source instead of the shortcode's default preset color.
 		$ic = isset( $card['iconColor'] ) ? trim( (string) $card['iconColor'] ) : '';
-		if ( $ic !== '' && preg_match( '/^#[0-9a-f]{3,8}$/i', $ic ) ) {
+		$ic = preg_replace( '/\s*\/\s*var\([^)]*\)/', '', $ic ); // drop a trailing `/ var(--tw-text-opacity)` alpha channel
+		if ( $ic !== '' && preg_match( '/^(#[0-9a-f]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\)|oklch\([^)]*\))$/i', $ic ) && stripos( $ic, 'transparent' ) === false ) {
+			// A captured COMPUTED colour (rgb/hex/…) is authoritative — resolves ANY source token incl. a
+			// custom `text-brand` the Tailwind config can't, so each card keeps its real icon colour
+			// (green / yellow / green) instead of the shortcode's default preset.
 			$atts['icon_color'] = array( 'predefined' => '', 'custom' => $ic );
 		} elseif ( ! empty( $card['iconCls'] ) && self::$style_on && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
 			// The source icon's color is usually a Tailwind TOKEN class (e.g. `text-outline`), not a hex —
@@ -3449,6 +3560,44 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/**
+	 * NEVER-DROP overline typography. The Special Heading overline has native options for casing
+	 * (overline_uppercase), colour (overline_color) and alignment, plus its WEIGHT is re-asserted by
+	 * heading_weight_css() — but NO native option carries the overline's FONT-SIZE or LETTER-SPACING.
+	 * A source eyebrow like `text-[11px] tracking-[0.3em] uppercase` therefore lost its 11px size + 0.3em
+	 * tracking (strip_inert_utilities drops them), rendering in the theme's default overline font — the
+	 * "overline looks different" bug. Carry those two as scoped Custom CSS on `.heading-overline` (tier-3
+	 * of the never-drop rule: no native option, no design token → last-resort scoped CSS). Font-size comes
+	 * from the Tailwind compiler (handles arbitrary `text-[11px]` and named `text-xs`); an ARBITRARY
+	 * `tracking-[…]` the compiler doesn't resolve is parsed directly. Mirrored in the JS to-pages path.
+	 */
+	private static function overline_typography_css( $h ) {
+		if ( '' === trim( (string) ( $h['overline'] ?? '' ) ) ) { return ''; }
+		$cls = trim( (string) ( $h['overline_class'] ?? '' ) );
+		if ( '' === $cls ) { return ''; }
+		$decls = '';
+		if ( class_exists( 'FW_Site_Converter_Tailwind' ) ) {
+			$cm   = FW_Site_Converter_Tailwind::compile_class_set( $cls, self::$style_cfg );
+			$base = $cm['base'] ?? array();
+			if ( ! empty( $base['font-size'] ) )      { $decls .= 'font-size:' . $base['font-size'] . ' !important;'; }
+			if ( ! empty( $base['letter-spacing'] ) ) { $decls .= 'letter-spacing:' . $base['letter-spacing'] . ' !important;'; }
+		}
+		// Arbitrary `tracking-[0.3em]` (the compiler resolves only NAMED tracking-*), parsed directly.
+		if ( false === strpos( $decls, 'letter-spacing' ) && preg_match( '/\btracking-\[([^\]]+)\]/', $cls, $tm ) ) {
+			$decls .= 'letter-spacing:' . trim( str_replace( '_', ' ', $tm[1] ) ) . ' !important;';
+		}
+		return '' !== $decls ? 'selector .heading-overline{' . $decls . '}' : '';
+	}
+
+	/** The overline class tokens overline_typography_css()/heading_weight_css() carry natively, so the
+	 *  dropped-class guard counts them KEPT (size / tracking / weight utilities on the eyebrow). */
+	private static function overline_kept_tokens( $h ) {
+		$cls = trim( (string) ( $h['overline_class'] ?? '' ) );
+		if ( '' === $cls || '' === trim( (string) ( $h['overline'] ?? '' ) ) ) { return array(); }
+		preg_match_all( '/\b(?:text-(?:\[[^\]]+\]|xs|sm|base|lg|\dxl)|tracking-(?:\[[^\]]+\]|tighter|tight|normal|wide|wider|widest)|font-(?:thin|extralight|light|normal|medium|semibold|bold|extrabold|black))\b/', $cls, $m );
+		return $m[0] ?? array();
+	}
+
+	/**
 	 * NEVER-DROP rule for a heading part's constrained MEASURE. A merged subtitle/title part often
 	 * carries `max-w-* mx-auto` (a centered content measure). Because that part is folded INTO the
 	 * special_heading — its standalone block is consumed — the section styler (collect_section_style)
@@ -3592,7 +3741,10 @@ class FW_Site_Converter_Mapper {
 		// NEVER-DROP: reproduce each part's constrained measure (`max-w-* mx-auto`) as scoped Custom CSS,
 		// and count the utilities it carried as KEPT so the dropped-class guard doesn't flag them.
 		$measures = self::heading_measures( $h );
-		$kept_all = trim( $overline_class . ' ' . $title_class . ' ' . $subtitle_class . ' ' . self::keep_classes( $layout['css_class'] ?? '' ) . ' ' . implode( ' ', $measures['tokens'] ) );
+		// NEVER-DROP overline size/letter-spacing (no native option) → scoped CSS, and count its
+		// carried size/tracking/weight utilities as KEPT so the dropped-class guard doesn't flag them.
+		$overline_type_css = self::overline_typography_css( $h );
+		$kept_all = trim( $overline_class . ' ' . $title_class . ' ' . $subtitle_class . ' ' . self::keep_classes( $layout['css_class'] ?? '' ) . ' ' . implode( ' ', $measures['tokens'] ) . ' ' . implode( ' ', self::overline_kept_tokens( $h ) ) );
 		self::conv_debug_record( $uid, $src_all, self::conv_dropped_diff( $src_all, $kept_all ) );
 		return array(
 			'type' => 'simple', 'shortcode' => 'special_heading', '_items' => array(),
@@ -3603,6 +3755,7 @@ class FW_Site_Converter_Mapper {
 				// Re-assert each part's SOURCE font-weight on its own element (wins over the theme's
 				// hN.heading-title tag rule when no heading-weight token is set) — parity with JS to-pages.
 				'custom_css' => self::heading_weight_css( $h )
+				. $overline_type_css // NEVER-DROP: overline font-size + letter-spacing (no native option)
 				. $measures['css'] // NEVER-DROP: per-part constrained measure (max-w-* mx-auto → scoped max-width)
 				// NO subtitle: the theme's default hN bottom margin leaks as the block's below-gap and DOMINATES
 				// the (source-derived) outer Margin & Padding value — e.g. a 48px h1 default over the source's
@@ -4689,6 +4842,7 @@ class FW_Site_Converter_Mapper {
 				'lottie'    => 'n_lottie',
 				'svg_draw'  => 'n_svg_draw',
 				'instagram' => 'n_instagram', // detected Instagram feed → the [instagram] Library shortcode
+				'gallery'   => 'n_gallery',   // detected image-tile grid → the native gallery shortcode
 			);
 			$bt_native = $b['t'] ?? '';
 			if ( isset( $native_own[ $bt_native ] ) ) {

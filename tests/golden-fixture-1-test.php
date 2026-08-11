@@ -2,8 +2,8 @@
 /**
  * Golden-fixture regression guard for the Site Converter deterministic (no-AI) path.
  *
- * Runs FW_Site_Converter_Sources::build_from_html() over the FreshPaws capture
- * (tests/fixtures/freshpaws.html) and ASSERTS the current known-good output:
+ * Runs FW_Site_Converter_Sources::build_from_html() over the Golden Fixture 1 capture
+ * (tests/fixtures/golden-fixture-1.html) and ASSERTS the current known-good output:
  *   - section css_ids (proves the source `id` attribute survives  = the P0 fix),
  *   - the per-section block/shortcode set (proves recognizers still map the same way),
  *   - key chrome theme-settings (logo squircle, footer columns=4, container ladder,
@@ -17,7 +17,7 @@
  *
  * Run:
  *   php D:/xampp/wp-cli.phar --path=D:/xampp/htdocs eval-file \
- *       "D:/xampp/htdocs/wp-content/plugins/unysonplus/framework/extensions/site-converter/tests/freshpaws-golden-test.php"
+ *       "D:/xampp/htdocs/wp-content/plugins/unysonplus/framework/extensions/site-converter/tests/golden-fixture-1-test.php"
  *
  * Exit code 0 = all PASS, 1 = at least one FAIL (CI-friendly).
  */
@@ -48,7 +48,7 @@ function ga_eq( $label, $expected, $actual ) {
 /* --------------------------------------------------------------------- *
  * Build from the fixture through the CURRENT deterministic path
  * --------------------------------------------------------------------- */
-$fixture = __DIR__ . '/fixtures/freshpaws.html';
+$fixture = __DIR__ . '/fixtures/golden-fixture-1.html';
 if ( ! is_file( $fixture ) ) { fwrite( STDERR, "FAIL: fixture missing: $fixture\n" ); exit( 1 ); }
 $html = file_get_contents( $fixture );
 
@@ -178,7 +178,7 @@ ga_eq( "header_logo type", 'custom', $ts['header_logo']['logo_type']['logo_type'
 // `.site-title-text`), and the scoped logo_custom_css paints it — richer than the hand-built demo's flat title.
 ga_eq( "header_logo site_title (two-tone split)", 'Fresh<span class="accent">Paws</span>', $logo_custom['site_title'] ?? null );
 ga( "header_logo two-tone css paints .accent green", isset( $logo_custom['logo_custom_css'] ) && strpos( $logo_custom['logo_custom_css'], '.accent' ) !== false && strpos( $logo_custom['logo_custom_css'], 'rgb(33, 196, 93)' ) !== false, $logo_custom['logo_custom_css'] ?? null );
-// FreshPaws' logo tile is `rounded-2xl` = 24px on a 40px box (ratio 0.6). CSS clamps border-radius to
+// Golden Fixture 1' logo tile is `rounded-2xl` = 24px on a 40px box (ratio 0.6). CSS clamps border-radius to
 // box/2, so a ≥50% radius renders as a FULL CIRCLE — the frame is `circle`, not `squircle`.
 ga_eq( "header_logo icon frame (circle — 24px clamps on a 40px tile)", 'circle', $logo_custom['logo_icon_frame'] ?? null );
 ga_eq( "header_logo icon chip bg (brand green)", 'rgb(33, 196, 93)', $logo_custom['logo_icon_frame_bg']['custom'] ?? null );
@@ -329,7 +329,7 @@ foreach ( ( $mapping['pages'][0]['sections'] ?? array() ) as $s ) { $m_ids[] = $
 ga_eq( "mapping css_ids == builder css_ids", $cids, $m_ids );
 
 /* --------------------------------------------------------------------- *
- * 6) NEW RECOGNIZERS — per-recognizer synthetic fixtures (FreshPaws has no
+ * 6) NEW RECOGNIZERS — per-recognizer synthetic fixtures (Golden Fixture 1 has no
  *    table / accordion / counter / list, so each is proven on its own HTML).
  *    Each asserts the recognizer emits the right native shortcode + payload.
  * --------------------------------------------------------------------- */
@@ -604,7 +604,7 @@ $noav_html = '<section id="row2"><div class="grid grid-cols-2 gap-8">'
 	. '</div></section>';
 ga( "plain image row is NOT mis-claimed as avatar", null === $first_sc( $sc_nodes_of( $noav_html ), 'avatar' ), wp_json_encode( $codes_of( $sc_nodes_of( $noav_html ) ) ) );
 
-/* --- (b) Icon-chip capture: the FreshPaws features cards (built above with dynamic_chrome=true, so
+/* --- (b) Icon-chip capture: the Golden Fixture 1 features cards (built above with dynamic_chrome=true, so
  *         the semantic-colour config resolves `text-primary`/`text-secondary`) each carry a non-empty
  *         icon AND a per-card icon color (green / amber / green), not an empty icon_box. */
 $feat_ibs = array();
@@ -923,7 +923,7 @@ ga( "hi-fi OFF: NO :where() base is emitted (opt-out omits the base = byte-ident
 
 // A pill (badge) carries the SOURCE fill + radius it did NOT set natively (colours left neutral otherwise).
 // A STANDALONE chip (no heading after it) still becomes a `badge` — build one so its faithful base can be
-// checked (the FreshPaws hero pill is now the h1's overline, so it no longer emits a badge base).
+// checked (the Golden Fixture 1 hero pill is now the h1's overline, so it no longer emits a badge base).
 $lone_pill_doc  = '<!DOCTYPE html><html><head></head><body><main><section id="lp"><div class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary/10 text-primary" data-sc-cs="background-color:rgba(33, 196, 93, 0.1);color:rgb(33, 196, 93);border-radius:9999px;display:inline-flex;padding:8px 16px"><svg viewBox="0 0 24 24" class="w-4 h-4"><path d="M2 9.5"></path></svg><span data-sc-cs="color:rgb(33, 196, 93)">Trusted by 2,000+ families</span></div></section></main></body></html>';
 $lone_pill_bndl = FW_Site_Converter_Sources::build_from_html( $lone_pill_doc, 'GoldenLonePill', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
 $lone_pill_bld  = $lone_pill_bndl['files']['pages.json']['pages'][0]['builder'] ?? array();
@@ -1294,7 +1294,7 @@ if ( method_exists( 'FW_Site_Converter_Mapper', 'responsive_hide_from_classes' )
  * dropped because the recognizer read the h2's OWN classes).
  * --------------------------------------------------------------------- */
 $wi_html = '<section id="wi"><div class="text-center max-w-2xl mx-auto mb-16">'
-	. '<h2 class="text-3xl md:text-4xl font-bold mb-4">Why Pets Love FreshPaws</h2>'
+	. '<h2 class="text-3xl md:text-4xl font-bold mb-4">Why Pets Love Golden Fixture 1</h2>'
 	. '<p class="text-lg">We designed every aspect of our facility for your furry friends.</p>'
 	. '</div></section>';
 $wi_nodes = $sc_nodes_of( $wi_html );
@@ -1589,7 +1589,7 @@ if ( method_exists( 'FW_Site_Converter_Mapper', 'set_text_presets' ) ) {
 	 * `element_spacing` select (coarse: tight ≤6 / relaxed 7–20 / Normal), NOT the outer margin — and it must
 	 * NOT also land on spacing.margin.bottom (no double-count). Without a subtitle, the title's mb stays the
 	 * outer block bottom margin (`.heading` default would otherwise take over). Mirrors the JS to-pages routing. */
-	$es_sub = $nh->invoke( null, array( 'level' => 2, 'title' => 'Why Pets Love FreshPaws', 'subtitle' => "We've designed every aspect…", 'title_class' => 'text-3xl md:text-4xl font-heading font-bold mb-4' ) );
+	$es_sub = $nh->invoke( null, array( 'level' => 2, 'title' => 'Why Pets Love Golden Fixture 1', 'subtitle' => "We've designed every aspect…", 'title_class' => 'text-3xl md:text-4xl font-heading font-bold mb-4' ) );
 	ga_eq( "element_spacing: subtitle + title mb-4 (16px) → 'relaxed'", 'relaxed', $es_sub['atts']['element_spacing'] ?? null );
 	ga_eq( "element_spacing: that gap does NOT double onto outer spacing.bottom", '', $es_sub['atts']['spacing']['margin']['bottom'] ?? '' );
 	$es_tight = $nh->invoke( null, array( 'level' => 2, 'title' => 'Tight Heading', 'subtitle' => 'Sub.', 'title_class' => 'font-bold mb-1' ) );

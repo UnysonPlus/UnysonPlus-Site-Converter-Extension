@@ -371,8 +371,9 @@ class FW_Site_Converter_Media {
 	 * @return string[]
 	 */
 	public static function scan_html( $html, $base = '' ) {
-		$declared = array(); // <img>/srcset — trusted images
+		$declared = array(); // <img>/srcset + <video poster> — trusted images
 		$other    = array(); // url() — could be a font/anything, must look like an image
+		$videos   = array(); // <video src> / <video><source src> — trusted self-hosted video files
 
 		if ( preg_match_all( '/<img\b[^>]*?\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) {
 			$declared = array_merge( $declared, $m[1] );
@@ -391,11 +392,57 @@ class FW_Site_Converter_Media {
 		if ( preg_match_all( '/url\(\s*["\']?([^"\')]+)["\']?\s*\)/i', $html, $m ) ) {
 			$other = $m[1];
 		}
+		// Self-hosted VIDEO sources — a `<video src>` or a `<source src>` inside a `<video>`. Collected so a
+		// background/hero video is SIDELOADED into the Media Library (real attachment) → the section's
+		// Background → Video picker shows + can edit it, instead of a bare external URL the picker renders
+		// blank. collect_videos() gates on a video file extension, so an audio `<source>` (mp3) or a
+		// `<picture><source srcset>` (image, no `src`) is skipped. The video POSTER is an image → image path.
+		if ( preg_match_all( '/<video\b[^>]*?\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) {
+			$videos = array_merge( $videos, $m[1] );
+		}
+		if ( preg_match_all( '/<source\b[^>]*?\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) {
+			$videos = array_merge( $videos, $m[1] );
+		}
+		if ( preg_match_all( '/\bposter\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) {
+			$declared = array_merge( $declared, $m[1] );
+		}
 
 		return array_values( array_unique( array_merge(
 			self::collect( $declared, $base, true ),
-			self::collect( $other, $base, false )
+			self::collect( $other, $base, false ),
+			self::collect_videos( $videos, $base )
 		) ) );
+	}
+
+	/**
+	 * Collect self-hosted VIDEO source URLs (`<video src>` / `<source src>`) for sideload, gated on a
+	 * video file extension (mp4/webm/ogv/ogg/mov/m4v). Mirrors collect() but with a video acceptance
+	 * instead of accept_image_url() (which deliberately REJECTS video, since the image pipeline can't size
+	 * them). Skips data-URIs and any `<source>` that isn't a real video file (audio, image). The importer's
+	 * sideload() → media_handle_sideload() handles the video mime types WordPress allows by default.
+	 *
+	 * @param array  $raw  Raw src values.
+	 * @param string $base Base URL for relative refs.
+	 * @return array Absolute, de-duplicated video file URLs.
+	 */
+	private static function collect_videos( array $raw, $base ) {
+		$out = array();
+		foreach ( $raw as $u ) {
+			$u = trim( html_entity_decode( (string) $u, ENT_QUOTES ) );
+			if ( $u === '' || stripos( $u, 'data:' ) === 0 ) {
+				continue;
+			}
+			$abs = self::absolutize( $u, $base );
+			if ( $abs === '' ) {
+				continue;
+			}
+			$path = (string) wp_parse_url( $abs, PHP_URL_PATH );
+			if ( ! preg_match( '/\.(?:mp4|webm|ogv|ogg|mov|m4v)(?:$|[?#])/i', $path ) ) {
+				continue;
+			}
+			$out[ $abs ] = true;
+		}
+		return array_keys( $out );
 	}
 
 	/**

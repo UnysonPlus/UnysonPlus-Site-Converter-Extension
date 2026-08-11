@@ -247,9 +247,66 @@ class FW_Site_Converter_Pages {
 		// + query strings — so code-block HTML, carousel slide atts and section custom_css all
 		// get their images re-pointed to the imported attachments).
 		$decoded = json_decode( $json, true );
-		$work    = is_array( $decoded ) ? (string) wp_json_encode( $decoded, JSON_UNESCAPED_SLASHES ) : (string) $json;
+		if ( is_array( $decoded ) ) {
+			// Fill the attachment_id of every upload-shaped media value ({ attachment_id, url }) —
+			// hero background VIDEO (source_mp4 / source_webm / poster) and section image src — from the
+			// sideloaded copy. localize() below only rewrites image URL *strings* (never the id, and its
+			// regex is image-extensions-only), so a video imported url-only rendered as a blank "Upload"
+			// field in the backend even though the frontend played it. This makes the media picker SHOW it.
+			$decoded = self::resolve_upload_ids( $decoded );
+			$work    = (string) wp_json_encode( $decoded, JSON_UNESCAPED_SLASHES );
+		} else {
+			$work = (string) $json;
+		}
 
 		return FW_Site_Converter_Media::localize( $work );
+	}
+
+	/**
+	 * Recursively resolve upload-shaped media values ({ attachment_id, url }) whose id is empty: look up
+	 * the sideloaded attachment by its ORIGINAL source URL (SOURCE_META) — or the local URL — and set
+	 * BOTH the attachment_id and the (protocol-relative local) url. No-op for values that already carry
+	 * an id or have no url, so it never disturbs already-resolved media.
+	 *
+	 * @param mixed $node
+	 * @return mixed
+	 */
+	private static function resolve_upload_ids( $node ) {
+		if ( ! is_array( $node ) ) {
+			return $node;
+		}
+
+		if ( array_key_exists( 'url', $node ) && array_key_exists( 'attachment_id', $node )
+			&& empty( $node['attachment_id'] ) && is_string( $node['url'] ) && trim( $node['url'] ) !== '' ) {
+			$url        = trim( $node['url'] );
+			$candidates = array( $url );
+			if ( strpos( $url, '//' ) === 0 ) {                 // protocol-relative → try both schemes
+				$candidates[] = 'https:' . $url;
+				$candidates[] = 'http:' . $url;
+			}
+			$id = 0;
+			foreach ( $candidates as $c ) {
+				$id = FW_Site_Converter_Media::find_by_source( $c );
+				if ( ! $id ) {
+					$bare = preg_replace( '/\?.*$/', '', $c );
+					if ( $bare !== $c ) { $id = FW_Site_Converter_Media::find_by_source( $bare ); }
+				}
+				if ( $id ) { break; }
+			}
+			if ( ! $id && function_exists( 'attachment_url_to_postid' ) ) {
+				foreach ( $candidates as $c ) { $id = attachment_url_to_postid( $c ); if ( $id ) { break; } }
+			}
+			if ( $id ) {
+				$node['attachment_id'] = (string) $id;
+				$local = wp_get_attachment_url( $id );
+				if ( $local ) { $node['url'] = preg_replace( '#^https?://#', '//', $local ); }
+			}
+		}
+
+		foreach ( $node as $k => $v ) {
+			$node[ $k ] = self::resolve_upload_ids( $v );
+		}
+		return $node;
 	}
 
 	/**

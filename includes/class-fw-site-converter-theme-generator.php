@@ -2074,7 +2074,11 @@ JS;
 		$out = "/* ---- Design tokens & typography (self-contained — independent of the parent\n"
 			. "   theme's Theme Settings typography) ---- */\n";
 		if ( ! empty( $col['bg'] ) ) {
-			$out .= "body { background-color:{$col['bg']} !important; }\n";
+			// Defer to the editable Site Background option (--site-bg-color, set by the converter's
+			// site_background value) so the page canvas stays EDITABLE in Theme Settings; the detected
+			// colour is only the fallback. (Was a baked `!important` rule that overrode the option — the
+			// "non-editable injected background" case.)
+			$out .= "body { background-color:var(--site-bg-color, {$col['bg']}); }\n";
 		}
 		// Content container width from the source (.container / max-w-* / centered wrapper) → the
 		// builder's .fw-container, overriding the frontend-grid default.

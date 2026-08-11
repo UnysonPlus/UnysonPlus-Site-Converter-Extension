@@ -56,7 +56,7 @@ reference screenshot). ALWAYS use these:
   downloadable `theme.zip` with a multi-MB video — reference it from the library. A **local
   file** (the video) sideloads via `media_handle_sideload` on a temp copy (dedupe by a
   `_upw_demo_src` meta = the source path); resolve it into the tree via a marker string
-  (e.g. `__SENKEI_VIDEO__`) the importer swaps for `{attachment_id,url}`.
+  (e.g. `__VIDEO_PLACEHOLDER__`) the importer swaps for `{attachment_id,url}`.
 - **background-pro shape gotcha:** the section's bg `image.src`, `video.source_mp4`, and
   `video.poster` are each a **single object** `{attachment_id,url}` — NOT an array. `sc_bg_pro_style`
   / `sc_bg_pro_video_attr` read `image/src/url` and `video/source_mp4/url`, so an array yields no
@@ -230,7 +230,7 @@ There are three, chosen by SCOPE — never add a schema field for a property one
 > (`base_css` / `util_css` / `header_css` / `footer_css`), the **`/* Globals & utilities (source) */`**
 > block MUST be present and substantial. If it's missing/empty, the source's **body-section utilities
 > were dropped** and every section below the header ships **unstyled** (hero fine, feature grid / CTA /
-> footer bare) — the `freshpaws` regression. Root cause (fixed capture-service v1.7.78): the JS
+> footer bare) — the `golden-fixture` regression. Root cause (fixed capture-service v1.7.78): the JS
 > categorizer only globalized header/footer-scoped or **vendor-filename**-matched utilities, so a
 > Tailwind/JIT source served from an inline `<style>` or a hash-named bundle lost its body utilities.
 > **Fix + invariant:** the global `util_css` must carry EVERY page-matching utility, independent of the
@@ -475,7 +475,7 @@ translucent surfaces (glass, hairlines) go in the box step's Custom CSS.
 Set with `fw_set_db_settings_option( 'theme_colors', $palette )` on the target (sub)site
 (bootstrapped AS that blog); the preset CSS regenerates on the next front-end load.
 
-**Senkei palette (reference):** Primary #22c55e, Primary Light #86efac, Primary Deep #16a34a,
+**Reference palette:** Primary #22c55e, Primary Light #86efac, Primary Deep #16a34a,
 Accent #facc15, Dark #020617, Surface #0f172a, Ink #f8fafc, Muted #94a3b8, Line #1e293b, White,
 Black.
 
@@ -535,7 +535,7 @@ Procedure:
 Watch the **`*/` docblock gotcha**: writing `--font-*/--h*-*` in a PHP docblock closes it early —
 rephrase.
 
-**Senkei scale (reference):** Body + Heading = Inter, body 16/1.65; h1 88px/700/-2px, h2 44/700/-1px,
+**Reference scale:** Body + Heading = Inter, body 16/1.65; h1 88px/700/-2px, h2 44/700/-1px,
 h3 24/600, h4 20/600, h5 18/600, h6 16/600.
 
 ### Text Styles (Components) — the reusable type-style system
@@ -560,7 +560,7 @@ type token = a size PLUS **optional weight / line-height / letter-spacing / text
 
 **When to use:** a source `<p>` that bundles size+weight+line-height (a *Lead* paragraph), or a
 label that's uppercase+tracked+small (an *Eyebrow*/overline) → collapse it into ONE Text Style the
-element consumes, instead of scattered child CSS. (Senkei: **Lead** = 20/300/1.625 for the hero
+element consumes, instead of scattered child CSS. (the reference site: **Lead** = 20/300/1.625 for the hero
 subtitle; **Eyebrow** = 12/600/uppercase/0.1em for "Trusted by …".)
 
 **Display-size weight (shortcodes 1.10.73).** Bootstrap's `.display-1..6` hardcode `font-weight:300`;
@@ -589,7 +589,7 @@ Standard (mirror the colour standard — override roles, don't dump):
 1. **Override the basics, then TRIM/RE-POINT to the palette.** Re-skin **Primary** to the source's
    main CTA. Because Primary's bg **references the Primary Color Preset**, it already renders in the
    brand colour once the palette is set — you mostly add hover + glow + weight.
-   **⚠ Interdependency (bit us on Senkei):** button presets reference Color Preset *slugs*, so
+   **⚠ Interdependency (bit us on the reference site):** button presets reference Color Preset *slugs*, so
    **curating the palette orphans every preset that referenced a removed colour** — the default
    Secondary/Success/Info/Warning/Danger point to `secondary/green/cyan/amber/red`, which vanish
    when you trim the palette to a minimal role set → those buttons render with **no colour** (empty
@@ -597,7 +597,7 @@ Standard (mirror the colour standard — override roles, don't dump):
    the design uses and **re-point every reference to a LIVE palette slug**. Keep status buttons ONLY
    if the design uses status colours (and they're in the palette). *(Same rule applies to Box
    Presets — their colours reference the palette too.)*
-   Senkei kept 5, all re-pointed: Primary (green+glow), Secondary (→`muted`), Primary Outline
+   the reference site kept 5, all re-pointed: Primary (green+glow), Secondary (→`muted`), Primary Outline
    (`primary`), Secondary Outline (→`muted`), Link (`primary`); removed the 4 status buttons + their
    outlines + Gradient.
 2. **Match the source CTA on Primary**: default bg/text + the glow via the default-state `box_shadow`;
@@ -614,7 +614,7 @@ the entry you're overriding, `fw_set_db_settings_option('button_colors'|'button_
 box-shadow value shape: `{x,y,blur,spread,color,inset}`. Note: the glow colour is a **raw** value
 (no alpha on Color Presets — the rgb-triplet gap), so a literal `rgba(...)` is expected there.
 
-**Senkei (reference):** Primary → default `#22c55e` + glow `0 0 30px -5px rgba(34,197,94,.5)`, hover
+**Reference:** Primary → default `#22c55e` + glow `0 0 30px -5px rgba(34,197,94,.5)`, hover
 bg `primary-light` + text `surface`, weight 600; Large size → 18 / 16 / 32; hero button = `btn-primary
 btn-lg btn-shape-pill`.
 
@@ -636,7 +636,7 @@ Countdown also consume box presets; `pricing_table` does NOT — see below.)
 Building a card (the glass card is the reference):
 
 1. **Native fields for the common properties**: radius, padding (add a spacing scale entry if the
-   source's value is missing — Senkei added `Card`=2rem), border width/style, box_shadow, transition,
+   source's value is missing — the reference site added `Card`=2rem), border width/style, box_shadow, transition,
    and the **background** (bg-pro's colour `custom` takes **rgba**, so a translucent glass fill IS a
    native field).
 2. **Custom CSS for the special bits** (per the "special CSS → Custom CSS" rule): `backdrop-filter:
@@ -670,7 +670,7 @@ Building a card (the glass card is the reference):
 `border_preset` support to `pricing_table` — a self-contained component, so leaving its card look as a
 few scoped child-CSS rules is the pragmatic call (like the CLAUDE.md exception for bespoke UIs).
 
-**Senkei (reference):** Glass preset — bg `rgba(15,23,42,.5)` (bg-pro custom) / hover `rgba(30,41,59,.8)`;
+**Reference:** Glass preset — bg `rgba(15,23,42,.5)` (bg-pro custom) / hover `rgba(30,41,59,.8)`;
 border 1px + radius 16px + padding `p-card` (2rem); Custom CSS = hairline `rgba(255,255,255,.08)!important`
 + `backdrop-filter:blur(8px)` + `:hover{transform:translateY(-4px)}`. Feature columns → `boxp-glass`.
 
@@ -689,7 +689,7 @@ WP-blue header — the palette's third orphan after buttons and boxes.
   hex to the matching role — light WP neutrals → `surface`/`line`, dark text → `ink`/`muted`, borders →
   `line`, an accent header → `primary`; a white body bg → **empty** (transparent, inherits the dark
   section). Walk the preset tree and swap `{predefined:'',custom:'#hex'}` → `{predefined:'<slug>'}`. It's
-  demo data (travels in `settings.json`); no framework change. (Senkei: 50 fields re-pointed; a table
+  demo data (travels in `settings.json`); no framework change. (the reference site: 50 fields re-pointed; a table
   now renders light-on-dark with `line` borders.)
 
 ## Section Styles standard (`.section--{slug}` skins)
@@ -797,11 +797,11 @@ responsive Gap. In a builder tree, pass `padding_top`/`padding_bottom` (and `gap
 `{ base, md, lg }` where each layer is the utility class (`base` applies at all widths; md/lg
 override from that breakpoint up — the view/`sc_apply_styling_classes` inject the infix, e.g.
 `pt-3` → `pt-lg-3`). A legacy scalar still folds into `base`. Use this to keep big section rhythm on
-desktop while staying lighter on phones — e.g. Senkei features/pricing = base `pt-section` (6rem) →
+desktop while staying lighter on phones — e.g. the reference site features/pricing = base `pt-section` (6rem) →
 lg `pt-sectionlarge` (8rem). Only reach for FIXED (scalar) padding when the source is genuinely
 non-responsive.
 
-**Senkei (reference):** added `Section`=6rem + `Section Large`=8rem; features/pricing =
+**Reference:** added `Section`=6rem + `Section Large`=8rem; features/pricing =
 `pt-sectionlarge`/`pb-sectionlarge` (8rem), worlds = `pt-section`/`pb-section` (6rem), credit =
 `pt-5`/`pb-5` (3rem).
 
@@ -916,7 +916,7 @@ the standard SVG gotchas:**
   frontend mark is invisible on the light builder canvas) and wrap each logo in a `white-space:nowrap`
   span so multi-word names stay on one line.
 
-*(Senkei "Trusted by": an **Eyebrow** Text-Style label + logo-grid with Unreal/Unity/Blender/Wacom/
+*(the reference site "Trusted by": an **Eyebrow** Text-Style label + logo-grid with Unreal/Unity/Blender/Wacom/
 Adobe simple-icons marks, Show Names on, White Logo Color, grayscale, height 22, SQUARE viewBoxes.)*
 
 ---
@@ -994,7 +994,7 @@ The header + footer are **site chrome** = the parent theme's **Header/Footer The
 child `header.php`/`footer.php` and NOT page-builder content. Configure them on the (sub)site with
 `fw_set_db_settings_option()` (see `wordpress/demos/anime-header-footer.php` — the canonical recipe),
 then **delete the child `header.php`/`footer.php`** and their dead `.sk-nav`/`.sk-foot` CSS/JS so the
-parent renders the chrome. Building the Senkei nav I re-missed the SAME kind of detail over and over
+parent renders the chrome. Building the the reference site nav I re-missed the SAME kind of detail over and over
 (font size, exact link colour, the CTA style, the header tint) — so the rule is:
 
 > **EXTRACT every chrome sub-element's computed style from the source and set it explicitly — never
