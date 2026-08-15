@@ -314,8 +314,20 @@ class FW_Site_Converter_Bundle {
 		$html = (string) @file_get_contents( $html_file );
 		if ( trim( $html ) === '' || stripos( $html, 'data-sc-cs' ) === false ) { return; } // not a usable capture.
 
-		$title = ( is_array( $meta ) && ! empty( $meta['name'] ) ) ? (string) $meta['name'] : 'Home';
-		$res   = FW_Site_Converter_Sources::build_from_html( $html, $title, array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+		$title   = ( is_array( $meta ) && ! empty( $meta['name'] ) ) ? (string) $meta['name'] : 'Home';
+		// The source site URL → lets the Mapper absolutize + inline relative /assets/*.svg. Primary source is
+		// the manifest `source`; but derive it ROBUSTLY from an absolute asset URL in media.json when the
+		// manifest lacks it (an older bundle, or a lossy unzip that dropped bundle.json) — otherwise every
+		// same-origin SVG (Need Help icons, the hero illustration) falls back to a relative /assets 404.
+		$src_url = ( is_array( $meta ) && ! empty( $meta['source'] ) ) ? (string) $meta['source'] : '';
+		if ( '' === $src_url ) {
+			$media = self::read_json( $dir, array( 'media.json' ) );
+			$urls  = ( is_array( $media ) && isset( $media['urls'] ) && is_array( $media['urls'] ) ) ? $media['urls'] : array();
+			foreach ( $urls as $u ) {
+				if ( is_string( $u ) && preg_match( '#^(https?://[^/]+)/#i', $u, $mm ) ) { $src_url = $mm[1]; break; }
+			}
+		}
+		$res     = FW_Site_Converter_Sources::build_from_html( $html, $title, array( 'dynamic_chrome' => true, 'hifi_css' => true, 'source_url' => $src_url ) );
 		$files = ( is_array( $res ) && isset( $res['files'] ) && is_array( $res['files'] ) ) ? $res['files'] : array();
 		if ( empty( $files['pages.json'] ) ) { return; } // build produced nothing usable → leave the bundle as-is.
 

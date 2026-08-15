@@ -36,6 +36,7 @@ class FW_Site_Converter_Presets {
 		'section_style_presets',
 		'image_styles',
 		'background_patterns',
+		'shape_dividers',
 		'spacing_scale',
 		'gap_scale',
 		'default_gap',

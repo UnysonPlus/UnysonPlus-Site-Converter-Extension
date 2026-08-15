@@ -300,7 +300,17 @@ class FW_Site_Converter_Theme_Generator {
 
 		// Fonts — heading from the logo / section headings, body from <body>.
 		$logo         = isset( $head['logo'] ) && is_array( $head['logo'] ) ? $head['logo'] : array();
-		$heading_face = isset( $logo['computed']['fontFamily'] ) ? $logo['computed']['fontFamily'] : self::section_heading_face( $cap );
+		// Heading font from a REAL section <h1>/<h2>, NOT the logo — a logo/wordmark routinely uses the body
+		// (or a bespoke) font, so keying the heading font off it mis-detects it (e.g. logo=Inter over the
+		// actual display face Playfair Display), then overrides the correct css-tokens heading var. Parity
+		// with the JS to-design-config, whose comment flags this exact trap. Logo is only a last resort.
+		// PRIMARY: the captured heading TYPOGRAPHY (a real <h1>/<h2>'s computed family, same source detect_typography
+		// uses for the theme-settings heading_font). NOT the logo — a wordmark routinely uses the body/a bespoke
+		// font, so keying off it mis-detects the heading face (logo=Inter over the real display face Playfair
+		// Display), then overrides the correct css-tokens heading var. Section heading, then logo, are fallbacks.
+		$heading_face = isset( $cap['typography']['heading']['fontFamily'] ) ? (string) $cap['typography']['heading']['fontFamily'] : '';
+		if ( '' === trim( $heading_face ) ) { $heading_face = self::section_heading_face( $cap ); }
+		if ( '' === trim( (string) $heading_face ) && isset( $logo['computed']['fontFamily'] ) ) { $heading_face = (string) $logo['computed']['fontFamily']; }
 		$heading_font = self::first_family( $heading_face );
 		$body_font    = self::first_family( isset( $body['fontFamily'] ) ? $body['fontFamily'] : '' );
 		// Fall back to the design-config's own `fonts` block (the PHP conversion path fills these from the

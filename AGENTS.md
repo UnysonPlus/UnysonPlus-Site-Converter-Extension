@@ -6,6 +6,13 @@ provides: admin page (Unyson+ → Convert) + reusable importer engines
 status: in progress — roadmap #2 of the AI-site → WordPress initiative
 ---
 
+> **⛔ READ [`FIX-THE-DETERMINISTIC-CONVERTER.md`](./FIX-THE-DETERMINISTIC-CONVERTER.md) BEFORE
+> TOUCHING ANYTHING HERE.** When the user reports a conversion problem, the fix goes in the
+> converter CODE (JS capture + this PHP engine) and is verified by reproducing their REAL flow —
+> paste-URL-and-run, i.e. a **FRESH capture of the URL → convert**. NEVER "fix" it by importing a
+> stale `capture-out/` bundle via wp-cli or by hand-editing the live site's DB/options — that is
+> fixing the website, not the converter, and it masks the real failure.
+
 # Site Converter
 
 The admin home for the **AI-generated-site → WordPress importer** (roadmap #2 of the

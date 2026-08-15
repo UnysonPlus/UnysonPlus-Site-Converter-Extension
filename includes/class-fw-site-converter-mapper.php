@@ -454,7 +454,7 @@ class FW_Site_Converter_Mapper {
 			$buf .= $ch;
 		}
 		if ( $buf !== '' ) { $parts[] = trim( $buf ); }
-		$angle = 90;
+		$angle = 180; // CSS default for a DIRECTIONLESS linear-gradient is "to bottom" (180deg), not 90 (to right).
 		if ( isset( $parts[0] ) && preg_match( '/^(-?[0-9.]+)deg$/', $parts[0], $am ) ) {
 			$angle = (float) $am[1]; array_shift( $parts );
 		} elseif ( isset( $parts[0] ) && stripos( $parts[0], 'to ' ) === 0 ) {
@@ -568,6 +568,106 @@ class FW_Site_Converter_Mapper {
 
 	/** Is the faithful base active? */
 	public static function hifi_on() { return self::$hifi_on; }
+
+	/** Absolute source origin for THIS build (from the bundle manifest), so a relative /assets/*.svg can be
+	 *  fetched + inlined. '' when unknown (e.g. an HTML upload) → SVG icons degrade to a custom-upload URL. */
+	private static $source_url = '';
+
+	/** Set the source site URL for this build (enables SVG icon/illustration inlining). */
+	public static function set_source_url( $url ) { self::$source_url = (string) $url; self::$rwd_shim_done = false; }
+
+	/** Emitted-once guard for the responsive-display CSS shim (reset per build via set_source_url). */
+	private static $rwd_shim_done = false;
+
+	/** Tailwind responsive display utilities have NO runtime in the builder, so a verbatim `hidden lg:block`
+	 *  desktop variant and its `lg:hidden` mobile twin BOTH show (duplicated images). Emit real CSS for those
+	 *  utilities — scoped to the converter's `.sc-tw` verbatim wrapper, once per build — so show/hide works. */
+	private static function maybe_rwd_shim( $html ) {
+		if ( self::$rwd_shim_done ) { return $html; }
+		if ( ! preg_match( '/\b(?:hidden|(?:sm|md|lg|xl):(?:hidden|block|flex|grid|inline-block|inline-flex))\b/', $html ) ) { return $html; }
+		self::$rwd_shim_done = true;
+		$disp = array( 'block' => 'block', 'flex' => 'flex', 'grid' => 'grid', 'inline-block' => 'inline-block', 'inline-flex' => 'inline-flex' );
+		$bps  = array( 'sm' => 640, 'md' => 768, 'lg' => 1024, 'xl' => 1280 );
+		$css  = '.sc-tw .hidden{display:none !important}';
+		foreach ( $bps as $bp => $px ) {
+			$rules = '.sc-tw .' . $bp . '\\:hidden{display:none !important}';
+			foreach ( $disp as $u => $d ) { $rules .= '.sc-tw .' . $bp . '\\:' . $u . '{display:' . $d . ' !important}'; }
+			$css .= '@media(min-width:' . $px . 'px){' . $rules . '}';
+		}
+		return '<style>' . $css . '</style>' . $html;
+	}
+
+	/** Per-build cache of fetched+sanitised SVG markup, keyed by absolute URL (an svg can appear as both an
+	 *  icon and an illustration; fetch each once). */
+	private static $svg_cache = array();
+
+	/** Absolutise a source-relative asset URL against the source origin, so an un-inlined SVG HOTLINKS on the
+	 *  new domain (source returns 200) instead of 404-ing as a bare `/assets/…` path. Unchanged if already
+	 *  absolute / a data URI / no source origin is known. This is the reliability fallback for SVG inlining. */
+	private static function abs_asset( $url ) {
+		$url = trim( (string) $url );
+		if ( '' === $url || preg_match( '#^(?:https?:)?//#i', $url ) || 0 === strpos( $url, 'data:' ) ) { return $url; }
+		if ( class_exists( 'FW_Site_Converter_Media' ) && '' !== self::$source_url ) {
+			$abs = FW_Site_Converter_Media::absolutize( $url, self::$source_url );
+			if ( '' !== $abs ) { return $abs; }
+		}
+		return $url;
+	}
+
+	/** Absolutise a (possibly relative) svg src against the source origin, fetch + sanitise it (cached). */
+	private static function fetch_svg_cached( $src ) {
+		$src = trim( (string) $src );
+		if ( $src === '' || ! preg_match( '/\.svg(?:$|\?)/i', $src ) || ! class_exists( 'FW_Site_Converter_Media' ) ) { return ''; }
+		$abs = preg_match( '#^https?://#i', $src ) ? $src : FW_Site_Converter_Media::absolutize( $src, self::$source_url );
+		if ( $abs === '' || ! preg_match( '#^https?://#i', $abs ) ) { return ''; }
+		if ( ! array_key_exists( $abs, self::$svg_cache ) ) { self::$svg_cache[ $abs ] = FW_Site_Converter_Media::fetch_svg_markup( $abs ); }
+		return self::$svg_cache[ $abs ];
+	}
+
+	/** Inline any `<img src=*.svg>` inside verbatim HTML as sanitised inline <svg> — WordPress can't host SVG
+	 *  in the media library, so a relative/sideloaded <img> 404s. Leaves non-SVG / un-fetchable imgs alone. */
+	private static function inline_svg_imgs( $html ) {
+		if ( stripos( $html, '.svg' ) === false ) { return $html; }
+		return preg_replace_callback(
+			'/<img\b[^>]*\bsrc\s*=\s*(["\'])([^"\']+\.svg(?:\?[^"\']*)?)\1[^>]*>/i',
+			function ( $m ) {
+				$svg = self::fetch_svg_cached( $m[2] );
+				if ( $svg === '' ) {
+					// Couldn't inline — absolutise the src so it HOTLINKS instead of 404-ing as a relative path.
+					$abs = self::abs_asset( $m[2] );
+					return ( $abs !== $m[2] ) ? str_replace( $m[2], $abs, $m[0] ) : $m[0];
+				}
+				$svg = preg_replace( '/<svg\b/i', '<svg style="max-width:100%;height:auto"', $svg, 1 );
+				return '<span class="sc-illustration" style="display:inline-block;max-width:100%;">' . $svg . '</span>';
+			},
+			$html
+		);
+	}
+
+	/**
+	 * An `<img src=*.svg>` → an INLINE icon-v2 SVG value. WordPress can't host SVG in the media library,
+	 * so a custom-upload URL 404s; inline markup renders on any domain via sc_icon_render and keeps the
+	 * illustration's own colours. Fetches the markup (absolutising a relative src against the source
+	 * origin). Returns null when it isn't an SVG or can't be fetched → the caller falls back.
+	 *
+	 * @param string $src an <img> src (absolute or source-relative)
+	 * @return array|null icon-v2 svg-inline value, or null
+	 */
+	private static function svg_inline_icon( $src ) {
+		$svg = self::fetch_svg_cached( $src );
+		if ( $svg === '' ) { return null; }
+		// icon_box's `icon_size` emits font-size on the icon wrapper. A raw <svg> with fixed width/height
+		// ignores it (stays glyph-small). Strip the fixed dimensions and let the SVG track font-size
+		// (height:1em, width auto — aspect preserved by the viewBox), so icon_size actually resizes it.
+		$svg = preg_replace_callback( '/<svg\b[^>]*>/i', function ( $m ) {
+			$tag = preg_replace( '/\s(?:width|height)\s*=\s*("[^"]*"|\'[^\']*\')/i', '', $m[0] );
+			if ( preg_match( '/\sstyle\s*=\s*"/i', $tag ) ) {
+				return preg_replace( '/(\sstyle\s*=\s*")/i', '$1height:1em;width:auto;max-width:100%;', $tag, 1 );
+			}
+			return preg_replace( '/<svg\b/i', '<svg style="height:1em;width:auto;max-width:100%"', $tag, 1 );
+		}, $svg, 1 );
+		return array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => $svg, 'svg-id' => '' );
+	}
 
 	/** Is a computed appearance value visually INERT (a browser initial value that carries no look)? So the
 	 *  base stays lean — an element at the CSS default for a prop gets no rule for it. */
@@ -1193,7 +1293,7 @@ class FW_Site_Converter_Mapper {
 		// placement) so the content keeps its top/bottom breathing room, exactly like an image-bg hero.
 		// Without this a video-bg hero collapsed to zero vertical spacing (its source height came from
 		// min-h-screen + flex-centering, which apply_bg_video didn't reproduce).
-		self::apply_hero_frame( $node, (string) ( $b['valign'] ?? 'middle' ) );
+		self::apply_hero_frame( $node, (string) ( $b['valign'] ?? 'middle' ), (string) ( $b['hero_height'] ?? '' ) );
 	}
 
 	/**
@@ -1205,11 +1305,23 @@ class FW_Site_Converter_Mapper {
 	 * @param array  $node   Section node (by ref).
 	 * @param string $valign top|middle|bottom (default middle).
 	 */
-	private static function apply_hero_frame( array &$node, $valign = 'middle' ) {
+	private static function apply_hero_frame( array &$node, $valign = 'middle', $height = '' ) {
 		if ( ! isset( $node['atts'] ) || ! is_array( $node['atts'] ) ) { return; }
-		$node['atts']['min_height']     = array( 'preset' => '80vh', 'custom' => array( 'custom_height' => array( 'value' => '', 'unit' => 'px' ) ) );
-		$vmap = array( 'top' => 'top', 'middle' => 'middle', 'bottom' => 'bottom' );
-		$node['atts']['content_valign'] = isset( $vmap[ (string) $valign ] ) ? $vmap[ (string) $valign ] : 'middle';
+		// The min-height mirrors the SOURCE hero height (`h-screen` → 100vh, `h-[80vh]` → 80vh, a computed vh
+		// height → itself); fall back to 80vh only when the source gave a bare boolean signal. A vh value maps
+		// to the preset; anything else (a px height) goes to the custom field.
+		$h        = trim( (string) $height );
+		$is_preset = ( '' !== $h && preg_match( '/^[0-9.]+vh$/', $h ) );
+		$node['atts']['min_height']     = array(
+			'preset' => $is_preset ? $h : ( '' === $h ? '80vh' : 'custom' ),
+			'custom' => array( 'custom_height' => array( 'value' => ( ! $is_preset && '' !== $h ) ? preg_replace( '/[^0-9.].*$/', '', $h ) : '', 'unit' => 'px' ) ),
+		);
+		// The SECTION shortcode's vertical-align att is `column_valign` (values stretch/top/center/bottom), and
+		// it DEFAULTS to 'stretch' — which OVERRIDES the legacy `content_valign` fallback the view also reads.
+		// So set column_valign DIRECTLY, mapping the hero's 'middle' → the section's 'center'. (Without this the
+		// hero rendered stretched/top-aligned and its heading overlapped an overlay header.)
+		$vmap = array( 'top' => 'top', 'middle' => 'center', 'bottom' => 'bottom' );
+		$node['atts']['column_valign'] = isset( $vmap[ (string) $valign ] ) ? $vmap[ (string) $valign ] : 'center';
 		// NEVER-DROP hero horizontal alignment: a LEFT-aligned viewport-tall hero should sit LEFT-FLUSH like
 		// the source, not in the theme's auto-centered max-width container. Skipped for a CENTERED band.
 		if ( 'center' !== (string) ( isset( $node['atts']['text_align'] ) ? $node['atts']['text_align'] : '' ) ) {
@@ -1246,13 +1358,20 @@ class FW_Site_Converter_Mapper {
 			'repeat'     => 'no-repeat',
 			'attachment' => 'scroll',
 		);
-		// Dark scrim (background-pro `overlay`) → white heading/overline/CTA stay readable over the photo.
-		$node['atts']['background']['overlay'] = array(
-			'color'    => 'rgba(0, 0, 0, 0.35)',
-			'gradient' => array( 'type' => 'linear', 'angle' => 90, 'stops' => array() ),
-		);
+		// OVERLAY / SCRIM (background-pro `overlay`) → white heading/overline/CTA stay readable over the photo.
+		// Carry the SOURCE overlay when detected (section_bg_image): a gradient scrim → overlay/gradient (the
+		// gradient-v2 shape), a semi-transparent colour → overlay/color. Fall back to a flat 35% black only
+		// when the source hero had NO explicit overlay layer.
+		$ov = trim( (string) ( $bg['overlay'] ?? '' ) );
+		if ( $ov !== '' && stripos( $ov, 'gradient' ) !== false && ( $grad = self::parse_linear_gradient( $ov ) ) ) {
+			$node['atts']['background']['overlay'] = array( 'color' => '', 'gradient' => $grad );
+		} elseif ( $ov !== '' && preg_match( '/^rgba?\(|^#|^hsla?\(/i', $ov ) ) {
+			$node['atts']['background']['overlay'] = array( 'color' => $ov, 'gradient' => array( 'type' => 'linear', 'angle' => 90, 'stops' => array() ) );
+		} else {
+			$node['atts']['background']['overlay'] = array( 'color' => 'rgba(0, 0, 0, 0.35)', 'gradient' => array( 'type' => 'linear', 'angle' => 90, 'stops' => array() ) );
+		}
 		if ( ! empty( $bg['hero'] ) ) {
-			self::apply_hero_frame( $node, (string) ( $bg['valign'] ?? 'middle' ) );
+			self::apply_hero_frame( $node, (string) ( $bg['valign'] ?? 'middle' ), (string) ( $bg['hero_height'] ?? '' ) );
 		}
 	}
 
@@ -1335,6 +1454,33 @@ class FW_Site_Converter_Mapper {
 	 * @param string $cls
 	 * @return array|null
 	 */
+	/**
+	 * Row-level column widths for a flex row that mixes a FIXED-px column (`w-[Npx]`) with flex-1
+	 * column(s): the fixed column maps to its px over a ~1200px content container (rounded to /12), and
+	 * the flex-1 column(s) share the remainder. Returns [colIndex => slug] or [] when the row isn't a
+	 * clean fixed-px + flex-1 mix (then the per-column path runs). (P3 audit fix: unbalanced two-column
+	 * bands where a fixed visual + flex body were both mapped to 1_2.)
+	 */
+	private static function flex_row_widths( $cols ) {
+		if ( ! is_array( $cols ) || count( $cols ) < 2 ) { return array(); }
+		$ref = 1200.0; $fixed = array(); $flex = array();
+		foreach ( $cols as $i => $c ) {
+			$cls = is_array( $c ) ? (string) ( $c['cls'] ?? '' ) : '';
+			if ( preg_match( '/(?:^|\s|:)w-\[(\d+(?:\.\d+)?)px\]/', $cls, $m ) ) { $fixed[ $i ] = (float) $m[1]; }
+			elseif ( preg_match( '/(?:^|\s)(?:flex-1|flex-auto|grow)\b/', $cls ) ) { $flex[ $i ] = true; }
+		}
+		if ( ! $fixed || ! $flex || ( count( $fixed ) + count( $flex ) ) !== count( $cols ) ) { return array(); }
+		$used = 0; $out = array();
+		foreach ( $fixed as $i => $px ) { $frac = max( 1, min( 11, (int) round( ( $px / $ref ) * 12 ) ) ); $used += $frac; $out[ $i ] = $frac; }
+		$rem = 12 - $used;
+		if ( $rem < count( $flex ) ) { return array(); }
+		$each = intdiv( $rem, count( $flex ) ); $extra = $rem - $each * count( $flex ); $first = true;
+		foreach ( $flex as $i => $_u ) { $out[ $i ] = $each + ( $first ? $extra : 0 ); $first = false; }
+		$slugs = array();
+		foreach ( $out as $i => $n ) { $slugs[ $i ] = self::frac12( $n ); }
+		return $slugs;
+	}
+
 	private static function col_layout( $cls ) {
 		$lg = ''; $md = ''; $sm = ''; $xs = '';
 		foreach ( preg_split( '/\s+/', (string) $cls ) as $c ) {
@@ -1471,6 +1617,12 @@ class FW_Site_Converter_Mapper {
 	}
 	private static function n_code( $html ) {
 		$html = (string) $html;
+		// A verbatim block can carry an `<img src=*.svg>` (e.g. a centered illustration) — WordPress can't
+		// host SVG, so inline it as sanitised <svg> here so it renders instead of 404-ing.
+		$html = self::inline_svg_imgs( $html );
+		// Make Tailwind responsive show/hide (hidden / lg:block / lg:hidden …) actually work in verbatim HTML,
+		// so a desktop/mobile variant pair doesn't render duplicated (once-per-build CSS shim, scoped to .sc-tw).
+		$html = self::maybe_rwd_shim( $html );
 		// PRETEACH tables: a verbatim <table> is wrapped in the default Table Preset skin (.tbl-{slug}).
 		// That preset's CSS targets descendant `> table > thead/tbody…`, so the raw source table renders
 		// styled (header fill, borders, stripes) instead of bare — no per-site table-style derivation
@@ -1509,6 +1661,18 @@ class FW_Site_Converter_Mapper {
 		if ( preg_match( '/<img\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) { $src = trim( $m[1] ); }
 		if ( preg_match( '/<img\b[^>]*\balt\s*=\s*["\']([^"\']*)["\']/i', $html, $m ) ) { $alt = trim( $m[1] ); }
 		if ( $src === '' ) { return self::n_code( $html ); }
+
+		// A standalone SVG illustration → INLINE it (the media library can't host SVG, so a media_image URL
+		// 404s). Emit the sanitised markup verbatim as a responsive code block instead of an <img>.
+		if ( preg_match( '/\.svg(?:$|\?)/i', $src ) ) {
+			$svg = self::fetch_svg_cached( $src );
+			if ( $svg !== '' ) {
+				$svg = preg_replace( '/<svg\b/i', '<svg style="max-width:100%;height:auto"', $svg, 1 );
+				return self::n_code( '<div class="sc-illustration" style="max-width:100%;">' . $svg . '</div>' );
+			}
+			// Couldn't inline → hotlink the ABSOLUTE source SVG (200) instead of a relative /assets path (404).
+			$src = self::abs_asset( $src );
+		}
 
 		// NOTHING DROPPED: the native media_image can carry a src/alt/size but NOT a visual SKIN
 		// (border colour + width, shadow, ring, outline, or an organic/rounded radius / blob shape).
@@ -1832,7 +1996,7 @@ class FW_Site_Converter_Mapper {
 	 * rating defaults to 5 (the shortcode default). The avatar carries the source URL only — the
 	 * media phase localizes it to the imported attachment (the view renders from `url`).
 	 */
-	private static function n_testimonials( array $rows ) {
+	private static function n_testimonials( array $rows, $design = null ) {
 		$items = array();
 		foreach ( $rows as $r ) {
 			$has_rating = isset( $r['rating'] ) && $r['rating'] !== null && $r['rating'] !== '';
@@ -1846,10 +2010,39 @@ class FW_Site_Converter_Mapper {
 				'rating'        => $has_rating ? (float) $r['rating'] : 5,
 			);
 		}
+		// Carry the source's UPPERCASE letter-spaced author kicker onto the rendered name/role — the native
+		// view has no per-part transform option, so it rides as scoped custom CSS (`.testimonial-author` = the
+		// name, `.testimonial-job` = the role). Only when the source attribution actually used it.
+		$custom_css = '';
+		$au = false; $als = '';
+		foreach ( $rows as $r ) { if ( ! empty( $r['author_upper'] ) ) { $au = true; if ( ! empty( $r['author_ls'] ) ) { $als = (string) $r['author_ls']; } break; } }
+		if ( $au ) {
+			$decl = 'text-transform:uppercase;' . ( $als !== '' ? 'letter-spacing:' . $als . ';' : '' );
+			$custom_css = 'selector .testimonial-author,selector .testimonial-job{' . $decl . '}';
+		}
+		// DESIGN — mirror the source testimonial's presentation (Classic single/grid/carousel, Marquee, …)
+		// when the converter classified it (detect_testimonial_design); else the Classic default. Only the
+		// design + its layout sub-choice are overridden — every design's other defaults stay intact.
+		$design_settings = self::testimonials_design_default();
+		if ( is_array( $design ) && ! empty( $design['design'] ) ) {
+			$d = (string) $design['design'];
+			$design_settings['design'] = $d;
+			if ( 'default' === $d && ! empty( $design['layout_choice'] ) && isset( $design_settings['default']['layout_type'] ) ) {
+				$design_settings['default']['layout_type']['layout_choice'] = (string) $design['layout_choice'];
+				if ( 'grid' === $design['layout_choice'] && ! empty( $design['grid_columns'] ) && isset( $design_settings['default']['layout_type']['grid'] ) ) {
+					$design_settings['default']['layout_type']['grid']['grid_columns'] = (string) $design['grid_columns'];
+				}
+			}
+			// Design-specific sub-options (e.g. masonry_columns / bubble_columns / zigzag_start) — merge onto
+			// that design's default sub-tree so its other defaults survive.
+			if ( ! empty( $design['sub'] ) && is_array( $design['sub'] ) && isset( $design_settings[ $d ] ) && is_array( $design_settings[ $d ] ) ) {
+				$design_settings[ $d ] = array_merge( $design_settings[ $d ], $design['sub'] );
+			}
+		}
 		return array( 'type' => 'simple', 'shortcode' => 'testimonials', '_items' => array(), 'atts' => array(
 			'title'           => '',
 			'testimonials'    => $items,
-			'design_settings' => self::testimonials_design_default(),
+			'design_settings' => $design_settings,
 			'container_type'  => 'container',
 			'text_align'      => 'text-center',
 			'avatar_shape'    => 'rounded-circle',
@@ -1860,7 +2053,7 @@ class FW_Site_Converter_Mapper {
 			'author_name_color' => self::empty_color(), 'author_job_color' => self::empty_color(), 'site_link_color' => self::empty_color(),
 			'spacing'         => self::def_spacing(),
 			'animation'       => self::def_animation(),
-			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
+			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => $custom_css, 'responsive_hide' => array(), 'custom_attrs' => array(),
 		) );
 	}
 
@@ -2102,15 +2295,62 @@ class FW_Site_Converter_Mapper {
 		$atts['click_action'] = 'lightbox';
 		$atts['rounded']      = 'rounded';
 		$atts['hover_zoom']   = 'yes';
-		if ( isset( $atts['design_settings']['grid'] ) && is_array( $atts['design_settings']['grid'] ) ) {
-			$atts['design_settings']['design']          = 'grid';
-			$atts['design_settings']['grid']['count']   = (string) $count;
-			$atts['design_settings']['grid']['columns'] = array( (string) $count => array( 'col_ratio' => $ratio ) );
+		// DESIGN — mirror the source gallery's presentation (Grid / Masonry / Metro / Carousel / Marquee)
+		// when the converter classified it (detect_gallery_design); else the uniform Grid. Only the chosen
+		// design + its column/per-view count are set — every design's other defaults stay intact.
+		$gd   = ( isset( $b['design'] ) && is_array( $b['design'] ) && ! empty( $b['design']['design'] ) ) ? $b['design'] : array( 'design' => 'grid' );
+		$dkey = (string) $gd['design'];
+		if ( isset( $atts['design_settings'] ) && is_array( $atts['design_settings'] ) ) {
+			$atts['design_settings']['design'] = $dkey;
+			// The default atts only materialize the 'grid' branch, so CREATE a design's branch when picking a
+			// non-grid design (the shortcode fills the rest from its own defaults — only `design` is required).
+			if ( ! isset( $atts['design_settings'][ $dkey ] ) || ! is_array( $atts['design_settings'][ $dkey ] ) ) { $atts['design_settings'][ $dkey ] = array(); }
+			if ( 'grid' === $dkey ) {
+				// Uniform grid — carry the source col-spans as the per-column ratio (a featured tile stays wider).
+				$atts['design_settings']['grid']['count']   = (string) $count;
+				$atts['design_settings']['grid']['columns'] = array( (string) $count => array( 'col_ratio' => $ratio ) );
+			} elseif ( in_array( $dkey, array( 'masonry', 'metro' ), true ) ) {
+				// Column-count designs use the nested `columns` shape `{ count:'N', 'N':{} }` + a gap default.
+				$n = ! empty( $gd['columns'] ) ? (string) $gd['columns'] : '3';
+				$atts['design_settings'][ $dkey ]['columns'] = array( 'count' => $n, $n => array() );
+				if ( ! isset( $atts['design_settings'][ $dkey ]['gap'] ) ) { $atts['design_settings'][ $dkey ]['gap'] = '3'; }
+			} elseif ( 'carousel' === $dkey ) {
+				// Slider — a sensible visible-slide count; the carousel_* switches default on the shortcode side.
+				$atts['design_settings']['carousel']['per_view'] = (string) min( 4, max( 1, $count ) );
+			}
+			// marquee: no required sub-option — the design's speed/direction/width defaults render as-is.
 		}
 		$atts['unique_id'] = self::uid();
 		if ( ! isset( $atts['css_id'] ) )    { $atts['css_id'] = ''; }
 		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
 		return array( 'type' => 'simple', 'shortcode' => 'gallery', '_items' => array(), 'atts' => $atts );
+	}
+
+	/**
+	 * A native `posts` shortcode node from a detected blog LISTING (recognizer block `{ count, meta:{date,
+	 * author}, design:{layout_mode,card_style,columns} }`). The `posts` shortcode is a DYNAMIC WP_Query, so the
+	 * source's specific cards are NOT reproduced — instead a live `post` feed is emitted with the closest
+	 * layout / card design + the meta bar the source showed, and it fills from the target site's own posts.
+	 */
+	private static function n_posts( array $b ) {
+		$d = ( isset( $b['design'] ) && is_array( $b['design'] ) ) ? $b['design'] : array();
+		$meta = ( isset( $b['meta'] ) && is_array( $b['meta'] ) ) ? $b['meta'] : array();
+		$atts = self::shortcode_default_atts( 'posts' );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		$atts['post_type']       = 'post';
+		$atts['posts_per_page']  = (string) max( 3, (int) ( $b['count'] ?? 6 ) );
+		$atts['orderby']         = 'date';
+		$atts['order']           = 'DESC';
+		$atts['layout_mode']     = (string) ( $d['layout_mode'] ?? 'grid' );
+		$atts['card_style']      = (string) ( $d['card_style'] ?? 'standard' );
+		$atts['columns_desktop'] = (string) min( 6, max( 1, (int) ( $d['columns'] ?? 3 ) ) );
+		// Show only the meta the source actually displayed (date / author).
+		$atts['meta_items']      = array( 'date' => ! empty( $meta['date'] ), 'author' => ! empty( $meta['author'] ) );
+		$atts['pagination_type'] = 'none';
+		$atts['unique_id']       = self::uid();
+		if ( ! isset( $atts['css_id'] ) )    { $atts['css_id'] = ''; }
+		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
+		return array( 'type' => 'simple', 'shortcode' => 'posts', '_items' => array(), 'atts' => $atts );
 	}
 
 	/**
@@ -2197,7 +2437,13 @@ class FW_Site_Converter_Mapper {
 		}
 		if ( count( $tabs ) < 2 ) { return self::n_code( '' ); }
 		if ( ! $have_active ) { $tabs[0]['is_active'] = 'yes'; }
-		return self::finalize_widget( 'tabs', array( 'tabs' => $tabs ) );
+		// Mirror the source presentation: `orientation` (horizontal/vertical) + the nav `design`
+		// (underline/pills/segmented/boxed) when detect_tabs_design classified them.
+		$d = ( isset( $b['design'] ) && is_array( $b['design'] ) ) ? $b['design'] : array();
+		$overlay = array( 'tabs' => $tabs );
+		if ( ! empty( $d['orientation'] ) ) { $overlay['orientation'] = (string) $d['orientation']; }
+		if ( ! empty( $d['tab_style'] ) )   { $overlay['design'] = (string) $d['tab_style']; }
+		return self::finalize_widget( 'tabs', $overlay );
 	}
 
 	/**
@@ -2218,7 +2464,8 @@ class FW_Site_Converter_Mapper {
 			);
 		}
 		if ( count( $steps ) < 2 ) { return self::n_code( '' ); }
-		return self::finalize_widget( 'steps', array( 'steps' => $steps ) );
+		$d = ( isset( $b['design'] ) && is_array( $b['design'] ) && ! empty( $b['design']['design'] ) ) ? array( 'design' => (string) $b['design']['design'] ) : array();
+		return self::finalize_widget( 'steps', array( 'steps' => $steps ) + $d );
 	}
 
 	/**
@@ -2244,7 +2491,8 @@ class FW_Site_Converter_Mapper {
 			);
 		}
 		if ( count( $items ) < 2 ) { return self::n_code( '' ); }
-		return self::finalize_widget( 'timeline', array( 'items' => $items ) );
+		$d = ( isset( $b['design'] ) && is_array( $b['design'] ) && ! empty( $b['design']['design'] ) ) ? array( 'design' => (string) $b['design']['design'] ) : array();
+		return self::finalize_widget( 'timeline', array( 'items' => $items ) + $d );
 	}
 
 	/**
@@ -2264,7 +2512,8 @@ class FW_Site_Converter_Mapper {
 			);
 		}
 		if ( count( $bars ) < 2 ) { return self::n_code( '' ); }
-		return self::finalize_widget( 'progress', array( 'layout' => array( 'type' => 'bar' ), 'bars' => $bars ) );
+		$type = ( isset( $b['design']['type'] ) && in_array( $b['design']['type'], array( 'bar', 'circle', 'gauge' ), true ) ) ? (string) $b['design']['type'] : 'bar';
+		return self::finalize_widget( 'progress', array( 'layout' => array( 'type' => $type ), 'bars' => $bars ) );
 	}
 
 	/**
@@ -2296,8 +2545,12 @@ class FW_Site_Converter_Mapper {
 			);
 		}
 		if ( count( $plans ) < 2 ) { return self::n_code( '' ); }
-		$cols = (string) max( 2, min( 5, count( $plans ) ) );
-		return self::finalize_widget( 'pricing_table', array( 'plans' => $plans, 'columns' => $cols ) );
+		$cols    = (string) max( 2, min( 5, count( $plans ) ) );
+		$overlay = array( 'plans' => $plans, 'columns' => $cols );
+		if ( isset( $b['design'] ) && in_array( $b['design'], array( 'classic', 'modern', 'minimal', 'gradient', 'dark', 'outline' ), true ) ) {
+			$overlay['design'] = (string) $b['design'];
+		}
+		return self::finalize_widget( 'pricing_table', $overlay );
 	}
 
 	/**
@@ -2489,6 +2742,17 @@ class FW_Site_Converter_Mapper {
 			// the AI path emits doesn't exist on this path, so a single class loaded after the theme wins.
 			'css_id'          => '', 'css_class' => self::button_style_class( $cls, $cs ), 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		);
+		// AUTO-WIDTH: a lone button is a flex item in a column whose content wrapper defaults to
+		// align-items:stretch, so an inline-block source button gets blockified + stretched to the full
+		// column width. Pin it back to its natural width (unless the source button was genuinely full-width),
+		// preserving the source's horizontal placement (a centered `mx-auto` button stays centered).
+		$bcls  = ' ' . strtolower( (string) $cls . ' ' . (string) $group_cls ) . ' ';
+		$bfull = ( strpos( $bcls, ' w-full ' ) !== false || strpos( $bcls, ' w-100 ' ) !== false || strpos( $bcls, ' w-screen ' ) !== false || strpos( $bcls, ' block ' ) !== false );
+		if ( ! $bfull && preg_match( '/display\s*:\s*block/i', (string) $cs ) && preg_match( '/width\s*:\s*100%/i', (string) $cs ) ) { $bfull = true; }
+		if ( ! $bfull ) {
+			$bself = ( strpos( $bcls, ' mx-auto ' ) !== false || strpos( $bcls, ' self-center ' ) !== false || strpos( $bcls, ' text-center ' ) !== false ) ? 'center' : 'flex-start';
+			$atts['custom_css'] = trim( $atts['custom_css'] . "\nselector{align-self:" . $bself . ";width:auto;}" );
+		}
 		$preset = self::button_preset_for( (string) $cls, (string) $cs );
 		if ( '' !== $preset['style'] ) { $atts['style'] = $preset['style']; }
 		if ( '' !== $preset['size'] )  { $atts['size']  = $preset['size']; }
@@ -2630,6 +2894,11 @@ class FW_Site_Converter_Mapper {
 			if ( strpos( $icls, ' aspect-square ' ) !== false )     { $ar = '1 / 1'; }
 			elseif ( strpos( $icls, ' aspect-video ' ) !== false )  { $ar = '16 / 9'; }
 			elseif ( preg_match( '/\saspect-\[([0-9.]+)\/([0-9.]+)\]/', $icls, $am ) ) { $ar = $am[1] . ' / ' . $am[2]; }
+			// The ratio often lives on the wrapping FRAME (`<div class="relative aspect-[3/4] overflow-hidden">`),
+			// not the <img> itself — captured as $img['aspect'] (img_frame_aspect). Without it a portrait photo
+			// renders at natural height and pushes its card's title BELOW its siblings' (the "Brand Alignment
+			// sits lower" case); with it every card in the grid crops to the same ratio and the row stays even.
+			elseif ( ! empty( $img['aspect'] ) && preg_match( '#^([0-9.]+)/([0-9.]+)$#', (string) $img['aspect'], $fm ) ) { $ar = $fm[1] . ' / ' . $fm[2]; }
 			$decl = 'width:100%;display:block;' . ( $ar !== '' ? 'aspect-ratio:' . $ar . ';object-fit:cover;' : 'height:auto;' );
 			$items[] = self::n_media_image( '<img src="' . esc_url( $src ) . '" alt="' . $alt . '" />', 'selector img{' . $decl . '}' );
 		}
@@ -2653,6 +2922,80 @@ class FW_Site_Converter_Mapper {
 		}
 		if ( ! $items ) { $items[] = self::n_code( '' ); }
 		return $items;
+	}
+
+	/** A source frame aspect ("3/4", "16/9") → the image_box `image_ratio` slug, or '' (→ keep default). */
+	private static function img_ratio_slug( $ar ) {
+		$ar = str_replace( ' ', '', (string) $ar );
+		$map = array( '1/1' => 'ratio-1-1', '4/3' => 'ratio-4-3', '3/2' => 'ratio-3-2', '16/9' => 'ratio-16-9', '3/4' => 'ratio-3-4', '2/3' => 'ratio-2-3' );
+		return isset( $map[ $ar ] ) ? $map[ $ar ] : '';
+	}
+
+	/**
+	 * A native `image_box` node from a captured IMAGE TILE — a prominent photo + title + short text (+ a CTA /
+	 * hover "explore" link): the portfolio / service-card / feature-tile pattern. Emits ONE cohesive image_box
+	 * (image + title + text + button + the source's design family) instead of decomposing to loose media_image
+	 * + heading + text blocks — so the tile's hover/overlay + button semantics survive. Returns array() when
+	 * there's no image (the caller falls back to n_image_card).
+	 *
+	 * @param array $card { image:{src,alt,cls,aspect}, title, titleTag, text, button, link }
+	 */
+	private static function n_image_box( array $card ) {
+		$img = isset( $card['image'] ) && is_array( $card['image'] ) ? $card['image'] : array();
+		$src = trim( (string) ( $img['src'] ?? '' ) );
+		if ( $src === '' ) { return array(); }
+		$atts = self::shortcode_default_atts( 'image_box' );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		// Image → the box image (sideloaded upload shape so the picker previews + can edit it).
+		$uv = self::upload_val( $src );
+		$atts['image'] = array(
+			'attachment_id' => ( isset( $uv['attachment_id'] ) && $uv['attachment_id'] !== '' ) ? $uv['attachment_id'] : 0,
+			'url'           => ( isset( $uv['url'] ) && $uv['url'] !== '' ) ? $uv['url'] : $src,
+		);
+		$atts['image_alt'] = (string) ( $img['alt'] ?? '' );
+		$title = trim( wp_strip_all_tags( (string) ( $card['title'] ?? '' ) ) );
+		$atts['title'] = $title;
+		$tag = strtolower( (string) ( $card['titleTag'] ?? 'h3' ) );
+		$atts['title_tag'] = preg_match( '/^h[2-6]$/', $tag ) ? $tag : 'h3';
+		$atts['text'] = (string) ( $card['text'] ?? '' );
+		// Crop the image to the source frame aspect (keeps a tile grid uniform).
+		$icls = ' ' . strtolower( (string) ( $img['cls'] ?? '' ) ) . ' '; $ar = '';
+		if ( strpos( $icls, ' aspect-square ' ) !== false )    { $ar = '1/1'; }
+		elseif ( strpos( $icls, ' aspect-video ' ) !== false ) { $ar = '16/9'; }
+		elseif ( preg_match( '/\saspect-\[([0-9.]+)\/([0-9.]+)\]/', $icls, $am ) ) { $ar = $am[1] . '/' . $am[2]; }
+		elseif ( ! empty( $img['aspect'] ) ) { $ar = (string) $img['aspect']; }
+		$rslug = self::img_ratio_slug( $ar );
+		if ( $rslug !== '' ) { $atts['image_ratio'] = $rslug; }
+		// CTA — a short explore/CTA label (from a real button, else a whole-card "Discover →" link). An arrow
+		// glyph / icon → the `arrow` link style; else a text link. The card's own link becomes the box link.
+		$btn  = isset( $card['button'] ) && is_array( $card['button'] ) ? $card['button'] : array();
+		$link = isset( $card['link'] ) && is_array( $card['link'] ) ? $card['link'] : array();
+		$cta_label = ''; $cta_href = ''; $cta_arrow = false;
+		$try = function ( $lbl, $href, $extra ) use ( &$cta_label, &$cta_href, &$cta_arrow, $title ) {
+			$lbl = trim( wp_strip_all_tags( (string) $lbl ) );
+			if ( $lbl === '' || mb_strlen( $lbl ) > 32 || ( $title !== '' && stripos( $lbl, $title ) !== false ) ) { return; }
+			$cta_label = $lbl; $cta_href = (string) $href;
+			$cta_arrow = (bool) preg_match( '/→|➔|»|\barrow\b|chevron/i', $lbl . ' ' . (string) $extra );
+		};
+		if ( $btn )  { $try( $btn['label'] ?? '', $btn['href'] ?? '', ( $btn['icon'] ?? '' ) . ' ' . ( $btn['cls'] ?? '' ) ); }
+		if ( $cta_label === '' && $link ) { $try( $link['label'] ?? '', $link['href'] ?? '', '' ); }
+		if ( $cta_label !== '' ) {
+			$atts['button_style'] = $cta_arrow ? 'arrow' : 'link';
+			$atts['button_label'] = $cta_label;
+		}
+		$box_href = $cta_href !== '' ? $cta_href : (string) ( $link['href'] ?? '' );
+		if ( $box_href !== '' && $box_href !== '#' ) {
+			$atts['link_behavior'] = 'url';
+			$atts['link_url']      = $box_href;
+			$atts['link_target']   = '_self';
+		}
+		// Design family — image-on-top + title/text below = the Stacked family (img → title → text). (Overlay
+		// / Side families are not auto-selected yet; Stacked is the faithful default for a photo-topped tile.)
+		$atts['design_settings'] = array( 'family' => 'stacked', 'stacked' => array( 'stacking' => 'img-title-text' ) );
+		$atts['unique_id'] = self::uid();
+		if ( ! isset( $atts['css_id'] ) )    { $atts['css_id'] = ''; }
+		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
+		return array( 'type' => 'simple', 'shortcode' => 'image_box', '_items' => array(), 'atts' => $atts );
 	}
 
 	/**
@@ -2682,7 +3025,23 @@ class FW_Site_Converter_Mapper {
 
 		// Icon: a font icon → icon-v2 value (normalized to Font Awesome so it renders); an SVG →
 		// custom_icon (icon_box renders inline SVG).
-		if ( ! empty( $card['lucide'] ) && is_array( $atts['icon'] ) ) {
+		if ( ! empty( $card['imgIcon'] ) && is_array( $atts['icon'] ) ) {
+			// A source `<img src=*.svg>` icon → INLINE it as an icon-v2 svg value. WordPress can't host SVG in
+			// the media library, so a custom-upload URL 404s (the icon silently vanishes); inline markup
+			// renders cleanly on any domain via sc_icon_render and keeps the illustration's own colours. Fall
+			// back to custom-upload only when the SVG can't be fetched — keeping the src for a hotlink.
+			$svg_icon = self::svg_inline_icon( (string) $card['imgIcon'] );
+			if ( $svg_icon ) {
+				$atts['icon'] = array_merge( $atts['icon'], $svg_icon );
+				// These SVGs are full illustrations, not glyphs — size the icon to the source icon container's
+				// height (icon_size drives font-size, which the inline SVG now tracks). Floor/cap for sanity.
+				$ih = isset( $card['imgIconH'] ) ? (int) $card['imgIconH'] : 0;
+				if ( $ih < 40 ) { $ih = 88; } elseif ( $ih > 240 ) { $ih = 240; }
+				$atts['icon_size'] = array( 'value' => (string) $ih, 'unit' => 'px' );
+			} else {
+				$atts['icon'] = array_merge( $atts['icon'], array( 'type' => 'custom-upload', 'url' => self::abs_asset( (string) $card['imgIcon'] ), 'attachment-id' => false ) );
+			}
+		} elseif ( ! empty( $card['lucide'] ) && is_array( $atts['icon'] ) ) {
 			// Native Lucide → icon_box library icon (icon-v2 SVG source), preserving the atom's icon shape.
 			$atts['icon'] = array_merge( $atts['icon'], array( 'type' => 'svg', 'svg-source' => 'library', 'svg-id' => (string) $card['lucide'] ) );
 		} elseif ( ! empty( $card['customIcon'] ) ) {
@@ -3337,7 +3696,7 @@ class FW_Site_Converter_Mapper {
 					if ( isset( $b['overline_color'] ) ) { $head['overline_color'] = (string) $b['overline_color']; }
 				}
 				if ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
-					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight', 'font-size', 'color' ) );
+					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight', 'font-size', 'color', 'text-transform' ) );
 					if ( isset( $cw['font-weight'] ) ) { $head[ $role . '_weight' ] = $cw['font-weight']; }
 					// Capture the part's computed font-size (px) so n_heading can assign the matching Text
 					// Style preset (e.g. an 18px subtitle → the `font-subtitle` preset) instead of losing its
@@ -3351,6 +3710,24 @@ class FW_Site_Converter_Mapper {
 					if ( isset( $cw['color'] ) && trim( (string) $cw['color'] ) !== '' ) {
 						$head[ $role . '_color_src' ] = trim( (string) $cw['color'] );
 					}
+					// OVERLINE: restore the gold + UPPERCASE + letter-spaced kicker from the computed style —
+					// overline_color (accent) + overline_transform (→ overline_uppercase='yes' in n_heading). See
+					// the parallel merge branch for the full rationale.
+					if ( 'overline' === $role ) {
+						if ( empty( $head['overline_color'] ) && isset( $cw['color'] ) && trim( (string) $cw['color'] ) !== '' && ! self::is_default_ink( (string) $cw['color'] ) ) {
+							$head['overline_color'] = trim( (string) $cw['color'] );
+						}
+						if ( isset( $cw['text-transform'] ) && trim( (string) $cw['text-transform'] ) !== '' ) {
+							$head['overline_transform'] = strtolower( trim( (string) $cw['text-transform'] ) );
+						}
+					}
+				}
+				if ( $role === 'title' && isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
+					// TITLE computed bottom margin → the title→subtitle gap (never-drop). `mb-8` is stripped
+					// from title_class, so read the resolved px from the computed style; n_heading carries it
+					// verbatim as scoped `.heading-title{margin-bottom:Npx}`. (Mirror in JS to-pages.)
+					$mb = self::cs_margin_bottom_px( (string) $b['cs'] );
+					if ( $mb !== null ) { $head['title_mb_px'] = $mb; }
 				}
 				if ( $role === 'title' ) {
 					$head['level'] = (int) ( $b['level'] ?? 2 );
@@ -3361,6 +3738,21 @@ class FW_Site_Converter_Mapper {
 				continue;
 			}
 			$flush_head();
+
+			// Native `$b['t']` blocks (a <ul> checklist → feature_list, a <table>, an accordion, tabs, …) carry
+			// NO `role`, so the role-router below would dump them into an EMPTY code block (they have no `html`).
+			// Dispatch them here — mirroring the section loop — so e.g. the hero's check-icon list renders as a
+			// feature_list instead of vanishing.
+			$bt = isset( $b['t'] ) ? (string) $b['t'] : '';
+			if ( $bt === 'feature_list' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
+				$node = self::n_feature_list( $b ); self::apply_block_anim( $node, $b ); $items[] = $node; continue;
+			}
+			$cell_native = array( 'table' => 'n_table', 'accordion' => 'n_accordion', 'tabs' => 'n_tabs', 'steps' => 'n_steps', 'timeline' => 'n_timeline', 'progress' => 'n_progress', 'pricing' => 'n_pricing', 'gallery' => 'n_gallery' );
+			if ( isset( $cell_native[ $bt ] ) && method_exists( __CLASS__, $cell_native[ $bt ] ) ) {
+				$node = call_user_func( array( __CLASS__, $cell_native[ $bt ] ), $b );
+				if ( is_array( $node ) ) { self::apply_block_anim( $node, $b ); $items[] = $node; }
+				continue;
+			}
 
 			$builders = self::builders();
 			$bld      = isset( $builders[ $role ] ) ? $builders[ $role ] : $builders['code'];
@@ -3672,7 +4064,11 @@ class FW_Site_Converter_Mapper {
 		//    (Margin & Padding), as before, so `.heading{margin-bottom:1em}` doesn't take over.
 		// The px comes from the source title's `mb-*` utility (Tailwind: N × 4px). Parity mirrored in JS to-pages.
 		$has_subtitle = '' !== trim( (string) ( $h['subtitle'] ?? '' ) );
-		$title_mb_px  = preg_match( '/\bmb-(\d+(?:\.\d+)?)\b/', (string) ( $h['title_class'] ?? '' ), $tmb ) ? (float) $tmb[1] * 4 : null;
+		// Prefer the title's COMPUTED bottom margin (from cs) — authoritative and survives class stripping —
+		// falling back to an `mb-*` still on title_class.
+		$title_mb_px  = ( isset( $h['title_mb_px'] ) && $h['title_mb_px'] !== null )
+			? (float) $h['title_mb_px']
+			: ( preg_match( '/\bmb-(\d+(?:\.\d+)?)\b/', (string) ( $h['title_class'] ?? '' ), $tmb ) ? (float) $tmb[1] * 4 : null );
 		if ( $has_subtitle && $title_mb_px !== null ) {
 			if ( '' === $layout['element_spacing'] ) {
 				$layout['element_spacing'] = $title_mb_px <= 6 ? 'tight' : ( $title_mb_px <= 20 ? 'relaxed' : '' );
@@ -3762,7 +4158,14 @@ class FW_Site_Converter_Mapper {
 				// 24px. `.heading-title` is never reset by the shortcode (only its top margin is), so reset the
 				// bottom here for lone headings; the outer `spacing` option then IS the faithful gap. (Headings
 				// WITH a subtitle keep their title→subtitle rhythm via element_spacing above.) Mirror in JS to-pages.
-				. ( '' === trim( (string) ( $h['subtitle'] ?? '' ) ) ? 'selector .heading-title{margin-bottom:0 !important;}' : '' ),
+				// TITLE bottom margin. No subtitle → reset the theme's default hN margin to 0 (the outer Margin &
+				// Padding option then IS the faithful below-gap). WITH a subtitle → the title→subtitle gap is the
+				// title's own `mb-*` (e.g. mb-8 = 32px); the coarse element_spacing select rounds it to a theme
+				// default (e.g. 32px → "Normal" ≈ 64px), so carry the EXACT px here — never-drop, reproduced
+				// faithfully. (Mirror in JS to-pages.)
+				. ( '' === trim( (string) ( $h['subtitle'] ?? '' ) )
+					? 'selector .heading-title{margin-bottom:0 !important;}'
+					: ( ( $title_mb_px !== null && $title_mb_px > 0 ) ? 'selector .heading-title{margin-bottom:' . (int) $title_mb_px . 'px !important;}' : '' ) ),
 				'overline' => self::map_accent_classes( $ov_raw ),
 				'overline_uppercase' => $ol_upper ? 'yes' : 'no',
 				'overline_icon' => $ov_icon,
@@ -4426,7 +4829,12 @@ class FW_Site_Converter_Mapper {
 			return $node;
 		} );
 		self::register_builder( 'button', function ( $b ) {
-			$node = self::n_button( (string) ( $b['label'] ?? $b['text'] ?? 'Button' ), (string) ( $b['href'] ?? '#' ), (string) ( $b['srcCls'] ?? $b['cls'] ?? '' ), (string) ( $b['icon'] ?? '' ), (string) ( $b['iconPos'] ?? 'after' ), (string) ( $b['srcCs'] ?? $b['cs'] ?? '' ), (string) ( $b['groupCls'] ?? '' ), (string) ( $b['groupCs'] ?? '' ), (string) ( $b['iconSvg'] ?? '' ), (string) ( $b['srcHover'] ?? '' ) );
+			// A button in a CENTERED band inherits centering from the parent's text-center — which n_button
+			// can't see from the button's OWN classes, so it would default to align-self:flex-start (left).
+			// section_center marks the block align=center; carry that into the class hint so the button centres.
+			$bcls_in = (string) ( $b['srcCls'] ?? $b['cls'] ?? '' );
+			if ( ( $b['align'] ?? '' ) === 'center' ) { $bcls_in .= ' text-center'; }
+			$node = self::n_button( (string) ( $b['label'] ?? $b['text'] ?? 'Button' ), (string) ( $b['href'] ?? '#' ), $bcls_in, (string) ( $b['icon'] ?? '' ), (string) ( $b['iconPos'] ?? 'after' ), (string) ( $b['srcCs'] ?? $b['cs'] ?? '' ), (string) ( $b['groupCls'] ?? '' ), (string) ( $b['groupCs'] ?? '' ), (string) ( $b['iconSvg'] ?? '' ), (string) ( $b['srcHover'] ?? '' ) );
 			// The color/size preset + the `.btn-fill` semantic class already reproduce the button's exact
 			// fill / text color / border / radius / padding / typography (safety-net Custom CSS) = $already; the
 			// base only fills leftover appearance (background-image gradient, opacity, transform, …).
@@ -4498,6 +4906,28 @@ class FW_Site_Converter_Mapper {
 		$body = '';
 		foreach ( $d as $pr => $v ) { $body .= $pr . ':' . $v . ' !important;'; }
 		self::$style_css['sc-main'] = '#main.site-main,main#main{' . $body . '}';
+	}
+
+	/**
+	 * Computed BOTTOM margin (px) from a `data-sc-cs` string — the authoritative title→subtitle gap.
+	 * A heading's `mb-8` is stripped from the class before it reaches n_heading (numeric spacing utilities
+	 * are dropped from title_class), so we read the resolved value straight from the computed style instead.
+	 * Handles the `margin-bottom:32px` longhand AND the `margin:` shorthand (1–4 values → t/r/b/l). Returns
+	 * null when absent or zero. (Mirror in JS to-pages.)
+	 */
+	private static function cs_margin_bottom_px( $cs ) {
+		$cs = (string) $cs;
+		if ( preg_match( '/(?:^|;)\s*margin-bottom:\s*([0-9.]+)px/i', $cs, $m ) ) {
+			$v = (float) $m[1]; return $v > 0 ? $v : null;
+		}
+		if ( preg_match( '/(?:^|;)\s*margin:\s*([^;]+)/i', $cs, $m ) ) {
+			$parts = preg_split( '/\s+/', trim( $m[1] ) );
+			$px = function ( $s ) { return preg_match( '/^([0-9.]+)px$/', (string) $s, $p ) ? (float) $p[1] : null; };
+			$n = count( $parts );
+			$bottom = $n >= 3 ? $px( $parts[2] ) : ( $n === 2 ? $px( $parts[0] ) : ( $n === 1 ? $px( $parts[0] ) : null ) );
+			return ( $bottom !== null && $bottom > 0 ) ? $bottom : null;
+		}
+		return null;
 	}
 
 	private static function section_vspace( $cls ) {
@@ -4645,11 +5075,27 @@ class FW_Site_Converter_Mapper {
 		// here; it's wired onto the section node after the node is built. The actual file comes from the
 		// captured <source> URL, or the matching "Attach media" upload (upload_val handles the swap).
 		$bg_video = null;
-		foreach ( $blocks as $bi => $bb ) {
-			$bt = isset( $bb['t'] ) ? $bb['t'] : ( isset( $bb['role'] ) ? $bb['role'] : '' );
-			if ( $bt === 'video' && ! empty( $bb['bg'] ) ) { $bg_video = $bb; unset( $blocks[ $bi ] ); break; }
-		}
-		$blocks = array_values( $blocks );
+		// RECURSIVE — a HERO background <video> is commonly nested inside the overlay's column/row (source
+		// `<div class="absolute inset-0"><video …></div>` beside the heading column), NOT a top-level section
+		// block. The old top-level-only scan missed it, so a video-bg hero shipped with no background and no
+		// hero framing (it collapsed to a short top-aligned band). Walk the same block tree the bg-image strip
+		// uses (column cells → 'blocks'; rows → 'cols'). (P2 audit fix.)
+		$find_bgv = function ( array &$list ) use ( &$find_bgv, &$bg_video ) {
+			foreach ( $list as $k => &$blk ) {
+				if ( ! is_array( $blk ) ) { continue; }
+				$bt = isset( $blk['t'] ) ? $blk['t'] : ( isset( $blk['role'] ) ? $blk['role'] : '' );
+				if ( $bt === 'video' && ! empty( $blk['bg'] ) ) { $bg_video = $blk; unset( $list[ $k ] ); return true; }
+				if ( isset( $blk['blocks'] ) && is_array( $blk['blocks'] ) && $find_bgv( $blk['blocks'] ) ) { return true; }
+				if ( isset( $blk['cols'] ) && is_array( $blk['cols'] ) ) {
+					foreach ( $blk['cols'] as &$col ) { if ( is_array( $col ) && isset( $col['blocks'] ) && is_array( $col['blocks'] ) && $find_bgv( $col['blocks'] ) ) { return true; } }
+					unset( $col );
+				}
+			}
+			unset( $blk );
+			return false;
+		};
+		$find_bgv( $blocks );
+		$blocks = array_values( array_filter( $blocks ) );
 
 		// HERO full-bleed BACKGROUND image → the section Background (below), NOT a tiny inline media_image.
 		// Drop the duplicate content image block whose src matches the detected background photo.
@@ -4779,7 +5225,7 @@ class FW_Site_Converter_Mapper {
 			// (the shortcode renders its own container_type). Content only; design not preserved.
 			if ( ( $b['t'] ?? '' ) === 'testimonials' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
 				$flush_buf();
-				$node = self::n_testimonials( $b['items'] );
+				$node = self::n_testimonials( $b['items'], isset( $b['design'] ) && is_array( $b['design'] ) ? $b['design'] : null );
 				self::apply_block_anim( $node, $b );
 				$items[] = self::n_column( '1_1', array( $node ) );
 				continue;
@@ -4843,6 +5289,7 @@ class FW_Site_Converter_Mapper {
 				'svg_draw'  => 'n_svg_draw',
 				'instagram' => 'n_instagram', // detected Instagram feed → the [instagram] Library shortcode
 				'gallery'   => 'n_gallery',   // detected image-tile grid → the native gallery shortcode
+				'posts'     => 'n_posts',     // detected blog listing → the dynamic posts query shortcode
 			);
 			$bt_native = $b['t'] ?? '';
 			if ( isset( $native_own[ $bt_native ] ) ) {
@@ -4887,7 +5334,7 @@ class FW_Site_Converter_Mapper {
 				// Carry the part's RESOLVED computed font-weight (data-sc-cs) so the heading re-asserts its
 				// real weight even on a NON-Tailwind source (where the class carries no font-* utility).
 				if ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
-					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight', 'font-size', 'color' ) );
+					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight', 'font-size', 'color', 'text-transform' ) );
 					if ( isset( $cw['font-weight'] ) ) { $head[ $role . '_weight' ] = $cw['font-weight']; }
 					// Capture the part's computed font-size (px) so n_heading can assign the matching Text
 					// Style preset (e.g. an 18px subtitle → the `font-subtitle` preset) instead of losing its
@@ -4901,10 +5348,30 @@ class FW_Site_Converter_Mapper {
 					if ( isset( $cw['color'] ) && trim( (string) $cw['color'] ) !== '' ) {
 						$head[ $role . '_color_src' ] = trim( (string) $cw['color'] );
 					}
+					// OVERLINE: the gold + UPPERCASE + letter-spaced kicker. The source overline
+					// (`<span class="text-primary uppercase tracking-[0.3em]">`) drops both its accent colour and
+					// its casing when only the text survives, rendering a muted, un-transformed label. Restore the
+					// native controls from the computed style: overline_color (accent) + overline_transform (drives
+					// overline_uppercase='yes' in n_heading, i.e. the letter-spaced uppercase treatment).
+					if ( 'overline' === $role ) {
+						if ( empty( $head['overline_color'] ) && isset( $cw['color'] ) && trim( (string) $cw['color'] ) !== '' && ! self::is_default_ink( (string) $cw['color'] ) ) {
+							$head['overline_color'] = trim( (string) $cw['color'] );
+						}
+						if ( isset( $cw['text-transform'] ) && trim( (string) $cw['text-transform'] ) !== '' ) {
+							$head['overline_transform'] = strtolower( trim( (string) $cw['text-transform'] ) );
+						}
+					}
 				}
 				// The heading-group wrapper class (source `<div class="heading">`) → the special
 				// heading's own wrapper (css_class). Carried from the title block (the wrapper holds
 				// the whole group). keep_classes runs in n_heading.
+				if ( $role === 'title' && isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
+					// TITLE computed bottom margin → the title→subtitle gap (never-drop). `mb-8` is stripped
+					// from title_class, so read the resolved px from the computed style; n_heading carries it
+					// verbatim as scoped `.heading-title{margin-bottom:Npx}`. (Mirror in JS to-pages.)
+					$mb = self::cs_margin_bottom_px( (string) $b['cs'] );
+					if ( $mb !== null ) { $head['title_mb_px'] = $mb; }
+				}
 				if ( $role === 'title' ) {
 					$head['level'] = (int) ( $b['level'] ?? 2 );
 					$head['align'] = $b['align'] ?? $head['align'];
@@ -4943,7 +5410,12 @@ class FW_Site_Converter_Mapper {
 				// Row vertical alignment (source `.row.align-items-center` …) → each column's Content
 				// Vertical Align. Skipped on the grid column (the height-definer where it's redundant).
 				$row_valign = isset( $b['valign'] ) && in_array( $b['valign'], array( 'start', 'center', 'end' ), true ) ? $b['valign'] : '';
-				foreach ( $b['cols'] as $c ) {
+				// Row-level width pre-pass: a flex row mixing a FIXED-px column (`w-[506px]`) with a flex-1
+				// column otherwise falls back to an even split (both 1_2), unbalanced (the fixed visual gets half
+				// instead of ~40%). Derive the fixed column's 12-fraction from its px; flex-1 column(s) take the
+				// remainder. Empty unless it's a clean fixed-px + flex-1 mix. (P3 audit fix.)
+				$row_widths = self::flex_row_widths( $b['cols'] );
+				foreach ( $b['cols'] as $ci => $c ) {
 					$box_on_column = ''; // box class for this column's Inner Wrapper Class (box card WITH a button)
 						$btn_row_on_column = ''; // .btn-row class for a CTA button-group cell (side-by-side buttons)
 						// A cell whose decomposed blocks include a FLOATING CARD (image-composite decompose:
@@ -4990,15 +5462,24 @@ class FW_Site_Converter_Mapper {
 					} elseif ( isset( $c['text'] ) && is_array( $c['text'] ) ) {
 						$inner_items = self::n_text_cell( $c['text'] );
 					} elseif ( isset( $c['card'] ) && is_array( $c['card'] ) && ! empty( $c['card']['image']['src'] ) ) {
-						// IMAGE / PRODUCT / COLLECTION card — a real photo + title + text (+ optional CTA). Rendered
-						// as a stacked column (media_image + special_heading + text_block + button) so the source
-						// photo actually shows, instead of an icon_box that drops it. The box skin (border/radius/
-						// shadow) moves to the column's Inner Wrapper Class so it wraps the whole card.
+						// IMAGE TILE — a prominent photo + title + text (+ CTA / hover explore). A TITLED tile is the
+						// image_box pattern → emit ONE cohesive image_box (image + title + text + button + design
+						// family + hover), so the tile semantics survive. An image-only / untitled blob falls back to
+						// the decomposed image_card (media_image + heading + text). The box skin (border/radius/shadow)
+						// goes on the image_box's own css_class (tile) / the column's Inner Wrapper (decomposed).
 						$card = $c['card'];
 						$cc   = (string) ( $card['cls'] ?? '' );
 						$ccs  = (string) ( $card['cs'] ?? '' );
-						$inner_items = self::n_image_card( $card );
-						if ( self::is_box_class( $cc ) || self::cs_is_box( $ccs ) ) { $box_on_column = self::box_style_class( $cc, $ccs ); }
+						$is_box = self::is_box_class( $cc ) || self::cs_is_box( $ccs );
+						$titled = '' !== trim( wp_strip_all_tags( (string) ( $card['title'] ?? '' ) ) );
+						$ibx    = $titled ? self::n_image_box( $card ) : array();
+						if ( ! empty( $ibx ) ) {
+							if ( $is_box ) { $ibx['atts']['css_class'] = trim( (string) ( $ibx['atts']['css_class'] ?? '' ) . ' ' . self::box_style_class( $cc, $ccs ) ); }
+							$inner_items = array( $ibx );
+						} else {
+							$inner_items = self::n_image_card( $card );
+							if ( $is_box ) { $box_on_column = self::box_style_class( $cc, $ccs ); }
+						}
 					} elseif ( isset( $c['card'] ) && is_array( $c['card'] ) ) {
 						$card = $c['card'];
 						$cc   = (string) ( $card['cls'] ?? '' );
@@ -5044,11 +5525,19 @@ class FW_Site_Converter_Mapper {
 					if ( ! empty( $c['width'] ) && preg_match( '/^\d+_\d+$/', (string) $c['width'] ) ) {
 						$width = (string) $c['width']; // reviewer-chosen column width wins
 					} else {
-						$lay = self::col_layout( (string) ( $c['cls'] ?? '' ) );
-						if ( $lay === null ) { $lay = self::geom_layout( isset( $c['wResp'] ) ? $c['wResp'] : null ); }
-						$width = ( $lay !== null ) ? $lay['width'] : self::cell_width( $c['width'] ?? '1_3' );
+						if ( isset( $row_widths[ $ci ] ) ) { $width = $row_widths[ $ci ]; } // fixed-px/flex-1 row split
+						else {
+							$lay = self::col_layout( (string) ( $c['cls'] ?? '' ) );
+							if ( $lay === null ) { $lay = self::geom_layout( isset( $c['wResp'] ) ? $c['wResp'] : null ); }
+							$width = ( $lay !== null ) ? $lay['width'] : self::cell_width( $c['width'] ?? '1_3' );
+						}
 					}
 					$col   = self::n_column( $width, $inner_items );
+					// Responsive VISIBILITY: a source column with Tailwind show/hide utilities (`hidden lg:block`
+					// = desktop-only, `lg:hidden` = hide desktop) → the column's native Hide-on-Device option, so
+					// the desktop/mobile variant pair each hides on the right breakpoints instead of both showing.
+					$col_rhide = self::responsive_hide_from_classes( (string) ( $c['cls'] ?? '' ) );
+					if ( ! empty( $col_rhide ) ) { $col['atts']['responsive_hide'] = $col_rhide; }
 					// Floating-card cell → make the column the positioned ancestor for the absolute icon_box
 					// (its `selector{position:absolute;top/left}` now resolves against this column = the image
 					// area, not the page). Without this the badge lands at the page top-left over the logo.
@@ -5072,7 +5561,17 @@ class FW_Site_Converter_Mapper {
 						if ( empty( $col['atts']['content_gap']['base'] ) ) { $col['atts']['content_gap'] = array( 'base' => '3', 'md' => '', 'lg' => '' ); }
 						$col['atts']['content_h'] = 'center';
 					}
-					if ( $row_valign !== '' && empty( $c['grid'] ) ) { $col['atts']['content_v'] = $row_valign; }
+					if ( $row_valign !== '' && empty( $c['grid'] ) ) {
+						// Source `items-center` / `.row.align-items-*` centres each COLUMN against its row siblings
+						// on the cross axis — that is the native `align_self` option ("column vertical align vs row
+						// siblings": start=Top, center=Middle, end=Bottom), NOT `content_v`. `content_v` aligns the
+						// contents WITHIN the column and only shows once the column is stretched — which hits the
+						// h-100 / flex-no-explicit-height trap and renders top. `align_self` maps 1:1, emits the
+						// native `.align-self-*` class (align-self on the flex item), leaves the column content-
+						// height and centred, and — the point — is a real option in the column's Layout tab, so the
+						// user sees/edits it there instead of raw CSS in Advanced. (No custom_css, no content_v.)
+						$col['atts']['align_self'] = array( 'base' => $row_valign, 'md' => '', 'lg' => '' );
+					}
 					// A grid CELL that centers/right-aligns its own text (source `text-center` / `text-right`
 					// on the cell wrapper) → the column's native `text_align`, so the cell's mixed content
 					// (heading + prose + buttons) inherits that alignment as one. '' (text-left / none) forces
@@ -5120,6 +5619,17 @@ class FW_Site_Converter_Mapper {
 		if ( $center && isset( $sec_node['atts'] ) ) { $sec_node['atts']['text_align'] = 'center'; }
 		if ( $bg_video !== null ) { self::apply_bg_video( $sec_node, $bg_video ); } // full-screen <video> → section background
 		if ( $bg_image !== null ) { self::apply_bg_image( $sec_node, $bg_image ); } // hero full-bleed <img> → section background image + dark scrim
+		// OVERLAY-HEADER OFFSET: a fixed/absolute transparent masthead overlays the hero, so the hero needs
+		// top padding = the header height, or its heading renders UNDER the nav (the 'hero top spacing' bug).
+		if ( ! empty( $sec['heroTopPad'] ) && (int) $sec['heroTopPad'] > 0 && isset( $sec_node['atts'] ) ) {
+			$hpad = (int) $sec['heroTopPad'];
+			$hcur = (string) ( $sec_node['atts']['custom_css'] ?? '' );
+			// selector[class] (specificity 0,2,0) + !important — a full-bleed/verbatim hero carries both
+			// `.section--bleed{padding-block:0}` (higher specificity) AND `.sc-mirror{padding-top:0 !important}`
+			// (same specificity as a bare `selector`, wins on source order). The [class] attribute selector
+			// raises specificity above `.sc-mirror` so the overlay-header offset actually renders.
+			$sec_node['atts']['custom_css'] = trim( $hcur . " selector[class]{padding-top:{$hpad}px !important;}" );
+		}
 		// Container Width — the source's content-band cap (e.g. `container-narrow` = 64rem) → a shared named
 		// Container Width preset (Components → Section Styles → Container Widths), so the whole site reuses it.
 		if ( isset( $sec['sectionContainerW'] ) && is_array( $sec['sectionContainerW'] ) && isset( $sec_node['atts'] ) ) {

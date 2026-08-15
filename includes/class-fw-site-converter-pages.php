@@ -276,28 +276,26 @@ class FW_Site_Converter_Pages {
 			return $node;
 		}
 
+		// Media shape { attachment_id, url } — hero video, section image src, gallery, etc.
 		if ( array_key_exists( 'url', $node ) && array_key_exists( 'attachment_id', $node )
 			&& empty( $node['attachment_id'] ) && is_string( $node['url'] ) && trim( $node['url'] ) !== '' ) {
-			$url        = trim( $node['url'] );
-			$candidates = array( $url );
-			if ( strpos( $url, '//' ) === 0 ) {                 // protocol-relative → try both schemes
-				$candidates[] = 'https:' . $url;
-				$candidates[] = 'http:' . $url;
-			}
-			$id = 0;
-			foreach ( $candidates as $c ) {
-				$id = FW_Site_Converter_Media::find_by_source( $c );
-				if ( ! $id ) {
-					$bare = preg_replace( '/\?.*$/', '', $c );
-					if ( $bare !== $c ) { $id = FW_Site_Converter_Media::find_by_source( $bare ); }
-				}
-				if ( $id ) { break; }
-			}
-			if ( ! $id && function_exists( 'attachment_url_to_postid' ) ) {
-				foreach ( $candidates as $c ) { $id = attachment_url_to_postid( $c ); if ( $id ) { break; } }
-			}
+			$id = self::attachment_id_for_url( $node['url'] );
 			if ( $id ) {
 				$node['attachment_id'] = (string) $id;
+				$local = wp_get_attachment_url( $id );
+				if ( $local ) { $node['url'] = preg_replace( '#^https?://#', '//', $local ); }
+			}
+		}
+
+		// icon-v2 custom-upload shape { type:'custom-upload', url, 'attachment-id' } — an image icon
+		// (e.g. a source SVG icon in a converted card grid). Different keys than the media shape above,
+		// so resolve it explicitly: fill attachment-id + re-point url to the sideloaded local copy.
+		if ( isset( $node['type'] ) && $node['type'] === 'custom-upload'
+			&& array_key_exists( 'url', $node ) && is_string( $node['url'] ) && trim( $node['url'] ) !== ''
+			&& empty( $node['attachment-id'] ) ) {
+			$id = self::attachment_id_for_url( $node['url'] );
+			if ( $id ) {
+				$node['attachment-id'] = (int) $id;
 				$local = wp_get_attachment_url( $id );
 				if ( $local ) { $node['url'] = preg_replace( '#^https?://#', '//', $local ); }
 			}
@@ -307,6 +305,41 @@ class FW_Site_Converter_Pages {
 			$node[ $k ] = self::resolve_upload_ids( $v );
 		}
 		return $node;
+	}
+
+	/**
+	 * Find the sideloaded attachment id for a builder media URL — matches by original source URL
+	 * (SOURCE_META, which now also indexes the root-relative path form) or, failing that, by the
+	 * local attachment URL. Handles protocol-relative and cache-busting query variants. 0 if none.
+	 *
+	 * @param string $url
+	 * @return int
+	 */
+	private static function attachment_id_for_url( $url ) {
+		$url = trim( (string) $url );
+		if ( $url === '' ) {
+			return 0;
+		}
+		$candidates = array( $url );
+		if ( strpos( $url, '//' ) === 0 ) {                 // protocol-relative → try both schemes
+			$candidates[] = 'https:' . $url;
+			$candidates[] = 'http:' . $url;
+		}
+		foreach ( $candidates as $c ) {
+			$id = FW_Site_Converter_Media::find_by_source( $c );
+			if ( ! $id ) {
+				$bare = preg_replace( '/\?.*$/', '', $c );
+				if ( $bare !== $c ) { $id = FW_Site_Converter_Media::find_by_source( $bare ); }
+			}
+			if ( $id ) { return (int) $id; }
+		}
+		if ( function_exists( 'attachment_url_to_postid' ) ) {
+			foreach ( $candidates as $c ) {
+				$id = attachment_url_to_postid( $c );
+				if ( $id ) { return (int) $id; }
+			}
+		}
+		return 0;
 	}
 
 	/**

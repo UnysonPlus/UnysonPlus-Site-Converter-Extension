@@ -85,7 +85,20 @@ class FW_Site_Converter_Media {
 		// Derive a sane filename + extension from the ACTUAL file contents, so
 		// extension-less URLs (e.g. /image?id=5) still land with a valid type.
 		$ext  = '';
-		$info = @getimagesize( $tmp );
+		// SVG: getimagesize() can't identify a vector file, and WordPress blocks SVG uploads by default,
+		// so a source's SVG icons / illustrations (common on Tailwind/React sites — e.g. a "practice areas"
+		// icon grid) were silently rejected and the images went missing. Detect an SVG by signature, allow
+		// it explicitly for THIS sideload, and SANITIZE it first (strip <script>/<foreignObject>/on*
+		// handlers/javascript: refs/DOCTYPE) so an imported SVG can never carry active content.
+		$is_svg = false;
+		$sniff  = (string) @file_get_contents( $tmp, false, null, 0, 512 );
+		if ( stripos( $sniff, '<svg' ) !== false
+			|| ( preg_match( '/\.svg(?:$|\?)/i', $url ) && stripos( (string) @file_get_contents( $tmp ), '<svg' ) !== false ) ) {
+			$is_svg = true;
+			$ext    = 'svg';
+			self::sanitize_svg_file( $tmp );
+		}
+		$info = $is_svg ? false : @getimagesize( $tmp );
 		if ( is_array( $info ) && isset( $info[2] ) ) {
 			$ext = ltrim( (string) image_type_to_extension( $info[2] ), '.' );
 		}
@@ -98,28 +111,40 @@ class FW_Site_Converter_Media {
 		// so WP's strict real-mime check in media_handle_sideload() blanks the ext+type and
 		// rejects the file ("not permitted for security reasons"). Trust the extension for these
 		// known raster image types (scoped to THIS sideload only) and ensure they're allowed.
-		$accept_modern = static function ( $data, $f, $filename, $mimes, $real_mime = '' ) {
+		$accept_modern = static function ( $data, $f, $filename, $mimes, $real_mime = '' ) use ( $is_svg ) {
 			if ( ! empty( $data['ext'] ) && ! empty( $data['type'] ) ) {
 				return $data;
 			}
 			$e     = strtolower( (string) pathinfo( $filename, PATHINFO_EXTENSION ) );
 			$known = array( 'webp' => 'image/webp', 'avif' => 'image/avif' );
+			if ( $is_svg ) {
+				$known['svg'] = 'image/svg+xml';
+			}
 			if ( isset( $known[ $e ] ) ) {
 				$data['ext']  = $e;
 				$data['type'] = $known[ $e ];
 			}
 			return $data;
 		};
-		$allow_modern = static function ( $m ) {
+		$allow_modern = static function ( $m ) use ( $is_svg ) {
 			$m['webp'] = 'image/webp';
 			$m['avif'] = 'image/avif';
+			if ( $is_svg ) {
+				$m['svg'] = 'image/svg+xml';
+			}
 			return $m;
 		};
 		add_filter( 'wp_check_filetype_and_ext', $accept_modern, 99, 5 );
 		add_filter( 'upload_mimes', $allow_modern, 99 );
+		// The bundled SVG-upload guard (sc_svg_* in the shortcodes extension) SANITISES SVGs but gates
+		// them to administrators. A converter sideload can run without an admin user (wp-cli / REST /
+		// cron), so signal a trusted, already-downloaded + pre-sanitised SVG import for THIS call only —
+		// the guard still runs its sanitiser; only the admin gate is lifted.
+		if ( $is_svg ) { add_filter( 'fw_sc_svg_upload_allowed', '__return_true', 99 ); }
 
 		$id = media_handle_sideload( $file, (int) $post_id, $desc !== '' ? $desc : null );
 
+		if ( $is_svg ) { remove_filter( 'fw_sc_svg_upload_allowed', '__return_true', 99 ); }
 		remove_filter( 'wp_check_filetype_and_ext', $accept_modern, 99 );
 		remove_filter( 'upload_mimes', $allow_modern, 99 );
 
@@ -131,11 +156,85 @@ class FW_Site_Converter_Media {
 		}
 
 		update_post_meta( $id, self::SOURCE_META, $url );
+		// ALSO index by the ROOT-RELATIVE path form (e.g. /assets/traffic-accident.svg). Same-origin
+		// assets are localised to a root-relative URL in the builder (the origin is stripped), so a
+		// later resolve pass looks them up by that path — which won't match the absolute SOURCE_META
+		// above. Storing the path too lets find_by_source() match either form. (Multi-value meta.)
+		$rel_path = (string) wp_parse_url( $url, PHP_URL_PATH );
+		if ( $rel_path !== '' && $rel_path[0] === '/' && $rel_path !== $url ) {
+			add_post_meta( $id, self::SOURCE_META, $rel_path );
+		}
 		if ( $hash ) {
 			update_post_meta( $id, self::HASH_META, $hash );
 		}
 
 		return (int) $id;
+	}
+
+	/**
+	 * Sanitize an SVG file IN PLACE before it enters the media library — strips anything that can
+	 * execute or fetch (scripts, event handlers, foreignObject, javascript: URIs, DOCTYPE/ENTITY).
+	 * Deliberately conservative regex pass (no DOM dependency); imported clone SVGs are static art.
+	 *
+	 * @param string $path Absolute path to the downloaded temp SVG.
+	 * @return void
+	 */
+	private static function sanitize_svg_file( $path ) {
+		$svg = @file_get_contents( $path );
+		if ( $svg === false || $svg === '' ) {
+			return;
+		}
+		$clean = self::sanitize_svg_markup( $svg );
+		@file_put_contents( $path, $clean );
+	}
+
+	/**
+	 * The markup-level SVG sanitizer (also usable for inline SVG). Removes active/unsafe constructs.
+	 *
+	 * @param string $svg Raw SVG markup.
+	 * @return string Sanitized SVG markup.
+	 */
+	/**
+	 * Fetch a URL's SVG and return it sanitised for INLINE embedding, or '' on any failure. WordPress
+	 * can't host SVG in the media library, so the converter inlines icon/illustration SVGs instead of
+	 * sideloading them. Reuses the same browser-UA + Referer request as the media downloader.
+	 *
+	 * @param string $url absolute http(s) URL to an .svg
+	 * @return string sanitised <svg>…</svg> markup, or '' (not fetchable / not an SVG / too large)
+	 */
+	public static function fetch_svg_markup( $url ) {
+		$url = trim( (string) $url );
+		if ( $url === '' || ! preg_match( '#^https?://#i', $url ) ) { return ''; }
+		$pu      = wp_parse_url( $url );
+		$referer = ( $pu && ! empty( $pu['scheme'] ) && ! empty( $pu['host'] ) ) ? $pu['scheme'] . '://' . $pu['host'] . '/' : '';
+		$resp    = wp_remote_get( $url, array(
+			'timeout'     => 20,
+			'redirection' => 5,
+			'user-agent'  => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+			'headers'     => array( 'Referer' => $referer, 'Accept' => 'image/svg+xml,image/*,*/*;q=0.8' ),
+		) );
+		if ( is_wp_error( $resp ) || 200 !== (int) wp_remote_retrieve_response_code( $resp ) ) { return ''; }
+		$body = (string) wp_remote_retrieve_body( $resp );
+		if ( strlen( $body ) > 524288 || stripos( $body, '<svg' ) === false ) { return ''; } // 512KB guard
+		return self::sanitize_svg_markup( $body );
+	}
+
+	public static function sanitize_svg_markup( $svg ) {
+		$svg = (string) $svg;
+		// Executable / fetching elements.
+		$svg = preg_replace( '#<\s*script\b[^>]*>.*?<\s*/\s*script\s*>#is', '', $svg );
+		$svg = preg_replace( '#<\s*script\b[^>]*/?>#is', '', $svg );
+		$svg = preg_replace( '#<\s*foreignObject\b[^>]*>.*?<\s*/\s*foreignObject\s*>#is', '', $svg );
+		// Doctype / entity declarations (XXE / entity-expansion vectors).
+		$svg = preg_replace( '#<!DOCTYPE[^>]*>#is', '', $svg );
+		$svg = preg_replace( '#<!ENTITY[^>]*>#is', '', $svg );
+		// Inline event handlers ( on*="…" / on*='…' ).
+		$svg = preg_replace( '#\s+on[a-z]+\s*=\s*"[^"]*"#is', '', $svg );
+		$svg = preg_replace( "#\\s+on[a-z]+\\s*=\\s*'[^']*'#is", '', $svg );
+		// javascript: in any href/src attribute → neutralize.
+		$svg = preg_replace( '#(href|xlink:href|src)\s*=\s*"\s*javascript:[^"]*"#is', '$1="#"', $svg );
+		$svg = preg_replace( "#(href|xlink:href|src)\\s*=\\s*'\\s*javascript:[^']*'#is", '$1="#"', $svg );
+		return $svg;
 	}
 
 	/**

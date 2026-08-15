@@ -948,6 +948,46 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	}
 
 	/**
+	 * The source site's ORIGIN, for the admin build path (build_pages, not build_from_html). The Mapper needs
+	 * it to fetch+inline / absolutise relative `/assets/*.svg` icons & illustrations — without it they ship as
+	 * bare `/assets/…` paths that 404. Derived robustly: stashed bundle.json `source`, the stashed source URL,
+	 * the mapping's `source`, an absolute asset URL in stashed media.json, else any absolute /assets URL in the
+	 * mapping. '' when the source genuinely can't be determined (then icons degrade, but never to a 404 loop).
+	 *
+	 * @param mixed $mapping the posted conversion mapping
+	 * @param mixed $stash   the convert stash (convert_build) or null (analyze_apply)
+	 * @return string
+	 */
+	private function resolve_source_url( $mapping, $stash ) {
+		// FIRST: the URL the user actually pasted into the Site Converter. On a URL conversion there is no
+		// bundle.json/media.json and the source assets are RELATIVE (`/assets/*.svg`), so every heuristic
+		// below returns '' — which clobbers the origin in the build step and 404s the icons/illustrations.
+		// Step 1 (prepare) stashes it as `source_url`; honour it before anything else. (The recurring
+		// "images still not loading after another conversion" bug lived exactly here.)
+		if ( is_array( $stash ) && ! empty( $stash['source_url'] ) && preg_match( '#^https?://#i', (string) $stash['source_url'] ) ) {
+			return (string) $stash['source_url'];
+		}
+		if ( is_array( $stash ) && ! empty( $stash['bundle.json'] ) ) {
+			$bj = is_array( $stash['bundle.json'] ) ? $stash['bundle.json'] : json_decode( (string) $stash['bundle.json'], true );
+			if ( is_array( $bj ) && ! empty( $bj['source'] ) ) { return (string) $bj['source']; }
+		}
+		if ( is_array( $stash ) && isset( $stash['source'] ) && is_array( $stash['source'] ) && ! empty( $stash['source']['url'] ) ) {
+			return (string) $stash['source']['url'];
+		}
+		if ( is_array( $mapping ) && ! empty( $mapping['source'] ) && is_string( $mapping['source'] ) ) {
+			return (string) $mapping['source'];
+		}
+		if ( is_array( $stash ) && ! empty( $stash['media.json'] ) ) {
+			$mj   = is_array( $stash['media.json'] ) ? $stash['media.json'] : json_decode( (string) $stash['media.json'], true );
+			$urls = ( is_array( $mj ) && isset( $mj['urls'] ) && is_array( $mj['urls'] ) ) ? $mj['urls'] : array();
+			foreach ( $urls as $u ) { if ( is_string( $u ) && preg_match( '#^(https?://[^/]+)/#i', $u, $m ) ) { return $m[1]; } }
+		}
+		$blob = wp_json_encode( $mapping );
+		if ( is_string( $blob ) && preg_match( '#(https?://[^/"\\\\]+)/assets/#i', $blob, $m ) ) { return $m[1]; }
+		return '';
+	}
+
+	/**
 	 * A new conversion REPLACES the previous one's generated theme: once the freshly generated child
 	 * theme is active, delete the theme a PRIOR conversion generated (when it's a different slug, now
 	 * inactive) so converter themes don't pile up. Tracked in `fw_sc_last_generated_theme`, so we only
@@ -1024,6 +1064,147 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		wp_send_json_success( array( 'imported' => $n, 'total' => count( FW_Site_Converter_Stitch::rules_get() ) ) );
 	}
 
+	/**
+	 * A human-readable summary of the captured header + footer chrome (from the bundle's theme-settings),
+	 * for the Convert review UI — so the header/footer that WILL be applied are visible and can be omitted.
+	 *
+	 * @param array $values theme-settings.json 'values'.
+	 * @return array { header:{present,items[]}, footer:{present,items[]} }
+	 */
+	private static function chrome_review( array $values ) {
+		$header = self::chrome_header_items( $values );
+		$footer = self::chrome_footer_items( $values );
+		return array(
+			'header' => array( 'present' => ! empty( $header ), 'items' => $header ),
+			'footer' => array( 'present' => ! empty( $footer ), 'items' => $footer ),
+		);
+	}
+
+	/** Header review lines — WHICH bar slot (left / center / right) holds WHICH element. */
+	private static function chrome_header_items( array $values ) {
+		$items = array();
+		$hm    = ( isset( $values['header_main'] ) && is_array( $values['header_main'] ) ) ? $values['header_main'] : array();
+		$slots = array( 'main_left' => __( 'Left', 'fw' ), 'main_center' => __( 'Center', 'fw' ), 'main_right' => __( 'Right', 'fw' ) );
+		foreach ( $slots as $slot => $lbl ) {
+			$els = array();
+			foreach ( (array) ( isset( $hm[ $slot ] ) ? $hm[ $slot ] : array() ) as $node ) {
+				$s = self::chrome_el_summary( $node, $values );
+				if ( '' !== $s ) { $els[] = $s; }
+			}
+			if ( $els ) { $items[] = sprintf( '%s: %s', $lbl, implode( ', ', $els ) ); }
+		}
+		// No header-bar slots captured → at least surface the logo.
+		if ( ! $items ) {
+			$hl = ( isset( $values['header_logo']['logo_type'] ) && is_array( $values['header_logo']['logo_type'] ) ) ? $values['header_logo']['logo_type'] : array();
+			if ( 'simple' === ( isset( $hl['logo_type'] ) ? $hl['logo_type'] : '' ) && ! empty( $hl['simple']['image']['url'] ) ) {
+				$items[] = __( 'Logo: image', 'fw' );
+			} elseif ( ! empty( $hl['custom']['site_title'] ) ) {
+				$t = trim( wp_strip_all_tags( (string) $hl['custom']['site_title'] ) );
+				if ( '' !== $t ) { $items[] = sprintf( __( 'Logo: “%s”', 'fw' ), $t ); }
+			}
+		}
+		return $items;
+	}
+
+	/** Footer review lines — the pre / main / post regions (with each column's elements) + the copyright bar. */
+	private static function chrome_footer_items( array $values ) {
+		$items  = array();
+		$regions = array(
+			'pre_footer_columns'  => array( __( 'Pre-footer', 'fw' ),  'pre_footer' ),
+			'main_footer_columns' => array( __( 'Main footer', 'fw' ), 'main_footer' ),
+			'post_footer_columns' => array( __( 'Post-footer', 'fw' ), 'post_footer' ),
+		);
+		foreach ( $regions as $key => $meta ) {
+			$cols = self::chrome_footer_cols( isset( $values[ $key ] ) ? $values[ $key ] : null, $meta[1], $values );
+			if ( $cols ) {
+				$items[] = sprintf( _n( '%1$s: %2$d column', '%1$s: %2$d columns', count( $cols ), 'fw' ), $meta[0], count( $cols ) );
+				foreach ( $cols as $i => $csum ) {
+					$items[] = sprintf( '   %s %d: %s', __( 'Col', 'fw' ), $i + 1, '' !== $csum ? $csum : '—' );
+				}
+			}
+		}
+		// Copyright bar.
+		$cp = isset( $values['copyright_settings'] ) && is_array( $values['copyright_settings'] ) ? $values['copyright_settings'] : array();
+		if ( ( isset( $cp['enabled'] ) ? $cp['enabled'] : '' ) === 'yes' ) {
+			$cc    = ( isset( $cp['yes']['copyright_columns'] ) && is_array( $cp['yes']['copyright_columns'] ) ) ? $cp['yes']['copyright_columns'] : array();
+			$count = isset( $cc['count'] ) ? (int) $cc['count'] : 1;
+			$obj   = ( isset( $cc[ (string) $count ] ) && is_array( $cc[ (string) $count ] ) ) ? $cc[ (string) $count ] : array();
+			$parts = array();
+			foreach ( $obj as $cnodes ) { if ( is_array( $cnodes ) ) { $s = self::chrome_nodes_summary( $cnodes, $values ); if ( '' !== $s ) { $parts[] = $s; } } }
+			$items[] = sprintf( _n( 'Copyright: %d column — %s', 'Copyright: %d columns — %s', max( 1, $count ), 'fw' ), max( 1, $count ), $parts ? implode( ' · ', $parts ) : __( '© line', 'fw' ) );
+		}
+		// A trailing styling note (kept last so structure reads first).
+		$styling = array();
+		if ( ! empty( $values['footer_background'] ) )                                            { $styling[] = __( 'background', 'fw' ); }
+		if ( ! empty( $values['footer_text_color'] ) || ! empty( $values['footer_link_color'] ) ) { $styling[] = __( 'text + link colors', 'fw' ); }
+		if ( $styling ) { $items[] = sprintf( __( 'Styling: %s', 'fw' ), implode( ', ', $styling ) ); }
+		return $items;
+	}
+
+	/** A footer region's columns → a per-column element summary. Handles the { count, '<count>':{ <region>_col_N:[…] } } shape. */
+	private static function chrome_footer_cols( $bar, $region, array $values ) {
+		if ( ! is_array( $bar ) ) { return array(); }
+		$count = isset( $bar['count'] ) ? (int) $bar['count'] : 0;
+		if ( ! $count ) {
+			foreach ( $bar as $k => $v ) { if ( ctype_digit( (string) $k ) && is_array( $v ) ) { $count = (int) $k; break; } }
+		}
+		$obj = ( isset( $bar[ (string) $count ] ) && is_array( $bar[ (string) $count ] ) ) ? $bar[ (string) $count ] : array();
+		$out = array();
+		for ( $i = 1; $i <= $count; $i++ ) {
+			$cnodes = isset( $obj[ $region . '_col_' . $i ] ) ? $obj[ $region . '_col_' . $i ] : null;
+			if ( is_array( $cnodes ) ) { $out[] = self::chrome_nodes_summary( $cnodes, $values ); }
+		}
+		return $out;
+	}
+
+	/** Summarize a list of element_type nodes (one footer/header column) into a short, comma-joined label. */
+	private static function chrome_nodes_summary( $nodes, array $values ) {
+		$parts = array();
+		foreach ( (array) $nodes as $node ) { $s = self::chrome_el_summary( $node, $values ); if ( '' !== $s ) { $parts[] = $s; } }
+		return implode( ', ', $parts );
+	}
+
+	/** One element_type node → a friendly label (a text block with an <h*>+links reads as "Links: <heading>"). */
+	private static function chrome_el_summary( $node, array $values = array() ) {
+		$et = isset( $node['element_type']['element'] ) ? (string) $node['element_type']['element'] : '';
+		switch ( $et ) {
+			case 'logo':
+				$t = '';
+				if ( ! empty( $values['header_logo']['logo_type']['custom']['site_title'] ) ) {
+					$t = trim( wp_strip_all_tags( (string) $values['header_logo']['logo_type']['custom']['site_title'] ) );
+				}
+				return '' !== $t ? sprintf( __( 'Logo (%s)', 'fw' ), $t ) : __( 'Logo', 'fw' );
+			case 'menu_area':
+			case 'menu':
+				return __( 'Menu', 'fw' );
+			case 'cta_button':
+			case 'button':
+			case 'cta':
+				$txt = isset( $node['element_type']['cta_button']['cta_text'] ) ? (string) $node['element_type']['cta_button']['cta_text'] : '';
+				return '' !== $txt ? sprintf( __( 'Button (%s)', 'fw' ), $txt ) : __( 'Button', 'fw' );
+			case 'social_icons':
+			case 'social':
+				return __( 'Social', 'fw' );
+			case 'newsletter':
+				return __( 'Newsletter', 'fw' );
+			case 'search':
+				return __( 'Search', 'fw' );
+			case 'text':
+				$tc = isset( $node['element_type']['text']['text_content'] ) ? (string) $node['element_type']['text']['text_content'] : '';
+				if ( preg_match( '/<h[1-6][^>]*>(.*?)<\/h[1-6]>/is', $tc, $m ) ) {
+					$heading = trim( wp_strip_all_tags( $m[1] ) );
+					$nlinks  = preg_match_all( '/<a\b/i', $tc );
+					if ( $nlinks ) { return sprintf( _n( 'Links: %1$s (%2$d)', 'Links: %1$s (%2$d)', $nlinks, 'fw' ), $heading, $nlinks ); }
+					return '' !== $heading ? $heading : __( 'Text', 'fw' );
+				}
+				if ( false !== strpos( $tc, 'footer-tagline' ) ) { return __( 'Tagline', 'fw' ); }
+				if ( false !== strpos( $tc, '©' ) || false !== strpos( $tc, '{{current_year}}' ) || false !== stripos( $tc, 'copyright' ) ) { return __( '© line', 'fw' ); }
+				return '' !== trim( wp_strip_all_tags( $tc ) ) ? __( 'Text', 'fw' ) : '';
+			default:
+				return '' !== $et ? ucwords( str_replace( '_', ' ', $et ) ) : '';
+		}
+	}
+
 	public function _ajax_convert_prepare() {
 		check_ajax_referer( self::NONCE );
 		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 ); }
@@ -1032,6 +1213,12 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$title = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? 'Home' ) );
 		if ( $title === '' ) { $title = 'Home'; }
 		$opts  = array( 'dynamic_chrome' => true, 'hifi_css' => self::sc_hifi_opt() ); // faithful source look + EDITABLE chrome + hi-fi base
+		// SOURCE ORIGIN — the URL flow renders the page (?html=1) and builds from that HTML with NO bundle, so
+		// build_from_html has no origin to resolve a relative `/assets/*.svg` against → the Need-Help icons &
+		// the "Why" illustration ship as bare `/assets/…` paths that 404. The pasted URL rides along as
+		// fw_sc_source_url; pass it so the Mapper can inline/absolutise those SVGs.
+		$sc_src = esc_url_raw( trim( (string) wp_unslash( $_POST['fw_sc_source_url'] ?? '' ) ) );
+		if ( $sc_src !== '' ) { $opts['source_url'] = $sc_src; }
 
 		$bundle = null;
 		$file   = $_FILES['fw_sc_file'] ?? null;
@@ -1093,6 +1280,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'theme-settings.json' => $bundle['files']['theme-settings.json'] ?? null,
 			'screens'           => $bundle['screens'] ?? 1,
 			'source'            => $bundle['source'] ?? null,
+			// The pasted source URL — carried into step 2 (build) so the origin survives the review round-trip
+			// and relative /assets/*.svg icons + illustrations inline/absolutise instead of 404-ing. See
+			// resolve_source_url(): this is the authoritative origin for a URL conversion.
+			'source_url'        => $sc_src,
 			// The source markup — needed in step 2 to re-enable the styling mapper (sc-btn / .box) when the
 			// corrected pages are rebuilt; without it the build step produces unstyled buttons/cards.
 			'html'              => isset( $bundle['html'] ) ? (string) $bundle['html'] : '',
@@ -1101,6 +1292,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		wp_send_json_success( array(
 			'mapping' => $bundle['mapping'],
 			'roles'   => FW_Site_Converter_Mapper::roles(),
+			// Header + footer chrome summary (from the captured theme-settings) → shown in the review UI so
+			// the chrome is visible and can be omitted (kept editable — applied via Theme Settings, not baked).
+			'chrome'  => self::chrome_review( ( isset( $bundle['files']['theme-settings.json']['values'] ) && is_array( $bundle['files']['theme-settings.json']['values'] ) ) ? $bundle['files']['theme-settings.json']['values'] : array() ),
 			'source'  => isset( $bundle['source']['label'] ) ? $bundle['source']['label'] : __( 'HTML export', 'fw' ),
 			// The home markup — handed to the optional AI companion (browser → localhost) to refine the mapping.
 			'html'    => isset( $bundle['html'] ) ? (string) $bundle['html'] : '',
@@ -1144,6 +1338,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		$__am = get_transient( $this->assets_key() );
 		FW_Site_Converter_Mapper::set_assets( is_array( $__am ) ? $__am : array() ); // "Attach media" uploads → used by the mapper
+		// SOURCE ORIGIN for the admin build path (build_pages, not build_from_html) — so relative /assets/*.svg
+		// icons & illustrations inline/absolutise instead of 404-ing (the recurring Need-Help/Why-image bug).
+		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_source_url' ) ) {
+			FW_Site_Converter_Mapper::set_source_url( $this->resolve_source_url( $mapping, isset( $stash ) ? $stash : null ) );
+		}
 		$pages = FW_Site_Converter_Mapper::build_pages( $mapping );
 
 		// Fold the styling the mapper just registered (sc-btn / .box / btn-row) into the stashed child-theme
@@ -1166,6 +1365,17 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		if ( ! empty( $stash['media.json'] ) )        { $files['media.json'] = $stash['media.json']; }
 		if ( ! empty( $stash['theme-design.json'] ) ) { $files['theme-design.json'] = $stash['theme-design.json']; }
 		if ( ! empty( $stash['theme-settings.json'] ) && is_array( $stash['theme-settings.json'] ) ) { $files['theme-settings.json'] = $stash['theme-settings.json']; }
+		// Review "Omit header / footer": drop the captured chrome Theme-Settings so the site keeps its own
+		// header/footer instead of adopting the source's. header_*/footer_*/copyright_* keys are the chrome.
+		if ( isset( $files['theme-settings.json']['values'] ) && is_array( $files['theme-settings.json']['values'] )
+			&& ( ! empty( $mapping['omit_header'] ) || ! empty( $mapping['omit_footer'] ) ) ) {
+			$tv = $files['theme-settings.json']['values'];
+			foreach ( array_keys( $tv ) as $k ) {
+				if ( ! empty( $mapping['omit_header'] ) && 0 === strpos( $k, 'header' ) ) { unset( $tv[ $k ] ); }
+				if ( ! empty( $mapping['omit_footer'] ) && ( 0 === strpos( $k, 'footer' ) || 0 === strpos( $k, 'copyright' ) ) ) { unset( $tv[ $k ] ); }
+			}
+			$files['theme-settings.json']['values'] = $tv;
+		}
 		if ( $pages )                                 { $files['pages.json'] = array( 'pages' => $pages ); }
 
 		// NATIVE-CHROME AI REFINEMENT: when Use AI mapped the header/footer into Theme-Settings JSON
@@ -1796,6 +2006,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		$__am = get_transient( $this->assets_key() );
 		FW_Site_Converter_Mapper::set_assets( is_array( $__am ) ? $__am : array() ); // "Attach media" uploads → used by the mapper
+		// SOURCE ORIGIN for the admin build path (build_pages, not build_from_html) — so relative /assets/*.svg
+		// icons & illustrations inline/absolutise instead of 404-ing (the recurring Need-Help/Why-image bug).
+		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_source_url' ) ) {
+			FW_Site_Converter_Mapper::set_source_url( $this->resolve_source_url( $mapping, isset( $stash ) ? $stash : null ) );
+		}
 		$pages = FW_Site_Converter_Mapper::build_pages( $mapping );
 		if ( $grab_only ) {
 			foreach ( $pages as $i => $pg ) {
@@ -2388,6 +2603,22 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						}, 120 );
 					}
 					function svc() { return ( ( aiUrlEl && aiUrlEl.value ) || 'http://localhost:8787' ).replace( /\/+$/, '' ); }
+					// ALWAYS-ON local micro pass (token-free, NOT the "Use AI" heavy path): ask the capture service
+					// to give the sections semantic css_id slugs on the LOCAL model. Best-effort — a missing
+					// service / no local model / any error / a slow model just keeps the deterministic mapping. A
+					// short timeout stops it stalling the review. Resolves with the (possibly-improved) mapping.
+					function aiMicroPass( mapping ) {
+						return new Promise( function ( resolve ) {
+							var done = false, finish = function ( m ) { if ( ! done ) { done = true; resolve( m || mapping ); } };
+							var to = setTimeout( function () { finish( mapping ); }, 45000 );
+							try {
+								fetch( svc() + '/ai-micro', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify( { mapping: mapping } ) } )
+									.then( function ( r ) { return r.json(); } )
+									.then( function ( d ) { clearTimeout( to ); finish( d && d.mapping ); } )
+									.catch( function () { clearTimeout( to ); finish( mapping ); } );
+							} catch ( e ) { clearTimeout( to ); finish( mapping ); }
+						} );
+					}
 				function aiOn() { return !! ( aiChk && aiChk.checked ); }
 						// AUTO browser-render (replaces the old "Render in a browser" checkbox): when the capture
 						// service is up and AI is off, FILE / paste uploads are rendered in a real browser through the
@@ -2488,8 +2719,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							.then( function ( renderedHtml ) { loading( '<?php echo esc_js( __( 'Mapping the rendered page…', 'fw' ) ); ?>', 82, 9000 ); return prepareFromHtml( renderedHtml ); } )
 							.then( function ( data ) {
 								var mapping = data.mapping || { pages: [] }, roles = data.roles || {};
-								if ( autoBuild ) { return doBuild( mapping ); }
-								render( mapping, roles, data.source || '<?php echo esc_js( __( 'rendered in browser', 'fw' ) ); ?>', false );
+								mapping.chrome = data.chrome || null; // header/footer summary → shown + omittable in the review
+								// Token-free local micro pass: semantic section slugs on the local model (best-effort).
+								loading( '<?php echo esc_js( __( 'Naming sections with the local AI…', 'fw' ) ); ?>', 88, 6000 );
+								return aiMicroPass( mapping ).then( function ( m ) {
+									var mp = m || mapping;
+									if ( autoBuild ) { return doBuild( mp ); }
+									render( mp, roles, data.source || '<?php echo esc_js( __( 'rendered in browser', 'fw' ) ); ?>', false );
+								} );
 							} )
 							.catch( function ( e ) { serviceMode = false; wrap.innerHTML = '<div class="notice notice-error"><p>' + escH( e.message ) + '</p></div>'; } );
 					}
@@ -2498,6 +2735,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						var fd = new FormData();
 						fd.append( 'action', 'fw_sc_convert_prepare' ); fd.append( '_wpnonce', nonce );
 						fd.append( 'fw_sc_file_html', renderedHtml );
+						// The pasted SOURCE URL -> the PHP build's source origin, so relative /assets/*.svg icons &
+						// illustrations inline/absolutise instead of 404-ing (else they ship as bare /assets paths).
+						fd.append( 'fw_sc_source_url', window.__fwSCSourceUrl || '' );
 						// Carry the "High-fidelity CSS" choice into the prepare step (this manual FormData does
 						// not include the form's named fields). present-flag + value = default-ON, unchecked→off.
 						( function () { var e = document.getElementById( 'fw-sc-opt-hifi' ); fd.append( 'fw_sc_hifi_present', '1' ); fd.append( 'fw_sc_hifi', ( ! e || e.checked ) ? '1' : '0' ); } )();
@@ -2667,10 +2907,34 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						var o = ''; for ( var k in roles ) { o += '<option value="' + k + '"' + ( k === cur ? ' selected' : '' ) + '>' + escH( roles[ k ] ) + '</option>'; }
 						return '<select data-p="' + pi + '" data-s="' + si + '" data-b="' + bi + '" style="max-width:210px">' + o + '</select>';
 					}
+					// A Header / Footer review row (chrome → Theme Settings). Read-only summary + an Omit toggle
+					// that (in the build step) drops the captured chrome so the site keeps its own header/footer.
+					function chromeBlock( region, cd ) {
+						if ( ! cd || ! cd.present ) { return ''; }
+						var label = ( region === 'header' ) ? '<?php echo esc_js( __( 'Header', 'fw' ) ); ?>' : '<?php echo esc_js( __( 'Footer', 'fw' ) ); ?>';
+						var omit  = !! mapping[ 'omit_' + region ];
+						// Leading spaces on an item (e.g. "   Col 1: …") mark a nested column line → indent it
+						// (HTML would otherwise collapse the spaces and flatten the region → column tree).
+						var items = ( cd.items || [] ).map( function ( x ) {
+							var m = /^(\s+)/.exec( x ), ind = m ? m[1].length : 0;
+							var pad = ind ? 'padding-left:' + ( ind * 0.55 ).toFixed( 1 ) + 'em;' : '';
+							var faint = ind ? 'color:#8a8f94;' : '';
+							return '<div style="' + pad + faint + '"><span style="color:#a7aaad">↳</span> ' + escH( x.replace( /^\s+/, '' ) ) + '</div>';
+						} ).join( '' );
+						return '<div class="fw-sc-chrome" data-region="' + region + '" style="border-top:2px solid #c3c4c7">'
+							+ '<div style="display:flex;flex-wrap:wrap;gap:.4em .9em;align-items:center;padding:.45em .7em;background:#e7ecf3">'
+								+ '<strong>' + label + '</strong>'
+								+ '<span style="font-size:11px;color:#787c82"><?php echo esc_js( __( '(chrome → Theme Settings)', 'fw' ) ); ?></span>'
+								+ '<label style="font-size:12px;white-space:nowrap;color:#b32d2e;margin-left:auto"><input type="checkbox" class="fw-sc-omit-chrome" data-region="' + region + '"' + ( omit ? ' checked' : '' ) + '> <?php echo esc_js( __( 'Omit', 'fw' ) ); ?> ' + label.toLowerCase() + '</label>'
+							+ '</div>'
+							+ '<div class="fw-sc-chrome-rows" style="padding:.4em .7em .5em 2.4em;font-size:12px;color:#787c82;line-height:1.7;' + ( omit ? 'opacity:.4' : '' ) + '">' + ( items || '<?php echo esc_js( __( 'detected', 'fw' ) ); ?>' ) + '</div>'
+						+ '</div>';
+					}
 					var aiBadge = ai ? ' <span style="background:#6d28d9;color:#fff;border-radius:9px;padding:1px 7px;font-size:11px">✦ <?php echo esc_js( __( 'AI-refined', 'fw' ) ); ?></span>' : '';
 					var h = '<div class="notice notice-info" style="margin:.3em 0;padding:.7em .9em">'
 						+ '<p style="margin:.1em 0 .5em"><strong><?php echo esc_js( __( 'Detected:', 'fw' ) ); ?> ' + escH( source ) + '</strong>' + aiBadge + ' — <?php echo esc_js( __( 'review each element’s role (or uncheck / omit it), then build.', 'fw' ) ); ?></p>'
-						+ '<div id="fw-sc-file-map" style="max-height:520px;overflow:auto;border:1px solid #dcdcde;border-radius:6px;background:#fff">';
+						+ '<div id="fw-sc-file-map" style="border:1px solid #dcdcde;border-radius:6px;background:#fff">';
+					h += chromeBlock( 'header', mapping.chrome && mapping.chrome.header ); // header first (top of the site)
 					( mapping.pages || [] ).forEach( function ( pg, pi ) {
 						( pg.sections || [] ).forEach( function ( sc, si ) {
 							h += '<div class="fw-sc-sec" data-p="' + pi + '" data-s="' + si + '" style="border-top:2px solid #c3c4c7">'
@@ -2700,11 +2964,20 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							h += '</div></div>';
 						} );
 					} );
+					h += chromeBlock( 'footer', mapping.chrome && mapping.chrome.footer ); // footer last (bottom of the site)
 					h += '</div><p style="margin:.7em 0 0"><button type="button" class="button button-primary" id="fw-sc-file-build"><?php echo esc_js( __( 'Build the site from this mapping', 'fw' ) ); ?></button></p></div>';
 					container.innerHTML = h;
 					var map = document.getElementById( 'fw-sc-file-map' );
 					map.addEventListener( 'change', function ( e ) {
-						var t = e.target, p = +t.dataset.p, s = +t.dataset.s;
+						var t = e.target;
+						// Header/Footer chrome omit toggle (no section index) — handle before the section guard.
+						if ( t.classList && t.classList.contains( 'fw-sc-omit-chrome' ) ) {
+							mapping[ 'omit_' + t.dataset.region ] = t.checked;
+							var crows = t.closest( '.fw-sc-chrome' ).querySelector( '.fw-sc-chrome-rows' );
+							if ( crows ) { crows.style.opacity = t.checked ? '.4' : '1'; }
+							return;
+						}
+						var p = +t.dataset.p, s = +t.dataset.s;
 						if ( isNaN( p ) || isNaN( s ) ) { return; }
 						var sec = mapping.pages[ p ].sections[ s ];
 						if ( t.classList.contains( 'fw-sc-cssid' ) ) { sec.css_id = t.value; return; }
@@ -2734,7 +3007,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						serviceMode = false;
 						resetProg(); loading( '<?php echo esc_js( __( 'Analyzing the export…', 'fw' ) ); ?>', 20, 6000, '<?php echo esc_js( __( 'Reading the export — extracting the palette, fonts, page sections, and the header/footer.', 'fw' ) ); ?>' );
 						prepare().then( function ( data ) {
-							return maybeAI( data ).then( function ( r ) { aiCss = r.css || ''; aiHeader = r.header || ''; aiFooter = r.footer || ''; aiChromeHeader = r.chromeHeader || null; aiChromeFooter = r.chromeFooter || null; render( r.mapping || { pages: [] }, data.roles || {}, data.source || '', r.ai ); } );
+							return maybeAI( data ).then( function ( r ) { aiCss = r.css || ''; aiHeader = r.header || ''; aiFooter = r.footer || ''; aiChromeHeader = r.chromeHeader || null; aiChromeFooter = r.chromeFooter || null; var rm = r.mapping || { pages: [] }; rm.chrome = data.chrome || null; render( rm, data.roles || {}, data.source || '', r.ai ); } );
 						} ).catch( function ( e ) { wrap.innerHTML = '<div class="notice notice-error"><p>' + escH( e.message ) + '</p></div>'; } ).then( function () { reviewBtn.disabled = false; } );
 					}
 					// AUTO browser-render: service up + AI off → route the upload through the capture service so
@@ -2787,7 +3060,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					// Remember the source URL (URL flow only) so the build can trigger the AI header/footer pass.
 					if ( /^https?:\/\//i.test( String( label || '' ) ) ) { window.__fwSCSourceUrl = String( label ); }
 					return prepareFromHtml( html ).then( function ( d ) {
-						render( d.mapping || { pages: [] }, d.roles || {}, label || ( d.source || '' ), false, container );
+						var dm = d.mapping || { pages: [] }; dm.chrome = d.chrome || null;
+						render( dm, d.roles || {}, label || ( d.source || '' ), false, container );
 					} );
 				};
 
