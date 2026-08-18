@@ -3748,12 +3748,13 @@ class FW_Site_Converter_Stitch {
 				'design'            => 'inline',
 			) ) ) );
 		}
-		// NAV column → atomic native footer elements: a `heading` element (the column title) followed by one
-		// `link` element per {label,url} (F1, footer.md). Each link stores its href INLINE (no registered WP
-		// menu / menu_id), so it can never vanish from a missing menu object — the reason we map here and not
-		// to the registration-based `menu` element. The elements stack in the column to read as a link list.
-		// A column with real <a> links becomes heading + links; a bare text-item column (no hrefs) stays a
-		// Text `<ul>` (nothing to make a link from).
+		// NAV column → the column TITLE as a native `heading` element, then the link list GROUPED into a
+		// SINGLE `text` element holding one semantic `<ul class="fw-footer-links">` of `<a>` (F1, footer.md).
+		// Each link keeps its href INLINE, so the list is fully self-contained — nothing to vanish from a
+		// missing WP menu object (the reason we map here and not to the registration-based `menu` element),
+		// and the theme already styles this exact `<ul>`-in-a-text-element pattern. This replaces the old
+		// "one `link` element per link" emit: a run of successive links now reads as ONE editable `<ul>`
+		// menu list — the faithful translation of a source `<ul><li><a>` footer column.
 		if ( ! empty( $group['links'] ) ) {
 			$els   = array();
 			$title = trim( (string) $group['title'] );
@@ -3764,27 +3765,39 @@ class FW_Site_Converter_Stitch {
 					'heading_level' => $htag,
 				) ) );
 			}
-			$has_link = false;
+			$lis = '';
 			foreach ( $group['links'] as $l ) {
 				$label = trim( (string) $l['label'] );
 				if ( $label === '' ) { continue; }
-				$has_link = true;
-				$els[]    = array( 'element_type' => array( 'element' => 'link', 'link' => array(
-					'link_label'  => $label,
-					'link_url'    => ( $l['href'] !== '' ? $l['href'] : '#' ),
-					'link_target' => '_self',
-				) ) );
+				$href = ( isset( $l['href'] ) && $l['href'] !== '' ) ? $l['href'] : '#';
+				$lis .= '<li><a class="footer-link hf-link" href="' . esc_url( $href ) . '">' . esc_html( $label ) . '</a></li>';
 			}
-			if ( $has_link ) {
+			if ( $lis !== '' ) {
+				$els[] = array( 'element_type' => array( 'element' => 'text', 'text' => array(
+					'text_content' => '<ul class="fw-footer-links">' . $lis . '</ul>',
+				) ) );
 				return $els;
 			}
 		}
-		// No real links (text-only items) → keep the heading + plain list as a Text element.
-		$ltag     = preg_match( '/^h[2-6]$/', (string) ( $group['tag'] ?? '' ) ) ? $group['tag'] : 'h4';
-		$html_col = '<' . $ltag . '>' . esc_html( $group['title'] ) . '</' . $ltag . '><ul class="fw-footer-links">';
-		foreach ( ( $group['items'] ?? array() ) as $it ) { $html_col .= '<li>' . esc_html( $it ) . '</li>'; }
-		$html_col .= '</ul>';
-		return array( array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $html_col ) ) ) );
+		// No real links (text-only items — e.g. a Contact column of address / email / phone lines) → the
+		// column TITLE as a native `heading`, then the lines as ONE `<ul class="fw-footer-links">` text
+		// element. Bare emails / phone numbers are linkified (mailto: / tel:) so they stay actionable —
+		// WITHOUT inventing leading icons the source never had (that stays the icon_text path's job).
+		$els   = array();
+		$title = trim( (string) $group['title'] );
+		if ( $title !== '' ) {
+			$ltag  = preg_match( '/^h[2-6]$/', (string) ( $group['tag'] ?? '' ) ) ? $group['tag'] : 'h4';
+			$els[] = array( 'element_type' => array( 'element' => 'heading', 'heading' => array(
+				'heading_text'  => $title,
+				'heading_level' => $ltag,
+			) ) );
+		}
+		$lis = '';
+		foreach ( ( $group['items'] ?? array() ) as $it ) { $lis .= '<li>' . self::footer_linkify_contact( (string) $it ) . '</li>'; }
+		$els[] = array( 'element_type' => array( 'element' => 'text', 'text' => array(
+			'text_content' => '<ul class="fw-footer-links">' . $lis . '</ul>',
+		) ) );
+		return $els;
 	}
 
 	/**
@@ -3937,6 +3950,28 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 		return '';
+	}
+
+	/**
+	 * Linkify a bare footer contact line: wrap a standalone email in `<a href="mailto:">` and a phone
+	 * number in `<a href="tel:">`, so a plain-text Contact column (address / email / phone with no source
+	 * anchors) stays actionable — WITHOUT inventing the leading icons the source never had (an icon-bearing
+	 * contact column takes the structured icon_text path instead). A plain address line passes through
+	 * escaped, unchanged. Digits-only comparison ignores spaces / dashes / parens in the displayed number.
+	 */
+	private static function footer_linkify_contact( $line ) {
+		$line = trim( (string) $line );
+		if ( $line === '' ) { return ''; }
+		if ( preg_match( '/^[^\s@]+@[^\s@]+\.[^\s@]+$/', $line ) ) {
+			return '<a class="footer-link hf-link" href="mailto:' . esc_attr( $line ) . '">' . esc_html( $line ) . '</a>';
+		}
+		if ( preg_match( '/^[\d\s()+.\-]+$/', $line ) ) {
+			$digits = preg_replace( '/[^0-9+]/', '', $line );
+			if ( strlen( $digits ) >= 7 ) {
+				return '<a class="footer-link hf-link" href="tel:' . esc_attr( $digits ) . '">' . esc_html( $line ) . '</a>';
+			}
+		}
+		return esc_html( $line );
 	}
 
 	private static function detect_footer_columns( $html ) {
@@ -6370,6 +6405,13 @@ class FW_Site_Converter_Stitch {
 			function ( $el ) { return self::is_card_grid( $el ); },
 			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'cols' => $cols ) : null; }
 		);
+		// A section-intro HEADING beside a trailing "View All →" CTA link in a `flex justify-between` row
+		// (heading LEFT, link RIGHT). Claimed as ONE block BEFORE the generic heading walk splits it (which
+		// mis-folded the link into the heading + duplicated it) → the mapper lays it out inline space-between.
+		self::register_recognizer( 'heading_cta_row', 82,
+			function ( $el ) { return self::is_heading_cta_row( $el ); },
+			function ( $el ) { return self::heading_cta_row_build( $el ); }
+		);
 		// Headings h1–h6.
 		self::register_recognizer( 'heading', 80,
 			function ( $el, $tag ) { return (bool) preg_match( '/^h[1-6]$/', $tag ); },
@@ -8016,6 +8058,12 @@ class FW_Site_Converter_Stitch {
 		for ( $j = $title_at + 1; $j < $total; $j++ ) {
 			if ( 'text' === ( isset( $blocks[ $j ]['t'] ) ? $blocks[ $j ]['t'] : '' )
 				&& 'subtitle' !== ( isset( $blocks[ $j ]['role'] ) ? $blocks[ $j ]['role'] : '' ) ) {
+				// Never fold a LINK into the heading's subtitle — a "View All →" style CTA link beside a
+				// section heading (`flex justify-between`) is a button, NOT descriptive subtitle copy. Folding
+				// it produced a stray empty-title special_heading (its subtitle = the link text) alongside the
+				// real link. Only a plain paragraph becomes the subtitle.
+				$bh = (string) ( $blocks[ $j ]['html'] ?? $blocks[ $j ]['text'] ?? '' );
+				if ( preg_match( '/^\s*<a\b/i', $bh ) || ! empty( $blocks[ $j ]['href'] ) ) { continue; }
 				$blocks[ $j ]['role'] = 'subtitle';
 				return;
 			}
@@ -8147,18 +8195,102 @@ class FW_Site_Converter_Stitch {
 
 	/** A container that's just a strip of images (≥2 imgs, no headings/cards) — a logo / "trusted by" row. */
 	/** A container's direct-child IMAGE TILES: each a wrapper (div/a/figure/li) around a real <img>. */
+	/**
+	 * Does $el hold a section-intro HEADING + a single trailing CTA LINK laid out `flex justify-between`?
+	 * (heading-group on one side, a lone `<a>` on the other). Tight: exactly two element children, exactly
+	 * one side carries an hN, the other is/wraps ONE `<a>` (no heading, no image, no second link). So a real
+	 * "Our Services … View All →" row is caught, but a normal content row never is.
+	 */
+	private static function is_heading_cta_row( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$c = ' ' . strtolower( self::cls( $el ) ) . ' ';
+		$is_flex = strpos( $c, ' flex ' ) !== false || strpos( $c, ':flex-row' ) !== false || 'flex' === self::sc_css( $el, 'display' );
+		$between = strpos( $c, 'justify-between' ) !== false || false !== strpos( (string) self::sc_css( $el, 'justify-content' ), 'space-between' );
+		if ( ! $is_flex || ! $between ) { return false; }
+		$kids = array();
+		foreach ( $el->childNodes as $ch ) { if ( XML_ELEMENT_NODE === $ch->nodeType ) { $kids[] = $ch; } }
+		if ( count( $kids ) !== 2 ) { return false; }
+		$has_h = function ( $n ) {
+			foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) { if ( $n->getElementsByTagName( $h )->length > 0 ) { return true; } }
+			return false;
+		};
+		$h0 = $has_h( $kids[0] ); $h1 = $has_h( $kids[1] );
+		if ( $h0 === $h1 ) { return false; }                                     // need EXACTLY one heading side
+		$link_el = $h0 ? $kids[1] : $kids[0];
+		if ( $has_h( $link_el ) ) { return false; }
+		$link_is_a = ( 'a' === strtolower( $link_el->tagName ) );
+		$a = $link_is_a ? $link_el : $link_el->getElementsByTagName( 'a' )->item( 0 );
+		if ( ! $a ) { return false; }
+		// Exactly ONE link total. getElementsByTagName excludes the element itself, so add 1 when link_el IS
+		// the <a> (else a bare `<a>` side counts 0 and is wrongly rejected).
+		$a_count = ( $link_is_a ? 1 : 0 ) + $link_el->getElementsByTagName( 'a' )->length;
+		if ( $a_count !== 1 ) { return false; }
+		if ( $link_el->getElementsByTagName( 'img' )->length > 0 ) { return false; }   // not an image tile
+		if ( trim( self::text( $a ) ) === '' ) { return false; }
+		return true;
+	}
+
+	/** Build the { t:'heading_cta', heading, link } block from a heading+CTA-link justify-between row. */
+	private static function heading_cta_row_build( $el ) {
+		$kids = array();
+		foreach ( $el->childNodes as $ch ) { if ( XML_ELEMENT_NODE === $ch->nodeType ) { $kids[] = $ch; } }
+		$has_h = function ( $n ) {
+			foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) { if ( $n->getElementsByTagName( $h )->length > 0 ) { return true; } }
+			return false;
+		};
+		$head_el = $has_h( $kids[0] ) ? $kids[0] : $kids[1];
+		$link_el = ( $head_el === $kids[0] ) ? $kids[1] : $kids[0];
+		$a = ( 'a' === strtolower( $link_el->tagName ) ) ? $link_el : $link_el->getElementsByTagName( 'a' )->item( 0 );
+
+		$h  = array( 'overline' => '', 'title' => '', 'subtitle' => '', 'overline_class' => '', 'title_class' => '', 'subtitle_class' => '', 'css_class' => '', 'level' => 2, 'align' => '', 'wrapMaxW' => '' );
+		$hn = null;
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $tg ) { $e = $head_el->getElementsByTagName( $tg )->item( 0 ); if ( $e ) { $hn = $e; $h['level'] = (int) substr( $tg, 1 ); break; } }
+		if ( $hn instanceof DOMElement ) {
+			$h['title']       = self::clean_inline_html( $hn );
+			$h['title_class'] = self::cls( $hn );
+			$h['title_cs']    = (string) $hn->getAttribute( 'data-sc-cs' );
+		}
+		$p = $head_el->getElementsByTagName( 'p' )->item( 0 );
+		if ( $p instanceof DOMElement ) {
+			$h['subtitle']       = self::clean_inline_html( $p );
+			$h['subtitle_class'] = self::cls( $p );
+			$h['subtitle_cs']    = (string) $p->getAttribute( 'data-sc-cs' );
+		}
+
+		$link = array(
+			'label' => self::text( $a ),
+			'href'  => (string) $a->getAttribute( 'href' ),
+			'cls'   => self::cls( $a ),
+			'cs'    => (string) $a->getAttribute( 'data-sc-cs' ),
+			'hover' => (string) $a->getAttribute( 'data-sc-hover' ),
+		);
+		$svg = $a->getElementsByTagName( 'svg' )->item( 0 );
+		if ( $svg instanceof DOMElement && $a->ownerDocument ) { $link['icon_svg'] = (string) $a->ownerDocument->saveHTML( $svg ); }
+
+		return array( 't' => 'heading_cta', 'role' => 'heading_cta', 'heading' => $h, 'link' => $link );
+	}
+
 	private static function image_grid_tiles( $el ) {
 		$tiles = array();
 		if ( ! ( $el instanceof DOMElement ) ) { return $tiles; }
-		foreach ( $el->childNodes as $ch ) {
-			if ( XML_ELEMENT_NODE !== $ch->nodeType ) { continue; }
-			if ( ! in_array( strtolower( $ch->tagName ), array( 'div', 'a', 'figure', 'li' ), true ) ) { continue; }
-			$img = $ch->getElementsByTagName( 'img' )->item( 0 );
-			if ( ! $img ) { continue; }
+		// Collect EVERY real gallery image in the container, FLATTENING nested columns/grids — a metro layout
+		// like `grid[ tall-img , flex-col[ img , img ] ]` carries 3 images across only 2 direct children, and
+		// the old direct-child-only scan saw just 2 tiles (grabbing one img per child) → the grid failed the
+		// ≥3 gallery test and one image was dropped. Walk every <img>, keyed to its nearest block wrapper (for
+		// col-span / aspect classes). Parity in JS capture-extract imageGridTiles.
+		foreach ( $el->getElementsByTagName( 'img' ) as $img ) {
+			if ( ! ( $img instanceof DOMElement ) ) { continue; }
 			$src = trim( (string) $img->getAttribute( 'src' ) );
 			if ( '' === $src ) { $src = trim( (string) $img->getAttribute( 'data-src' ) ); }
 			if ( '' === $src || stripos( $src, 'data:' ) === 0 ) { continue; }
-			$tiles[] = array( 'el' => $ch, 'img' => $img, 'src' => $src );
+			// Nearest block-wrapper ancestor inside $el (the tile element); fall back to the img itself.
+			$wrap = $img->parentNode;
+			while ( $wrap instanceof DOMElement && $wrap !== $el
+				&& ! in_array( strtolower( $wrap->tagName ), array( 'div', 'a', 'figure', 'li' ), true ) ) {
+				$wrap = $wrap->parentNode;
+			}
+			if ( ! ( $wrap instanceof DOMElement ) || $wrap === $el ) { $wrap = $img; }
+			$tiles[] = array( 'el' => $wrap, 'img' => $img, 'src' => $src );
 		}
 		return $tiles;
 	}
@@ -8175,11 +8307,48 @@ class FW_Site_Converter_Stitch {
 		$is_grid = strpos( $c, ' grid ' ) !== false || strpos( $c, 'grid-cols' ) !== false
 			|| preg_match( '/\bflex\b/', $c ) || in_array( self::sc_css( $el, 'display' ), array( 'grid', 'flex' ), true );
 		if ( ! $is_grid ) { return false; }
-		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
-			if ( $el->getElementsByTagName( $h )->length > 0 ) { return false; }
-		}
 		$tiles = self::image_grid_tiles( $el );
 		if ( count( $tiles ) < 3 ) { return false; }
+		// DEFER to the more-specific recognizers: a logo/"trusted-by" strip → `logo_grid`, an avatar stack →
+		// `avatar`. image_grid is a HIGHER priority (91) than logo_strip (25) / avatar_group (84), and now
+		// that tile-flattening catches nested images it would otherwise greedily claim those first — so bow
+		// out when they match, letting each land on its correct shortcode. (Regression guard.)
+		if ( self::is_logo_strip( $el ) || self::is_avatar_group( $el ) ) { return false; }
+		// A grid with headings is USUALLY a content-card grid (icon/heading/text) — NOT a gallery, so reject
+		// it. The ONE exception is a captioned PHOTO gallery, where each caption is a HOVER-REVEALED overlay
+		// (`absolute inset-0 … opacity-0 group-hover:opacity-100`) sitting over a cover image — a signature a
+		// content card never has (its heading is in normal, always-visible flow). Allow the grid only when
+		// EVERY heading is such a hover caption AND the tiles are cover-image-dominant with no body <p>.
+		// Parity in JS isImageGrid.
+		$n = count( $tiles );
+		$headings = 0;
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) { $headings += $el->getElementsByTagName( $h )->length; }
+		if ( $headings > 0 ) {
+			$cover = 0; $with_body = 0;
+			foreach ( $tiles as $t ) {
+				$ic = ' ' . strtolower( self::cls( $t['img'] ) ) . ' ';
+				$wc = ' ' . strtolower( self::cls( $t['el'] ) ) . ' ';
+				if ( strpos( $ic, 'object-cover' ) !== false || strpos( $ic, 'object-fill' ) !== false
+					|| ( strpos( $ic, 'w-full' ) !== false && strpos( $ic, 'h-full' ) !== false )
+					|| preg_match( '/\b(?:[a-z]{2}:)?aspect-/', $wc ) || preg_match( '/\b(?:[a-z]{2}:)?h-\[?[0-9]/', $wc ) ) { $cover++; }
+				if ( $t['el'] instanceof DOMElement && $t['el']->getElementsByTagName( 'p' )->length > 0 ) { $with_body++; }
+			}
+			$all_hover_caption = true;
+			foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
+				foreach ( $el->getElementsByTagName( $h ) as $hn ) {
+					$anc = $hn->parentNode; $is_hover = false;
+					while ( $anc instanceof DOMElement && $anc !== $el ) {
+						$ac = ' ' . strtolower( self::cls( $anc ) ) . ' ';
+						if ( ( strpos( $ac, ' absolute ' ) !== false || strpos( $ac, ' fixed ' ) !== false )
+							&& ( strpos( $ac, 'opacity-0' ) !== false || strpos( $ac, 'group-hover' ) !== false ) ) { $is_hover = true; break; }
+						$anc = $anc->parentNode;
+					}
+					if ( ! $is_hover ) { $all_hover_caption = false; break 2; }
+				}
+			}
+			$photo_gallery = $all_hover_caption && ( $cover >= (int) ceil( $n * 0.7 ) ) && ( $with_body < (int) ceil( $n * 0.5 ) );
+			if ( ! $photo_gallery ) { return false; }
+		}
 		$child_els = 0;
 		foreach ( $el->childNodes as $ch ) { if ( XML_ELEMENT_NODE === $ch->nodeType ) { $child_els++; } }
 		return count( $tiles ) >= max( 3, (int) ceil( $child_els * 0.7 ) );
@@ -9193,7 +9362,19 @@ class FW_Site_Converter_Stitch {
 				// sizing step, e.g. `w-16 h-16 bg-white rounded-2xl`) — as iconChipCls, so n_icon_box reproduces
 				// the badge/bg behind the icon (icon_badge shape + fill) rather than an unstyled bare icon.
 				$sp = ( $svg->parentNode instanceof DOMElement ) ? $svg->parentNode : null;
-				if ( $sp ) {
+				// A real icon CHIP is a SMALL wrapper around ONLY the icon — never the CARD/CELL itself. The
+				// card carries `bg-secondary p-8`, which matches the chip heuristic (bg + padding), so without
+				// this guard the whole card was read as the icon's chip: its dark background got painted behind
+				// the icon and the icon was forced display:flex full-width (centered), defeating icon_align.
+				// Require the parent to NOT be the cell AND to hold no heading/paragraph (icon-only). (Matches
+				// the `$sp !== $cell` guard the lucide path already has.)
+				$chip_ok = $sp && $sp !== $cell;
+				if ( $chip_ok ) {
+					foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p' ) as $tg ) {
+						if ( $sp->getElementsByTagName( $tg )->length > 0 ) { $chip_ok = false; break; }
+					}
+				}
+				if ( $chip_ok ) {
 					$pcls = self::cls( $sp );
 					if ( strpos( $pcls, 'bg-' ) !== false && preg_match( '/(?:^|\s)(?:w-\d|h-\d|min-h-|aspect-|p-\d)/', $pcls ) ) {
 						$icon_chip_cls = $pcls;
@@ -9949,15 +10130,33 @@ class FW_Site_Converter_Stitch {
 	/** The descendant container (div/ul/section) with the most DIRECT element children (>=2) — e.g. a
 	 *  footer's column ROW. */
 	private static function densest_child_group( $host ) {
-		$best = null; $best_n = 1;
+		$best = null; $best_n = 1;                 // fallback: densest non-list container
+		$best_grid = null; $best_grid_n = 1;       // preferred: the grid/flex COLUMN row
 		foreach ( array( 'div', 'ul', 'section' ) as $tag ) {
 			foreach ( $host->getElementsByTagName( $tag ) as $el ) {
-				$n = 0;
-				foreach ( $el->childNodes as $ch ) { if ( $ch instanceof DOMElement ) { $n++; } }
+				$n = 0; $listish = 0;
+				foreach ( $el->childNodes as $ch ) {
+					if ( ! ( $ch instanceof DOMElement ) ) { continue; }
+					$n++;
+					$cn = strtolower( $ch->nodeName );
+					if ( 'li' === $cn || 'a' === $cn ) { $listish++; }
+				}
+				if ( $n < 2 ) { continue; }
+				// A container whose children are mostly <li>/<a> is a LINK LIST inside ONE column (a menu or a
+				// social row), never the column ROW itself — skip it so a 4-link <ul> can't outrank the real
+				// 3-column grid (the "footer Contact column baked verbatim" bug: the links <ul> won the density
+				// race, so the actual grid columns were never tokenized).
+				if ( $listish * 2 > $n ) { continue; }
 				if ( $n > $best_n ) { $best_n = $n; $best = $el; }
+				// The true footer column row is a grid/flex container of block columns — prefer it outright over
+				// a merely-dense plain container, even when it has fewer children.
+				$cls = strtolower( self::cls( $el ) );
+				if ( ( false !== strpos( $cls, 'grid' ) || false !== strpos( $cls, 'flex' ) ) && $n > $best_grid_n ) {
+					$best_grid_n = $n; $best_grid = $el;
+				}
 			}
 		}
-		return $best;
+		return $best_grid ? $best_grid : $best;
 	}
 
 	/** Inner HTML of an element (its children serialized). */

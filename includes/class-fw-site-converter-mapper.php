@@ -750,6 +750,62 @@ class FW_Site_Converter_Mapper {
 	 * @param string $cs      the element's data-sc-cs
 	 * @return array the (possibly updated) spacing att
 	 */
+	/**
+	 * The source element's computed PADDING → the native spacing option's `padding` (editable). Equal
+	 * padding on all four sides collapses to the `all` slug (`p-8`); otherwise each side is set. Skips
+	 * a side already set by a class map, and hairline/zero values. Mirrors apply_native_margin.
+	 */
+	/**
+	 * Tailwind responsive VISIBILITY classes → the native `responsive_hide` checkboxes (hide-xs = mobile
+	 * <768, hide-sm = tablet 768–991, hide-md = desktop ≥992). Handles `md:hidden` / `lg:hidden` (hidden
+	 * FROM a breakpoint up) and `hidden md:flex|block|grid|…` (hidden BELOW a breakpoint). Lets a source's
+	 * responsive show/hide survive on a NATIVE element — e.g. a `md:hidden` mobile CTA twin stops showing on
+	 * desktop beside its `hidden md:flex` desktop version. Returns [] when the class has no visibility rule.
+	 */
+	private static function responsive_hide_from_class( $cls ) {
+		$c    = ' ' . strtolower( (string) $cls ) . ' ';
+		$hide = array();   // ASSOCIATIVE: keyed by the hide-* class (the checkboxes option reads array_keys()).
+		// `hidden` + a breakpoint-show (md:flex / lg:block / …) → hidden BELOW that breakpoint.
+		if ( preg_match( '/\bhidden\b/', $c ) && preg_match( '/\b(sm|md|lg|xl):(?:flex|block|grid|inline|inline-flex|inline-block|table)\b/', $c, $m ) ) {
+			$hide['hide-xs'] = 'hide-xs';                             // mobile always hidden here
+			if ( 'lg' === $m[1] || 'xl' === $m[1] ) { $hide['hide-sm'] = 'hide-sm'; }   // shown only ≥ lg → tablet hidden too
+		}
+		// `md:hidden` / `lg:hidden` / `sm:hidden` → hidden FROM that breakpoint up.
+		if ( preg_match( '/\b(sm|md|lg|xl):hidden\b/', $c, $m ) ) {
+			if ( 'lg' === $m[1] || 'xl' === $m[1] ) { $hide['hide-md'] = 'hide-md'; }   // desktop only
+			else { $hide['hide-sm'] = 'hide-sm'; $hide['hide-md'] = 'hide-md'; }        // sm/md → tablet + desktop
+		}
+		return $hide;
+	}
+
+	private static function apply_native_padding( $spacing, $cs ) {
+		if ( ! self::$hifi_on || '' === (string) $cs || ! is_array( $spacing ) || ! isset( $spacing['padding'] ) ) { return $spacing; }
+		$p = self::cs_decls( (string) $cs, array( 'padding-top', 'padding-right', 'padding-bottom', 'padding-left' ) );
+		$slug_of = function ( $v ) {
+			if ( ! is_string( $v ) || $v === '' || strpos( $v, 'var(' ) !== false || strpos( $v, 'auto' ) !== false ) { return null; }
+			$px = self::px_of( $v );
+			if ( $px < 6 ) { return null; }
+			$s = self::spacing_px_to_slug( $px );
+			return ( '0' === $s ) ? null : $s;
+		};
+		$sides = array( 'top' => 'padding-top', 'right' => 'padding-right', 'bottom' => 'padding-bottom', 'left' => 'padding-left' );
+		$slugs = array();
+		foreach ( $sides as $side => $prop ) { $slugs[ $side ] = isset( $p[ $prop ] ) ? $slug_of( $p[ $prop ] ) : null; }
+		$vals = array_values( array_unique( array_filter( $slugs, function ( $x ) { return $x !== null; } ) ) );
+		// All four sides present + equal → the single `all` control.
+		if ( count( array_filter( $slugs, function ( $x ) { return $x !== null; } ) ) === 4 && count( $vals ) === 1 ) {
+			if ( empty( $spacing['padding']['all'] ) ) { $spacing['padding']['all'] = 'p-' . $vals[0]; }
+			return $spacing;
+		}
+		$pref = array( 'top' => 'pt', 'right' => 'pr', 'bottom' => 'pb', 'left' => 'pl' );
+		foreach ( $slugs as $side => $slug ) {
+			if ( $slug === null ) { continue; }
+			if ( ! empty( $spacing['padding'][ $side ] ) ) { continue; }
+			$spacing['padding'][ $side ] = $pref[ $side ] . '-' . $slug;
+		}
+		return $spacing;
+	}
+
 	private static function apply_native_margin( $spacing, $cs ) {
 		if ( ! self::$hifi_on || '' === (string) $cs || ! is_array( $spacing ) || ! isset( $spacing['margin'] ) ) { return $spacing; }
 		$m = self::cs_decls( (string) $cs, array( 'margin-top', 'margin-bottom' ) );
@@ -985,6 +1041,11 @@ class FW_Site_Converter_Mapper {
 				$grp = isset( $run[0]['_group'] ) ? $run[0]['_group'] : array();
 				$col = self::n_column( '1_1', array_map( $strip, $run ) );
 				$col['atts']['content_direction'] = 'row';
+				// Size the buttons to their CONTENT (not full-width). Converted `.btn`s render block/full-width,
+				// so in a flex-row + flex-wrap column two full-width buttons WRAP and stack — the "hero buttons
+				// aren't inline" bug. flex:0 0 auto + width:auto keeps each at content width, side-by-side (parity
+				// with the old btn_row_class / btn_group_class rule the native content_direction path had dropped).
+				$col['atts']['custom_css'] = 'selector .btn{flex:0 0 auto !important;width:auto !important;}';
 				$gap = ( $grp && preg_match( '/gap:\s*([0-9.]+)px/', (string) ( $grp['cs'] ?? '' ), $gm ) ) ? self::gap_slug( $gm[1] ) : '';
 				$col['atts']['content_gap'] = array( 'base' => ( $gap !== '' ? $gap : '3' ), 'md' => '', 'lg' => '' );
 				// Horizontal placement = the SOURCE button container's real flex main-axis alignment (NOT a blind
@@ -1535,7 +1596,7 @@ class FW_Site_Converter_Mapper {
 		if ( $d < 1 || $d > 12 ) { return null; }
 		return array( 'width' => self::frac12( $d ) );
 	}
-	private static function n_text( $html, $max_width = '', $align = '', $cs = '' ) {
+	private static function n_text( $html, $max_width = '', $align = '', $cs = '', $cls = '' ) {
 		$html      = (string) $html;
 		$centered  = in_array( $align, array( 'center', 'right' ), true );
 		$mw        = self::max_width_att( (string) $max_width );
@@ -1572,10 +1633,16 @@ class FW_Site_Converter_Mapper {
 		// CONVERSION DEBUG (best-effort) — the paragraph's source classes (from a `<p class="…">` in the
 		// html) that became NO option: size/leading/color utilities are now owned by the Text Style preset /
 		// text_color / spacing options → "represented"; the rest are "dropped".
-		if ( stripos( $html, 'class=' ) !== false && preg_match( '/class\s*=\s*"([^"]*)"/i', $html, $cm ) ) {
-			$src_cls = trim( $cm[1] );
-			self::conv_debug_record( $uid, $src_cls, self::conv_dropped_diff( $src_cls, self::strip_inert_utilities( $src_cls ) ) );
+		$all_cls = (string) $cls;                                 // the block's source class (survives html cleaning)
+		if ( stripos( $html, 'class=' ) !== false && preg_match_all( '/class\s*=\s*"([^"]*)"/i', $html, $cm ) ) {
+			$all_cls = trim( $all_cls . ' ' . implode( ' ', $cm[1] ) );
+			$first   = trim( (string) ( $cm[1][0] ?? '' ) );
+			self::conv_debug_record( $uid, $first, self::conv_dropped_diff( $first, self::strip_inert_utilities( $first ) ) );
 		}
+		// Responsive visibility (a `md:hidden` mobile twin, `hidden md:flex` desktop-only, …) → the native
+		// responsive_hide option, so a source element hidden at a breakpoint stays hidden on that device.
+		$rh = self::responsive_hide_from_class( $all_cls );
+		if ( $rh ) { $atts['responsive_hide'] = $rh; }
 		// Native horizontal alignment (a `text-*` class on the block wrapper) — only for an explicit
 		// center/right; left/start is the inherit default, so it stays unset.
 		if ( $text_align !== '' ) { $atts['text_align'] = $text_align; }
@@ -2291,7 +2358,15 @@ class FW_Site_Converter_Mapper {
 
 		$atts = self::shortcode_default_atts( 'gallery' );
 		if ( ! is_array( $atts ) ) { $atts = array(); }
-		$atts['images']       = $images;
+		// The gallery view reads `source/media/images` FIRST and only falls back to the flat `images` key
+		// when the former ISN'T an array — but the shortcode defaults leave `source.media.images` as an empty
+		// [] (which IS an array), so the fallback never fires and the gallery renders EMPTY. Populate the real
+		// render key (source → media → images), keeping the flat key too for back-compat.
+		$atts['images'] = $images;
+		if ( ! isset( $atts['source'] ) || ! is_array( $atts['source'] ) ) { $atts['source'] = array(); }
+		$atts['source']['kind'] = 'media';
+		if ( ! isset( $atts['source']['media'] ) || ! is_array( $atts['source']['media'] ) ) { $atts['source']['media'] = array(); }
+		$atts['source']['media']['images'] = $images;
 		$atts['click_action'] = 'lightbox';
 		$atts['rounded']      = 'rounded';
 		$atts['hover_zoom']   = 'yes';
@@ -2373,6 +2448,44 @@ class FW_Site_Converter_Mapper {
 		$btn_css = self::cta_button_css( (string) ( $b['btn_cls'] ?? '' ), (string) ( $b['btn_cs'] ?? '' ) );
 		if ( '' !== $btn_css ) { $overlay['custom_css'] = $btn_css; }
 		return self::finalize_widget( 'call_to_action', $overlay );
+	}
+
+	/**
+	 * A section-intro HEADING beside a trailing "View All →" CTA LINK (a source `flex justify-between` row)
+	 * → ONE builder column with native content_direction=row (Inline) + content_h=between (Space Between),
+	 * so the heading sits LEFT and the link RIGHT — matching the source — instead of the link stacking below.
+	 * Input block: { heading:<n_heading input>, link:{label,href,cls,cs,hover,icon_svg} }.
+	 */
+	private static function n_heading_cta( array $b ) {
+		$h    = ( isset( $b['heading'] ) && is_array( $b['heading'] ) ) ? $b['heading'] : array();
+		$link = ( isset( $b['link'] ) && is_array( $b['link'] ) ) ? $b['link'] : array();
+		$heading_node = self::n_heading( $h );
+		$btn = self::n_button(
+			(string) ( $link['label'] ?? '' ),
+			(string) ( $link['href'] ?? '#' ),
+			(string) ( $link['cls'] ?? '' ),
+			'',
+			'after',
+			(string) ( $link['cs'] ?? '' ),
+			'',
+			'',
+			(string) ( $link['icon_svg'] ?? '' ),
+			(string) ( $link['hover'] ?? '' )
+		);
+		// Carry the desktop link's responsive visibility (`hidden md:flex` → hide on mobile) so it matches
+		// its `md:hidden` mobile twin and only ONE shows per breakpoint.
+		$rh = self::responsive_hide_from_class( (string) ( $link['cls'] ?? '' ) );
+		if ( $rh && isset( $btn['atts'] ) && is_array( $btn['atts'] ) ) { $btn['atts']['responsive_hide'] = $rh; }
+		$col = self::n_column( '1_1', array( $heading_node, $btn ) );
+		if ( isset( $col['atts'] ) && is_array( $col['atts'] ) ) {
+			$col['atts']['content_direction'] = 'row';     // Inline
+			$col['atts']['content_h']         = 'between';  // Space Between → heading left, link right
+			$col['atts']['content_v']         = 'end';      // source `items-end` — align to the baseline
+			// Both children must be content-width (the special_heading wrapper + the .btn render block, which
+			// would otherwise fill the row and force a wrap). Size them to content so Space-Between works.
+			$col['atts']['custom_css'] = 'selector{align-items:flex-end;flex-wrap:nowrap;}selector > *{flex:0 1 auto !important;width:auto !important;max-width:none !important;}selector .special-heading{width:auto !important;}selector .btn{flex:0 0 auto !important;width:auto !important;}';
+		}
+		return $col;
 	}
 
 	/** Scoped Custom CSS painting the CTA button (`selector .btn.btn-1`) from the source button's fill. */
@@ -2683,7 +2796,15 @@ class FW_Site_Converter_Mapper {
 			$prop = trim( substr( $d, 0, $cp ) );
 			if ( strpos( $prop, '--tw-' ) === 0 ) { continue; }                 // internal Tailwind var — drop
 			if ( $prop === 'transform' && ( $tx || $ty || $sx || $sy || $rot ) ) { continue; } // rebuilt below
-			$out[] = $prop . ':' . self::normalize_shadcn_color( trim( substr( $d, $cp + 1 ) ) );
+			$val = self::normalize_shadcn_color( trim( substr( $d, $cp + 1 ) ) );
+			// Resolve a source PALETTE var (`var(--secondary)`, `var(--primary)`…) to its concrete hex. The
+			// UnysonPlus theme never defines the source framework's Tailwind palette vars, so an unresolved
+			// var() leaves the hover a NO-OP (the "outline button hover does nothing" bug). Keep unknown vars.
+			$val = preg_replace_callback( '/var\(\s*(--[a-z0-9-]+)\s*\)/i', function ( $m ) {
+				$hex = self::color_token_hex( ltrim( $m[1], '-' ) );
+				return $hex !== '' ? $hex : $m[0];
+			}, $val );
+			$out[] = $prop . ':' . $val;
 		}
 		if ( $tx || $ty || $sx || $sy || $rot ) {
 			$t = 'translate(' . ( $tx ?: '0' ) . ',' . ( $ty ?: '0' ) . ')';
@@ -3122,10 +3243,14 @@ class FW_Site_Converter_Mapper {
 			}
 		}
 
-		// css_class = source ALIGNMENT (sc-ib-left unless the card is centered) + the gray icon "image" box
-		// (if the source had one). The cell's own box classes are NOT carried here — box styling lives on the
-		// column (with-button card) or is added separately (simple card), so this stays clean (no double border).
-		$ibcls = empty( $card['center'] ) ? self::ib_left_class() : '';
+		// ALIGNMENT → the NATIVE icon_align / title_align / content_align options (editable controls), not a
+		// baked `.sc-ib-left` CSS class. A left-aligned source card maps to 'left'; a centered one to 'center'.
+		$align = empty( $card['center'] ) ? 'left' : 'center';
+		if ( isset( $atts['icon_align'] ) )    { $atts['icon_align'] = $align; }
+		if ( isset( $atts['title_align'] ) )   { $atts['title_align'] = $align; }
+		if ( isset( $atts['content_align'] ) ) { $atts['content_align'] = $align; }
+		// css_class now only carries the gray icon "image" box (if the source had one) — no alignment class.
+		$ibcls = '';
 		if ( ! empty( $card['iconBoxCls'] ) ) {
 			$ibx = self::ib_iconbox_class( (string) $card['iconBoxCls'], (string) ( $card['iconBoxCs'] ?? '' ) );
 			if ( '' !== $ibx ) { $ibcls = trim( $ibcls . ' ' . $ibx ); }
@@ -3138,9 +3263,14 @@ class FW_Site_Converter_Mapper {
 			self::conv_debug_record( $atts['unique_id'], (string) $card['cls'], self::conv_dropped_diff( (string) $card['cls'], self::strip_inert_utilities( (string) $card['cls'] ) ) );
 		}
 
-		// Pass-1: the card's source vertical margin → the icon_box NATIVE spacing option (editable).
+		// Pass-1: the card's source vertical margin + INNER PADDING → the icon_box NATIVE spacing option
+		// (editable). The card's `p-8` (its inner padding) was being dropped — a converted card looked cramped
+		// vs the source's roomy 32px inset. Carry it so the padding is a real, editable control.
 		$card_cs = (string) ( $card['cs'] ?? '' );
-		if ( isset( $atts['spacing'] ) && is_array( $atts['spacing'] ) ) { $atts['spacing'] = self::apply_native_margin( $atts['spacing'], $card_cs ); }
+		if ( isset( $atts['spacing'] ) && is_array( $atts['spacing'] ) ) {
+			$atts['spacing'] = self::apply_native_margin( $atts['spacing'], $card_cs );
+			$atts['spacing'] = self::apply_native_padding( $atts['spacing'], $card_cs );
+		}
 		$node = array( 'type' => 'simple', 'shortcode' => 'icon_box', 'atts' => $atts, '_items' => array() );
 		// Pass-2: faithful base of the card's REMAINING appearance. The card BOX (fill / border / radius /
 		// shadow) is reproduced by the column's Inner Wrapper Class / box_style_class, and the icon colour +
@@ -3663,7 +3793,14 @@ class FW_Site_Converter_Mapper {
 		$items = array();
 		$head  = null;
 		$flush_head = function () use ( &$head, &$items ) {
-			if ( $head !== null ) { $items[] = self::n_heading( $head ); $head = null; }
+			if ( $head !== null ) {
+				// Skip a head with NO title, NO overline, whose only content is a LINK subtitle — that's a
+				// mis-folded CTA (a "View All →" link beside a section heading became an empty-title
+				// special_heading whose subtitle = the link, duplicating the real link). A title-less head with
+				// a PLAIN-text subtitle is still legitimate, so keep those. (Parity to add in JS to-pages.)
+				if ( ! self::head_is_stray_link( $head ) ) { $items[] = self::n_heading( $head ); }
+				$head = null;
+			}
 		};
 		foreach ( $blocks as $b ) {
 			if ( ! is_array( $b ) ) { continue; }
@@ -4041,6 +4178,29 @@ class FW_Site_Converter_Mapper {
 			if ( $center ) { $toks[] = 'mx-auto'; }
 		}
 		return array( 'css' => $css, 'tokens' => $toks );
+	}
+
+	/**
+	 * True when a coalesced heading `head` is NOT a real heading but a stray mis-folded LINK: no title, no
+	 * overline, and its only content is a subtitle that is a link (`<a …>`). These come from a "View All →"
+	 * CTA link beside a section heading in a `flex justify-between` row; folding it created an empty-title
+	 * special_heading duplicating the real link. Kept precise so a legitimate plain-text subtitle-only head
+	 * (fixture-2 section 6) is never dropped.
+	 */
+	private static function head_is_stray_link( $head ) {
+		if ( ! is_array( $head ) ) { return false; }
+		if ( '' !== trim( (string) ( $head['title'] ?? '' ) ) )    { return false; }
+		if ( '' !== trim( (string) ( $head['overline'] ?? '' ) ) ) { return false; }
+		$sub = (string) ( $head['subtitle'] ?? '' );
+		if ( trim( $sub ) === '' ) { return false; }
+		// (a) the subtitle still carries an <a>, or (b) its class signature is a LINK/CTA — a hover
+		// `transition`, or a `hidden md:flex` responsive link. A plain descriptive subtitle never carries
+		// those, so a legitimate subtitle-only heading (fixture-2 §6) is left intact.
+		if ( preg_match( '/<a\b/i', $sub ) ) { return true; }
+		$scls = ' ' . strtolower( (string) ( $head['subtitle_class'] ?? '' ) ) . ' ';
+		if ( strpos( $scls, 'transition' ) !== false ) { return true; }
+		if ( preg_match( '/\bhidden\b/', $scls ) && preg_match( '/\b(?:sm|md|lg|xl):(?:flex|inline-flex)\b/', $scls ) ) { return true; }
+		return false;
 	}
 
 	private static function n_heading( $h ) {
@@ -4812,7 +4972,7 @@ class FW_Site_Converter_Mapper {
 		} );
 		self::register_builder( 'text', function ( $b ) {
 			$cs   = (string) ( $b['cs'] ?? '' );
-			$node = self::n_text( (string) ( $b['html'] ?? $b['text'] ?? '' ), (string) ( $b['maxWidth'] ?? '' ), (string) ( $b['align'] ?? '' ), $cs );
+			$node = self::n_text( (string) ( $b['html'] ?? $b['text'] ?? '' ), (string) ( $b['maxWidth'] ?? '' ), (string) ( $b['align'] ?? '' ), $cs, (string) ( $b['cls'] ?? '' ) );
 			// SINGLE SOURCE OF TRUTH per property: the Text Style preset owns font-size, the native
 			// `text_color` option owns colour, the native `spacing` option owns vertical margins, and the
 			// unified styler owns line-height + font-family (no native option). So ALL of those are $already
@@ -5149,7 +5309,12 @@ class FW_Site_Converter_Mapper {
 		$center = ! empty( $sec['align'] ) && $sec['align'] === 'center';
 
 		$flush_head = function () use ( &$head, &$buf ) {
-			if ( $head !== null ) { $buf[] = self::n_heading( $head ); $head = null; }
+			if ( $head !== null ) {
+				// Skip a title-less, overline-less head whose only content is a LINK subtitle (a mis-folded
+				// "View All →" CTA). A plain-text subtitle-only head stays. Same guard as build_cell_items.
+				if ( ! self::head_is_stray_link( $head ) ) { $buf[] = self::n_heading( $head ); }
+				$head = null;
+			}
 		};
 		$flush_buf = function () use ( &$buf, &$items, &$flush_head, $col_lay, $inner_wrap, $center ) {
 			$flush_head();
@@ -5247,6 +5412,16 @@ class FW_Site_Converter_Mapper {
 				$node = self::n_cta( $b );
 				self::apply_block_anim( $node, $b );
 				$items[] = self::n_column( '1_1', array( $node ) );
+				continue;
+			}
+
+			// A section-intro HEADING + a trailing "View All →" CTA link laid out `flex justify-between`
+			// (heading LEFT, link RIGHT) → ONE column using the native Inline direction + Space-Between
+			// alignment, so the link sits top-right next to the heading (instead of stacking below).
+			if ( ( $b['t'] ?? '' ) === 'heading_cta' ) {
+				$flush_buf();
+				$node = self::n_heading_cta( $b );
+				if ( is_array( $node ) ) { self::apply_block_anim( $node, $b ); $items[] = $node; }
 				continue;
 			}
 
