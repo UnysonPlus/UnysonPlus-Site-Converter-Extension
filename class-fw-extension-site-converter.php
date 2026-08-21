@@ -1326,14 +1326,22 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$cfg = ( class_exists( 'FW_Site_Converter_Tailwind' ) && ! empty( $stash['html'] ) )
 			? FW_Site_Converter_Tailwind::parse_config( (string) $stash['html'] )
 			: array();
+		// Recover the source's custom SEMANTIC colours (primary / secondary / muted-foreground / accent / …)
+		// from the captured computed styles — the SAME enrichment build_from_html() does. WITHOUT this the
+		// admin rebuild's config carries no `muted-foreground`, so a card icon's `text-muted-foreground`
+		// resolves to nothing and the icon falls to the shortcode's DEFAULT (green) instead of the source's
+		// grey — the "icon boxes wrong colour" bug (parity with the import path).
+		if ( ! empty( $stash['html'] ) && method_exists( 'FW_Site_Converter_Tailwind', 'extract_semantic_colors' ) ) {
+			$sem = FW_Site_Converter_Tailwind::extract_semantic_colors( (string) $stash['html'] );
+			if ( $sem ) { $cfg['colors'] = ( isset( $cfg['colors'] ) && is_array( $cfg['colors'] ) ? $cfg['colors'] : array() ) + $sem; }
+		}
 		FW_Site_Converter_Mapper::set_style_config( $cfg );
 
 		// Re-enable the hi-fi faithful base for the REBUILD (the mapper's hifi flag is OFF between requests;
-		// build_bundle set it during prepare, but build_pages runs standalone here). Honor the panel's
-		// "High-fidelity CSS" checkbox (posted opt_hifi='1'/'0'); default ON when absent.
+		// build_bundle set it during prepare, but build_pages runs standalone here). Hi-fi is ALWAYS on now
+		// (the "High-fidelity CSS" checkbox was removed) — every conversion is high-fidelity.
 		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_hifi_css' ) ) {
-			$hifi_build = ! ( isset( $_POST['opt_hifi'] ) && '0' === (string) $_POST['opt_hifi'] );
-			FW_Site_Converter_Mapper::set_hifi_css( $hifi_build );
+			FW_Site_Converter_Mapper::set_hifi_css( true );
 		}
 
 		$__am = get_transient( $this->assets_key() );
@@ -1796,13 +1804,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 * @return bool whether the hi-fi faithful base is requested.
 	 */
 	private static function sc_hifi_opt() {
-		if ( isset( $_POST['fw_sc_hifi_present'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
-			return ! empty( $_POST['fw_sc_hifi'] ) && '0' !== (string) $_POST['fw_sc_hifi']; // phpcs:ignore WordPress.Security.NonceVerification
-		}
-		if ( isset( $_POST['fw_sc_hifi'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
-			return '1' === (string) $_POST['fw_sc_hifi'] || 'true' === (string) $_POST['fw_sc_hifi']; // phpcs:ignore WordPress.Security.NonceVerification
-		}
-		return true; // default ON
+		// High-fidelity is ALWAYS on — the "High-fidelity CSS" checkbox was removed. Every conversion maps
+		// the source into the shortcode options + Theme Settings as fully as possible, and writes only the
+		// un-mappable remainder to the child theme CSS as an editable, low-priority base.
+		return true;
 	}
 
 	/**
@@ -2486,9 +2491,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-header" checked> <?php esc_html_e( 'Capture header', 'fw' ); ?></label>
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-footer" checked> <?php esc_html_e( 'Capture footer', 'fw' ); ?></label>
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-media" checked> <?php esc_html_e( 'Import images', 'fw' ); ?></label>
-						<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-hifi" name="fw_sc_hifi" value="1" checked> <?php esc_html_e( 'High-fidelity CSS (faithful base)', 'fw' ); ?></label>
-						<input type="hidden" name="fw_sc_hifi_present" value="1">
-						<span style="display:block;color:#646970;font-size:12px;margin:.15em 0 .3em"><?php esc_html_e( 'Reproduces the source’s exact look as an editable, low-priority base (theme settings/presets still override). Off = leaner, purely-native output.', 'fw' ); ?></span>
+						<span style="display:block;color:#646970;font-size:12px;margin:.15em 0 .3em"><?php esc_html_e( 'Every conversion is high-fidelity: the source is mapped into the shortcode options and Theme Settings as fully as possible, with anything not mappable written to the child theme CSS as an editable, low-priority base (theme settings / presets still override).', 'fw' ); ?></span>
 						<span style="color:#646970;font-size:12px"><?php esc_html_e( 'Runtime-CSS builder exports (Google Stitch / Tailwind CDN, Lovable, v0) are rendered in a real browser automatically when the capture service is running — no option needed. A “source bundle” (.zip of already-rendered HTML + media) always converts offline.', 'fw' ); ?></span>
 				</p>
 				<p style="margin:.2em 0 1.1em">

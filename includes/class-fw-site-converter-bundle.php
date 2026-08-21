@@ -285,6 +285,26 @@ class FW_Site_Converter_Bundle {
 			$out['error'] = __( 'The bundle had no recognized sections (media.json, presets.json, theme-settings.json, pages.json, menus.json).', 'fw' );
 		}
 
+		// CACHE-BUST — a conversion rewrites Theme Settings (footer colours, typography, presets, chrome), but the
+		// plugin's generated CSS (`uploads/unysonplus/css/…`) and the Asset Optimizer's combined bundles are
+		// write-once caches keyed by a hash that doesn't track every settings change — so a STALE rule (e.g. a
+		// footer section's old default typography) could survive a re-convert and paint the live site wrong.
+		// Regenerate the preset CSS and purge the combined bundles here so the fresh design always takes effect.
+		if ( $do_design ) {
+			if ( function_exists( 'unysonplus_ensure_preset_css_file' ) ) { unysonplus_ensure_preset_css_file(); }
+			// Drop the on-demand generated CSS (rebuilds clean on the next front-end request).
+			if ( function_exists( 'fw_upw_uploads_dir' ) ) {
+				$cssd = fw_upw_uploads_dir( 'css' );
+				if ( ! empty( $cssd['path'] ) && is_dir( $cssd['path'] ) ) {
+					foreach ( (array) glob( $cssd['path'] . '/unysonplus-generated*.css' ) as $gf ) { @unlink( $gf ); }
+				}
+			}
+			// Purge the Asset Optimizer combined bundles (they recombine from the fresh sources next visit).
+			if ( class_exists( 'FW_Extension_Asset_Optimizer' ) && function_exists( 'fw_ext' ) && fw_ext( 'asset-optimizer' ) && method_exists( fw_ext( 'asset-optimizer' ), 'purge_all' ) ) {
+				fw_ext( 'asset-optimizer' )->purge_all();
+			}
+		}
+
 		return $out;
 	}
 

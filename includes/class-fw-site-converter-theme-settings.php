@@ -80,6 +80,14 @@ class FW_Site_Converter_Theme_Settings {
 		// Blank source-site media refs (attachment_id) — re-attached via the media engine.
 		$incoming = self::strip_media( $incoming );
 
+		// LOCALIZE external media URLs that survive strip_media — chiefly the Custom-Logo-Layout logo icon
+		// (`{ type:'custom-upload', url:<source CDN>, attachment-id:false }`), which strip_media leaves alone
+		// (its key is `attachment-id`, not `attachment_id`). Without this the header logo HOTLINKS to the
+		// source CDN even though Phase-1 media already downloaded a local copy. The media engine dedupes by
+		// URL, so this reuses that copy (or fetches on demand for a direct import) and points the field at the
+		// local attachment.
+		$incoming = self::localize_media( $incoming );
+
 		if ( empty( $incoming ) ) {
 			$out['error'] = __( 'No importable theme-settings keys in the payload.', 'fw' );
 			return $out;
@@ -237,5 +245,43 @@ class FW_Site_Converter_Theme_Settings {
 			}
 		}
 		return $value;
+	}
+
+	/**
+	 * Recursively sideload EXTERNAL image URLs referenced by settings (a `custom-upload` logo icon, or any
+	 * media value carrying a `url` + an `attachment(-|_)id`) into the media library, so nothing hotlinks to
+	 * the source site. Reuses the already-downloaded copy (the media engine dedupes by URL). A local URL, a
+	 * data: URI, or a non-media value passes through untouched.
+	 *
+	 * @param mixed $value
+	 * @return mixed
+	 */
+	private static function localize_media( $value ) {
+		if ( ! is_array( $value ) ) { return $value; }
+		$url      = isset( $value['url'] ) ? (string) $value['url'] : '';
+		$is_media = $url !== '' && ( ( isset( $value['type'] ) && $value['type'] === 'custom-upload' )
+			|| array_key_exists( 'attachment_id', $value ) || array_key_exists( 'attachment-id', $value ) );
+		if ( $is_media && preg_match( '#^https?://#i', $url ) && ! self::is_local_url( $url ) && class_exists( 'FW_Site_Converter_Media' ) ) {
+			$id = FW_Site_Converter_Media::sideload( $url );
+			if ( $id && ! is_wp_error( $id ) ) {
+				$local = function_exists( 'wp_get_attachment_url' ) ? wp_get_attachment_url( (int) $id ) : '';
+				if ( $local ) {
+					$value['url'] = $local;
+					if ( array_key_exists( 'attachment-id', $value ) ) { $value['attachment-id'] = (string) $id; }
+					if ( array_key_exists( 'attachment_id', $value ) )  { $value['attachment_id']  = (string) $id; }
+				}
+			}
+			return $value; // resolved media value — don't recurse into it
+		}
+		foreach ( $value as $k => $v ) { $value[ $k ] = self::localize_media( $v ); }
+		return $value;
+	}
+
+	/** True when a URL points at THIS site (its uploads) — already local, nothing to sideload. */
+	private static function is_local_url( $url ) {
+		if ( ! function_exists( 'wp_parse_url' ) || ! function_exists( 'home_url' ) ) { return false; }
+		$h    = wp_parse_url( $url, PHP_URL_HOST );
+		$site = wp_parse_url( home_url(), PHP_URL_HOST );
+		return $h && $site && strcasecmp( $h, $site ) === 0;
 	}
 }

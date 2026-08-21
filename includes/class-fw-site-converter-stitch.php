@@ -536,6 +536,25 @@ class FW_Site_Converter_Stitch {
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return array(); }
 
+		// Normalize a font-family stack for comparison / output: strip quotes, collapse whitespace,
+		// lowercase the FIRST family only (so `"Poppins", sans-serif` and `Poppins,sans-serif` match).
+		$ff_key = function ( $ff ) {
+			$ff = strtolower( trim( (string) $ff ) );
+			if ( $ff === '' ) { return ''; }
+			$first = trim( explode( ',', $ff )[0] );
+			return trim( $first, "\"' " );
+		};
+		// Page BASE font — the body's own computed font-family (data-sc-cs). A button whose font matches
+		// this inherits it for free, so we only carry a button font when it DEVIATES from the base.
+		$base_ff = '';
+		foreach ( $dom->getElementsByTagName( 'body' ) as $b ) {
+			if ( $b instanceof DOMElement ) {
+				$bcs = (string) $b->getAttribute( 'data-sc-cs' );
+				if ( $bcs !== '' && preg_match( '/font-family\s*:\s*([^;]+)/i', $bcs, $bm ) ) { $base_ff = $ff_key( $bm[1] ); }
+			}
+			break;
+		}
+
 		$hex     = function ( $h ) { return array( 'predefined' => '', 'custom' => (string) $h ); };
 		$clean   = function ( $c ) { // rgb(R G B / var(…)) → rgb(R, G, B); hex / clean rgb pass through
 			$c = trim( (string) $c );
@@ -654,7 +673,12 @@ class FW_Site_Converter_Stitch {
 					'ls' => isset( $props['letter-spacing'] ) ? trim( $props['letter-spacing'] ) : '',
 					'tt' => isset( $props['text-transform'] ) ? trim( $props['text-transform'] ) : '',
 					'fw' => isset( $props['font-weight'] ) ? trim( $props['font-weight'] ) : '',
+					'ff' => isset( $props['font-family'] ) ? trim( $props['font-family'] ) : '',
 					'cls' => $cls, // raw classes → parse `hover:*` for the real hover state
+					// The capture stamps the element's RESOLVED :hover declarations here
+					// (`hover-self{background-color:var(--secondary)}`) — a more reliable hover source than the
+					// Tailwind `hover:*` classes, since the browser already computed it. Preferred when present.
+					'hov' => ( $node instanceof DOMElement ) ? (string) $node->getAttribute( 'data-sc-hover' ) : '',
 				);
 			}
 		}
@@ -671,6 +695,25 @@ class FW_Site_Converter_Stitch {
 			if ( $s['fg'] !== '' && preg_match( '/\stext-([a-z][a-z0-9-]*)(?:\/\d+)?\s/', $lc, $m ) ) { $sem_fg[ $m[1] ] = $s['fg']; }
 			if ( $s['bd'] !== '' && preg_match( '/\sborder-([a-z][a-z0-9-]*)(?:\/\d+)?\s/', $lc, $m ) ) { $sem_bd[ $m[1] ] = $s['bd']; }
 		}
+		// DESIGN-TOKEN colour map — resolve a semantic token (`primary`, `secondary`, `accent`, `cta`, …) to its
+		// real colour by scanning the WHOLE document, not just buttons: any element carrying a NON-hover
+		// `bg-<name>` / `text-<name>` / `border-<name>` class stamps its computed colour (data-sc-cs) for that
+		// token. A `hover:bg-secondary` on an OUTLINE button (whose base is transparent) names a semantic no
+		// BUTTON uses as its own fill — but 6 other elements do, so `secondary` still resolves (to rgb(5,5,5))
+		// instead of being dropped. Tailwind v4 keeps the `--secondary` var in an external sheet, so the class→
+		// computed-colour scan is the only in-page source of the token's value.
+		$css_vars = array();
+		$dom_all  = self::load_dom( $html );
+		if ( $dom_all ) {
+			$xp = new DOMXPath( $dom_all );
+			foreach ( $xp->query( '//*[@data-sc-cs and (contains(@class,"bg-") or contains(@class,"text-") or contains(@class,"border-"))]' ) as $el ) {
+				if ( ! ( $el instanceof DOMElement ) ) { continue; }
+				$ecs = ' ' . strtolower( $el->getAttribute( 'class' ) ) . ' ';
+				$props2 = array();
+				foreach ( explode( ';', (string) $el->getAttribute( 'data-sc-cs' ) ) as $decl ) { $cp = strpos( $decl, ':' ); if ( $cp !== false ) { $props2[ strtolower( trim( substr( $decl, 0, $cp ) ) ) ] = trim( substr( $decl, $cp + 1 ) ); } }
+				if ( preg_match( '/\sbg-([a-z][a-z0-9-]*)(?:\/\d+)?\s/', $ecs, $m ) && strpos( $m[0], 'hover:' ) === false && isset( $props2['background-color'] ) ) { $c = $normc( $props2['background-color'] ); if ( $c !== '' && ! isset( $css_vars[ $m[1] ] ) ) { $css_vars[ $m[1] ] = $c; } }
+			}
+		}
 		// Apply an alpha (0..1) to a clean rgb()/rgba()/hex colour → rgba(). Used for Tailwind's `/<pct>`
 		// colour-opacity modifier and the `opacity-<n>` utility.
 		$apply_alpha = function ( $col, $a ) use ( $normc ) {
@@ -685,13 +728,14 @@ class FW_Site_Converter_Stitch {
 		// honouring the `/<pct>` opacity modifier. Prefers the semantic map (built from the source's own
 		// computed fills); falls back to literal white/black/transparent and the Tailwind compiler. $fallback
 		// is the button's own default colour (so `bg-primary/90` on a primary button resolves to its own fill).
-		$resolve_token = function ( $token, $map, $fallback ) use ( $apply_alpha, $normc ) {
+		$resolve_token = function ( $token, $map, $fallback ) use ( $apply_alpha, $normc, $css_vars ) {
 			$token = strtolower( trim( (string) $token ) );
 			if ( $token === '' ) { return ''; }
 			$alpha = 1.0; $name = $token;
 			if ( strpos( $token, '/' ) !== false ) { list( $name, $pct ) = explode( '/', $token, 2 ); $alpha = ( is_numeric( $pct ) ? (float) $pct / 100 : 1.0 ); }
 			$base = '';
 			if ( isset( $map[ $name ] ) )                 { $base = $map[ $name ]; }
+			elseif ( isset( $css_vars[ $name ] ) )        { $base = $css_vars[ $name ]; } // design-token var (--secondary → its colour)
 			elseif ( $name === 'white' )                  { $base = '#ffffff'; }
 			elseif ( $name === 'black' )                  { $base = '#000000'; }
 			elseif ( $name === 'transparent' )            { return ''; }
@@ -716,6 +760,24 @@ class FW_Site_Converter_Stitch {
 			if ( $out['bg'] === '' && preg_match( '/\shover:opacity-(\d+)\s/', $cls, $m ) && $def_bg !== '' ) { $out['bg'] = $apply_alpha( $def_bg, (float) $m[1] / 100 ); }
 			return $out;
 		};
+		// Parse the capture's RESOLVED hover declarations (data-sc-hover, e.g.
+		// `hover-self{background-color:var(--secondary);color:#fff}`) → the real hover { bg, fg, bd }. `var(--x)`
+		// resolves through the CSS-variable map; a literal rgb()/hex passes straight through. This is the primary
+		// hover source (the browser already computed it) — more reliable than guessing from `hover:*` classes.
+		$hover_from_attr = function ( $attr ) use ( $normc, $css_vars ) {
+			$out = array( 'bg' => '', 'fg' => '', 'bd' => '' );
+			$attr = (string) $attr;
+			if ( $attr === '' ) { return $out; }
+			$val = function ( $v ) use ( $normc, $css_vars ) {
+				$v = trim( $v );
+				if ( preg_match( '/var\(\s*--([a-z0-9-]+)\s*(?:,[^)]*)?\)/i', $v, $vm ) ) { $nm = strtolower( $vm[1] ); return isset( $css_vars[ $nm ] ) ? $css_vars[ $nm ] : ''; }
+				return $normc( $v );
+			};
+			if ( preg_match( '/background(?:-color)?\s*:\s*([^;}]+)/i', $attr, $m ) ) { $out['bg'] = $val( $m[1] ); }
+			if ( preg_match( '/(?<!-)\bcolor\s*:\s*([^;}]+)/i', $attr, $m ) )          { $out['fg'] = $val( $m[1] ); }
+			if ( preg_match( '/border(?:-[a-z]+)?-color\s*:\s*([^;}]+)/i', $attr, $m ) ) { $out['bd'] = $val( $m[1] ); }
+			return $out;
+		};
 		// Parse a button's `hover:scale-*` / `active:scale-*` micro-interaction → a preset Custom CSS (advanced)
 		// block ({{SELECTOR}}-aware). The source's grow-on-hover (e.g. `hover:scale-105`, the common CTA press)
 		// has no dedicated native colour-preset field, so per the data model it rides in the preset's Custom CSS
@@ -733,8 +795,15 @@ class FW_Site_Converter_Stitch {
 		// Extra typography the native colour/size preset fields can't hold (letter-spacing, text-transform,
 		// font-weight) → a `{{SELECTOR}}{…}` block in the preset's Custom CSS (advanced), so a source button's
 		// `tracking-[.15em] uppercase font-medium` is reproduced verbatim instead of dropped. Defaults skipped.
-		$appearance_css = function ( $g ) {
+		$appearance_css = function ( $g ) use ( $ff_key, $base_ff ) {
 			$d = array();
+			// font-family FIRST — a source button using a display/heading face (e.g. Poppins) different from the
+			// page body font is otherwise dropped, so the converted button silently inherits the body font. Carry
+			// the button's own stack verbatim whenever it DEVIATES from the page base font.
+			$ff = isset( $g['ff'] ) ? trim( (string) $g['ff'] ) : '';
+			if ( $ff !== '' && $ff_key( $ff ) !== '' && $ff_key( $ff ) !== $base_ff && strpos( strtolower( $ff ), 'inherit' ) === false ) {
+				$d[] = 'font-family:' . $ff;
+			}
 			$ls = isset( $g['ls'] ) ? trim( (string) $g['ls'] ) : '';
 			if ( $ls !== '' && $ls !== 'normal' && $ls !== '0px' && $ls !== '0' ) { $d[] = 'letter-spacing:' . $ls; }
 			$tt = isset( $g['tt'] ) ? strtolower( trim( (string) $g['tt'] ) ) : '';
@@ -750,6 +819,12 @@ class FW_Site_Converter_Stitch {
 			$key = $s['role'] . '|' . $s['bg'] . '|' . $s['bw'] . $s['bd'];
 			if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array_merge( $s, array( 'count' => 0 ) ); }
 			$groups[ $key ]['count']++;
+			// The winning group keeps the FIRST-seen skin's fields — but the HOVER often lives on only one
+			// member (e.g. a single `hover:bg-secondary` outline button among plain outlines). Adopt a later
+			// member's hover source when the stored one has none, so the hover isn't dropped by clustering.
+			$has_hov = ( ! empty( $groups[ $key ]['hov'] ) ) || ( strpos( (string) $groups[ $key ]['cls'], 'hover:' ) !== false );
+			$s_hov   = ( ! empty( $s['hov'] ) ) || ( strpos( (string) $s['cls'], 'hover:' ) !== false );
+			if ( ! $has_hov && $s_hov ) { $groups[ $key ]['hov'] = $s['hov']; $groups[ $key ]['cls'] = $s['cls']; }
 		}
 		// One preset per ROLE (keep the most common skin for each role); order Primary, Secondary, Outline, Fill.
 		$order = array( 'Primary' => 0, 'Secondary' => 1, 'Outline' => 2, 'Fill' => 3 );
@@ -783,7 +858,11 @@ class FW_Site_Converter_Stitch {
 			// alpha; a `hover:bg-secondary` resolves to a genuinely different colour; `hover:opacity-90` →
 			// the default fill at 90%. Only keys the source actually sets are written; if the source declares
 			// no hover class at all, fall back to the classic /90 darken so filled buttons still lift.
-			$hov = $hover_from_cls( isset( $g['cls'] ) ? $g['cls'] : '', $g['bg'], $g['fg'], $def_bd );
+			// Prefer the capture's RESOLVED hover (data-sc-hover) — the browser already computed it; fall back to
+			// parsing the `hover:*` classes. Merge so a class-derived channel fills a gap the attr didn't set.
+			$hov  = $hover_from_cls( isset( $g['cls'] ) ? $g['cls'] : '', $g['bg'], $g['fg'], $def_bd );
+			$hova = $hover_from_attr( isset( $g['hov'] ) ? $g['hov'] : '' );
+			foreach ( array( 'bg', 'fg', 'bd' ) as $ch ) { if ( ! empty( $hova[ $ch ] ) ) { $hov[ $ch ] = $hova[ $ch ]; } }
 			$hover = array();
 			if ( $hov['bg'] !== '' ) { $hover['bg_color'] = $hex( $hov['bg'] ); }
 			if ( $hov['fg'] !== '' ) { $hover['text_color'] = $hex( $hov['fg'] ); }
@@ -791,13 +870,42 @@ class FW_Site_Converter_Stitch {
 			if ( empty( $hover ) && $filledp( $g['bg'] ) ) {
 				$hover['bg_color'] = $hex( preg_replace( '/^rgb\((.+)\)$/', 'rgba($1, 0.9)', $g['bg'] ) );
 			}
+			// Typography → the preset's NATIVE Font field (family/weight/letter-spacing) + the default state's
+			// text_transform — NOT Custom CSS. This makes Theme Settings → Buttons show the real font (Syncopate,
+			// not Arial) and emits ONE `.btn-{slug}` rule instead of a duplicate `{{SELECTOR}}` block. Font family
+			// is carried only when it DEVIATES from the page body font (else the button inherits it for free).
+			$font = array();
+			$ffv  = trim( (string) $g['ff'] );
+			if ( $ffv !== '' && $ff_key( $ffv ) !== '' && $ff_key( $ffv ) !== $base_ff && stripos( $ffv, 'inherit' ) === false ) {
+				// Store the FIRST family (proper-case, unquoted) — matches the font-picker convention and shows
+				// cleanly in the Theme Settings "Font face" field (e.g. `Syncopate`, not `Syncopate, sans-serif`).
+				$font['family'] = trim( explode( ',', $ffv )[0], " \"'" );
+			}
+			$fwv  = trim( (string) $g['fw'] );
+			if ( preg_match( '/^(100|200|300|500|600|700|800|900)$/', $fwv ) ) { $font['weight'] = $fwv; }
+			$lsv  = trim( (string) $g['ls'] );
+			if ( $lsv !== '' && $lsv !== 'normal' && $lsv !== '0px' && $lsv !== '0' ) { $font['letter-spacing'] = $lsv; }
+			$ttv  = strtolower( trim( (string) $g['tt'] ) );
+			$ttv  = ( $ttv !== '' && $ttv !== 'none' ) ? $ttv : '';
+
+			$def_state = $state( $g['fg'], $g['bg'], $def_bd, $g['bw'], ( $g['bw'] !== '' ? 'solid' : ( $is_outline ? 'solid' : 'none' ) ), $g['shadow'] );
+			if ( $ttv !== '' ) { $def_state['text_transform'] = $ttv; }
+
 			$colors[] = array(
 				'id'         => $role_id[ $name ] ?? ( '00000000' . ( count( $colors ) + 1 ) ),
 				'color_name' => $name,
-				// The source button's hover/active grow (hover:scale-*) → the preset's Custom CSS (advanced) tab.
-				'custom_css' => trim( $appearance_css( $g ) . "\n" . $hover_transform_css( isset( $g['cls'] ) ? $g['cls'] : '' ) ),
+				// slug + role let the Mapper's button_preset_for()/btn_color_slug_by_role() match a
+				// converted BODY button to this preset — `slug` mirrors the plugin's choice key
+				// (`btn-` . sanitize_title_with_dashes(color_name)) so `style => 'btn-primary'` resolves.
+				// Without these the match failed and every body button fell back to the sc-btn-* transplant.
+				'slug'       => sanitize_title_with_dashes( $name ),
+				'role'       => strtolower( $name ),
+				'font'       => $font,
+				// Custom CSS holds ONLY the source button's hover/active grow (hover:scale-*) — a motion effect
+				// the native colour/size/font fields can't express. Typography now lives in `font` above.
+				'custom_css' => trim( $hover_transform_css( isset( $g['cls'] ) ? $g['cls'] : '' ) ),
 				'states'     => array(
-					'default' => $state( $g['fg'], $g['bg'], $def_bd, $g['bw'], ( $g['bw'] !== '' ? 'solid' : ( $is_outline ? 'solid' : 'none' ) ), $g['shadow'] ),
+					'default' => $def_state,
 					'hover'   => $hover,
 					'active'  => array(), 'focus' => array(), 'disabled' => array(),
 				),
@@ -2086,30 +2194,96 @@ class FW_Site_Converter_Stitch {
 		/* --- header_layout — switches/bg driven by the detected header chrome (only override defaults on a
 		   real signal, so we never write a false 'yes'). --- */
 		$header_bg_val = isset( $hstyle['bg'] ) ? $hstyle['bg'] : $header_bg;
-		// Header DESIGN + BEHAVIOR from the deterministic signals (were hardcoded 'classic' + sticky-only, even
-		// though detect_header already knows the pill/overlay): a rounded-full nav container → 'pill'; a header
-		// pinned (fixed/sticky) with a TRANSPARENT background sitting over the hero → 'transparent-overlay'.
-		$h_design   = ( isset( $hdr['style'] ) && 'pill' === $hdr['style'] ) ? 'pill' : 'classic';
-		// A pinned header is a TRANSPARENT-OVERLAY when it has no SOLID fill — either no bg at all, a
-		// SEMI-transparent one (`bg-[#020617]/40` = 40% opacity), or a glass/backdrop-blur nav sitting over
-		// the hero. Only a fully-opaque fill = a normal sticky bar. (Was: overlay only when there was NO bg
-		// — so a translucent glass nav was mis-read as plain sticky.)
+		// Header DESIGN + the TWO-STATE model (see the Header Layout doc). POSITION comes from the RESTING
+		// snapshot: a pinned (fixed/sticky) header with a TRANSPARENT fill sitting over the hero = overlay; a
+		// pinned SOLID header = sticky; otherwise static. AT-TOP appearance = the resting reads; ON-SCROLL
+		// appearance = the captured scroll state (data-sc-scrolled). rounded-full nav → pill design.
+		$h_design  = ( isset( $hdr['style'] ) && 'pill' === $hdr['style'] ) ? 'pill' : 'classic';
 		$h_bg      = isset( $hstyle['bg'] ) ? (string) $hstyle['bg'] : '';
 		$h_solid   = $h_bg !== '' && empty( $hstyle['glass'] ) && ! preg_match( '/rgba?\([^)]*[,\/]\s*(0|0?\.\d+)\s*\)/i', $h_bg );
-		$h_overlay = ! empty( $hdr['sticky'] ) && ! $h_solid;
-		$h_behavior = $h_overlay ? 'transparent-overlay' : ( ! empty( $hdr['sticky'] ) ? 'sticky' : 'static' );
+		$h_pinned  = ! empty( $hdr['sticky'] );
+		$position  = $h_pinned ? ( $h_solid ? 'sticky' : 'overlay' ) : 'static';
 		$values['header_layout'] = array(
 			'header_mode'          => array( 'mode' => 'top', 'top' => array( 'header_design' => array( 'design' => $h_design ) ) ),
-			'header_behavior'      => $h_behavior,
-			'header_glass'         => ! empty( $hstyle['glass'] ) ? 'yes' : 'no',
-			'header_shadow'        => ! empty( $hstyle['shadow'] ) ? 'yes' : 'no',
-			'header_border'        => ! empty( $hstyle['border'] ) ? 'yes' : 'no',
+			'header_position'      => $position,
 			'header_uppercase_nav' => ! empty( $mstyle['uppercase'] ) ? 'yes' : 'no',
-			'bg_color'             => $hex( $header_bg_val ),
+			// Appearance — AT TOP (the resting look only). bg_color = the resting SOLID fill; EMPTY for a
+			// transparent / overlay header (its scrolled fill, if any, is scroll_bg_color below — not here).
+			'bg_color'             => ( isset( $hstyle['bg'] ) && '' !== $hstyle['bg'] ) ? $hex( $hstyle['bg'] ) : array( 'predefined' => '', 'custom' => '' ),
+			'header_glass'         => ! empty( $hstyle['glass'] ) ? 'yes' : 'no',
+			'header_border'        => ! empty( $hstyle['border'] ) ? 'yes' : 'no',
+			'header_shadow'        => ! empty( $hstyle['shadow'] ) ? 'yes' : 'no',
 		);
+		// Appearance — ON SCROLL, from the captured scroll state (data-sc-scrolled). When the scrolled header
+		// differs from resting (a bg / backdrop-blur / border / shadow / padding revealed on scroll), enable
+		// Change-on-scroll and map each delta to its scroll_* option — the OBSIDIAN pattern (clear over the
+		// hero, then a frosted + shrunk bar) reproduces natively instead of being flattened into one enum.
+		$sc_glass  = ! empty( $hstyle['scroll_glass'] );
+		$sc_border = ! empty( $hstyle['scroll_border'] );
+		$sc_shadow = ! empty( $hstyle['scroll_shadow'] );
+		$sc_shrink = ! empty( $hstyle['scroll_shrink'] );
+		$sc_bg     = isset( $hstyle['scrolled_bg'] ) ? (string) $hstyle['scrolled_bg'] : '';
+		if ( $sc_glass || $sc_border || $sc_shadow || $sc_shrink || $sc_bg !== '' ) {
+			$values['header_layout']['header_scroll_change'] = 'yes';
+			if ( $sc_glass )  { $values['header_layout']['scroll_glass']  = 'yes'; }
+			if ( $sc_border ) { $values['header_layout']['scroll_border'] = 'yes'; }
+			if ( $sc_shadow ) { $values['header_layout']['scroll_shadow'] = 'yes'; }
+			if ( $sc_shrink ) { $values['header_layout']['scroll_shrink'] = 'yes'; }
+			// Scrolled Background: the solid scrolled fill if opaque; else, for a dark header (light nav text)
+			// whose scroll state is blur-only/transparent, the site's dark bg so the frost tints dark.
+			if ( $sc_bg !== '' ) {
+				$values['header_layout']['scroll_bg_color'] = $hex( $sc_bg );
+			} elseif ( ( $sc_glass || 'overlay' === $position ) && '' !== $dark ) {
+				$nav_col = ( isset( $mstyle['link_color'] ) && is_string( $mstyle['link_color'] ) && '' !== $mstyle['link_color'] )
+					? $mstyle['link_color']
+					: ( is_string( $link_col ) ? $link_col : '' );
+				if ( '' !== $nav_col && ! self::color_is_dark( $nav_col ) ) {
+					$values['header_layout']['scroll_bg_color'] = $hex( $dark );
+				}
+			}
+		}
 		// Mobile breakpoint — the width at which the inline nav collapses to a drawer (only on a real signal).
 		if ( ! empty( $hstyle['mobile_breakpoint'] ) ) {
-			$values['header_layout']['mobile_breakpoint'] = $hstyle['mobile_breakpoint'];
+			$values['mobile_breakpoint'] = $hstyle['mobile_breakpoint'];
+		}
+		// Mobile drawer PANEL appearance. The drawer used to inherit the desktop menu palette, which is
+		// tuned for the header BAR (often light text over a hero) -- on a solid drawer panel those links
+		// render washed-out / illegible. Map a legible drawer look instead of letting the bar palette leak
+		// in: panel background = the resting SOLID header fill when opaque (else the theme light default),
+		// and drawer link colour = the source nav colour ONLY if it contrasts on that panel; else a legible
+		// ink (dark on a light panel, light on a dark one).
+		$drawer_bg_hex = ( $h_solid && '' !== $h_bg ) ? self::color_to_hex( $h_bg ) : '#ffffff';
+		if ( '' !== $drawer_bg_hex ) {
+			if ( $h_solid && '' !== $h_bg ) { $values['drawer_bg'] = $hex( $h_bg ); }
+			$panel_is_dark = self::color_is_dark( $drawer_bg_hex );
+			$dnav_col = ( isset( $mstyle['link_color'] ) && is_string( $mstyle['link_color'] ) && '' !== $mstyle['link_color'] )
+				? $mstyle['link_color']
+				: ( is_string( $link_col ) ? $link_col : '' );
+			$dnav_col = ( '' !== $dnav_col ) ? self::color_to_hex( $dnav_col ) : '';
+			$dlegible = ( '' !== $dnav_col && self::color_is_dark( $dnav_col ) !== $panel_is_dark );
+			if ( $dlegible ) {
+				$values['drawer_link_color'] = $hex( $dnav_col );
+			} else {
+				$fallback_ink = $panel_is_dark ? '#f1f1f1' : ( ( isset( $ink ) && is_string( $ink ) && '' !== $ink ) ? $ink : '#1a1a1a' );
+				$values['drawer_link_color'] = $hex( $fallback_ink );
+			}
+			if ( isset( $accent ) && is_string( $accent ) && '' !== $accent && self::color_is_dark( $accent ) !== $panel_is_dark ) {
+				$values['drawer_link_active_color'] = $hex( $accent );
+			}
+		}
+		// Mobile BAR background (top-level key, Header → Mobile & Tablet). A transparent / overlay desktop
+		// header leaves the COLLAPSED mobile bar see-through over page content, so give it a solid fill.
+		// Prefer the scrolled fill we computed; else the site background (dark sites → dark bar); else white.
+		if ( 'overlay' === $position || ! $h_solid ) {
+			$mbar = '';
+			if ( isset( $values['header_layout']['scroll_bg_color']['custom'] ) && '' !== $values['header_layout']['scroll_bg_color']['custom'] ) {
+				$mbar = (string) $values['header_layout']['scroll_bg_color']['custom'];
+			} elseif ( isset( $dark ) && is_string( $dark ) && '' !== $dark ) {
+				$mbar = $dark;
+			} else {
+				$mbar = '#ffffff';
+			}
+			if ( '' !== $mbar ) { $values['mobile_bar_bg'] = $hex( $mbar ); }
 		}
 		// H11 — header row vertical alignment + element gap (only on a real, non-default signal).
 		$hrow = self::detect_header_row_layout( (string) $html );
@@ -2119,7 +2293,7 @@ class FW_Site_Converter_Stitch {
 		// when EVERY nav item is an in-page `#id` link (a real single-page site); the target sections
 		// keep their source ids, so the highlight lines up with no further wiring. See header.md → nav_scrollspy.
 		if ( self::nav_scrollspy_targets( (string) $html ) ) {
-			$values['header_layout']['nav_scrollspy'] = 'yes';
+			$values['nav_scrollspy'] = 'yes';
 		}
 		// HEADER container width — from the header's INNER content wrapper (.container / mx-auto / max-w-*)
 		// computed max-width, NOT the <header> element. A real capped px → Fixed Width (the header then
@@ -2163,7 +2337,7 @@ class FW_Site_Converter_Stitch {
 			}
 			if ( ! empty( $tb['mobile_hide'] ) ) {
 				if ( ! isset( $values['header_layout'] ) || ! is_array( $values['header_layout'] ) ) { $values['header_layout'] = array(); }
-				$values['header_layout']['mobile_hide_topbar'] = 'yes';
+				$values['mobile_hide_topbar'] = 'yes';
 			}
 		} else {
 			// CHROME RESET — this source has NO top bar, so explicitly CLEAR it. The theme-settings importer
@@ -2288,6 +2462,28 @@ class FW_Site_Converter_Stitch {
 			foreach ( array( 'main_footer_custom_styling', 'copyright_custom_styling' ) as $ck ) {
 				$prefix = ( $ck === 'main_footer_custom_styling' ) ? 'main_footer' : 'copyright';
 				$values[ $ck ] = array( 'enabled' => 'yes', 'yes' => array( $prefix . '_container' => $fcontainer ) );
+			}
+		}
+
+		// The COPYRIGHT band commonly carries its OWN inner `border-t` (separating the columns from the © line)
+		// that the footer-level footer_border_top can't capture — detect the band's border / background and fold
+		// it into copyright_custom_styling (a shared Custom-Styling detector, reusable for the other bars).
+		$cs_foot = self::footer_root_el( (string) $html );
+		$copy_el = ( $cs_foot instanceof DOMElement ) ? self::footer_copyright_el( $cs_foot ) : null;
+		if ( $copy_el instanceof DOMElement ) {
+			// footer_copyright_el returns the TIGHTEST wrapper (the © <p>); the border sits on the enclosing
+			// BAND (`<div class="border-t …">`). Walk up (within the footer) to the nearest ancestor carrying a
+			// top border, so its border/background is what we read.
+			$copy_band = $copy_el;
+			for ( $p = $copy_el->parentNode, $i = 0; $p instanceof DOMElement && $p !== $cs_foot && $i < 4; $p = $p->parentNode, $i++ ) {
+				$bwc = self::sc_css( $p, 'border-top-width' );
+				$bsc = self::sc_css( $p, 'border-top-style' );
+				if ( $bwc !== '' && (float) $bwc > 0 && $bsc !== '' && $bsc !== 'none' ) { $copy_band = $p; break; }
+			}
+			$cfields = self::detect_band_custom_fields( $copy_band, 'copyright' );
+			if ( $cfields ) {
+				$cur = ( isset( $values['copyright_custom_styling']['yes'] ) && is_array( $values['copyright_custom_styling']['yes'] ) ) ? $values['copyright_custom_styling']['yes'] : array();
+				$values['copyright_custom_styling'] = array( 'enabled' => 'yes', 'yes' => array_merge( $cur, $cfields ) );
 			}
 		}
 
@@ -2643,6 +2839,7 @@ class FW_Site_Converter_Stitch {
 			if ( isset( $h['size'] ) )            { $hv['size'] = array( 'value' => (string) $h['size'], 'unit' => 'px' ); }
 			if ( isset( $h['line-height'] ) )     { $hv['line-height'] = $h['line-height']; }
 			if ( isset( $h['letter-spacing'] ) )  { $hv['letter-spacing'] = $h['letter-spacing']; }
+			if ( isset( $h['text-transform'] ) )  { $hv['text-transform'] = $h['text-transform']; }
 			$typo[ $lvl ] = $hv;
 		}
 		// BODY TEXT (ink) → Typography body colour (→ --color-text via theme-vars.php, read unconditionally
@@ -2743,6 +2940,11 @@ class FW_Site_Converter_Stitch {
 				if ( $lh !== '' ) { $rec['line-height'] = $lh; }
 				$ls = $ls_px( self::sc_css( $h, 'letter-spacing' ) );
 				if ( $ls !== '' ) { $rec['letter-spacing'] = $ls; }
+				// text-transform — a source whose headings are uppercased purely by CSS (no `uppercase` class,
+				// e.g. a display font like Syncopate) otherwise renders mixed-case after conversion. Carry the
+				// computed casing per level so `Our Services` reproduces the source's `OUR SERVICES`.
+				$htt = strtolower( trim( (string) self::sc_css( $h, 'text-transform' ) ) );
+				if ( in_array( $htt, array( 'uppercase', 'lowercase', 'capitalize' ), true ) ) { $rec['text-transform'] = $htt; }
 				if ( $rec ) { $out[ $lvl ] = $rec; }
 				break; // first real occurrence of this level is representative
 			}
@@ -2832,14 +3034,17 @@ class FW_Site_Converter_Stitch {
 							) );
 							break;
 						case 'icon_text':
-							$it_set = array(
-								'icontext_text'      => isset( $item['text'] ) ? (string) $item['text'] : '',
-								'icontext_link'      => isset( $item['link'] ) ? (string) $item['link'] : '',
-								'icontext_link_type' => ( isset( $item['link'] ) && strpos( (string) $item['link'], 'tel:' ) === 0 ) ? 'phone' : ( ( isset( $item['link'] ) && strpos( (string) $item['link'], 'mailto:' ) === 0 ) ? 'email' : 'url' ),
+						case 'list_item':
+							$it_lnk  = isset( $item['link'] ) ? (string) $item['link'] : '';
+							$it_type = ( $it_lnk === '' ) ? 'none' : ( strpos( $it_lnk, 'tel:' ) === 0 ? 'phone' : ( strpos( $it_lnk, 'mailto:' ) === 0 ? 'email' : 'url' ) );
+							$it_set  = array(
+								'li_text'      => isset( $item['text'] ) ? (string) $item['text'] : '',
+								'li_link'      => $it_lnk,
+								'li_link_type' => $it_type,
 							);
 							$it_ico = self::contact_icon_v2( self::contact_icon_name_svg( isset( $item['icon'] ) ? $item['icon'] : '' ), '' );
-							if ( $it_ico ) { $it_set['icontext_icon'] = $it_ico; }
-							$out_zone[] = $el( 'icon_text', $it_set );
+							if ( $it_ico ) { $it_set['li_icon'] = $it_ico; }
+							$out_zone[] = $el( 'list_item', $it_set );
 							break;
 						case 'social_icons':
 							$out_zone[] = $el( 'social_icons' );
@@ -2955,14 +3160,17 @@ class FW_Site_Converter_Stitch {
 							}
 							break;
 						case 'icon_text':
-							$e_set = array(
-								'icontext_text'      => isset( $e['text'] ) ? (string) $e['text'] : '',
-								'icontext_link'      => isset( $e['link'] ) ? (string) $e['link'] : '',
-								'icontext_link_type' => ( isset( $e['link'] ) && strpos( (string) $e['link'], 'tel:' ) === 0 ) ? 'phone' : ( ( isset( $e['link'] ) && strpos( (string) $e['link'], 'mailto:' ) === 0 ) ? 'email' : 'url' ),
+						case 'list_item':
+							$e_lnk  = isset( $e['link'] ) ? (string) $e['link'] : '';
+							$e_type = ( $e_lnk === '' ) ? 'none' : ( strpos( $e_lnk, 'tel:' ) === 0 ? 'phone' : ( strpos( $e_lnk, 'mailto:' ) === 0 ? 'email' : 'url' ) );
+							$e_set  = array(
+								'li_text'      => isset( $e['text'] ) ? (string) $e['text'] : '',
+								'li_link'      => $e_lnk,
+								'li_link_type' => $e_type,
 							);
 							$e_ico = self::contact_icon_v2( self::contact_icon_name_svg( isset( $e['icon'] ) ? $e['icon'] : '' ), '' );
-							if ( $e_ico ) { $e_set['icontext_icon'] = $e_ico; }
-							$out[] = $el( 'icon_text', $e_set );
+							if ( $e_ico ) { $e_set['li_icon'] = $e_ico; }
+							$out[] = $el( 'list_item', $e_set );
 							break;
 					}
 				}
@@ -3719,28 +3927,43 @@ class FW_Site_Converter_Stitch {
 	}
 
 	private static function footer_group_to_column( array $group ) {
+		// Every footer column now emits the UNIFIED `list_item` element (text + optional icon + optional smart
+		// link) for its rows — the theme's column renderer auto-groups a run of 2+ into a semantic <ul><li>.
+		// This retires the old split emit (nav → `link`, contact → `icon_text`, text-only → a `<ul>` frozen in
+		// a Text element): a menu link, an icon contact row, and a plain address line are ALL editable rows now.
+		$title = trim( (string) ( $group['title'] ?? '' ) );
+		$mk_heading = function ( $deftag ) use ( $group, $title ) {
+			if ( $title === '' ) { return null; }
+			$tag = preg_match( '/^h[2-6]$/', (string) ( $group['tag'] ?? '' ) ) ? $group['tag'] : $deftag;
+			return array( 'element_type' => array( 'element' => 'heading', 'heading' => array( 'heading_text' => $title, 'heading_level' => $tag ) ) );
+		};
+		$mk_item = function ( $text, $icon = null, $link = '', $type = 'none' ) {
+			$li = array( 'li_text' => (string) $text, 'li_link_type' => $type );
+			if ( $icon )        { $li['li_icon']   = $icon; }
+			if ( $link !== '' ) { $li['li_link']   = $link; }
+			if ( 'url' === $type ) { $li['li_target'] = '_self'; }
+			return array( 'element_type' => array( 'element' => 'list_item', 'list_item' => $li ) );
+		};
+
+		// CONTACT column (icon + text rows) → heading + one List Item per row (icon tinted; tel/mailto/url link).
 		if ( ( $group['kind'] ?? '' ) === 'contact' && ! empty( $group['rows'] ) ) {
-			$ftag    = preg_match( '/^h[2-6]$/', (string) ( $group['tag'] ?? '' ) ) ? $group['tag'] : 'h4';
-			$col_els = array( array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<' . $ftag . '>' . esc_html( $group['title'] ) . '</' . $ftag . '>' ) ) ) );
+			$els = array(); $h = $mk_heading( 'h4' ); if ( $h ) { $els[] = $h; }
 			foreach ( $group['rows'] as $r ) {
 				$txt = isset( $r['text'] ) ? (string) $r['text'] : '';
 				if ( $txt === '' ) { continue; }
-				$it  = array( 'icontext_text' => $txt );
-				$ico = ( isset( $r['icon'] ) && $r['icon'] !== '' ) ? self::contact_icon_v2( $r['icon'], isset( $r['color'] ) ? $r['color'] : '' ) : null;
-				if ( $ico ) { $it['icontext_icon'] = $ico; }
-				$lnk = isset( $r['link'] ) ? (string) $r['link'] : '';
-				if ( $lnk !== '' ) {
-					$it['icontext_link']      = $lnk;
-					$it['icontext_link_type'] = ( stripos( $lnk, 'tel:' ) === 0 ) ? 'phone' : ( ( stripos( $lnk, 'mailto:' ) === 0 ) ? 'email' : 'url' );
-				}
-				$col_els[] = array( 'element_type' => array( 'element' => 'icon_text', 'icon_text' => $it ) );
+				$ico  = ( isset( $r['icon'] ) && $r['icon'] !== '' ) ? self::contact_icon_v2( $r['icon'], isset( $r['color'] ) ? $r['color'] : '' ) : null;
+				$lnk  = isset( $r['link'] ) ? (string) $r['link'] : '';
+				$type = ( $lnk !== '' ) ? ( ( stripos( $lnk, 'tel:' ) === 0 ) ? 'phone' : ( ( stripos( $lnk, 'mailto:' ) === 0 ) ? 'email' : 'url' ) ) : 'none';
+				$els[] = $mk_item( $txt, $ico, $lnk, $type );
 			}
-			return $col_els;
+			return $els;
 		}
+
+		// NEWSLETTER column → the native newsletter element (unchanged).
 		if ( ( $group['kind'] ?? '' ) === 'newsletter' && ! empty( $group['newsletter'] ) ) {
 			$nw = $group['newsletter'];
 			return array( array( 'element_type' => array( 'element' => 'newsletter', 'newsletter' => array(
-				'title'             => (string) $group['title'],
+				'title'             => $title,
 				'description'       => (string) ( $nw['tagline'] ?? '' ),
 				'email_placeholder' => ( ! empty( $nw['placeholder'] ) ? (string) $nw['placeholder'] : 'Your email address' ),
 				'button_label'      => ( ! empty( $nw['button'] ) ? (string) $nw['button'] : 'Subscribe' ),
@@ -3748,55 +3971,34 @@ class FW_Site_Converter_Stitch {
 				'design'            => 'inline',
 			) ) ) );
 		}
-		// NAV column → the column TITLE as a native `heading` element, then the link list GROUPED into a
-		// SINGLE `text` element holding one semantic `<ul class="fw-footer-links">` of `<a>` (F1, footer.md).
-		// Each link keeps its href INLINE, so the list is fully self-contained — nothing to vanish from a
-		// missing WP menu object (the reason we map here and not to the registration-based `menu` element),
-		// and the theme already styles this exact `<ul>`-in-a-text-element pattern. This replaces the old
-		// "one `link` element per link" emit: a run of successive links now reads as ONE editable `<ul>`
-		// menu list — the faithful translation of a source `<ul><li><a>` footer column.
+
+		// NAV column (real <a> links) → heading + one List Item (URL link) per {label,href}.
 		if ( ! empty( $group['links'] ) ) {
-			$els   = array();
-			$title = trim( (string) $group['title'] );
-			if ( $title !== '' ) {
-				$htag  = preg_match( '/^h[2-6]$/', (string) ( $group['tag'] ?? '' ) ) ? $group['tag'] : 'h3';
-				$els[] = array( 'element_type' => array( 'element' => 'heading', 'heading' => array(
-					'heading_text'  => $title,
-					'heading_level' => $htag,
-				) ) );
-			}
-			$lis = '';
+			$els = array(); $h = $mk_heading( 'h3' ); if ( $h ) { $els[] = $h; }
+			$had = false;
 			foreach ( $group['links'] as $l ) {
 				$label = trim( (string) $l['label'] );
 				if ( $label === '' ) { continue; }
-				$href = ( isset( $l['href'] ) && $l['href'] !== '' ) ? $l['href'] : '#';
-				$lis .= '<li><a class="footer-link hf-link" href="' . esc_url( $href ) . '">' . esc_html( $label ) . '</a></li>';
+				$had = true;
+				$els[] = $mk_item( $label, null, ( isset( $l['href'] ) && $l['href'] !== '' ) ? $l['href'] : '#', 'url' );
 			}
-			if ( $lis !== '' ) {
-				$els[] = array( 'element_type' => array( 'element' => 'text', 'text' => array(
-					'text_content' => '<ul class="fw-footer-links">' . $lis . '</ul>',
-				) ) );
-				return $els;
+			if ( $had ) { return $els; }
+		}
+
+		// TEXT-ONLY column (plain lines, no icons/links — e.g. address / city / email / phone) → heading + one
+		// List Item per line. A bare email / phone line becomes a mailto: / tel: link so it stays actionable.
+		$els = array(); $h = $mk_heading( 'h4' ); if ( $h ) { $els[] = $h; }
+		foreach ( ( $group['items'] ?? array() ) as $line ) {
+			$line = trim( (string) $line );
+			if ( $line === '' ) { continue; }
+			if ( preg_match( '/^[^\s@]+@[^\s@]+\.[^\s@]+$/', $line ) ) {
+				$els[] = $mk_item( $line, null, $line, 'email' );
+			} elseif ( preg_match( '/^[\d\s()+.\-]+$/', $line ) && strlen( preg_replace( '/[^0-9+]/', '', $line ) ) >= 7 ) {
+				$els[] = $mk_item( $line, null, $line, 'phone' );
+			} else {
+				$els[] = $mk_item( $line );
 			}
 		}
-		// No real links (text-only items — e.g. a Contact column of address / email / phone lines) → the
-		// column TITLE as a native `heading`, then the lines as ONE `<ul class="fw-footer-links">` text
-		// element. Bare emails / phone numbers are linkified (mailto: / tel:) so they stay actionable —
-		// WITHOUT inventing leading icons the source never had (that stays the icon_text path's job).
-		$els   = array();
-		$title = trim( (string) $group['title'] );
-		if ( $title !== '' ) {
-			$ltag  = preg_match( '/^h[2-6]$/', (string) ( $group['tag'] ?? '' ) ) ? $group['tag'] : 'h4';
-			$els[] = array( 'element_type' => array( 'element' => 'heading', 'heading' => array(
-				'heading_text'  => $title,
-				'heading_level' => $ltag,
-			) ) );
-		}
-		$lis = '';
-		foreach ( ( $group['items'] ?? array() ) as $it ) { $lis .= '<li>' . self::footer_linkify_contact( (string) $it ) . '</li>'; }
-		$els[] = array( 'element_type' => array( 'element' => 'text', 'text' => array(
-			'text_content' => '<ul class="fw-footer-links">' . $lis . '</ul>',
-		) ) );
 		return $els;
 	}
 
@@ -4235,6 +4437,7 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( ! ( $h instanceof DOMElement ) ) { return ''; }
 		$decls = '';
+		$ff = self::sc_css( $h, 'font-family' );      if ( $ff !== '' && stripos( $ff, 'inherit' ) === false ) { $decls .= 'font-family:' . $ff . ';'; }
 		$tt = self::sc_css( $h, 'text-transform' );  if ( stripos( $tt, 'uppercase' ) !== false ) { $decls .= 'text-transform:uppercase;'; }
 		$ls = self::sc_css( $h, 'letter-spacing' );  if ( $ls !== '' && $ls !== 'normal' && $ls !== '0px' ) { $decls .= 'letter-spacing:' . $ls . ';'; }
 		$fw = self::sc_css( $h, 'font-weight' );     if ( preg_match( '/^(300|400|500|600|700|800|900)$/', trim( $fw ) ) ) { $decls .= 'font-weight:' . trim( $fw ) . ';'; }
@@ -4261,17 +4464,70 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( ! ( $a instanceof DOMElement ) ) { return ''; }
 		$decls = '';
+		$ff = self::sc_css( $a, 'font-family' );      if ( $ff !== '' && stripos( $ff, 'inherit' ) === false ) { $decls .= 'font-family:' . $ff . ';'; }
 		$tt = self::sc_css( $a, 'text-transform' );  if ( stripos( $tt, 'uppercase' ) !== false ) { $decls .= 'text-transform:uppercase;'; }
 		$ls = self::sc_css( $a, 'letter-spacing' );  if ( $ls !== '' && $ls !== 'normal' && $ls !== '0px' ) { $decls .= 'letter-spacing:' . $ls . ';'; }
 		$fw = self::sc_css( $a, 'font-weight' );     if ( preg_match( '/^(300|400|500|600|700|800|900)$/', trim( $fw ) ) ) { $decls .= 'font-weight:' . trim( $fw ) . ';'; }
 		$fs = self::sc_css( $a, 'font-size' );        if ( preg_match( '/^[0-9.]+px$/', trim( $fs ) ) ) { $decls .= 'font-size:' . trim( $fs ) . ';'; }
-		$css = $decls !== '' ? '.footer-menu a{' . $decls . '}' : '';
+		// LINE-HEIGHT — the source footer text sets its own (e.g. 20px for 14px links); the theme's tighter
+		// default (~15px) leaves the list looking cramped even once the item gap matches. Captured separately
+		// so it can be applied to EVERY list item (links AND plain-text contact rows), which inherit it.
+		$lh = trim( self::sc_css( $a, 'line-height' ) );
+		$lh = ( $lh !== '' && $lh !== 'normal' && preg_match( '/^[0-9.]+(px|rem|em)$/', $lh ) ) ? $lh : '';
+		// Retarget: footer links now render as `.footer-link` (the unified List Item), not `.footer-menu a`.
+		$css = $decls !== '' ? '.footer-column .footer-link{' . $decls . '}' : '';
+		// line-height on the list items so both the links and the non-link (address) rows breathe like the source.
+		if ( $lh !== '' ) { $css .= '.footer-column .footer-links-list>li,.footer-column .footer-links-list .list-item__text{line-height:' . $lh . '}'; }
 		// Hover colour (`hover:text-<token>`) → the theme's Color-Preset var (portable + editable).
 		if ( preg_match( '/hover:text-([a-z][a-z0-9-]*)/', self::cls( $a ), $hm ) ) {
 			$tok = preg_replace( '/[^a-z0-9-]/', '', strtolower( $hm[1] ) );
-			if ( $tok !== '' ) { $css .= '.footer-menu a:hover{color:var(--color-' . $tok . ')}'; }
+			if ( $tok !== '' ) { $css .= '.footer-column .footer-link:hover{color:var(--color-' . $tok . ')}'; }
+		}
+		// LIST-ITEM SPACING — the source's footer link list sets its own vertical rhythm (a `space-y-4`/`gap-4`
+		// utility on the <ul>, or a real computed margin/gap), which the theme's default `.footer-links-list>li
+		// {margin:0 0 .5rem}` (8px) doesn't match — so a source with 16px gaps renders visibly cramped. Read the
+		// list gap and, when it differs from the 8px default, emit a scoped `li` margin so the rhythm matches.
+		$gap = self::footer_list_gap_px( $a );
+		if ( $gap > 0 && abs( $gap - 8 ) >= 1 ) {
+			$css .= '.footer-column .footer-links-list>li:not(:last-child){margin-bottom:' . $gap . 'px}';
 		}
 		return $css;
+	}
+
+	/**
+	 * Resolve the vertical spacing (px) a footer link list uses between its items, from the FIRST link node
+	 * `$a`. Sources: (1) a Tailwind `space-y-<n>` / `gap-y-<n>` / `gap-<n>` utility on the nearest <ul>/list
+	 * container (n × 4px — the Tailwind spacing scale); (2) the computed `row-gap`/`gap` on the container
+	 * (data-sc-cs); (3) the computed `margin-top` a `space-y-*` stamps on a following sibling `<li>`. Returns
+	 * 0 when nothing usable is found (the theme's 8px default then stands).
+	 */
+	private static function footer_list_gap_px( $a ) {
+		if ( ! ( $a instanceof DOMElement ) ) { return 0; }
+		$px = function ( $v ) {
+			$v = trim( (string) $v );
+			if ( preg_match( '/^([0-9.]+)px$/', $v, $m ) )  { return (float) $m[1]; }
+			if ( preg_match( '/^([0-9.]+)rem$/', $v, $m ) ) { return (float) $m[1] * 16; }
+			return 0.0;
+		};
+		// Walk up to the enclosing list container (<ul>/<ol>/<nav>), reading utilities + computed gap.
+		$node = $a;
+		for ( $i = 0; $i < 6 && $node instanceof DOMElement; $i++ ) {
+			$tag = strtolower( $node->tagName );
+			$cls = ' ' . strtolower( (string) $node->getAttribute( 'class' ) ) . ' ';
+			if ( preg_match( '/\s(?:space-y|gap-y|gap)-(\d+(?:\.\d+)?)\s/', $cls, $m ) ) { return (float) $m[1] * 4; }
+			$cs = (string) $node->getAttribute( 'data-sc-cs' );
+			if ( $cs !== '' && preg_match( '/(?:^|;)\s*(?:row-)?gap\s*:\s*([0-9.]+(?:px|rem))/i', $cs, $m ) ) { $g = $px( $m[1] ); if ( $g > 0 ) { return $g; } }
+			if ( in_array( $tag, array( 'ul', 'ol', 'nav' ), true ) ) {
+				// space-y-* stamps margin-top on the 2nd+ child — read it off a following sibling <li>.
+				$lis = $node->getElementsByTagName( 'li' );
+				if ( $lis->length >= 2 && $lis->item( 1 ) instanceof DOMElement ) {
+					$mt = self::sc_css( $lis->item( 1 ), 'margin-top' ); $g = $px( $mt ); if ( $g > 0 ) { return $g; }
+				}
+				break;
+			}
+			$node = $node->parentNode;
+		}
+		return 0;
 	}
 
 	/**
@@ -4897,6 +5153,35 @@ class FW_Site_Converter_Stitch {
 		if ( $sh !== '' && $sh !== 'none' ) { $out['shadow'] = true; }
 		if ( stripos( self::sc_css( $header, 'backdrop-filter' ), 'blur' ) !== false
 			|| stripos( self::sc_css( $header, '-webkit-backdrop-filter' ), 'blur' ) !== false ) { $out['glass'] = true; }
+		// SCROLL-STATE (data-sc-scrolled, stamped by the capture service after scrolling the page): a fixed /
+		// transparent header that reveals a bg / backdrop-blur / border / shadow ONLY on scroll. The resting
+		// reads above can't see it (the effect is JS-applied on a scroll listener), so fold the scrolled state
+		// in here → the native header_glass / header_border / header_shadow toggles + a solid scrolled bg. This
+		// is what lets the PHP build_from_html path reproduce the scroll effect without the JS-bundle mapper.
+		$scrolled = ( $header instanceof DOMElement ) ? (string) $header->getAttribute( 'data-sc-scrolled' ) : '';
+		if ( $scrolled !== '' ) {
+			$sp = array();
+			foreach ( explode( ';', $scrolled ) as $d ) {
+				$cp = strpos( $d, ':' );
+				if ( $cp === false ) { continue; }
+				$sp[ strtolower( trim( substr( $d, 0, $cp ) ) ) ] = trim( substr( $d, $cp + 1 ) );
+			}
+			// TWO-STATE model: the scrolled reads map to the ON-SCROLL options (scroll_*), kept SEPARATE from
+			// the resting at-top glass/border/shadow above — so the converter fills Appearance-At-top from the
+			// resting snapshot and Appearance-On-scroll from here.
+			if ( isset( $sp['backdrop-filter'] ) && stripos( $sp['backdrop-filter'], 'blur' ) !== false ) { $out['scroll_glass'] = true; }
+			if ( ! empty( $sp['box-shadow'] ) && 'none' !== strtolower( $sp['box-shadow'] ) ) { $out['scroll_shadow'] = true; }
+			$sbb = isset( $sp['border-bottom'] ) ? $sp['border-bottom'] : '';
+			if ( $sbb !== '' && stripos( $sbb, 'none' ) === false && ! preg_match( '/^0(px)?\s/', $sbb ) ) { $out['scroll_border'] = true; }
+			// An OPAQUE scrolled bg (the header repaints solid on scroll) → the Scrolled Background. A transparent
+			// scrolled bg (blur only) leaves this unset (the mapper supplies a dark tint for a dark site).
+			$sbg = isset( $sp['background-color'] ) ? $sp['background-color'] : '';
+			if ( $sbg !== '' && stripos( $sbg, 'transparent' ) === false && ! preg_match( '/rgba\([^)]*[,\/]\s*0\s*\)/i', $sbg ) ) { $out['scrolled_bg'] = $sbg; }
+			// SHRINK: the header tightens its padding on scroll (padTop meaningfully smaller than at rest).
+			$spt = isset( $sp['padding-top'] ) ? (float) $sp['padding-top'] : -1;
+			$rpt = (float) self::sc_pad( $header, 'top' );
+			if ( $spt >= 0 && $rpt > 0 && $spt < $rpt - 2 ) { $out['scroll_shrink'] = true; }
+		}
 		$pt = self::sc_pad( $header, 'top' );  if ( $pt !== '' ) { $out['pad_top'] = $pt; }
 		$pb = self::sc_pad( $header, 'bottom' ); if ( $pb !== '' ) { $out['pad_bottom'] = $pb; }
 		// Mobile breakpoint: the responsive class that swaps the inline nav for the hamburger — a desktop nav
@@ -5089,6 +5374,49 @@ class FW_Site_Converter_Stitch {
 	 * (top hairline {width,style,color} when present), radius (top border-radius when the footer is rounded,
 	 * e.g. `rounded-t-[3rem]`). Only detected keys present.
 	 */
+	/**
+	 * Shared Custom-Styling detector: read a section BAND element's computed BORDER (the one shared width /
+	 * style / colour + the edges that carry it) and BACKGROUND fill → the `{prefix}_border` / `_border_sides`
+	 * / `_border_extent` / `_background` fields for that band's Custom Styling block. Reusable for the footer
+	 * copyright band, the top/main/bottom bars, etc. Returns array() when the band has no detectable chrome.
+	 *
+	 * @param DOMElement $el     The band element.
+	 * @param string     $prefix The Custom-Styling field prefix (e.g. 'copyright', 'topbar', 'main_footer').
+	 * @return array
+	 */
+	private static function detect_band_custom_fields( $el, $prefix ) {
+		$out = array();
+		if ( ! ( $el instanceof DOMElement ) ) { return $out; }
+		// BORDER — per-edge computed widths; emit the ONE shared border + the sides that actually carry it.
+		$sides = array(); $bw = ''; $bstyle = 'solid'; $bcolor = '';
+		foreach ( array( 'top', 'right', 'bottom', 'left' ) as $side ) {
+			$w  = self::sc_css( $el, 'border-' . $side . '-width' );
+			$st = self::sc_css( $el, 'border-' . $side . '-style' );
+			if ( $w !== '' && (float) $w > 0 && $st !== '' && $st !== 'none' ) {
+				$c = self::sc_css( $el, 'border-' . $side . '-color' );
+				if ( $c !== '' && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $c ) ) {
+					$sides[] = $side;
+					if ( $bw === '' ) { $bw = $w; $bstyle = $st; $bcolor = $c; }
+				}
+			}
+		}
+		if ( $sides && $bw !== '' && $bcolor !== '' ) {
+			$out[ $prefix . '_border' ] = array(
+				'width' => array( 'value' => (string) max( 1, (int) round( (float) $bw ) ), 'unit' => 'px' ),
+				'style' => $bstyle,
+				'color' => array( 'predefined' => '', 'custom' => self::color_to_hex( $bcolor ) ),
+			);
+			$out[ $prefix . '_border_sides' ]  = $sides;
+			$out[ $prefix . '_border_extent' ] = array( 'mode' => 'full' );
+		}
+		// BACKGROUND — an opaque fill on the band itself (skips transparent / inherited).
+		$bg = self::sc_css( $el, 'background-color' );
+		if ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bg ) ) {
+			$out[ $prefix . '_background' ] = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => self::color_to_hex( $bg ) ) ) );
+		}
+		return $out;
+	}
+
 	private static function detect_footer_chrome_styles( $html ) {
 		$out = array();
 		$dom = self::load_dom( $html );
@@ -10859,6 +11187,14 @@ class FW_Site_Converter_Stitch {
 		foreach ( array( 'h1','h2','h3','h4','h5','h6','p','button','ul' ) as $t ) {
 			if ( $el->getElementsByTagName( $t )->length > 0 ) { return false; }
 		}
+		// An ABSOLUTE-positioned overlay child (a scrim / caption / badge / blob layer) makes this an image
+		// WITH an overlay, not a plain frame — defer to the higher-fidelity `image_overlay` recognizer (which
+		// decomposes it) so the scrim + aspect-ratio box + object-fit crop aren't silently dropped. (Without
+		// this, is_image_wrapper's priority 35 claimed the frame and emitted just the bare <img>.)
+		foreach ( $el->getElementsByTagName( 'div' ) as $d ) {
+			if ( strpos( self::cls( $d ), 'absolute' ) !== false
+				|| preg_match( '/(?:^|;)\s*position:\s*absolute/', (string) $d->getAttribute( 'data-sc-cs' ) ) ) { return false; }
+		}
 		return true;
 	}
 
@@ -11016,23 +11352,80 @@ class FW_Site_Converter_Stitch {
 		if ( '' !== $bw && (float) $bw > 0 && '' !== $bc ) { $img_decl[] = 'border:' . $bw . ' solid ' . $bc; }
 		$shadow = self::sc_css( $img, 'box-shadow' );
 		if ( '' !== $shadow && 'none' !== $shadow ) { $img_decl[] = 'box-shadow:' . $shadow; }
+
+		// ASPECT-RATIO + OBJECT-FIT — a source `aspect-video` / `aspect-[4/3]` frame with `object-cover` crops
+		// the photo to a FIXED box. Without this the native media_image renders at the image's NATURAL ratio
+		// (the "atmosphere image doesn't match the source" bug). Read the ratio from the framing wrapper (class
+		// or computed) and force the <img> to FILL + cover so the crop is faithful; object-fit falls back to the
+		// `object-cover` class when the computed value wasn't captured.
+		$img_cls = self::cls( $img );
 		$fit = self::sc_css( $img, 'object-fit' );
+		if ( '' === $fit || 'fill' === $fit ) {
+			if ( strpos( $img_cls, 'object-cover' ) !== false )       { $fit = 'cover'; }
+			elseif ( strpos( $img_cls, 'object-contain' ) !== false ) { $fit = 'contain'; }
+		}
+		$aspect    = self::img_wrapper_aspect( $img );
+		$wrap_decl = array( 'position:relative' );
+		if ( '' !== $aspect ) {
+			$wrap_decl[] = 'aspect-ratio:' . $aspect;
+			$wrap_decl[] = 'overflow:hidden';
+			$img_decl[]  = 'width:100%';
+			$img_decl[]  = 'height:100%';
+			if ( '' === $fit || 'fill' === $fit ) { $fit = 'cover'; } // a fixed-ratio box implies a cover crop
+		}
 		if ( '' !== $fit && 'fill' !== $fit ) { $img_decl[] = 'object-fit:' . $fit; }
 
-		$css  = 'selector{position:relative;}';
+		$css  = 'selector{' . implode( ';', $wrap_decl ) . ';}';
 		$css .= 'selector img{' . implode( ';', $img_decl ) . ';}';
 
 		if ( $blob instanceof DOMElement ) {
-			$b_decl = array( 'content:""', 'position:absolute', 'inset:0', 'z-index:0', 'pointer-events:none' );
-			$bg     = self::sc_css( $blob, 'background-color' );
+			$bcls = self::cls( $blob );
+			$bccs = (string) $blob->getAttribute( 'data-sc-cs' );
+			// A FULL-BLEED tinted layer (`inset-0`) sitting OVER the image is a SCRIM (foreground): it must paint
+			// ON TOP of the <img> (z-index above it), not behind. An offset/rounded shape is a decorative BLOB
+			// backdrop and stays BEHIND (z-index:0). A `hover:bg-transparent` scrim clears on hover.
+			$is_scrim = ( strpos( $bcls, 'inset-0' ) !== false ) || (bool) preg_match( '/(?:^|;)\s*inset:\s*0/', $bccs );
+			$b_decl   = array( 'content:""', 'position:absolute', 'inset:0', 'pointer-events:none', 'z-index:' . ( $is_scrim ? '2' : '0' ) );
+			$bg       = self::sc_css( $blob, 'background-color' );
 			if ( '' !== $bg && ! preg_match( '/rgba?\(\s*0[,\s]+0[,\s]+0[,\s]+0\s*\)|transparent/', $bg ) ) { $b_decl[] = 'background:' . $bg; }
 			$brad = self::sc_css( $blob, 'border-radius' );
-			if ( '' !== $brad ) { $b_decl[] = 'border-radius:' . $brad; }
+			if ( '' !== $brad && ! $is_scrim ) { $b_decl[] = 'border-radius:' . $brad; }
 			// `scale-95` (or an inline transform) on the blob → a matching transform on the pseudo-element.
-			if ( preg_match( '/\bscale-(\d{1,3})\b/', self::cls( $blob ), $sm ) ) { $b_decl[] = 'transform:scale(' . ( (int) $sm[1] / 100 ) . ')'; }
+			if ( preg_match( '/\bscale-(\d{1,3})\b/', $bcls, $sm ) ) { $b_decl[] = 'transform:scale(' . ( (int) $sm[1] / 100 ) . ')'; }
+			$hover_clear = $is_scrim && ( strpos( $bcls, 'hover:bg-transparent' ) !== false || strpos( $bcls, 'group-hover:bg-transparent' ) !== false );
+			if ( $hover_clear ) {
+				$dur = self::sc_css( $blob, 'transition-duration' );
+				$b_decl[] = 'transition:background ' . ( '' !== $dur && '0s' !== $dur ? $dur : '0.5s' ) . ' ease';
+			}
 			$css .= 'selector::before{' . implode( ';', $b_decl ) . ';}';
+			if ( $hover_clear ) { $css .= 'selector:hover::before{background:transparent;}'; }
 		}
 		return $css;
+	}
+
+	/**
+	 * The aspect-ratio (in CSS `16 / 9` form) of an image's framing wrapper — from a Tailwind `aspect-video` /
+	 * `aspect-square` / `aspect-[w/h]` class or a computed `aspect-ratio` on the <img> or a near ancestor — or
+	 * '' when the frame has none. Lets the composite reproduce a fixed-ratio (cropped) image box natively.
+	 */
+	private static function img_wrapper_aspect( $img ) {
+		$scan = function ( $el ) {
+			if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+			$cls = self::cls( $el );
+			if ( strpos( $cls, 'aspect-video' ) !== false )  { return '16 / 9'; }
+			if ( strpos( $cls, 'aspect-square' ) !== false ) { return '1 / 1'; }
+			if ( preg_match( '/aspect-\[([0-9.]+)\/([0-9.]+)\]/', $cls, $m ) ) { return $m[1] . ' / ' . $m[2]; }
+			$ar = self::sc_css( $el, 'aspect-ratio' );
+			if ( '' !== $ar && 'auto' !== $ar && '0 / 0' !== str_replace( ' ', '', $ar ) ) { return trim( $ar ); }
+			return '';
+		};
+		$a = $scan( $img instanceof DOMElement ? $img : null );
+		if ( '' !== $a ) { return $a; }
+		for ( $p = $img instanceof DOMElement ? $img->parentNode : null, $i = 0; $p instanceof DOMElement && $i < 3; $p = $p->parentNode, $i++ ) {
+			$a = $scan( $p );
+			if ( '' !== $a ) { return $a; }
+		}
+		return '';
 	}
 
 	/**

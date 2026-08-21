@@ -368,8 +368,21 @@ class FW_Site_Converter_Mapper {
 	 * @param string $cs  the button's data-sc-cs (computed style), if any
 	 * @return array{ style:string, size:string }
 	 */
+	/** Lazy-load the button colour/size presets from Theme Settings when the mapper wasn't seeded via
+	 *  set_button_presets() — the STANDALONE admin build_pages() path (rebuild / build-mapping AJAX) never
+	 *  called it, so every body button fell back to the `.sc-btn-*` transplant. The design phase always
+	 *  imports `button_colors`/`button_sizes` before the pages build, so reading them here is safe. */
+	private static function maybe_seed_button_presets() {
+		if ( ! empty( self::$btn_colors ) || ! empty( self::$btn_sizes ) ) { return; }
+		if ( ! function_exists( 'fw_get_db_settings_option' ) ) { return; }
+		$c = fw_get_db_settings_option( 'button_colors', array() );
+		$s = fw_get_db_settings_option( 'button_sizes', array() );
+		if ( ! empty( $c ) || ! empty( $s ) ) { self::set_button_presets( (array) $c, (array) $s ); }
+	}
+
 	public static function button_preset_for( $cls, $cs = '' ) {
 		$out = array( 'style' => '', 'size' => '' );
+		self::maybe_seed_button_presets();
 		if ( empty( self::$btn_colors ) && empty( self::$btn_sizes ) ) { return $out; }
 		$lc    = ' ' . strtolower( (string) $cls ) . ' ';
 		$props = ( '' !== (string) $cs ) ? self::cs_decls( $cs, array( 'background-color', 'color', 'border', 'font-size', 'padding', 'padding-top', 'padding-left' ) ) : array();
@@ -935,6 +948,26 @@ class FW_Site_Converter_Mapper {
 	 * light/white fill → `sc-btn-light`; a bordered ghost → `sc-btn-outline`; NO fill + NO border (a
 	 * `text-primary hover:underline` CTA) → `sc-btn-link` (rendered as a bare text link); else `sc-btn-fill`.
 	 */
+	/** The button's KIND (primary/light/outline/link/fill) from its computed style + classes — the SAME
+	 *  classification button_style_class() uses, exposed so the button node can route a text LINK to the
+	 *  native `btn-link` style instead of the compiled `sc-btn-link` transplant. */
+	private static function button_kind( $cls, $cs = '' ) {
+		$inline = '' !== (string) $cs ? self::cs_decls( $cs, self::$cs_btn ) : array();
+		if ( $inline ) {
+			if ( isset( $inline['background-color'] ) ) { return 'primary'; }
+			if ( isset( $inline['border'] ) )           { return 'outline'; }
+			return 'link';
+		}
+		$c          = ' ' . strtolower( (string) $cls ) . ' ';
+		$has_bg     = (bool) preg_match( '/\sbg-(?!transparent)/', $c );
+		$has_border = ( strpos( $c, ' border' ) !== false );
+		if ( strpos( $c, ' bg-primary' ) !== false || strpos( $c, ' bg-accent' ) !== false || strpos( $c, ' bg-brand' ) !== false ) { return 'primary'; }
+		if ( strpos( $c, ' bg-white' ) !== false || strpos( $c, ' bg-surface' ) !== false ) { return 'light'; }
+		if ( $has_border && ! $has_bg ) { return 'outline'; }
+		if ( ! $has_bg ) { return 'link'; }
+		return 'fill';
+	}
+
 	private static function button_style_class( $cls, $cs = '' ) {
 		$inline = '' !== (string) $cs ? self::cs_decls( $cs, self::$cs_btn ) : array();
 		if ( $inline ) {
@@ -2817,7 +2850,7 @@ class FW_Site_Converter_Mapper {
 
 	/** Fallback: reproduce the source button's hover/pseudo rules verbatim as `selector`-scoped Custom CSS
 	 *  (used only when classify_hover_animation found no native preset), so a bespoke effect is never dropped. */
-	private static function hover_verbatim_css( $hover ) {
+	private static function hover_verbatim_css( $hover, $has_color_preset = false ) {
 		// Scope onto the NODE placeholder `selector` (the builder replaces it with the element's own
 		// .u<hash> at render, exactly like the hifi `:where(selector){…}` base on the same node) — NOT the
 		// PRESET placeholder `{{SELECTOR}}`, which a node's Custom CSS never resolves. The old `{{SELECTOR}}`
@@ -2829,9 +2862,50 @@ class FW_Site_Converter_Mapper {
 		foreach ( explode( '|', (string) $hover ) as $chunk ) {
 			if ( ! preg_match( '/^([a-z-]+)\{(.*)\}$/s', trim( $chunk ), $m ) || ! isset( $map[ $m[1] ] ) ) { continue; }
 			$decls = self::hover_rebuild_decls( $m[2] );
-			if ( $decls !== '' ) { $out[] = $map[ $m[1] ] . ' { ' . $decls . '; }'; }
+			// When this button ALSO matched a colour PRESET, the preset's `.btn-{slug}:hover` already carries the
+			// SOURCE-EXACT hover colours (the stitch resolves `hover:bg-secondary` → the real fill), so this node's
+			// verbatim COLOUR override is redundant — and worse, a source palette var the theme doesn't define
+			// (`var(--secondary)`) survives here as an INVALID declaration that `!important` then forces over the
+			// working preset (the "hover overruled by undefined var" bug). Strip pure-colour hover declarations
+			// when a preset owns them; keep any genuine motion/shadow the preset can't express.
+			if ( $has_color_preset && strpos( $m[1], 'hover-' ) === 0 ) { $decls = self::strip_color_decls( $decls ); }
+			if ( $decls === '' ) { continue; }
+			// A source button that ALSO matched a colour PRESET gets that preset's `.btn.sc-btn-*:hover` rule
+			// (specificity 0,3,0), which OUTRANKS this node's `selector:hover` (0,2,0) — so the exact source
+			// hover was silently overridden by the preset's generic hover (the "outline button hover not
+			// translated" bug). Mark the reproduced HOVER declarations !important so the source-exact fill
+			// always wins over the approximate preset. Base (`self`) state is left as-is (no such conflict).
+			if ( strpos( $m[1], 'hover-' ) === 0 ) { $decls = self::decls_important( $decls ); }
+			$out[] = $map[ $m[1] ] . ' { ' . $decls . '; }';
 		}
 		return $out ? implode( "\n", $out ) : '';
+	}
+
+	/** Drop pure-colour declarations (background / background-color / border*-color / color) from a
+	 *  `prop:val;prop:val` string — used to defer a preset-matched button's hover fill to the preset,
+	 *  keeping only non-colour effects (transform, box-shadow, filter, opacity, …). */
+	private static function strip_color_decls( $decls ) {
+		$parts = array();
+		foreach ( explode( ';', (string) $decls ) as $d ) {
+			$d = trim( $d );
+			if ( $d === '' ) { continue; }
+			$prop = strtolower( trim( substr( $d, 0, strpos( $d, ':' ) !== false ? strpos( $d, ':' ) : 0 ) ) );
+			if ( $prop === 'background' || $prop === 'background-color' || $prop === 'color' || preg_match( '/^border(-[a-z]+)*-color$/', $prop ) || $prop === 'border-color' ) { continue; }
+			$parts[] = $d;
+		}
+		return implode( ';', $parts );
+	}
+
+	/** Append `!important` to each declaration in a `prop:val;prop:val` string (idempotent). */
+	private static function decls_important( $decls ) {
+		$parts = array();
+		foreach ( explode( ';', (string) $decls ) as $d ) {
+			$d = trim( $d );
+			if ( $d === '' ) { continue; }
+			if ( stripos( $d, '!important' ) === false ) { $d .= ' !important'; }
+			$parts[] = $d;
+		}
+		return implode( ';', $parts );
 	}
 
 	private static function n_button( $label, $link, $cls = '', $icon = '', $icon_pos = 'after', $cs = '', $group_cls = '', $group_cs = '', $icon_svg = '', $hover = '' ) {
@@ -2858,11 +2932,28 @@ class FW_Site_Converter_Mapper {
 			'spacing'         => self::def_spacing(),
 			'animation'       => self::def_animation(),
 			'unique_id'       => self::uid(),
-			// Source button classes (bg / text color / radius / padding) → one semantic class on the button,
-			// so it gets the source's exact fill instead of the theme's default. The `#page a` link color
-			// the AI path emits doesn't exist on this path, so a single class loaded after the theme wins.
-			'css_id'          => '', 'css_class' => self::button_style_class( $cls, $cs ), 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
+			'css_id'          => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
 		);
+		// Prefer the NATIVE button colour + size PRESET the converter built (the SAME preset the header CTA
+		// uses), so header and body buttons render identically and no `.sc-btn-*` CSS is transplanted into the
+		// child theme. Only when NO preset matches (e.g. an odd fill, or a plain text link) do we fall back to
+		// the compiled `sc-btn-{kind}` class as a safety net.
+		$preset = self::button_preset_for( (string) $cls, (string) $cs );
+		if ( '' !== $preset['style'] ) { $atts['style'] = $preset['style']; }
+		if ( '' !== $preset['size'] )  { $atts['size']  = $preset['size']; }
+		if ( '' === $preset['style'] ) {
+			if ( self::button_kind( $cls, $cs ) === 'link' ) {
+				// A text-link CTA (no fill / no border) → the NATIVE `btn-link` style, with the source's exact
+				// link colour reproduced per-node (no shared `.sc-btn-link` class transplanted into the theme).
+				$atts['style'] = 'btn-link';
+				$lk = ( '' !== (string) $cs ) ? self::cs_decls( (string) $cs, array( 'color' ) ) : array();
+				if ( ! empty( $lk['color'] ) ) { $atts['custom_css'] = trim( $atts['custom_css'] . "\nselector,selector:hover{color:" . $lk['color'] . " !important;}" ); }
+			} else {
+				// No native colour preset matched (an unusual fill) → keep the source's exact fill via the
+				// compiled semantic class as a last-resort safety net.
+				$atts['css_class'] = self::button_style_class( $cls, $cs );
+			}
+		}
 		// AUTO-WIDTH: a lone button is a flex item in a column whose content wrapper defaults to
 		// align-items:stretch, so an inline-block source button gets blockified + stretched to the full
 		// column width. Pin it back to its natural width (unless the source button was genuinely full-width),
@@ -2874,9 +2965,6 @@ class FW_Site_Converter_Mapper {
 			$bself = ( strpos( $bcls, ' mx-auto ' ) !== false || strpos( $bcls, ' self-center ' ) !== false || strpos( $bcls, ' text-center ' ) !== false ) ? 'center' : 'flex-start';
 			$atts['custom_css'] = trim( $atts['custom_css'] . "\nselector{align-self:" . $bself . ";width:auto;}" );
 		}
-		$preset = self::button_preset_for( (string) $cls, (string) $cs );
-		if ( '' !== $preset['style'] ) { $atts['style'] = $preset['style']; }
-		if ( '' !== $preset['size'] )  { $atts['size']  = $preset['size']; }
 		// HOVER ANIMATION — classify the source button's captured :hover/::before/::after motion into a native
 		// `.btnfx-*` preset (deterministic fingerprint). When nothing matches but the source DID declare a hover
 		// effect, carry its rules verbatim as scoped Custom CSS (rewriting the pseudo states onto `selector`),
@@ -2886,7 +2974,11 @@ class FW_Site_Converter_Mapper {
 			if ( $fx !== '' ) {
 				$atts['hover_animation'] = $fx;
 			} else {
-				$verbatim = self::hover_verbatim_css( (string) $hover );
+				// A colour preset owning this button also owns its hover FILL (source-exact via the stitch), so
+				// tell the verbatim reproducer to skip pure-colour hover declarations — otherwise an undefined
+				// source var like `var(--secondary)` would override the working preset hover with !important.
+				$has_color_preset = ( '' !== (string) $preset['style'] && 'btn-link' !== $preset['style'] );
+				$verbatim = self::hover_verbatim_css( (string) $hover, $has_color_preset );
 				if ( $verbatim !== '' ) { $atts['custom_css'] = trim( $atts['custom_css'] . "\n" . $verbatim ); }
 			}
 		}
@@ -3833,6 +3925,9 @@ class FW_Site_Converter_Mapper {
 					if ( isset( $b['overline_color'] ) ) { $head['overline_color'] = (string) $b['overline_color']; }
 				}
 				if ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
+					// Carry the part's raw computed style so heading_weight_css (and any future significant-style
+					// re-assertion) can recover a source value that lives ONLY in the computed style, not a class.
+					$head[ $role . '_cs' ] = (string) $b['cs'];
 					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight', 'font-size', 'color', 'text-transform' ) );
 					if ( isset( $cw['font-weight'] ) ) { $head[ $role . '_weight' ] = $cw['font-weight']; }
 					// Capture the part's computed font-size (px) so n_heading can assign the matching Text
@@ -4082,7 +4177,18 @@ class FW_Site_Converter_Mapper {
 		foreach ( $parts as $part => $sel ) {
 			// Only for parts that actually render (have text).
 			if ( '' === trim( (string) ( $h[ $part ] ?? '' ) ) ) { continue; }
+			// Re-assert the SOURCE font-weight. Prefer the explicit weight / class; fall back to the part's
+			// own COMPUTED style (`*_cs`) — a heading whose weight lives only in the computed style (no class,
+			// e.g. a `<h2 class="font-heading">` that resolves to 400) would otherwise inherit the shortcode's
+			// `hN.heading-title{font-weight:var(--hN-font-weight, revert)}` = the UA BOLD default, rendering
+			// bold when the source is regular. The scoped `.uHASH .heading-title` (0,2,0) beats that (0,1,1).
 			$w = self::heading_part_weight( $h[ $part . '_weight' ] ?? '', $h[ $part . '_class' ] ?? '' );
+			if ( '' === $w ) {
+				$cs = (string) ( $h[ $part . '_cs' ] ?? '' );
+				if ( $cs !== '' && preg_match( '/(?:^|;)\s*font-weight\s*:\s*([^;]+)/i', $cs, $wm ) ) {
+					$w = self::heading_part_weight( trim( $wm[1] ), '' );
+				}
+			}
 			if ( '' !== $w ) { $css .= 'selector ' . $sel . '{font-weight:' . $w . ' !important;}'; }
 		}
 		return $css;
@@ -5509,6 +5615,9 @@ class FW_Site_Converter_Mapper {
 				// Carry the part's RESOLVED computed font-weight (data-sc-cs) so the heading re-asserts its
 				// real weight even on a NON-Tailwind source (where the class carries no font-* utility).
 				if ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
+					// Carry the part's raw computed style so heading_weight_css (and any future significant-style
+					// re-assertion) can recover a source value that lives ONLY in the computed style, not a class.
+					$head[ $role . '_cs' ] = (string) $b['cs'];
 					$cw = self::cs_decls( (string) $b['cs'], array( 'font-weight', 'font-size', 'color', 'text-transform' ) );
 					if ( isset( $cw['font-weight'] ) ) { $head[ $role . '_weight' ] = $cw['font-weight']; }
 					// Capture the part's computed font-size (px) so n_heading can assign the matching Text
@@ -5865,7 +5974,34 @@ class FW_Site_Converter_Mapper {
 			elseif ( in_array( $p, $box_props, true ) || 0 === strpos( (string) $p, '--' ) ) { $cont[ $p ] = $v; }
 			elseif ( 'margin-top' === $p || 'margin-bottom' === $p )                      { $secd[ $p ] = $v; }
 		}
-		if ( $cont ) { $cont['box-sizing'] = 'border-box'; }
+		// BORDER-COLOUR fallback. A SEMANTIC Tailwind border class (`border-border`, `border-secondary`) compiles
+		// to `border-color:var(--<token>)`, a var the converted theme doesn't define — so the class parse leaves
+		// NO resolvable colour and the `.fw-container` border renders as `currentColor` = the band's light TEXT
+		// colour on a dark section (a bright, wrong divider — the "why is there a top/bottom border" bug: the
+		// SOURCE `border-border` is a near-invisible dark rgb(38,38,38), the converted one glared white). Take the
+		// REAL computed border colour from the section's data-sc-cs when the class parse couldn't resolve one.
+		if ( $cont ) {
+			$has_bw = false;
+			foreach ( array( 'border-width', 'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width' ) as $bwk ) {
+				if ( isset( $cont[ $bwk ] ) && ! in_array( trim( (string) $cont[ $bwk ] ), array( '', '0', '0px' ), true ) ) { $has_bw = true; break; }
+			}
+			$bc_ok = ( isset( $cont['border-color'] ) && stripos( (string) $cont['border-color'], 'var(' ) === false );
+			foreach ( array( 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color' ) as $bck ) {
+				if ( isset( $cont[ $bck ] ) && stripos( (string) $cont[ $bck ], 'var(' ) === false ) { $bc_ok = true; break; }
+			}
+			if ( $has_bw && ! $bc_ok ) {
+				$sec_cs_b = (string) ( $sec['sectionCs'] ?? '' );
+				if ( preg_match( '/(?:^|;)\s*border-top-color:\s*(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $sec_cs_b, $bcm )
+					&& ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bcm[1] ) ) {
+					// Drop the unresolvable var()-based colours so the clean shorthand wins regardless of emit order.
+					foreach ( array( 'border-color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color' ) as $bck ) {
+						if ( isset( $cont[ $bck ] ) && stripos( (string) $cont[ $bck ], 'var(' ) !== false ) { unset( $cont[ $bck ] ); }
+					}
+					$cont['border-color'] = trim( $bcm[1] );
+				}
+			}
+			$cont['box-sizing'] = 'border-box';
+		}
 
 		// Reproduce the section's OWN rendered background (edge-to-edge, on the section element) from its
 		// COMPUTED style. AI-builder bands often set their fill via computed CSS, not a `bg-*` class (e.g. a
@@ -5981,6 +6117,28 @@ class FW_Site_Converter_Mapper {
 				$gslug = self::gap_slug( $grid_gap_px . 'px' );
 				if ( '' !== $gslug ) { $sec_node['atts']['gap'] = array( 'base' => $gslug, 'md' => '', 'lg' => '' ); }
 			}
+		}
+
+		// FULL-WIDTH section border → the SECTION element, not the capped `.fw-container`. A source
+		// `border-y` on a `<section>` that has NO `max-w-*`/`mx-auto` (a full-width band, e.g.
+		// `py-24 bg-secondary border-y border-border`) draws EDGE-TO-EDGE top/bottom lines; hoisting it
+		// onto the centred container instead drew a shorter, inset divider that reads as a stray box outline
+		// (the "why is there a top/bottom border on the featured section" report). Only a genuinely BOXED
+		// strip (`max-w-* mx-auto`) keeps its border on the container, where the box IS the bordered element.
+		$boxed = isset( $cont['max-width'] ) && ! in_array( trim( (string) $cont['max-width'] ), array( '', 'none' ), true );
+		if ( ! $boxed && $cont ) {
+			foreach ( array(
+				'border-width', 'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+				'border-style', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+				'border-color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+				'border-radius', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-left-radius', 'border-bottom-right-radius',
+			) as $bp ) {
+				if ( isset( $cont[ $bp ] ) ) { $secd[ $bp ] = $cont[ $bp ]; unset( $cont[ $bp ] ); }
+			}
+			// box-sizing was only added to pad the container's border; drop it if the container no longer borders.
+			$cont_has_border = false;
+			foreach ( $cont as $p => $v ) { if ( 0 === strpos( (string) $p, 'border-' ) ) { $cont_has_border = true; break; } }
+			if ( ! $cont_has_border ) { unset( $cont['box-sizing'] ); }
 		}
 
 		if ( $cont || $secd ) {

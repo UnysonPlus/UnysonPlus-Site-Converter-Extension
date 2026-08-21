@@ -204,20 +204,21 @@ $fcols4 = $ts['main_footer_columns']['4'] ?? array();
 $contact_col = array();
 foreach ( $fcols4 as $ck => $col ) {
 	if ( strpos( (string) $ck, 'main_footer_col_' ) !== 0 || ! is_array( $col ) ) { continue; }
-	$h = $col[0]['element_type']['text']['text_content'] ?? '';
+	$h0   = $col[0]['element_type'] ?? array();
+	$h    = ( ( $h0['element'] ?? '' ) === 'heading' ) ? (string) ( $h0['heading']['heading_text'] ?? '' ) : (string) ( $h0['text']['text_content'] ?? '' );
 	if ( strpos( $h, 'Contact Info' ) !== false ) { $contact_col = $col; break; }
 }
 ga( "footer contact column found", ! empty( $contact_col ) );
-ga( "footer contact heading is a bare heading (no <ul> blob)",
-	isset( $contact_col[0]['element_type']['text']['text_content'] )
-	&& strpos( (string) $contact_col[0]['element_type']['text']['text_content'], '<ul' ) === false );
+ga( "footer contact heading is a native heading element",
+	( $contact_col[0]['element_type']['element'] ?? '' ) === 'heading' );
+// Contact rows are the UNIFIED list_item element (superseded icon_text) — text + tinted inline-svg icon.
 $icon_texts = array();
 foreach ( array_slice( $contact_col, 1 ) as $cel ) {
-	if ( ( $cel['element_type']['element'] ?? '' ) === 'icon_text' ) { $icon_texts[] = $cel['element_type']['icon_text']; }
+	if ( ( $cel['element_type']['element'] ?? '' ) === 'list_item' ) { $icon_texts[] = $cel['element_type']['list_item']; }
 }
-ga_eq( "footer contact = 3 native icon_text rows", 3, count( $icon_texts ) );
-$markup_all = implode( ' ', array_map( function ( $it ) { return $it['icontext_icon']['markup'] ?? ''; }, $icon_texts ) );
-$texts_all  = implode( ' | ', array_map( function ( $it ) { return $it['icontext_text'] ?? ''; }, $icon_texts ) );
+ga_eq( "footer contact = 3 native list_item rows", 3, count( $icon_texts ) );
+$markup_all = implode( ' ', array_map( function ( $it ) { return $it['li_icon']['markup'] ?? ''; }, $icon_texts ) );
+$texts_all  = implode( ' | ', array_map( function ( $it ) { return $it['li_text'] ?? ''; }, $icon_texts ) );
 ga( "footer contact rows carry inline-svg icons", substr_count( $markup_all, '<svg' ) >= 3, $markup_all );
 ga( "footer contact leading icons tinted brand green", substr_count( $markup_all, 'rgb(33, 196, 93)' ) >= 3, $markup_all );
 ga( "footer contact map-pin icon present", strpos( $markup_all, 'lucide-map-pin' ) !== false );
@@ -308,17 +309,22 @@ echo "\n[4] Palette + typography + button presets\n";
 ga_eq( "colors.ink", '#1a1a1a', $td['colors']['ink'] ?? null );
 ga_eq( "colors.footer_bg", '#141414', $td['colors']['footer_bg'] ?? null );
 
-ga( "brand green (rgb(33, 196, 93)) present in CSS", strpos( $css, 'rgb(33, 196, 93)' ) !== false );
+// Brand green now lives in the native button-colour PRESET (the Primary preset's fill) rather than a
+// transplanted `.sc-btn-primary` block in the child-theme CSS — so check the preset (or CSS) carries it.
+$_green_in_preset = false;
+foreach ( (array) ( $ts['button_colors'] ?? array() ) as $_p ) { if ( strpos( wp_json_encode( $_p ), 'rgb(33, 196, 93)' ) !== false ) { $_green_in_preset = true; break; } }
+ga( "brand green (rgb(33, 196, 93)) present (button preset or CSS)", $_green_in_preset || strpos( $css, 'rgb(33, 196, 93)' ) !== false );
 ga( "typography: Nunito (headings) present in CSS", strpos( $css, 'Nunito' ) !== false );
 ga( "typography: Inter (body) present in CSS", strpos( $css, 'Inter' ) !== false );
 ga( "heading scale: #features h2 rule present", strpos( $css, '#features h2' ) !== false );
 ga( "heading scale: #cta h2 rule present", strpos( $css, '#cta h2' ) !== false );
 
-// Button presets: the two HERO body buttons still map to scoped `.sc-btn-*` classes (the CTA-section
-// button is now the native call_to_action's own button, painted via the node's custom_css — see [11]).
-$btn_ok = ( preg_match_all( '/\.sc-btn-[a-z0-9-]+\s*\{/', $css ) >= 2 );
-ga( "button presets: 3 mapped button classes present", $btn_ok );
-ga( "button presets: a :hover state exists", strpos( $css, ':hover' ) !== false );
+// Button presets: body buttons now reference the NATIVE button-colour presets (style=btn-{slug}) — the
+// SAME presets the header CTA uses — instead of a transplanted `.sc-btn-*` class in the child-theme CSS.
+$_bc_slugs = array_map( function ( $p ) { return isset( $p['slug'] ) ? $p['slug'] : ''; }, (array) ( $ts['button_colors'] ?? array() ) );
+ga( "button presets: primary role mapped (btn-primary)", in_array( 'primary', $_bc_slugs, true ) && count( array_filter( $_bc_slugs ) ) >= 2 );
+ga( "button presets: no .sc-btn-* transplant left in child-theme CSS", preg_match( '/\.sc-btn-[a-z0-9-]+\s*\{/', $css ) === 0 );
+ga( "button presets: a :hover state exists", strpos( wp_json_encode( $ts['button_colors'] ?? array() ), 'hover' ) !== false );
 
 /* --------------------------------------------------------------------- *
  * 5) MAPPING-LEVEL section ids match builder (both id paths agree)
@@ -1452,8 +1458,8 @@ $fl_html = '<!DOCTYPE html><html><head><title>T</title></head><body><main><secti
 	. '<div><h4 data-sc-cs="text-transform:uppercase">About</h4><ul><li><a href="/c">Story</a></li><li><a href="/c2">Team</a></li></ul></div></div></div>'
 	. '<div class="container py-6"><p>© 2026 Maison</p></div></footer></body></html>';
 $fl_mc = FW_Site_Converter_Sources::build_from_html( $fl_html, 'FootL', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values']['misc_custom_css']['custom_css'] ?? '';
-ga( "footer link never-drop: .footer-menu a font-size carried", (bool) preg_match( '/\.footer-menu a\{[^}]*font-size:14px/', $fl_mc ), $fl_mc );
-ga( "footer link never-drop: hover → var(--color-background)", false !== strpos( $fl_mc, '.footer-menu a:hover{color:var(--color-background)}' ), $fl_mc );
+ga( "footer link never-drop: .footer-link font-size carried", (bool) preg_match( '/\.footer-column \.footer-link\{[^}]*font-size:14px/', $fl_mc ), $fl_mc );
+ga( "footer link never-drop: hover → var(--color-background)", false !== strpos( $fl_mc, '.footer-column .footer-link:hover{color:var(--color-background)}' ), $fl_mc );
 
 /* FOOTER TAGLINE never-drop: the brand tagline <p>'s size / line-height / muted colour → a scoped
  * `.footer-tagline` rule (the emit tags the paragraph with that class). */
