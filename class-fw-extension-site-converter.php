@@ -511,7 +511,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	private function run_convert_file() {
 		// New generic field names, with back-compat for the old `fw_sc_stitch_*` names.
 		$action = ( ( $_POST['fw_sc_convert_action'] ?? $_POST['fw_sc_stitch_action'] ?? '' ) === 'download' ) ? 'download' : 'import';
-		$opts   = array( 'dynamic_chrome' => true, 'hifi_css' => self::sc_hifi_opt() ); // faithful source look + EDITABLE chrome + hi-fi base
+		$opts   = array( 'dynamic_chrome' => true, 'hifi_css' => self::sc_hifi_opt(), 'map_woocommerce' => self::sc_wc_opt() ); // faithful source look + EDITABLE chrome + hi-fi base + optional WooCommerce mapping
+		if ( isset( $_POST['opt_homepage'] ) ) { $opts['set_as_homepage'] = ( $_POST['opt_homepage'] === '1' || $_POST['opt_homepage'] === 'true' ); } // "Set as homepage" checkbox (absent = infer from the source URL path)
 		$html   = (string) wp_unslash( $_POST['fw_sc_file_html'] ?? $_POST['fw_sc_stitch_html'] ?? '' );
 		$title  = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? $_POST['fw_sc_stitch_title'] ?? 'Home' ) );
 		if ( $title === '' ) { $title = 'Home'; }
@@ -690,6 +691,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		unset( $opts['rendered_html'] );
 
 		$source_url = trim( (string) $source_url );
+		// Carry the source URL into the build so it can infer inner-page vs homepage from the path (an inner
+		// path like `/services` → a NEW page under that slug, NOT the site's front page). Kept unless the
+		// caller already set it.
+		if ( ! isset( $opts['source_url'] ) && $source_url !== '' ) { $opts['source_url'] = $source_url; }
 		if ( $source_url === '' || ! preg_match( '#^https?://#i', $source_url ) ) {
 			$out['error'] = __( 'A valid http(s) source URL is required.', 'fw' );
 			return $out;
@@ -945,6 +950,68 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	/** Where the file-upload review flow stashes the built bundle's design (theme + media) between steps. */
 	private function convert_stash_key() {
 		return 'fw_site_converter_stash_' . get_current_user_id();
+	}
+
+	/** Directory for the between-steps stash FILE (uploads/unysonplus/site-converter, else the system temp). */
+	private function convert_stash_dir() {
+		if ( function_exists( 'fw_upw_uploads_dir' ) ) {
+			$d = fw_upw_uploads_dir( 'site-converter' );
+			if ( is_array( $d ) && ! empty( $d['path'] ) ) { return $d['path']; }
+		}
+		return rtrim( get_temp_dir(), '/\\' ) . '/upw-site-converter';
+	}
+
+	/** The per-user stash file path. */
+	private function convert_stash_file() {
+		return trailingslashit( $this->convert_stash_dir() ) . 'stash-' . get_current_user_id() . '.json.gz';
+	}
+
+	/**
+	 * Stash the built-bundle design between the prepare (step 1) and build (step 2) requests. The payload
+	 * carries the FULL rendered source HTML + bundle/media/theme JSON, which for a big or SPA-rendered site
+	 * runs to several MB — too large for a transient on hosts with a small `max_allowed_packet` or a memory
+	 * object cache (a large item is silently dropped, surfacing later as "the conversion session expired").
+	 * So we write the payload to a gzipped FILE and keep only a tiny TTL-marker transient; a non-writable
+	 * uploads dir falls back to storing the payload inline in the transient (fine for small sites).
+	 */
+	private function convert_stash_set( array $data ) {
+		$dir = $this->convert_stash_dir();
+		if ( ! is_dir( $dir ) ) { wp_mkdir_p( $dir ); }
+		$json = wp_json_encode( $data );
+		$wrote = false;
+		if ( $json !== false && is_dir( $dir ) && is_writable( $dir ) ) {
+			$payload = function_exists( 'gzencode' ) ? gzencode( $json, 6 ) : $json;
+			$wrote   = ( false !== @file_put_contents( $this->convert_stash_file(), $payload, LOCK_EX ) );
+		}
+		if ( $wrote ) {
+			// The tiny marker is the TTL authority (always fits any transient store); the file holds the bulk.
+			set_transient( $this->convert_stash_key(), array( '__file' => 1 ), 30 * MINUTE_IN_SECONDS );
+		} else {
+			@unlink( $this->convert_stash_file() );
+			set_transient( $this->convert_stash_key(), $data, 30 * MINUTE_IN_SECONDS ); // inline fallback
+		}
+		return $wrote;
+	}
+
+	/** Read the between-steps stash (file-backed or the inline fallback), honouring the transient TTL. */
+	private function convert_stash_get() {
+		$t = get_transient( $this->convert_stash_key() );
+		if ( $t === false ) { return null; }                       // marker gone = expired (TTL authority)
+		if ( is_array( $t ) && empty( $t['__file'] ) ) { return $t; } // inline fallback stash
+		$f = $this->convert_stash_file();
+		if ( ! is_file( $f ) ) { return null; }
+		$raw = @file_get_contents( $f );
+		if ( ! is_string( $raw ) || $raw === '' ) { return null; }
+		if ( function_exists( 'gzdecode' ) && strncmp( $raw, "\x1f\x8b", 2 ) === 0 ) { $dec = @gzdecode( $raw ); if ( is_string( $dec ) ) { $raw = $dec; } }
+		$data = json_decode( $raw, true );
+		return is_array( $data ) ? $data : null;
+	}
+
+	/** Clear the between-steps stash (marker transient + file). */
+	private function convert_stash_delete() {
+		delete_transient( $this->convert_stash_key() );
+		$f = $this->convert_stash_file();
+		if ( is_file( $f ) ) { @unlink( $f ); }
 	}
 
 	/**
@@ -1212,7 +1279,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$html  = (string) wp_unslash( $_POST['fw_sc_file_html'] ?? '' );
 		$title = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? 'Home' ) );
 		if ( $title === '' ) { $title = 'Home'; }
-		$opts  = array( 'dynamic_chrome' => true, 'hifi_css' => self::sc_hifi_opt() ); // faithful source look + EDITABLE chrome + hi-fi base
+		$opts  = array( 'dynamic_chrome' => true, 'hifi_css' => self::sc_hifi_opt(), 'map_woocommerce' => self::sc_wc_opt() ); // faithful source look + EDITABLE chrome + hi-fi base + optional WooCommerce mapping
+		if ( isset( $_POST['opt_homepage'] ) ) { $opts['set_as_homepage'] = ( $_POST['opt_homepage'] === '1' || $_POST['opt_homepage'] === 'true' ); } // "Set as homepage" checkbox (absent = infer from the source URL path)
 		// SOURCE ORIGIN — the URL flow renders the page (?html=1) and builds from that HTML with NO bundle, so
 		// build_from_html has no origin to resolve a relative `/assets/*.svg` against → the Need-Help icons &
 		// the "Why" illustration ship as bare `/assets/…` paths that 404. The pasted URL rides along as
@@ -1270,7 +1338,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		}
 
 		// Stash the design half (theme + media) — pages are rebuilt from the corrected mapping in step 2.
-		set_transient( $this->convert_stash_key(), array(
+		$this->convert_stash_set( array(
 			'bundle.json'       => $bundle['files']['bundle.json'] ?? null,
 			'media.json'        => $bundle['files']['media.json'] ?? null,
 			'theme-design.json' => $bundle['files']['theme-design.json'] ?? null,
@@ -1287,7 +1355,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			// The source markup — needed in step 2 to re-enable the styling mapper (sc-btn / .box) when the
 			// corrected pages are rebuilt; without it the build step produces unstyled buttons/cards.
 			'html'              => isset( $bundle['html'] ) ? (string) $bundle['html'] : '',
-		), 30 * MINUTE_IN_SECONDS );
+		) );
 
 		wp_send_json_success( array(
 			'mapping' => $bundle['mapping'],
@@ -1315,7 +1383,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$mapping = is_string( $raw ) ? json_decode( $raw, true ) : ( is_array( $raw ) ? $raw : null );
 		if ( ! is_array( $mapping ) || empty( $mapping['pages'] ) ) { wp_send_json_error( array( 'message' => __( 'No mapping was received.', 'fw' ) ) ); }
 
-		$stash = get_transient( $this->convert_stash_key() );
+		$stash = $this->convert_stash_get();
 		if ( ! is_array( $stash ) ) { wp_send_json_error( array( 'message' => __( 'The conversion session expired — please upload the file again.', 'fw' ) ) ); }
 
 		// Re-enable the styling mapper (it is OFF between requests) with the source's design tokens, so the
@@ -1470,7 +1538,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			);
 		}
 
-		delete_transient( $this->convert_stash_key() );
+		$this->convert_stash_delete();
 		set_transient( $this->results_transient_key(), $result, 5 * MINUTE_IN_SECONDS );
 
 		wp_send_json_success( array(
@@ -1808,6 +1876,19 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		// the source into the shortcode options + Theme Settings as fully as possible, and writes only the
 		// un-mappable remainder to the child theme CSS as an editable, low-priority base.
 		return true;
+	}
+
+	/**
+	 * Read the Convert panel's "Map to WooCommerce" option. The mapper only emits WooCommerce shortcodes
+	 * (a live [wc_products] feed for a detected product grid) when this returns true — which requires BOTH
+	 * WooCommerce to be ACTIVE on this site (there is nothing to map to otherwise) AND the checkbox ticked
+	 * (posted as opt_woocommerce '1'/'0'). Default OFF, so a non-store conversion is never altered.
+	 *
+	 * @return bool
+	 */
+	private static function sc_wc_opt() {
+		if ( ! class_exists( 'WooCommerce' ) ) { return false; }
+		return isset( $_POST['opt_woocommerce'] ) && ( $_POST['opt_woocommerce'] === '1' || $_POST['opt_woocommerce'] === 'true' );
 	}
 
 	/**
@@ -2491,9 +2572,31 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-header" checked> <?php esc_html_e( 'Capture header', 'fw' ); ?></label>
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-footer" checked> <?php esc_html_e( 'Capture footer', 'fw' ); ?></label>
 					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-media" checked> <?php esc_html_e( 'Import images', 'fw' ); ?></label>
+					<?php $upw_wc_active = class_exists( 'WooCommerce' ); ?>
+					<label style="margin-right:1.2em<?php echo $upw_wc_active ? '' : ';opacity:.55'; ?>" title="<?php echo esc_attr( $upw_wc_active ? __( 'When the source is a store, map its product grids to WooCommerce shortcodes (a live [wc_products] feed) instead of static image cards. Auto-ticked when the source is detected as WooCommerce.', 'fw' ) : __( 'Install & activate WooCommerce to enable this option.', 'fw' ) ); ?>"><input type="checkbox" id="fw-sc-opt-woocommerce"<?php echo $upw_wc_active ? '' : ' disabled'; ?>> <?php esc_html_e( 'Map to WooCommerce', 'fw' ); ?><?php if ( ! $upw_wc_active ) : ?> <span style="color:#646970">(<?php esc_html_e( 'WooCommerce not installed', 'fw' ); ?>)</span><?php endif; ?></label>
+						<label style="margin-right:1.2em" title="<?php echo esc_attr__( 'Make the converted page the site\'s homepage. Auto-ON for a root URL; auto-OFF for an inner page (e.g. /services), which becomes a NEW page under its own slug and leaves your homepage untouched.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-homepage" checked> <?php esc_html_e( 'Set as homepage', 'fw' ); ?></label>
 						<span style="display:block;color:#646970;font-size:12px;margin:.15em 0 .3em"><?php esc_html_e( 'Every conversion is high-fidelity: the source is mapped into the shortcode options and Theme Settings as fully as possible, with anything not mappable written to the child theme CSS as an editable, low-priority base (theme settings / presets still override).', 'fw' ); ?></span>
 						<span style="color:#646970;font-size:12px"><?php esc_html_e( 'Runtime-CSS builder exports (Google Stitch / Tailwind CDN, Lovable, v0) are rendered in a real browser automatically when the capture service is running — no option needed. A “source bundle” (.zip of already-rendered HTML + media) always converts offline.', 'fw' ); ?></span>
-				</p>
+						<span id="fw-sc-inner-hint" style="display:none;color:#8a6d00;font-size:12px;margin-top:.25em"><?php esc_html_e( 'Inner page detected — it will be imported as a NEW page (content only), your homepage and chrome untouched. Re-tick any option to override.', 'fw' ); ?></span>
+					</p>
+					<script>
+					/* Inner-page awareness: a NON-root source URL (e.g. /services) auto-unchecks Set-as-homepage +
+					   chrome/child-theme so it imports as a new content-only page. A checkbox the user touched wins. */
+					( function () {
+						var url = document.getElementById( 'fw-sc-an-url' );
+						if ( ! url ) { return; }
+						var ids = [ 'fw-sc-opt-homepage', 'fw-sc-opt-theme', 'fw-sc-opt-header', 'fw-sc-opt-footer' ];
+						var touched = {};
+						ids.forEach( function ( id ) { var el = document.getElementById( id ); if ( el ) { el.addEventListener( 'change', function () { touched[ id ] = true; } ); } } );
+						function isInner( v ) { try { var pth = new URL( v ).pathname.replace( /^\/+|\/+$/g, '' ); return pth !== '' && ! /^(index\.[a-z0-9]+|home)$/i.test( pth ); } catch ( e ) { return false; } }
+						function apply() {
+							var inner = isInner( url.value );
+							ids.forEach( function ( id ) { var el = document.getElementById( id ); if ( el && ! touched[ id ] ) { el.checked = ! inner; } } );
+							var hint = document.getElementById( 'fw-sc-inner-hint' ); if ( hint ) { hint.style.display = inner ? 'block' : 'none'; }
+						}
+						url.addEventListener( 'input', apply ); url.addEventListener( 'change', apply ); apply();
+					} )();
+					</script>
 				<p style="margin:.2em 0 1.1em">
 					<label><input type="checkbox" id="fw-sc-ai"> <strong><?php esc_html_e( 'Use AI to refine the element mapping (Experimental)', 'fw' ); ?></strong></label>
 					<span id="fw-sc-ai-status" class="description" style="margin-left:.5em"></span>
@@ -2674,6 +2777,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						var optEl = function ( id ) { var e = document.getElementById( id ); return ( ! e || e.checked ) ? '1' : '0'; };
 						fd.append( 'opt_theme',  optEl( 'fw-sc-opt-theme' ) );
 						fd.append( 'opt_media',  optEl( 'fw-sc-opt-media' ) );
+						fd.append( 'opt_woocommerce', optEl( 'fw-sc-opt-woocommerce' ) );
+						fd.append( 'opt_homepage', optEl( 'fw-sc-opt-homepage' ) );
 						fd.append( 'opt_header', optEl( 'fw-sc-opt-header' ) );
 						fd.append( 'opt_footer', optEl( 'fw-sc-opt-footer' ) );
 						fd.append( 'opt_hifi',   optEl( 'fw-sc-opt-hifi' ) );
@@ -2700,7 +2805,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						var fd = new FormData();
 						fd.append( 'action', 'fw_sc_analyze_apply' ); fd.append( '_wpnonce', nonce ); fd.append( 'phase', 'design' );
 						fd.append( 'opt_theme', optEl( 'fw-sc-opt-theme' ) ); fd.append( 'opt_media', optEl( 'fw-sc-opt-media' ) );
-						fd.append( 'opt_header', optEl( 'fw-sc-opt-header' ) ); fd.append( 'opt_footer', optEl( 'fw-sc-opt-footer' ) );
+						fd.append( 'opt_header', optEl( 'fw-sc-opt-header' ) ); fd.append( 'opt_footer', optEl( 'fw-sc-opt-footer' ) ); fd.append( 'opt_woocommerce', optEl( 'fw-sc-opt-woocommerce' ) ); fd.append( 'opt_homepage', optEl( 'fw-sc-opt-homepage' ) );
 						fd.append( 'bundle', blob, 'convert-bundle.zip' );
 						return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } );
 					}
@@ -3230,6 +3335,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					var optEl = function ( id ) { var e = document.getElementById( id ); return ( !e || e.checked ) ? '1' : '0'; };
 					fd.append( 'opt_theme',  optEl( 'fw-sc-opt-theme' ) );
 					fd.append( 'opt_media',  optEl( 'fw-sc-opt-media' ) );
+					fd.append( 'opt_woocommerce', optEl( 'fw-sc-opt-woocommerce' ) );
+					fd.append( 'opt_homepage', optEl( 'fw-sc-opt-homepage' ) );
 					fd.append( 'opt_header', optEl( 'fw-sc-opt-header' ) );
 					fd.append( 'opt_footer', optEl( 'fw-sc-opt-footer' ) );
 					fd.append( 'bundle', blob, 'convert-bundle.zip' );

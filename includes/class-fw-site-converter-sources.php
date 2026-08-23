@@ -119,4 +119,40 @@ class FW_Site_Converter_Sources {
 		if ( is_array( $bundle ) ) { $bundle['source'] = $id; }
 		return $bundle;
 	}
+
+	/**
+	 * Does the source HTML read as a WooCommerce / e-commerce STORE? Deterministic signal scan — used to
+	 * (a) auto-tick the Convert panel's "Map to WooCommerce" option and (b) gate whether the mapper emits
+	 * WooCommerce shortcodes (`[wc_products]`, etc.) for product grids instead of static image cards. A
+	 * couple of STRONG signals, or several weaker ones, qualify — so a lone "cart" word doesn't false-positive.
+	 *
+	 * @param string $html
+	 * @return bool
+	 */
+	public static function is_woocommerce_source( $html ) {
+		$html = (string) $html;
+		if ( $html === '' ) { return false; }
+		$score = 0;
+		// STRONG signals (each is near-conclusive of a real store).
+		$strong = array(
+			'/class="[^"]*\bwoocommerce\b/i',                       // the WooCommerce body/wrapper class
+			'/\bwoocommerce-Price-amount\b/i',                      // a WC price element
+			'/\b(?:ajax_)?add_to_cart_button\b/i',                  // WC add-to-cart button class
+			'/\bwp-block-woocommerce\b|\bwc-block-/i',              // WC Blocks
+			'/\bdata-product_id\s*=/i',                             // add-to-cart data attr
+			'/"@type"\s*:\s*"Product"/i',                           // Product JSON-LD
+			'/name="add-to-cart"|\?add-to-cart=/i',                 // classic add-to-cart form/link
+		);
+		foreach ( $strong as $re ) { if ( preg_match( $re, $html ) ) { $score += 2; } }
+		// WEAKER signals (store-shaped URLs / words — corroborating, not conclusive on their own).
+		$weak = array(
+			'~href="[^"]*/product/[^"]*"~i',                        // a product permalink
+			'~href="[^"]*/(?:cart|checkout|my-account)/?[^"]*"~i',  // store pages
+			'/\badd to cart\b/i',
+			'/\bproduct[_-]cat(?:egory)?\b/i',
+		);
+		foreach ( $weak as $re ) { if ( preg_match( $re, $html ) ) { $score += 1; } }
+		// One strong signal (2) or two+ corroborating weak ones qualify.
+		return $score >= 2;
+	}
 }

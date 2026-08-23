@@ -11,7 +11,7 @@ $manifest['description'] = __(
 	'fw'
 );
 
-$manifest['version']       = '1.5.66';
+$manifest['version']       = '1.6.37';
 $manifest['github_update'] = 'UnysonPlus/UnysonPlus-Site-Converter-Extension';
 $manifest['display']       = true;
 $manifest['standalone']    = true;

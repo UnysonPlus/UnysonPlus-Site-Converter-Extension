@@ -122,6 +122,8 @@ class FW_Site_Converter_Theme_Generator {
 				'sticky'        => ! empty( $header['sticky'] ),
 				// Captured top nav → an editable menu (auto-built on activation).
 				'menu'          => self::norm_menu_items( isset( $header['menu'] ) ? $header['menu'] : array() ),
+				// The split-nav RIGHT cluster → the Secondary menu (empty on a single-nav source).
+				'menu_secondary' => self::norm_menu_items( isset( $header['menu_secondary'] ) ? $header['menu_secondary'] : array() ),
 				// Logo styling copied from the source's logo (applied to the site's OWN
 				// text logo). Empty members fall back to the heading font / ink defaults.
 				'logo'          => array(
@@ -2847,6 +2849,12 @@ JS;
 			if ( $nav_items ) {
 				$out .= self::menu_bootstrap_code( $fn, 'header_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header', $loc, $nav_items, $mega_menus );
 			}
+			// SECONDARY header menu (the split-nav right cluster) — carried on the config even in raw/dynamic
+			// mode; bootstrap it to the 'secondary' location so the header's right-zone menu_area has its links.
+			$sec_items = isset( $cfg['header']['menu_secondary'] ) && is_array( $cfg['header']['menu_secondary'] ) ? $cfg['header']['menu_secondary'] : array();
+			if ( $sec_items ) {
+				$out .= self::menu_bootstrap_code( $fn, 'header_menu_secondary', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header Secondary', 'secondary', $sec_items );
+			}
 			$logo_src = isset( $cfg['header']['logo_src'] ) ? (string) $cfg['header']['logo_src'] : '';
 			if ( $cfg['theme']['mode'] === 'child' && $logo_src !== '' ) {
 				$out .= "/** Set the custom logo from the source logo image (once). */\n";
@@ -2893,6 +2901,12 @@ JS;
 		$header_menu = isset( $cfg['header']['menu'] ) && is_array( $cfg['header']['menu'] ) ? $cfg['header']['menu'] : array();
 		if ( $header_menu ) {
 			$out .= self::menu_bootstrap_code( $fn, 'header_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header', $loc, $header_menu, $mega_menus );
+		}
+		// SECONDARY header menu — the right cluster of a split "luxury" nav (empty on a single-nav source).
+		// Bootstrapped to the parent theme's 'secondary' location so the header's right-zone menu_area shows it.
+		$header_menu_secondary = isset( $cfg['header']['menu_secondary'] ) && is_array( $cfg['header']['menu_secondary'] ) ? $cfg['header']['menu_secondary'] : array();
+		if ( $header_menu_secondary ) {
+			$out .= self::menu_bootstrap_code( $fn, 'header_menu_secondary', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Header Secondary', 'secondary', $header_menu_secondary );
 		}
 		if ( $footer_menu ) {
 			$out .= self::menu_bootstrap_code( $fn, 'footer_menu', ucwords( str_replace( array( '-', '_' ), ' ', $slug ) ) . ' Footer', 'sc_footer', $footer_menu );

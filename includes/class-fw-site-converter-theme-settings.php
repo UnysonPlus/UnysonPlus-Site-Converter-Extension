@@ -233,12 +233,16 @@ class FW_Site_Converter_Theme_Settings {
 	 * @return mixed
 	 */
 	private static function strip_media( $value ) {
-		if ( function_exists( 'unysonplus_settings_io_strip_media' ) ) {
-			return unysonplus_settings_io_strip_media( $value );
-		}
 		if ( is_array( $value ) ) {
-			if ( array_key_exists( 'attachment_id', $value ) ) {
-				return array();
+			// A media value carrying an attachment id (either key style). Blank the SOURCE-site id (meaningless
+			// locally) but KEEP the `url` — localize_media() runs next and needs the url to sideload the file and
+			// re-attach a LOCAL id. The old behaviour (and the theme's stripper) blanked the WHOLE value to [],
+			// which DROPPED the url → the header logo image was lost and the theme fell back to the site-title
+			// text ("NOIR"). We no longer delegate to unysonplus_settings_io_strip_media for that reason.
+			if ( array_key_exists( 'attachment_id', $value ) || array_key_exists( 'attachment-id', $value ) ) {
+				if ( array_key_exists( 'attachment_id', $value ) ) { $value['attachment_id'] = ''; }
+				if ( array_key_exists( 'attachment-id', $value ) ) { $value['attachment-id'] = false; }
+				return $value;
 			}
 			foreach ( $value as $k => $v ) {
 				$value[ $k ] = self::strip_media( $v );
