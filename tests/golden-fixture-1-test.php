@@ -635,7 +635,7 @@ ga( "every feature icon_box carries a non-empty icon_color", 3 === count( array_
 if ( count( $feat_ibs ) === 3 ) {
 	$c0 = $ib_color( $feat_ibs[0] ); $c1 = $ib_color( $feat_ibs[1] ); $c2 = $ib_color( $feat_ibs[2] );
 	ga( "feature icon colors differ per card (green / amber / green)", $c0 !== $c1 && $c0 === $c2, wp_json_encode( array( $c0, $c1, $c2 ) ) );
-	ga( "feature icon_box carries a badge chip (from the source icon container)", ! empty( $feat_ibs[0]['atts']['icon_badge'] ), $feat_ibs[0]['atts']['icon_badge'] ?? '(none)' );
+	ga( "feature icon_box carries a badge chip preset (from the source icon container)", ! empty( $feat_ibs[0]['atts']['icon_badge_preset'] ) && preg_match( '/^iconb-badge-[0-9a-f]+$/', (string) $feat_ibs[0]['atts']['icon_badge_preset'] ), $feat_ibs[0]['atts']['icon_badge_preset'] ?? '(none)' );
 }
 /* Negative control: a card with NO icon still emits a valid icon_box, without a bogus icon. */
 $noicon_nodes = $sc_nodes_of( '<section id="ni"><div class="grid grid-cols-2 gap-8">'
@@ -749,7 +749,7 @@ ga_eq( "floating card title survives as EDITABLE content", '24/7 Care', $ib['att
 ga( "floating card subtitle survives as editable content", strpos( (string) ( $ib['atts']['content'] ?? '' ), 'Always supervised' ) !== false, $ib['atts']['content'] ?? '' );
 $ib_css = (string) ( $ib['atts']['custom_css'] ?? '' );
 ga( "floating card is positioned over the image (absolute scoped CSS)", strpos( $ib_css, 'position:absolute' ) !== false && strpos( $ib_css, 'top:2.5rem' ) !== false, $ib_css );
-ga( "floating card icon chip → icon_badge (from the source chip)", ( $ib['atts']['icon_badge'] ?? '' ) === 'solid-circle', $ib['atts']['icon_badge'] ?? '' );
+ga( "floating card icon chip -> icon_badge_preset (from the source chip)", (bool) preg_match( '/^iconb-badge-[0-9a-f]+$/', (string) ( $ib['atts']['icon_badge_preset'] ?? '' ) ), $ib['atts']['icon_badge_preset'] ?? '' );
 
 /* Negative control: a plain <img> with a caption (no absolute card/blob) stays a simple
    media_image — it must NOT be force-decomposed into an icon_box. */
@@ -947,10 +947,17 @@ ga( "button HAS a :where() base (leftover appearance carried)", $btn_base !== ''
 ga( "button base does NOT re-emit background-color (native preset wins, base stays lean)", $btn_base !== '' && strpos( $btn_base, 'background-color' ) === false, $btn_base );
 ga( "button base does NOT re-emit border (native class wins)", $btn_base !== '' && strpos( $btn_base, 'border:' ) === false && strpos( $btn_base, 'border-radius' ) === false, $btn_base );
 
-// Layout/spacing is NEVER carried as raw CSS in the base (margin natively, layout structurally).
+// Layout/spacing is NEVER carried as raw CSS in the FAITHFUL BASE (margin natively, layout structurally).
+// Only the `:where()` base is inspected — a deliberate structural rule in a plain `selector{}` block
+// (e.g. a button's align-self/width:auto flex-fallback that keeps a centred CTA from fighting the native
+// alignment option) is intentional layout, not an appearance leak, so it must not trip this guard.
 $leaks = array();
 foreach ( $bases_on as $r ) {
-	if ( preg_match( '/(?:^|;|\{)\s*(margin|padding|display|position|width|height|flex|grid|justify-content|align-items|gap)\s*:/', $r['css'] ) ) { $leaks[] = $r['sc']; }
+	if ( preg_match_all( '/:where\([^{]*\)\s*\{([^}]*)\}/', $r['css'], $mm ) ) {
+		foreach ( $mm[1] as $body ) {
+			if ( preg_match( '/(?:^|;)\s*(margin|padding|display|position|width|height|flex|grid|justify-content|align-items|gap)\s*:/', $body ) ) { $leaks[] = $r['sc']; break; }
+		}
+	}
 }
 ga( "no base leaks layout/spacing props (margin/padding/display/flex/grid/…)", count( $leaks ) === 0, wp_json_encode( $leaks ) );
 
@@ -1086,9 +1093,11 @@ foreach ( $hero_cols as $col ) {
 ga( "hero image column found (media_image + icon_box)", $img_col !== null );
 ga( "hero text column found (special_heading)", $text_col !== null );
 
-// (a) Positioned-ancestor: the image column carries position:relative so the absolute badge anchors to it.
+// (a) Positioned-ancestor: the image column is position:relative so the absolute badge anchors to it. This
+// now rides the NATIVE Position option (element_position = {position:'relative'}) instead of raw custom_css.
 $img_col_css = (string) ( $img_col['atts']['custom_css'] ?? '' );
-ga( "floating-card column is a POSITIONED ANCESTOR (position:relative)", strpos( $img_col_css, 'position:relative' ) !== false, $img_col_css );
+$img_col_pos = (string) ( $img_col['atts']['element_position']['position'] ?? '' );
+ga( "floating-card column is a POSITIONED ANCESTOR (position:relative)", strpos( $img_col_css, 'position:relative' ) !== false || 'relative' === $img_col_pos, $img_col_css . ' | element_position=' . $img_col_pos );
 
 // The badge icon_box inside it is still absolutely positioned (top/left) → now resolves against the column.
 $badge = null;

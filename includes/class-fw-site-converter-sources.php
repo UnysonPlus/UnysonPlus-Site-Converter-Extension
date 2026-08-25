@@ -40,6 +40,8 @@ class FW_Site_Converter_Sources {
 			// 'lovable' => array( 'label' => 'Lovable', 'detect_dir' => …, 'build' => … ),
 		);
 		/**
+		 * Filters the Site Converter's source adapters, letting other extensions register support for new site builders/exports.
+		 *
 		 * Filter the converter's source adapters so other extensions can teach it new builders.
 		 *
 		 * @param array $adapters

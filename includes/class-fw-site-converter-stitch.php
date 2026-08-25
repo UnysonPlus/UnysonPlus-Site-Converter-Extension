@@ -1556,8 +1556,8 @@ class FW_Site_Converter_Stitch {
 		// (1) Section-APPLIED patterns FIRST — a section references these by id (apply_section_pattern set its
 		// Background Pattern option), so each MUST have a registered preset with the SAME deterministic id, or
 		// the reference dangles. Emit them ahead of the scan set and outside the top-5 cap.
-		if ( class_exists( 'FW_Site_Converter_Mapper' ) && ! empty( FW_Site_Converter_Mapper::$section_patterns ) ) {
-			foreach ( FW_Site_Converter_Mapper::$section_patterns as $pid => $sp ) {
+		if ( class_exists( 'FW_Site_Converter_Mapper' ) && ! empty( FW_Site_Converter_Mapper::captured( 'pattern' ) ) ) {
+			foreach ( FW_Site_Converter_Mapper::captured( 'pattern' ) as $pid => $sp ) {
 				$img = (string) ( $sp['image'] ?? '' );
 				if ( '' === $img || isset( $used[ $img ] ) ) { continue; }
 				$used[ $img ] = true;
@@ -1743,7 +1743,7 @@ class FW_Site_Converter_Stitch {
 		}
 		// Don't bail on an empty scan when the mapper REGISTERED boxes (a class-only source has no data-sc-cs
 		// boxes to scan, but its columns still assigned box presets that MUST be emitted below).
-		$_has_reg = ( class_exists( 'FW_Site_Converter_Mapper' ) && ! empty( FW_Site_Converter_Mapper::$card_boxes ) );
+		$_has_reg = ( class_exists( 'FW_Site_Converter_Mapper' ) && ! empty( FW_Site_Converter_Mapper::captured( 'box' ) ) );
 		if ( empty( $boxes ) && ! $_has_reg ) { return array(); }
 
 		// Cluster the distinct box designs by their FULL skin (fill INCLUDED, so a red-tint card and a green-tint
@@ -1836,8 +1836,8 @@ class FW_Site_Converter_Stitch {
 		// equals the mapper's slug (`box-<hash>`). Runs AFTER build_pages (theme-settings pass), so $card_boxes
 		// is populated. Deduped by slug (same skin → one preset, referenced by every column that uses it).
 		$reg = array();
-		if ( class_exists( 'FW_Site_Converter_Mapper' ) && ! empty( FW_Site_Converter_Mapper::$card_boxes ) ) {
-			foreach ( FW_Site_Converter_Mapper::$card_boxes as $slug => $sk ) {
+		if ( class_exists( 'FW_Site_Converter_Mapper' ) && ! empty( FW_Site_Converter_Mapper::captured( 'box' ) ) ) {
+			foreach ( FW_Site_Converter_Mapper::captured( 'box' ) as $slug => $sk ) {
 				if ( ! is_array( $sk ) ) { continue; }
 				$default = array( 'background' => $fill_val( (string) ( $sk['bg'] ?? '' ) ) );
 				if ( '' !== (string) ( $sk['bw'] ?? '' ) ) {
@@ -1845,6 +1845,26 @@ class FW_Site_Converter_Stitch {
 					$default['border_width'] = $unit( (string) $sk['bw'] );
 					$default['border_color'] = ( '' !== (string) ( $sk['bd'] ?? '' ) ) ? array( 'predefined' => '', 'custom' => (string) $sk['bd'] ) : $empty;
 				}
+				// The card's inner padding rides IN the preset, so the box pads the WHOLE card — incl. a decomposed
+				// feature_list on the column — not just the icon_box header. Emitted via the preset's own custom_css
+				// (exact source px, no scale snapping) WITHOUT !important, so a column's own Padding can still
+				// override it. Blank → no padding rule.
+				$reg_pad_px  = trim( (string) ( $sk['padding'] ?? '' ) );
+				$reg_pad_css = ( '' !== $reg_pad_px && preg_match( '/^[0-9.]+px$/', $reg_pad_px ) ) ? '{{SELECTOR}}{padding:' . $reg_pad_px . ';box-sizing:border-box;}' : '';
+				// HOVER state — the card's captured `hover:bg-*`/border/shadow + lift/scale (e.g. a glass card's
+				// `hover:bg-slate-800/80`) → the preset's hover state + hover_fx, so the source card's hover
+				// survives. A scale (`group-hover:scale`) has no native field → the preset's own custom_css.
+				$reg_hover = array(); $reg_hover_fx = array(); $reg_hover_css = '';
+				$rhv = is_array( $sk['hover'] ?? null ) ? $sk['hover'] : array();
+				if ( '' !== (string) ( $rhv['bg'] ?? '' ) ) { $reg_hover['background']   = $fill_val( (string) $rhv['bg'] ); }
+				if ( '' !== (string) ( $rhv['bd'] ?? '' ) ) { $reg_hover['border_color'] = array( 'predefined' => '', 'custom' => (string) $rhv['bd'] ); }
+				$rhsh = $parse_shadow( (string) ( $rhv['shadow'] ?? '' ) );
+				if ( $rhsh ) { $reg_hover['box_shadow'] = $rhsh; }
+				if ( ! empty( $rhv['lift'] ) ) { $reg_hover_fx[] = 'lift'; }
+				if ( $rhsh )                   { $reg_hover_fx[] = 'glow'; }
+				if ( ! empty( $rhv['scale'] ) ) { $reg_hover_css = '{{SELECTOR}}:hover{transform:scale(' . (float) $rhv['scale'] . ');}'; }
+				$reg_states = array( 'default' => $default );
+				if ( $reg_hover ) { $reg_states['hover'] = $reg_hover; }
 				$reg[] = array(
 					'id'            => 'r' . substr( md5( (string) $slug ), 0, 8 ),
 					'preset_name'   => 'Box ' . substr( (string) $slug, 4 ), // slug `box-<hash>` → name "Box <hash>" → slugifies back to the slug
@@ -1852,9 +1872,9 @@ class FW_Site_Converter_Stitch {
 					'border_radius' => ( '' !== (string) ( $sk['radius'] ?? '' ) ) ? $unit( (string) $sk['radius'] ) : $u0,
 					'padding'       => $pad0,
 					'transition'    => '200',
-					'hover_fx'      => array(),
-					'custom_css'    => '',
-					'states'        => array( 'default' => $default ),
+					'hover_fx'      => array_values( array_unique( $reg_hover_fx ) ),
+					'custom_css'    => trim( $reg_pad_css . $reg_hover_css ),
+					'states'        => $reg_states,
 				);
 			}
 		}
@@ -2426,7 +2446,11 @@ class FW_Site_Converter_Stitch {
 				'icol'   => $icol,
 			);
 		}
-		if ( empty( $tiles ) ) { return array(); }
+		// Don't bail on an empty scan when the mapper REGISTERED icon badges (a class-only source, or one whose
+		// chips the tile scan didn't catch, still has icon_box cards that assigned an icon_badge_preset which MUST
+		// be emitted below or the reference dangles). Mirrors build_box_presets()'s $_has_reg guard.
+		$_has_reg = ( class_exists( 'FW_Site_Converter_Mapper' ) && ! empty( FW_Site_Converter_Mapper::captured( 'icon_badge' ) ) );
+		if ( empty( $tiles ) && ! $_has_reg ) { return array(); }
 
 		// Cluster the distinct tile designs; keep the most common few.
 		$groups = array();
@@ -2471,9 +2495,47 @@ class FW_Site_Converter_Stitch {
 				'states'        => array( 'default' => $default, 'hover' => array() ),
 			);
 		}
-		if ( empty( $derived ) ) { return array(); }
+		// REGISTERED badges — chip skins the mapper ASSIGNED to an icon_box via register_icon_badge_preset()
+		// (its icon_badge_preset = `iconb-<slug>`). These MUST become presets or the reference dangles — and
+		// unlike the scan above they work on a class-only source. Named "Badge <hash>" so the slugified name
+		// equals the mapper's slug (`badge-<hash>`) -> the front-end `.iconb-badge-<hash>` the icon_box points at.
+		// Deduped by slug (same chip -> one preset, referenced by every card that uses it). Mirrors build_box_presets().
+		$reg = array();
+		if ( class_exists( 'FW_Site_Converter_Mapper' ) && ! empty( FW_Site_Converter_Mapper::captured( 'icon_badge' ) ) ) {
+			foreach ( FW_Site_Converter_Mapper::captured( 'icon_badge' ) as $slug => $sk ) {
+				if ( ! is_array( $sk ) ) { continue; }
+				$shape = in_array( (string) ( $sk['shape'] ?? '' ), array( 'circle', 'rounded', 'square' ), true ) ? (string) $sk['shape'] : 'circle';
+				$size  = ( '' !== (string) ( $sk['size'] ?? '' ) ) ? (int) $sk['size'] : 48;
+				if ( $size < 24 || $size > 120 ) { $size = 48; }
+				$isize = (int) round( $size * 0.5 );
+				$bw    = (string) ( $sk['bw'] ?? '' );
+				$default = array(
+					'background'   => ( '' !== (string) ( $sk['bg'] ?? '' ) ) ? $fill( (string) $sk['bg'] ) : $nofill,
+					'icon_color'   => ( '' !== (string) ( $sk['icol'] ?? '' ) ) ? array( 'predefined' => '', 'custom' => (string) $sk['icol'] ) : $empty,
+					'border_style' => ( '' !== $bw ) ? 'solid' : '',
+					'border_color' => ( '' !== $bw && '' !== (string) ( $sk['bd'] ?? '' ) ) ? array( 'predefined' => '', 'custom' => (string) $sk['bd'] ) : $empty,
+				);
+				if ( '' !== $bw ) { $bwu = $unit( $bw ); if ( $bwu ) { $default['border_width'] = $bwu; } }
+				$shadow = trim( (string) ( $sk['shadow'] ?? '' ) );
+				$ccss   = ( '' !== $shadow && 'none' !== strtolower( $shadow ) ) ? '{{SELECTOR}}{box-shadow:' . $shadow . ';}' : '';
+				$rrad   = (string) ( $sk['radius'] ?? '' );
+				$reg[] = array(
+					'id'            => 'g' . substr( md5( (string) $slug ), 0, 8 ),
+					'preset_name'   => 'Badge ' . substr( (string) $slug, 6 ), // slug `badge-<hash>` -> name "Badge <hash>" -> slugifies back to the slug
+					'badge_shape'   => $shape,
+					'badge_size'    => array( 'value' => (string) $size, 'unit' => 'px' ),
+					'icon_size'     => array( 'value' => (string) $isize, 'unit' => 'px' ),
+					'border_radius' => ( 'rounded' === $shape && '' !== $rrad && $unit( $rrad ) ) ? $unit( $rrad ) : array( 'value' => '', 'unit' => 'px' ),
+					'transition'    => '200',
+					'hover_fx'      => array(),
+					'custom_css'    => $ccss,
+					'states'        => array( 'default' => $default, 'hover' => array() ),
+				);
+			}
+		}
+		if ( empty( $derived ) && empty( $reg ) ) { return array(); }
 		$base_lib = function_exists( 'unysonplus_default_icon_badge_presets' ) ? unysonplus_default_icon_badge_presets() : array();
-		return array( 'icon_badge_presets' => array_merge( $base_lib, $derived ) );
+		return array( 'icon_badge_presets' => array_merge( $base_lib, $derived, $reg ) );
 	}
 
 	public static function tokens_to_theme_settings_chrome( array $tokens, $html, $title ) {
@@ -2490,7 +2552,8 @@ class FW_Site_Converter_Stitch {
 
 		// Palette-derived chrome colors (fall back to sensible neutrals).
 		$ink        = self::token_color( $tokens, array( 'text', 'on-background', 'on-surface' ) );
-		$accent     = self::token_color( $tokens, array( 'accent', 'primary', 'brand', 'cta' ) );
+		$accent     = self::brand_accent_color( $html );
+		if ( '' === $accent ) { $accent     = self::accent_token_color( $tokens ); }
 		$dark       = self::token_color( $tokens, array( 'deep-black', 'black', 'surface-container-lowest' ) );
 		if ( $dark === '' ) { $dark = '#141414'; }
 		$muted      = self::token_color( $tokens, array( 'muted', 'on-surface-variant' ) );
@@ -6328,7 +6391,8 @@ class FW_Site_Converter_Stitch {
 		$bg     = self::token_color( $tokens, array( 'page-bg', 'background', 'surface', 'white-soft' ) );
 		// The brand / ACTION color (the button fill, nav-hover, heading accent). Both Stitch and
 		// Material-3 put it in `primary`; the `*-container` fills and the `error` red are NOT it.
-		$accent = self::token_color( $tokens, array( 'accent', 'primary', 'brand', 'cta' ) );
+		$accent = self::brand_accent_color( $html );
+		if ( '' === $accent ) { $accent = self::accent_token_color( $tokens ); }
 		// No explicit brand color? Look for a vivid one in the markup (Stitch sometimes hides the
 		// accent in a gradient like `from-[#FF416C]`); failing that, fall to the design's own dark
 		// tone. A MONOCHROME design (e.g. a neutral Material export with black CTAs) is valid — never
@@ -6614,8 +6678,13 @@ class FW_Site_Converter_Stitch {
 			}
 			if ( $out['cta']['label'] === '' ) {
 				foreach ( $header->getElementsByTagName( 'a' ) as $a ) {
-					if ( $in_nav( $a ) ) { continue; }
-					if ( self::is_button( $a ) ) { $out['cta']['label'] = trim( (string) self::text_no_icons( $a ) ); $out['cta']['href'] = $a->getAttribute( 'href' ); $cta_node = $a; break; }
+					// A button-STYLED link (fill/border + padding + rounded) is a real CTA even when it sits INSIDE
+					// the <nav> — many headers place the "Book a Stay" pill alongside the menu links. Plain nav
+					// links aren't button-styled, so is_button() already excludes them; only skip an in-nav link
+					// that ISN'T a styled button (a dropdown-trigger anchor), not the CTA itself.
+					if ( ! self::is_button( $a ) ) { continue; }
+					if ( $in_nav( $a ) && trim( (string) $a->getAttribute( 'href' ) ) === '' ) { continue; }
+					$out['cta']['label'] = trim( (string) self::text_no_icons( $a ) ); $out['cta']['href'] = $a->getAttribute( 'href' ); $cta_node = $a; break;
 				}
 			}
 		}
@@ -6919,9 +6988,32 @@ class FW_Site_Converter_Stitch {
 	 * ---------------------------------------------------------------------- */
 
 	/** Collect raster image URLs from the Stitch HTML (reuses the media engine's scanner). */
+	/**
+	 * Derive the source ORIGIN (scheme://host) from a captured page's <head> — canonical link, og:url, or
+	 * <base href>. Lets a same-origin root-relative asset (e.g. a Vite-bundled logo `/assets/dvele-*.png`)
+	 * be absolutized so the media pipeline can DOWNLOAD it (an empty base makes absolutize() drop every
+	 * root-relative ref, so those logos never reach media.json and 404 on the imported site).
+	 *
+	 * @param string $html
+	 * @return string scheme://host, or '' if none can be derived.
+	 */
+	public static function derive_origin( $html ) {
+		$html = (string) $html;
+		$hint = '';
+		if ( preg_match( '/<link\b[^>]*\brel\s*=\s*["\']canonical["\'][^>]*\bhref\s*=\s*["\']([^"\']+)["\']/i', $html, $m )
+			|| preg_match( '/<meta\b[^>]*\bproperty\s*=\s*["\']og:url["\'][^>]*\bcontent\s*=\s*["\']([^"\']+)["\']/i', $html, $m )
+			|| preg_match( '/<base\b[^>]*\bhref\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) {
+			$hint = $m[1];
+		}
+		if ( $hint !== '' && preg_match( '#^(https?://[^/]+)#i', $hint, $mm ) ) {
+			return $mm[1];
+		}
+		return '';
+	}
+
 	public static function scan_images( $html ) {
 		if ( class_exists( 'FW_Site_Converter_Media' ) && method_exists( 'FW_Site_Converter_Media', 'scan_html' ) ) {
-			$urls = FW_Site_Converter_Media::scan_html( (string) $html, '' );
+			$urls = FW_Site_Converter_Media::scan_html( (string) $html, self::derive_origin( $html ) );
 			return is_array( $urls ) ? array_values( array_unique( $urls ) ) : array();
 		}
 		// Minimal fallback: <img src> only.
@@ -7671,6 +7763,14 @@ class FW_Site_Converter_Stitch {
 				$is_bg = $covers && ( $self_abs || $anc_abs );
 				return array(
 					't' => 'video', 'role' => 'video', 'mode' => 'self_hosted', 'bg' => (bool) $is_bg,
+					// The scrim over a background video (a `from-slate-950/90` gradient the source layers for text
+					// legibility) → carried as the section Background Overlay, matching the image-bg hero path.
+					'overlay' => $is_bg ? self::media_bg_overlay( $el ) : '',
+					// A viewport-tall background-video hero (`min-h-screen` / `h-screen` / a computed vh height on
+					// an ancestor) → the section min-height, so the hero keeps its full-height breathing room
+					// instead of collapsing to the 80vh fallback. Content valign from the ancestor flex-justify.
+					'hero_height' => $is_bg ? self::media_hero_height( $el ) : '',
+					'valign'      => $is_bg ? self::media_hero_valign( $el ) : 'middle',
 					'src' => $src, 'webm' => $webm, 'poster' => (string) $el->getAttribute( 'poster' ),
 					'autoplay'    => $el->hasAttribute( 'autoplay' )    ? 'yes' : 'no',
 					'muted'       => $el->hasAttribute( 'muted' )       ? 'yes' : 'no',
@@ -7781,6 +7881,15 @@ class FW_Site_Converter_Stitch {
 		self::register_recognizer( 'icon_text_list', 84,
 			function ( $el ) { return self::is_icon_text_list( $el ); },
 			function ( $el ) { return self::icon_text_list_block( $el ); }
+		);
+
+		// An INLINE LINK STRIP (footer policy links: `Editorial Policy • About • Corrections`) → ONE centered
+		// inline text_block. Priority 93 sits ABOVE card_grid (90/85) / layout_row (82) so the flex row isn't
+		// split into per-link columns (which dropped the separators + inline flow). TIGHT match
+		// (is_inline_link_strip): every child a short inline `<a>` or a <=3-char separator, nav/menu excluded.
+		self::register_recognizer( 'inline_links', 93,
+			function ( $el ) { return self::is_inline_link_strip( $el ); },
+			function ( $el ) { return self::inline_link_strip_block( $el ); }
 		);
 
 		// A STAT / COUNTER grid — a row/grid whose EVERY cell is a big NUMBER (optionally a `+`/`%`/`k`
@@ -8124,7 +8233,7 @@ class FW_Site_Converter_Stitch {
 				foreach ( iterator_to_array( $clone->getElementsByTagName( 'summary' ) ) as $s ) { $s->parentNode->removeChild( $s ); }
 				$content = self::strip_cs( trim( self::inner_html( $clone ) ) );
 				if ( '' === $content ) { $content = ''; }
-				if ( '' !== $title ) { $items[] = array( 'title' => $title, 'content' => $content ); }
+				if ( '' !== $title ) { $items[] = array( 'title' => $title, 'content' => $content, 'open' => $d->hasAttribute( 'open' ) ); }
 			}
 		} else {
 			// aria-expanded toggles: title = toggle text; content = aria-controls target or next sibling.
@@ -8143,33 +8252,36 @@ class FW_Site_Converter_Stitch {
 					while ( $sib && $sib->nodeType !== XML_ELEMENT_NODE ) { $sib = $sib->nextSibling; }
 					if ( $sib instanceof DOMElement ) { $panel_html = self::strip_cs( trim( self::inner_html( $sib ) ) ); }
 				}
-				$items[] = array( 'title' => $title, 'content' => $panel_html );
+				$items[] = array( 'title' => $title, 'content' => $panel_html, 'open' => ( 'true' === strtolower( (string) $t->getAttribute( 'aria-expanded' ) ) ) );
 			}
 		}
 		// FAQ JSON-LD FALLBACK — a Radix/Headless accordion UNMOUNTS its closed panels, so the answer content is
 		// absent from the captured DOM (each `<div role="region">` is empty) and every item came out title-only.
 		// The answers, however, live in the page's `schema.org/FAQPage` structured data — fill any empty content
 		// by matching the item's title to a Question's `name` → `acceptedAnswer.text`.
-		$empty_content = false;
-		foreach ( $items as $it ) { if ( '' === trim( (string) ( $it['content'] ?? '' ) ) ) { $empty_content = true; break; } }
-		if ( $empty_content ) {
-			$faq = self::faq_jsonld_map( $el->ownerDocument );
-			if ( $faq ) {
-				foreach ( $items as &$it ) {
-					if ( '' !== trim( (string) ( $it['content'] ?? '' ) ) ) { continue; }
-					$k = self::faq_key( (string) $it['title'] );
-					if ( isset( $faq[ $k ] ) ) {
-						$ans = trim( $faq[ $k ] );
-						$it['content'] = ( strpos( $ans, '<' ) !== false ) ? $ans : '<p>' . esc_html( $ans ) . '</p>';
-					}
+		// FAQ JSON-LD — recover answers a Radix/Headless accordion unmounts from closed panels, AND flag
+		// $faq_present when the page's schema.org/FAQPage structured data covers these questions, so the
+		// rebuilt accordion re-emits the FAQ schema (native `faq_schema`).
+		$faq_matched = 0;
+		$faq = self::faq_jsonld_map( $el->ownerDocument );
+		if ( $faq ) {
+			foreach ( $items as &$it ) {
+				$k = self::faq_key( (string) $it['title'] );
+				if ( ! isset( $faq[ $k ] ) ) { continue; }
+				$faq_matched++;
+				if ( '' === trim( (string) ( $it['content'] ?? '' ) ) ) {
+					$ans = trim( $faq[ $k ] );
+					$it['content'] = ( strpos( $ans, '<' ) !== false ) ? $ans : '<p>' . esc_html( $ans ) . '</p>';
 				}
-				unset( $it );
 			}
+			unset( $it );
 		}
 		if ( count( $items ) < 2 ) { return null; }
 		$block = array( 't' => 'accordion', 'items' => $items );
 		$design = self::accordion_design( $el );
 		if ( $design ) { $block['design'] = $design; }
+		// FAQ schema present when the structured data covers at least half the questions.
+		if ( $faq_matched >= max( 1, (int) floor( count( $items ) / 2 ) ) ) { $block['faq'] = true; }
 		return $block;
 	}
 
@@ -8322,6 +8434,14 @@ class FW_Site_Converter_Stitch {
 		if ( 'center' === $ta ) { $d['title_alignment'] = 'center'; }
 		elseif ( 'right' === $ta ) { $d['title_alignment'] = 'right'; }
 
+		// --- Title tag --- the header is often wrapped in a real heading (`<h3><button aria-expanded>`);
+		// carry that level so the rebuilt accordion keeps the source's heading semantics.
+		$htag = '';
+		for ( $hn = $bar; $hn instanceof DOMElement && $hn !== $first; $hn = ( $hn->parentNode instanceof DOMElement ? $hn->parentNode : null ) ) {
+			if ( preg_match( '/^h[2-6]$/', strtolower( $hn->tagName ) ) ) { $htag = strtolower( $hn->tagName ); break; }
+		}
+		if ( '' !== $htag ) { $d['title_tag'] = $htag; }
+
 		// --- Corner radius (from the item box) ---
 		$radius_raw = self::sc_css( $first, 'border-radius' );
 		$radius     = (float) $radius_raw;
@@ -8368,6 +8488,53 @@ class FW_Site_Converter_Stitch {
 		$sh = self::sc_css( $first, 'box-shadow' );
 		if ( '' !== $sh && 'none' !== $sh ) {
 			$d['elevation'] = ( preg_match( '/(\d+(?:\.\d+)?)px/', $sh, $sm ) && (float) $sm[1] >= 12 ) ? 'raised' : 'subtle';
+		}
+
+		// --- Panel (content) element: for <details> the first non-summary child; else the aria-controls
+		// target or the bar's next element sibling. Used for the content background + text colour. ---
+		$panel = null;
+		if ( 'details' === strtolower( $first->tagName ) ) {
+			foreach ( self::el_children( $first ) as $ch ) { if ( 'summary' !== strtolower( $ch->tagName ) ) { $panel = $ch; break; } }
+		} else {
+			$ctrl = trim( (string) $bar->getAttribute( 'aria-controls' ) );
+			if ( '' !== $ctrl && $el->ownerDocument ) { $panel = $el->ownerDocument->getElementById( $ctrl ); }
+			if ( ! $panel ) { $sib = $bar->nextSibling; while ( $sib && $sib->nodeType !== XML_ELEMENT_NODE ) { $sib = $sib->nextSibling; } if ( $sib instanceof DOMElement ) { $panel = $sib; } }
+		}
+
+		// Colour helpers: rgb(a) → #hex, and "is this the default near-black text?" (skip those to avoid noise).
+		$rgb_hex = function ( $css ) { return preg_match( '/rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/', (string) $css, $m ) ? sprintf( '#%02x%02x%02x', (int) $m[1], (int) $m[2], (int) $m[3] ) : ''; };
+		$near_black = function ( $css ) { return preg_match( '/rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/', (string) $css, $m ) && (int) $m[1] < 70 && (int) $m[2] < 70 && (int) $m[3] < 70; };
+		$col = function ( $hex ) { return array( 'predefined' => '', 'custom' => $hex ); };
+
+		// --- Content background (panel fill, when it carries a real, non-transparent fill) ---
+		if ( $panel instanceof DOMElement ) {
+			$pbg = self::sc_css( $panel, 'background-color' );
+			if ( '' !== $pbg && 'transparent' !== $pbg && 'rgba(0, 0, 0, 0)' !== $pbg ) {
+				$h = $rgb_hex( $pbg ); if ( '' !== $h ) { $d['content_bg_color'] = $col( $h ); }
+			}
+			// --- Content text colour (only when it isn't the default near-black) ---
+			$pc = self::sc_css( $panel, 'color' );
+			if ( '' !== $pc && ! $near_black( $pc ) ) { $h = $rgb_hex( $pc ); if ( '' !== $h ) { $d['tab_content_color'] = $col( $h ); } }
+		}
+
+		// --- Title (header) text colour (only when it isn't the default near-black) ---
+		$bc = self::sc_css( $bar, 'color' );
+		if ( '' !== $bc && ! $near_black( $bc ) ) { $h = $rgb_hex( $bc ); if ( '' !== $h ) { $d['tab_title_color'] = $col( $h ); } }
+
+		// --- Icon (closed-state) colour ---
+		if ( $icon_el instanceof DOMElement ) {
+			$ic = self::sc_css( $icon_el, 'color' );
+			if ( '' !== $ic && ! $near_black( $ic ) ) { $h = $rgb_hex( $ic ); if ( '' !== $h ) { $d['icon_closed_color'] = $col( $h ); } }
+		}
+
+		// --- Multiple open --- a <details> group opens panels independently; a Bootstrap collapse group
+		// with `data-bs-parent` opens only one at a time.
+		if ( 'details' === strtolower( $first->tagName ) ) {
+			$d['multiple_open'] = 'yes';
+		} else {
+			$has_parent = false;
+			foreach ( $el->getElementsByTagName( '*' ) as $n ) { if ( $n instanceof DOMElement && $n->hasAttribute( 'data-bs-parent' ) ) { $has_parent = true; break; } }
+			$d['multiple_open'] = $has_parent ? 'no' : 'yes';
 		}
 
 		return $d;
@@ -8455,10 +8622,45 @@ class FW_Site_Converter_Stitch {
 		if ( self::has_ancestor_tag( $el, 'nav', null ) ) { return false; }
 		$cls = self::cls( $el );
 		if ( preg_match( '/\b(menu|nav|navbar|pagination|breadcrumb|tabs?|tablist|social|slider|carousel|dropdown|toolbar)\b/', $cls ) ) { return false; }
+		// DEFER a BRAND "trusted by" logo row to the logo_strip recognizer (priority 25): its items are brand
+		// marks (iconify simple-icons/logos, or fa-brands/si-/cib- classes), not benefit rows. Without this the
+		// icon_text_list recognizer (priority 84, which runs first) claimed the row and stripped the logos to a
+		// feature_list. Gated on >=2 BRAND icons so a real checkmark feature list (lucide/generic) is untouched.
+		if ( self::logo_strip_brand_icons( $el ) >= 2 ) { return false; }
 		$kids = self::widget_children( $el );
 		if ( count( $kids ) < 2 ) { return false; }
 		foreach ( $kids as $k ) { if ( ! self::is_icon_text_row( $k ) ) { return false; } }
 		return true;
+	}
+
+	/**
+	 * Count a row's children that carry a BRAND icon — an iconify web-component with a brand set
+	 * (`simple-icons:`, `logos:`, `fa-brands:`, `cib:`, `brandico:`) or a brand icon-font class
+	 * (`fa-brands`/`fab`, `si-`, `simple-icons-`, `cib-`). The signal that a flex icon+label row is a
+	 * "trusted by" LOGO strip (→ logo_grid) rather than a benefit feature list (→ feature_list).
+	 */
+	private static function logo_strip_brand_icons( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return 0; }
+		$n = 0;
+		foreach ( $el->childNodes as $ch ) {
+			if ( XML_ELEMENT_NODE !== $ch->nodeType ) { continue; }
+			if ( ! in_array( strtolower( $ch->tagName ), array( 'span', 'div', 'a', 'li' ), true ) ) { continue; }
+			$brand = false;
+			foreach ( $ch->getElementsByTagName( 'iconify-icon' ) as $ii ) {
+				$ic = strtolower( (string) $ii->getAttribute( 'icon' ) );
+				if ( preg_match( '#^(simple-icons|logos|fa-brands|cib|brandico)[:\-]#', $ic ) ) { $brand = true; break; }
+			}
+			if ( ! $brand ) {
+				foreach ( array( 'svg', 'i', 'span' ) as $t ) {
+					foreach ( $ch->getElementsByTagName( $t ) as $e ) {
+						$cl = ' ' . strtolower( self::cls( $e ) ) . ' ';
+						if ( preg_match( '/(?:^|\s)(fa-brands|fab|si-|simple-icons-|cib-)/', $cl ) ) { $brand = true; break 2; }
+					}
+				}
+			}
+			if ( $brand ) { $n++; }
+		}
+		return $n;
 	}
 
 	/**
@@ -8504,6 +8706,16 @@ class FW_Site_Converter_Stitch {
 		$orientation = 'vertical';
 		if ( ( strpos( $cls, ' flex ' ) !== false || strpos( $cls, ' inline-flex ' ) !== false )
 			&& strpos( $cls, ' flex-col ' ) === false && strpos( $cls, ' grid ' ) === false ) { $orientation = 'horizontal'; }
+		// Per-item icon↔label gap (each row's own `flex items-center gap-2` = 8px) → carried so the marker
+		// sits the SOURCE distance from the text, not the theme default .75rem. Read from the first row
+		// (rows are visually uniform); computed style first, else a Tailwind `gap-N` (N×4px).
+		$item_gap = 0.0;
+		$kids0 = self::widget_children( $el );
+		if ( ! empty( $kids0 ) ) {
+			$k0cs = (string) $kids0[0]->getAttribute( 'data-sc-cs' );
+			if ( preg_match( '/(?:^|;)\s*gap:\s*([0-9.]+)px/', $k0cs, $gm ) ) { $item_gap = (float) $gm[1]; }
+			else { $k0cls = self::cls( $kids0[0] ); if ( preg_match( '/\bgap-(\d+(?:\.\d+)?)\b/', $k0cls, $gm ) ) { $item_gap = (float) $gm[1] * 4.0; } }
+		}
 		return array(
 			't' => 'feature_list', 'ordered' => false, 'items' => $rows,
 			'orientation' => $orientation,
@@ -8511,6 +8723,76 @@ class FW_Site_Converter_Stitch {
 			'list_cs'     => (string) $el->getAttribute( 'data-sc-cs' ),
 			'label_cls'   => $span_cls,                              // text-white/80 text-sm → text_color + size
 			'label_cs'    => $span_cs,
+			'item_gap'    => $item_gap,                              // icon↔label gap (gap-2 = 8px)
+		);
+	}
+
+	/**
+	 * An INLINE LINK STRIP — a flex/inline-flex row whose substantial children are ALL short inline links
+	 * (`<a>` <=40 chars, not button-styled) and short text separators (`•` / `|` / `/` / `·`), e.g. a footer
+	 * policy-links line (`Editorial Policy • About • Corrections`). Must be claimed as ONE block (a single
+	 * centered inline text_block) — else a card-grid/layout-row splits each `<a>` into its own 1/1 column
+	 * text_block, dropping the separators and the inline flow. Excludes nav / menu / social / tab strips.
+	 */
+	private static function is_inline_link_strip( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$tag = strtolower( $el->tagName );
+		if ( in_array( $tag, array( 'a', 'button', 'nav', 'ul', 'ol', 'form', 'header' ), true ) ) { return false; }
+		if ( self::has_ancestor_tag( $el, 'nav', null ) ) { return false; }
+		$cls = self::cls( $el );
+		$cs  = (string) $el->getAttribute( 'data-sc-cs' );
+		$is_flex = ( strpos( $cls, 'flex' ) !== false || strpos( $cls, 'inline-flex' ) !== false || preg_match( '/display:\s*(?:inline-)?flex/', $cs ) );
+		if ( ! $is_flex ) { return false; }
+		if ( preg_match( '/\b(menu|nav|navbar|pagination|breadcrumb|tabs?|tablist|social|slider|carousel|dropdown|toolbar)\b/', $cls ) ) { return false; }
+		$kids  = self::widget_children( $el );
+		if ( count( $kids ) < 2 ) { return false; }
+		$links = 0;
+		foreach ( $kids as $k ) {
+			$kt  = strtolower( $k->tagName );
+			$txt = trim( self::text( $k ) );
+			if ( 'a' === $kt ) {
+				if ( '' === $txt || mb_strlen( $txt ) > 40 ) { return false; }
+				if ( self::is_button( $k ) || self::cs_is_button( $k ) ) { return false; } // a styled CTA is not a link-strip item
+				foreach ( array( 'img', 'svg', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'button' ) as $bt ) { if ( $k->getElementsByTagName( $bt )->length ) { return false; } }
+				$links++;
+			} else {
+				// A short text SEPARATOR (•, |, /, ·, —) — <=3 chars, no link/media of its own.
+				if ( mb_strlen( $txt ) > 3 ) { return false; }
+				if ( $k->getElementsByTagName( 'a' )->length || $k->getElementsByTagName( 'img' )->length || $k->getElementsByTagName( 'svg' )->length ) { return false; }
+			}
+		}
+		return $links >= 2;
+	}
+
+	/** Build the inline-link-strip block: the links + separators as ONE centered inline `<p>`, each link
+	 *  cleaned (href kept, source classes/computed style stripped so it inherits the theme link colour). */
+	private static function inline_link_strip_block( $el ) {
+		$parts = array();
+		foreach ( self::el_children( $el ) as $k ) {
+			$kt  = strtolower( $k->tagName );
+			$txt = trim( preg_replace( '/\s+/', ' ', self::text( $k ) ) );
+			if ( '' === $txt ) { continue; }
+			if ( 'a' === $kt ) {
+				// Preserve the LINK (href + text); source classes / computed style are dropped so it inherits
+				// the theme link colour rather than a dead Tailwind class.
+				$href    = trim( (string) $k->getAttribute( 'href' ) );
+				$target  = trim( (string) $k->getAttribute( 'target' ) );
+				$parts[] = '<a href="' . esc_attr( $href !== '' ? $href : '#' ) . '"'
+					. ( '_blank' === $target ? ' target="_blank" rel="noopener"' : '' ) . '>' . esc_html( $txt ) . '</a>';
+			} else {
+				$parts[] = esc_html( $txt ); // a short separator (•, |, /) between links
+			}
+		}
+		if ( count( $parts ) < 2 ) { return null; }
+		$inner = implode( ' ', $parts );
+		$cls   = self::cls( $el );
+		$cs    = (string) $el->getAttribute( 'data-sc-cs' );
+		$center = ( strpos( $cls, 'justify-center' ) !== false || strpos( $cls, 'text-center' ) !== false || strpos( $cls, 'mx-auto' ) !== false || preg_match( '/justify-content:\s*center|text-align:\s*center/', $cs ) );
+		return array(
+			't' => 'text', 'role' => 'text', 'cls' => 'sc-link-strip',
+			'align' => $center ? 'center' : '', 'cs' => $cs,
+			'text' => self::text( $el ),
+			'html' => '<p class="sc-link-strip">' . $inner . '</p>',
 		);
 	}
 
@@ -8617,14 +8899,22 @@ class FW_Site_Converter_Stitch {
 				if ( $b && self::text( $b ) !== '' ) { $btn_label = self::text( $b ); $btn_url = (string) $b->getAttribute( 'href' ); break; }
 			}
 			$kcls     = strtolower( (string) $k->getAttribute( 'class' ) );
+			// FEATURED signals — beyond a class keyword: a "Most Popular"/"Recommended" BADGE child (the
+			// canonical marker), OR a visually-elevated card (lifted `-translate-y`, scaled/ringed, or an
+			// ACCENT/brand-coloured border while the neutral plans use slate/gray). The badge also gives the
+			// ribbon text. Without this the source's mid plan (badge + brand border + `-translate-y-4`) was
+			// never marked featured, losing the whole highlighted-plan treatment.
 			$featured = preg_match( '/\b(featured|popular|recommended|highlight(ed)?|best|pro)\b/', $kcls ) ? 'yes' : 'no';
 			$ribbon   = '';
-			if ( 'yes' === $featured ) {
-				foreach ( $k->getElementsByTagName( '*' ) as $c ) {
+			foreach ( $k->getElementsByTagName( '*' ) as $c ) {
+				$ct = trim( preg_replace( '/\s+/', ' ', (string) self::text( $c ) ) );
+				if ( '' === $ct || mb_strlen( $ct ) > 24 ) { continue; }
+				if ( preg_match( '/^(most popular|popular|recommended|best(?: value| seller)?|featured)\b/i', $ct ) ) {
 					$cc = strtolower( (string) $c->getAttribute( 'class' ) );
-					if ( preg_match( '/\b(ribbon|badge|popular|tag|label)\b/', $cc ) && self::text( $c ) !== '' && mb_strlen( self::text( $c ) ) <= 24 ) { $ribbon = self::text( $c ); break; }
+					if ( preg_match( '/(?:^|\s)(?:absolute|rounded-full|uppercase|badge|ribbon|tag)\b|\bbg-/', $cc ) ) { $ribbon = $ct; $featured = 'yes'; break; }
 				}
 			}
+			if ( 'no' === $featured && preg_match( '/-translate-y-|(?:^|\s)scale-1[01]|\bring-\d|border-(?:brand|primary|accent|emerald|green|blue|indigo|purple)/', $kcls ) ) { $featured = 'yes'; }
 			$plans[] = array(
 				'title'    => $title,
 				'currency' => $price ? $price['currency'] : '$',
@@ -8637,7 +8927,141 @@ class FW_Site_Converter_Stitch {
 				'btn_url'   => $btn_url,
 			);
 		}
-		return count( $plans ) >= 2 ? array( 't' => 'pricing', 'plans' => $plans, 'design' => self::detect_pricing_design( $el ) ) : null;
+		// The plan cards' BOX skin (glass-card: dark fill + radius + border) → box_style on the pricing_table,
+		// so every plan keeps the source card look instead of the shortcode's default. Read from the first
+		// plan card (they share the skin). The brand ACCENT (check-mark / featured colour) rides along too.
+		$card_box = null;
+		foreach ( self::widget_children( $el ) as $k ) { $card_box = self::read_card_skin( $k ); if ( $card_box ) { break; } }
+		$accent = self::pricing_accent_color( $el );
+		$btn_outline_css = self::pricing_outline_button_css( $el );
+		$feat = self::pricing_feature_style( $el );
+		return count( $plans ) >= 2 ? array( 't' => 'pricing', 'plans' => $plans, 'design' => self::detect_pricing_design( $el ), 'cardBox' => $card_box, 'accent' => $accent, 'btnOutlineCss' => $btn_outline_css, 'feat' => $feat ) : null;
+	}
+
+	/** The FEATURE-LIST presentation read from the source's first feature `<li>`: text alignment
+	 *  (left/center/right), muted text colour, whether the list uses divider lines vs pure spacing, and the
+	 *  feature font-size. The shortcode defaults to centered + divider lines + `.94rem`; most sources are
+	 *  left-aligned, divider-less (Tailwind `space-y-*`), and a specific muted colour — so without this the
+	 *  converted list mis-matches on all three. Returns array( align, color, dividers, fontSize ). */
+	private static function pricing_feature_style( $el ) {
+		$out = array( 'align' => '', 'color' => '', 'dividers' => '', 'fontSize' => '' );
+		if ( ! ( $el instanceof DOMElement ) ) { return $out; }
+		$li = null; $ul = null;
+		foreach ( self::widget_children( $el ) as $k ) {
+			$u = $k->getElementsByTagName( 'ul' )->item( 0 );
+			if ( ! $u ) { $u = $k->getElementsByTagName( 'ol' )->item( 0 ); }
+			if ( $u ) {
+				$ul = $u;
+				foreach ( $u->getElementsByTagName( 'li' ) as $l ) { if ( '' !== self::text( $l ) ) { $li = $l; break; } }
+			}
+			if ( $li ) { break; }
+		}
+		if ( ! ( $li instanceof DOMElement ) ) { return $out; }
+		// Alignment — from the li's flex justification (Tailwind `justify-*`) or text-align. `normal`/`start`
+		// = flex-start = left; `center` = center; `flex-end`/`end`/`right` = right.
+		$jc = strtolower( self::sc_css( $li, 'justify-content' ) );
+		$ta = strtolower( self::sc_css( $li, 'text-align' ) );
+		if ( strpos( $jc, 'center' ) !== false || strpos( $ta, 'center' ) !== false ) {
+			$out['align'] = 'center';
+		} elseif ( strpos( $jc, 'end' ) !== false || $ta === 'right' || strpos( $ta, 'end' ) !== false ) {
+			$out['align'] = 'right';
+		} else {
+			$out['align'] = 'left';
+		}
+		// Muted feature colour + size come from the li's own computed style (its checkmark icon carries its
+		// own accent colour, so the li colour is the text colour).
+		$col = trim( self::sc_css( $li, 'color' ) );
+		if ( '' !== $col && stripos( $col, 'transparent' ) === false ) { $out['color'] = $col; }
+		$fs = trim( self::sc_css( $li, 'font-size' ) );
+		if ( '' !== $fs && preg_match( '/^\d/', $fs ) ) { $out['fontSize'] = $fs; }
+		// Dividers — `divide-y` on the ul or a `border-b/border-t` on the li means real divider lines;
+		// a `space-y-*`/`gap-*` list spaces via margins with NO line. Default '' (unknown) leaves the
+		// shortcode's own default in place.
+		$ulcls = strtolower( self::cls( $ul ) );
+		$licls = strtolower( self::cls( $li ) );
+		if ( preg_match( '/\bdivide-y\b/', $ulcls ) || preg_match( '/\bborder-[bt]\b/', $licls ) ) {
+			$out['dividers'] = 'yes';
+		} elseif ( preg_match( '/\bspace-y-\d/', $ulcls ) || preg_match( '/\bgap-\d/', $ulcls ) ) {
+			$out['dividers'] = 'no';
+		}
+		return $out;
+	}
+
+	/** When the NON-featured plan CTAs are OUTLINE buttons (bordered, unfilled — the source's common "outline
+	 *  base + a filled accent button on the featured plan"), return scoped custom_css that renders the
+	 *  non-featured plan buttons outline (`.fw-pt__plan:not(.is-featured) .fw-pt__btn`), carrying the source
+	 *  border colour + hover fill; the featured plan's own filled-accent button stays (featured_style
+	 *  accent_button). '' when the buttons aren't outline. */
+	private static function pricing_outline_button_css( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		$outline = 0; $solid = 0; $border = ''; $bw = '1px'; $hover_bg = '';
+		foreach ( self::widget_children( $el ) as $k ) {
+			$b = $k->getElementsByTagName( 'a' )->item( 0 );
+			if ( ! $b ) { $b = $k->getElementsByTagName( 'button' )->item( 0 ); }
+			if ( ! ( $b instanceof DOMElement ) ) { continue; }
+			$bcls = ' ' . strtolower( self::cls( $b ) ) . ' ';
+			$bg   = self::sc_css( $b, 'background-color' );
+			$bdw  = self::sc_css( $b, 'border-top-width' );
+			$filled   = ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba\([^)]*,\s*0\s*\)/', $bg ) );
+			$bordered = ( strpos( $bcls, 'border' ) !== false ) || ( $bdw !== '' && $bdw !== '0px' && $bdw !== '0' );
+			if ( $filled ) { $solid++; continue; }
+			if ( $bordered ) {
+				$outline++;
+				if ( '' === $border ) {
+					$bc = self::sc_css( $b, 'border-top-color' );
+					if ( $bc !== '' && stripos( $bc, 'transparent' ) === false ) { $border = $bc; }
+					if ( $bdw !== '' && $bdw !== '0px' ) { $bw = $bdw; }
+					if ( class_exists( 'FW_Site_Converter_Tailwind' ) && strpos( $bcls, 'hover:' ) !== false ) {
+						$c = FW_Site_Converter_Tailwind::compile_class_set( self::cls( $b ) );
+						if ( ! empty( $c['hover']['background-color'] ) ) { $hover_bg = trim( preg_replace( '#\s*/\s*var\([^)]*\)#', '', (string) $c['hover']['background-color'] ) ); }
+					}
+				}
+			}
+		}
+		if ( $outline <= $solid || '' === $border ) { return ''; }
+		$css = 'selector .fw-pt__plan:not(.is-featured) .fw-pt__btn{background:transparent;border:' . $bw . ' solid ' . $border . ';}';
+		if ( '' !== $hover_bg && stripos( $hover_bg, 'transparent' ) === false ) {
+			$css .= 'selector .fw-pt__plan:not(.is-featured) .fw-pt__btn:hover{background:' . $hover_bg . ';border-color:' . $hover_bg . ';}';
+		}
+		return $css;
+	}
+
+	/** The plan CTA button style — 'outline' when the NON-featured plans use bordered, unfilled buttons (the
+	 *  source's common "outline base + a filled accent button on the featured plan" pattern), else 'solid'.
+	 *  The featured plan's own accent-fill is handled by the featured_style `accent_button`. '' = leave default. */
+	private static function pricing_button_style( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		$outline = 0; $solid = 0;
+		foreach ( self::widget_children( $el ) as $k ) {
+			$b = $k->getElementsByTagName( 'a' )->item( 0 );
+			if ( ! $b ) { $b = $k->getElementsByTagName( 'button' )->item( 0 ); }
+			if ( ! ( $b instanceof DOMElement ) ) { continue; }
+			$bcls = ' ' . strtolower( self::cls( $b ) ) . ' ';
+			$bg   = self::sc_css( $b, 'background-color' );
+			$bw   = self::sc_css( $b, 'border-top-width' );
+			$filled   = ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba\([^)]*,\s*0\s*\)/', $bg ) );
+			$bordered = ( strpos( $bcls, 'border' ) !== false ) || ( $bw !== '' && $bw !== '0px' && $bw !== '0' );
+			if ( $filled ) { $solid++; } elseif ( $bordered ) { $outline++; }
+		}
+		return ( $outline > $solid ) ? 'outline' : ( $solid > 0 ? 'solid' : '' );
+	}
+
+	/** The pricing table's brand ACCENT colour — the check-mark / `text-brand` glyph colour, else a filled
+	 *  CTA button's saturated background. '' when none. Feeds the pricing_table accent_color option. */
+	private static function pricing_accent_color( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		foreach ( $el->getElementsByTagName( '*' ) as $c ) {
+			$cl = ' ' . strtolower( self::cls( $c ) ) . ' ';
+			if ( strpos( $cl, 'text-brand' ) !== false || strpos( $cl, 'text-primary' ) !== false || strpos( $cl, 'text-accent' ) !== false ) {
+				$col = self::sc_css( $c, 'color' );
+				if ( $col !== '' && preg_match( '/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/', $col, $m ) && ( max( $m[1], $m[2], $m[3] ) - min( $m[1], $m[2], $m[3] ) ) > 40 ) { return $col; }
+			}
+		}
+		foreach ( $el->getElementsByTagName( 'a' ) as $a ) {
+			$bg = self::sc_css( $a, 'background-color' );
+			if ( $bg !== '' && preg_match( '/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/', $bg, $m ) && ( max( $m[1], $m[2], $m[3] ) - min( $m[1], $m[2], $m[3] ) ) > 40 && max( $m[1], $m[2], $m[3] ) < 245 ) { return $bg; }
+		}
+		return '';
 	}
 
 	/**
@@ -9479,12 +9903,27 @@ class FW_Site_Converter_Stitch {
 		$has_border = $bw !== '' && ! in_array( $bw, array( '0', '0px' ), true ) && $bc !== '' && ! preg_match( '/rgba?\([^)]*,\s*0\s*\)/', $bc );
 		$rounded    = ( $radius !== '' && $radius !== '0px' ) || (bool) preg_match( '/\brounded(?:-[a-z0-9]+)?\b/', $cls );
 		if ( ! $rounded || ( ! $has_fill && ! $has_border ) ) { return null; }
+		// HOVER state — the card's `hover:bg-*` / `hover:border-*` / `hover:shadow-*` (e.g. a glass card's
+		// `hover:bg-slate-800/80`) compiled via the Tailwind engine, so the source's card hover survives onto
+		// the Box Preset's hover state (the register path previously dropped it). Mirrors build_box_presets().
+		$hover = array();
+		if ( strpos( $cls, 'hover:' ) !== false && class_exists( 'FW_Site_Converter_Tailwind' ) ) {
+			$comp = FW_Site_Converter_Tailwind::compile_class_set( self::cls( $node ) );
+			$hb   = ( isset( $comp['hover'] ) && is_array( $comp['hover'] ) ) ? $comp['hover'] : array();
+			$strip = function ( $v ) { return trim( preg_replace( '#\s*/\s*var\([^)]*\)#', '', (string) $v ) ); };
+			if ( ! empty( $hb['background-color'] ) ) { $hbg = $strip( $hb['background-color'] ); if ( $hbg !== '' && stripos( $hbg, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*,\s*0\s*\)/', $hbg ) ) { $hover['bg'] = $hbg; } }
+			if ( ! empty( $hb['border-color'] ) )     { $hbd = $strip( $hb['border-color'] ); if ( $hbd !== '' ) { $hover['bd'] = $hbd; } }
+			if ( ! empty( $hb['box-shadow'] ) && stripos( (string) $hb['box-shadow'], 'none' ) === false && preg_match( '/[1-9]/', (string) $hb['box-shadow'] ) && ! preg_match( '/^\s*rgba\([^)]*,\s*0\s*\)\s+0px\s+0px/', (string) $hb['box-shadow'] ) ) { $hover['shadow'] = (string) $hb['box-shadow']; }
+			if ( preg_match( '/hover:-?translate-y-(?:\[[^\]]+\]|[0-9.]+)/', $cls ) ) { $hover['lift'] = true; }
+			if ( preg_match( '/hover:scale-(\d+)/', $cls, $sm ) ) { $hover['scale'] = (int) $sm[1] / 100; }
+		}
 		return array(
 			'bg'          => $has_fill ? $bg : '',
 			'radius'      => $radius,
 			'borderW'     => $has_border ? $bw : '',
 			'borderColor' => $has_border ? $bc : '',
 			'padding'     => ( preg_match( '/^[0-9.]+px$/', (string) $pad ) ? $pad : '' ),
+			'hover'       => $hover,
 		);
 	}
 
@@ -10105,20 +10544,25 @@ class FW_Site_Converter_Stitch {
 					|| preg_match( '/\b(?:[a-z]{2}:)?aspect-/', $wc ) || preg_match( '/\b(?:[a-z]{2}:)?h-\[?[0-9]/', $wc ) ) { $cover++; }
 				if ( $t['el'] instanceof DOMElement && $t['el']->getElementsByTagName( 'p' )->length > 0 ) { $with_body++; }
 			}
-			$all_hover_caption = true;
+			// Every heading must sit inside an OVERLAY on the tile — an `absolute`/`fixed` layer over the cover
+			// image. This covers BOTH a hover-revealed caption (`opacity-0 group-hover:opacity-100`) AND an
+			// always-visible gradient caption (`absolute inset-0 bg-gradient-to-t …`, the openhero "Discovered
+			// Worlds" pattern). A content card never absolute-positions its heading over the image, and the
+			// cover-dominant + no-body guards below keep a real card grid out — so the overlay signal alone is
+			// enough (the earlier opacity-0/group-hover requirement wrongly rejected always-on captions).
+			$all_overlay_caption = true;
 			foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
 				foreach ( $el->getElementsByTagName( $h ) as $hn ) {
-					$anc = $hn->parentNode; $is_hover = false;
+					$anc = $hn->parentNode; $is_overlay = false;
 					while ( $anc instanceof DOMElement && $anc !== $el ) {
 						$ac = ' ' . strtolower( self::cls( $anc ) ) . ' ';
-						if ( ( strpos( $ac, ' absolute ' ) !== false || strpos( $ac, ' fixed ' ) !== false )
-							&& ( strpos( $ac, 'opacity-0' ) !== false || strpos( $ac, 'group-hover' ) !== false ) ) { $is_hover = true; break; }
+						if ( strpos( $ac, ' absolute ' ) !== false || strpos( $ac, ' fixed ' ) !== false ) { $is_overlay = true; break; }
 						$anc = $anc->parentNode;
 					}
-					if ( ! $is_hover ) { $all_hover_caption = false; break 2; }
+					if ( ! $is_overlay ) { $all_overlay_caption = false; break 2; }
 				}
 			}
-			$photo_gallery = $all_hover_caption && ( $cover >= (int) ceil( $n * 0.7 ) ) && ( $with_body < (int) ceil( $n * 0.5 ) );
+			$photo_gallery = $all_overlay_caption && ( $cover >= (int) ceil( $n * 0.7 ) ) && ( $with_body < (int) ceil( $n * 0.5 ) );
 			if ( ! $photo_gallery ) { return false; }
 		}
 		$child_els = 0;
@@ -10344,8 +10788,23 @@ class FW_Site_Converter_Stitch {
 		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
 			if ( $el->getElementsByTagName( $h )->length > 0 ) { return false; }
 		}
-		// Classic: ≥2 <img> brand marks.
-		if ( $el->getElementsByTagName( 'img' )->length >= 2 ) { return true; }
+		// Classic: ≥2 <img> brand marks — but NOT a photo GALLERY. Logo marks are contained/small
+		// (`object-contain`, no cover fill); gallery tiles are `object-cover` cover photos filling their tile.
+		// Bowing to logo_strip on any ≥2-image container wrongly stole captioned photo galleries (they became
+		// loose media_image instead of a gallery), so require the images to be logo-like, not cover fills.
+		$imgs = $el->getElementsByTagName( 'img' );
+		if ( $imgs->length >= 2 ) {
+			$cover = 0;
+			foreach ( $imgs as $im ) {
+				$ic = ' ' . strtolower( self::cls( $im ) ) . ' ';
+				if ( strpos( $ic, 'object-cover' ) !== false || strpos( $ic, 'object-fill' ) !== false
+					|| ( strpos( $ic, 'w-full' ) !== false && strpos( $ic, 'h-full' ) !== false ) ) { $cover++; }
+			}
+			if ( $cover < (int) ceil( $imgs->length * 0.5 ) ) { return true; } // contained marks → a real logo strip
+			// else: cover-photo grid → not a logo strip; let image_grid claim it as a gallery.
+		}
+		// ≥2 BRAND icons (iconify simple-icons/logos, or fa-brands/si-/cib- classes) → a "trusted by" logo row.
+		if ( self::logo_strip_brand_icons( $el ) >= 2 ) { return true; }
 		// Inline-SVG / icon-font brand strip: ≥3 sibling items, each an icon + a short brand LABEL
 		// (`<span><svg/> Unity</span>` ×5 — the openhero/Tailwind "Trusted by" pattern). The label
 		// requirement separates a real logo row from a label-less social-icon row; the ≥3 count keeps a
@@ -10395,7 +10854,11 @@ class FW_Site_Converter_Stitch {
 		foreach ( $el->childNodes as $ch ) {
 			if ( XML_ELEMENT_NODE !== $ch->nodeType ) { continue; }
 			if ( ! in_array( strtolower( $ch->tagName ), array( 'span', 'div', 'a', 'li' ), true ) ) { continue; }
-			if ( ( $ch->getElementsByTagName( 'svg' )->length + $ch->getElementsByTagName( 'i' )->length ) < 1 ) { continue; }
+			// A brand mark = an inline <svg>, an icon-font <i>, OR an iconify web-component (<iconify-icon
+			// icon="simple-icons:unity">) — the last is how a Tailwind/React "trusted by" row carries brand
+			// logos, and it renders in shadow DOM so no <svg> survives the capture. Count it so is_logo_strip
+			// claims the row (else it fell to the feature_list recognizer with the marks stripped).
+			if ( ( $ch->getElementsByTagName( 'svg' )->length + $ch->getElementsByTagName( 'i' )->length + $ch->getElementsByTagName( 'iconify-icon' )->length ) < 1 ) { continue; }
 			if ( $ch->getElementsByTagName( 'button' )->length > 0 ) { continue; }
 			$txt = trim( preg_replace( '/\s+/', ' ', (string) self::text_no_icons( $ch ) ) );
 			$len = mb_strlen( $txt );
@@ -10431,13 +10894,33 @@ class FW_Site_Converter_Stitch {
 		}
 		// Inline-SVG / icon brand strip (no <img>): each sibling item's brand icon svg + its text label.
 		if ( empty( $out ) ) {
+			// The strip's text colour → tint iconify brand marks to match (a "trusted by" row on a dark hero is
+			// white/light; simple-icons default to black, which would vanish). Hex for the iconify ?color= param.
+			$strip_hex = self::color_to_hex( self::sc_css( $el, 'color' ) );
 			foreach ( $el->childNodes as $ch ) {
 				if ( XML_ELEMENT_NODE !== $ch->nodeType ) { continue; }
 				if ( ! in_array( strtolower( $ch->tagName ), array( 'span', 'div', 'a', 'li' ), true ) ) { continue; }
 				$sv   = $ch->getElementsByTagName( 'svg' )->item( 0 );
 				$svg  = ( $sv && $ch->ownerDocument ) ? self::strip_cs( trim( (string) $ch->ownerDocument->saveHTML( $sv ) ) ) : '';
 				$name = trim( preg_replace( '/\s+/', ' ', (string) self::text_no_icons( $ch ) ) );
-				if ( $svg === '' && $name === '' ) { continue; }
+				// No inline <svg> but an <iconify-icon icon="prefix:name"> (a React/Tailwind brand mark, rendered
+				// in shadow DOM so it never inlines) → the iconify SVG API gives a real, self-describing brand logo:
+				// https://api.iconify.design/<prefix>/<name>.svg[?color=<hex>]. Emitted as the logo image URL so the
+				// logo_grid renders an actual mark instead of a bare name (or a dropped feature_list item).
+				$icon_url = '';
+				if ( '' === $svg ) {
+					$ii = $ch->getElementsByTagName( 'iconify-icon' )->item( 0 );
+					if ( $ii instanceof DOMElement ) {
+						$icon = strtolower( trim( (string) $ii->getAttribute( 'icon' ) ) );
+						if ( preg_match( '#^([a-z0-9]+(?:-[a-z0-9]+)*):([a-z0-9]+(?:-[a-z0-9]+)*)$#', $icon, $mm ) ) {
+							// height=32 → the iconify API renders the SVG at 32px (its 16px default left logos tiny);
+							// the logo_grid still controls the on-page size via its own CSS.
+							$icon_url = 'https://api.iconify.design/' . $mm[1] . '/' . $mm[2] . '.svg?height=32';
+							if ( '' !== $strip_hex ) { $icon_url .= '&color=' . rawurlencode( $strip_hex ); }
+						}
+					}
+				}
+				if ( $svg === '' && $icon_url === '' && $name === '' ) { continue; }
 				$link = ''; $target = '_blank';
 				if ( strtolower( $ch->tagName ) === 'a' ) {
 					$link = trim( (string) $ch->getAttribute( 'href' ) );
@@ -10446,7 +10929,7 @@ class FW_Site_Converter_Stitch {
 					$a = $ch->getElementsByTagName( 'a' )->item( 0 );
 					if ( $a ) { $link = trim( (string) $a->getAttribute( 'href' ) ); }
 				}
-				$out[] = array( 'url' => '', 'name' => $name, 'link_url' => $link, 'link_target' => $target, 'svg' => $svg );
+				$out[] = array( 'url' => $icon_url, 'name' => $name, 'link_url' => $link, 'link_target' => $target, 'svg' => $svg );
 			}
 		}
 		return $out;
@@ -10459,7 +10942,25 @@ class FW_Site_Converter_Stitch {
 		$visual = 0;
 		foreach ( $logos as $l ) { if ( ! empty( $l['svg'] ) || ! empty( $l['url'] ) ) { $visual++; } }
 		if ( $visual >= 2 ) {
-			return array( 't' => 'logo_grid', 'role' => 'logo_grid', 'logos' => $logos );
+			// Carry the source strip's own treatment so the logo_grid matches it instead of the shortcode
+			// defaults: the inter-logo GAP (`gap-8` = 32px), the mark SIZE (the icons are 1em at the strip's
+			// font-size, e.g. `text-xl` = 20px — the 48px default made them oversized), the OPACITY dim
+			// (`opacity-70`), and GRAYSCALE.
+			$cls = ' ' . self::cls( $el ) . ' ';
+			$gap = '';
+			if ( preg_match( '/(?:^|\s)gap-(\d+)(?:\s|$)/', $cls, $gm ) ) { $gap = (string) ( (int) $gm[1] * 4 ); }
+			elseif ( ( $gc = self::sc_css( $el, 'gap' ) ) !== '' && preg_match( '/^([0-9.]+)px/', $gc, $gpm ) ) { $gap = (string) (int) round( (float) $gpm[1] ); }
+			$opacity = '';
+			if ( preg_match( '/(?:^|\s)opacity-(\d{1,3})(?:\s|$)/', $cls, $om ) ) { $opacity = rtrim( rtrim( sprintf( '%.2f', (int) $om[1] / 100 ), '0' ), '.' ); }
+			elseif ( ( $oc = self::sc_css( $el, 'opacity' ) ) !== '' && (float) $oc > 0 && (float) $oc < 1 ) { $opacity = (string) (float) $oc; }
+			$grayscale = ( strpos( $cls, ' grayscale ' ) !== false ) || ( stripos( self::sc_css( $el, 'filter' ), 'grayscale' ) !== false );
+			$isize = '';
+			foreach ( $el->getElementsByTagName( 'span' ) as $sp ) {
+				$fs = self::sc_css( $sp, 'font-size' );
+				if ( preg_match( '/^([0-9.]+)px$/', $fs, $fm ) ) { $isize = (string) (int) round( (float) $fm[1] * 1.2 ); break; }
+			}
+			return array( 't' => 'logo_grid', 'role' => 'logo_grid', 'logos' => $logos,
+				'gap' => $gap, 'opacity' => $opacity, 'grayscale' => $grayscale ? 'yes' : 'no', 'iconSize' => $isize );
 		}
 		// TEXT-only brand marquee (no logo images): logo_grid needs a visual mark, so emit the DEDUPED brand
 		// names as ONE centered inline row (a clean 'trusted by' line) instead of the raw marquee - which would
@@ -10764,21 +11265,58 @@ class FW_Site_Converter_Stitch {
 			// keeps the content instead of dropping it. Location = a short "City, ST"-ish 3rd candidate.
 			$position = isset( $cands[1] ) ? $cands[1] : '';
 			if ( isset( $cands[2] ) && preg_match( '/^[A-Za-z .\'-]+,\s*[A-Za-z]{2,}$/', $cands[2] ) ) { $position = trim( $position . ', ' . $cands[2], ', ' ); }
-			// A bordered "footer" row (mt-*/pt-*/border-t) holding a label + figure = a per-testimonial stat.
-			foreach ( self::el_children( $k ) as $foot ) {
-				$fc = ' ' . strtolower( self::cls( $foot ) ) . ' ';
-				if ( strpos( $fc, 'border-t' ) === false ) { continue; }
-				$ft = trim( preg_replace( '/\s+/', ' ', self::text( $foot ) ) );
-				if ( $ft !== '' && $ft !== $quote && mb_strlen( $ft ) <= 40 ) { $position = trim( $position . ' · ' . $ft, ' ·' ); }
-				break;
-			}
 			$rows[]   = array(
 				'quote' => $quote, 'image' => $image,
 				'name'  => isset( $cands[0] ) ? $cands[0] : '', 'position' => $position,
 				'rating' => self::testimonial_rating( $k ),
+				'extra'  => self::testimonial_extra( $k, $quote ), // per-testimonial stat/result rows (label + value)
 			);
 		}
 		return $rows;
+	}
+
+	/**
+	 * Per-testimonial EXTRA TEXTS — a bordered "footer" row (a `border-t` divider row) holding a stat/result
+	 * (e.g. a muted "Total savings" label over a bold "$14,200" figure, or a lone "40% more closes") →
+	 * an array of { label, value } rows for the testimonials shortcode's Extra Texts field. Prefers two
+	 * distinct leaf texts (label + value); else splits a single "Label $Figure" string on the figure; else
+	 * carries the whole line as a value-only row. Empty when the card has no footer stat.
+	 *
+	 * @param DOMElement $k     the testimonial card
+	 * @param string     $quote the card's quote (so the stat scan never re-captures the quote text)
+	 * @return array[] list of array( 'label' => string, 'value' => string )
+	 */
+	private static function testimonial_extra( $k, $quote ) {
+		$extra = array();
+		foreach ( self::el_children( $k ) as $foot ) {
+			$fc = ' ' . strtolower( self::cls( $foot ) ) . ' ';
+			if ( strpos( $fc, 'border-t' ) === false && strpos( $fc, 'border-top' ) === false ) { continue; }
+			// Collect the footer's distinct LEAF text runs (a muted label + an emphasized figure are separate
+			// elements in the common case) — order-preserving, deduped.
+			$parts = array();
+			foreach ( array( 'p', 'span', 'div', 'strong', 'b', 'dt', 'dd' ) as $tg ) {
+				foreach ( $foot->getElementsByTagName( $tg ) as $fe ) {
+					if ( $fe->getElementsByTagName( '*' )->length > 0 ) { continue; } // leaf only
+					$t = trim( preg_replace( '/\s+/', ' ', self::text( $fe ) ) );
+					if ( '' !== $t && $t !== $quote && mb_strlen( $t ) <= 60 && ! in_array( $t, $parts, true ) ) { $parts[] = $t; }
+				}
+			}
+			if ( count( $parts ) >= 2 ) {
+				$extra[] = array( 'label' => $parts[0], 'value' => $parts[1] );
+			} else {
+				$ft = trim( preg_replace( '/\s+/', ' ', self::text( $foot ) ) );
+				if ( '' !== $ft && $ft !== $quote && mb_strlen( $ft ) <= 60 ) {
+					// A single run — split "Total savings $14,200" / "…40% more closes" on the figure token.
+					if ( preg_match( '/^(.*?)\s*((?:[$€£]\s?[\d.,]+|\d[\d.,]*\s*%|\d[\d.,]+)\b.*)$/u', $ft, $m ) && trim( $m[1] ) !== '' ) {
+						$extra[] = array( 'label' => trim( $m[1] ), 'value' => trim( $m[2] ) );
+					} else {
+						$extra[] = array( 'label' => '', 'value' => $ft );
+					}
+				}
+			}
+			break; // one footer stat block per card
+		}
+		return $extra;
 	}
 
 	/** A SINGLE featured testimonial: a star rating (>=3 stars) PLUS a real quote (>=40 chars). The
@@ -10874,7 +11412,7 @@ class FW_Site_Converter_Stitch {
 			if ( strpos( $ac, ' uppercase ' ) !== false || stripos( $acs, 'text-transform:uppercase' ) !== false ) { $author_upper = true; }
 			if ( preg_match( '/letter-spacing:\s*([0-9.]+px)/i', $acs, $lm ) && $lm[1] !== '0px' ) { $author_ls = $lm[1]; }
 		}
-		return array( 'quote' => $quote, 'image' => $image, 'name' => $name, 'position' => $position, 'rating' => self::testimonial_rating( $el ), 'author_upper' => $author_upper, 'author_ls' => $author_ls );
+		return array( 'quote' => $quote, 'image' => $image, 'name' => $name, 'position' => $position, 'rating' => self::testimonial_rating( $el ), 'author_upper' => $author_upper, 'author_ls' => $author_ls, 'extra' => self::testimonial_extra( $el, $quote ) );
 	}
 
 	/**
@@ -11022,6 +11560,21 @@ class FW_Site_Converter_Stitch {
 		return null;
 	}
 
+	/** The FIRST descendant container that is an icon-text/feature list (icon+text rows) inside $cell, or
+	 *  null. Lets a card cell that wraps a nested feature list (icon + heading + description followed by a
+	 *  grid/flex of icon+text pills — e.g. modfii's "Loan Types Available" card) decompose into an icon_box
+	 *  HEADER + a native feature_list, instead of one icon_box that claims the card by its heading and DROPS
+	 *  the list. Excludes $cell itself (a bare list cell is the section-level icon_text_list recognizer's job). */
+	private static function cell_wraps_icon_text_list( $cell ) {
+		if ( ! ( $cell instanceof DOMElement ) || ! $cell->ownerDocument ) { return null; }
+		$xp = new DOMXPath( $cell->ownerDocument );
+		foreach ( $xp->query( './/*[self::div or self::ul or self::section]', $cell ) as $d ) {
+			if ( $d === $cell ) { continue; }
+			if ( self::is_icon_text_list( $d ) ) { return $d; }
+		}
+		return null;
+	}
+
 	/** The panel's OWN lead heading (the first h1-h4 that is NOT inside $exclude and not a counter label) →
 	 *  build_cell_items role blocks (title [+ following subtitle <p>]). Empty array when there's no such
 	 *  heading. Used to keep a stats-panel's title above its decomposed counter row. */
@@ -11146,6 +11699,35 @@ class FW_Site_Converter_Stitch {
 				}
 			}
 
+			// A card cell that WRAPS a feature/icon-text list (icon + heading + description, THEN a grid/flex
+			// of icon+text rows — e.g. modfii's "Loan Types Available" card) must NOT collapse into one
+			// icon_box: card_from_cell() claims it by its heading and DROPS the nested list. Decompose into the
+			// card's icon+title+desc as an icon_box HEADER + the list as a native feature_list below it. Same
+			// heading/content-preserving principle as the counter-panel + comparison-list deferrals above.
+			$flist = self::cell_wraps_icon_text_list( $cell );
+			if ( $flist !== null ) {
+				$flblock = self::icon_text_list_block( $flist );
+				if ( is_array( $flblock ) ) {
+					// Parse the HEADER card from the cell with the list subtree temporarily detached, so the
+					// icon_box's body text doesn't absorb the list labels; then restore the DOM.
+					$lparent = $flist->parentNode; $lnext = $flist->nextSibling;
+					if ( $lparent ) { $lparent->removeChild( $flist ); }
+					$hdr = self::card_from_cell( $cell );
+					if ( $lparent ) { $lparent->insertBefore( $flist, $lnext ); }
+					if ( $hdr ) {
+						$blocks = array( array( 't' => 'card', 'card' => $hdr ), $flblock );
+						$bcol   = array( 'cls' => '', 'wResp' => $wResp, 'blocks' => $blocks );
+						// The card's own box skin (bg/border/radius) → carried as cardBox so the mapper puts it on the
+						// COLUMN (a Box Preset on the inner wrapper), wrapping BOTH the icon_box header and the list —
+						// a multi-shortcode card must be boxed at the column, not on the icon_box alone.
+						$ccard = self::read_card_skin( $cell );
+						if ( $ccard ) { $bcol['cardBox'] = $ccard; }
+						$out[] = $bcol;
+						continue;
+					}
+				}
+			}
+
 			$card = self::card_from_cell( $cell );
 			$col  = array( 'cls' => '', 'wResp' => $wResp );
 			// A card cell that is a TINTED BOX (source `p-5 rounded-xl border bg-*/5`, e.g. the Problem /
@@ -11249,6 +11831,22 @@ class FW_Site_Converter_Stitch {
 			if ( preg_match( '/(?:^|;)\s*aspect-ratio:\s*([0-9.]+)\s*\/\s*([0-9.]+)/', $cs, $m ) ) { return $m[1] . '/' . $m[2]; }
 			if ( $n === $stop ) { break; }
 			$n = $n->parentNode;
+		}
+		return '';
+	}
+
+	/** The bottom margin (px) of an element from its data-sc-cs — reads `margin-bottom:` first, else parses the
+	 *  `margin` shorthand's bottom value (top right BOTTOM [left] / vertical horizontal / all). '' when none. */
+	private static function heading_margin_bottom( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*margin-bottom:\s*([0-9.]+px)/i', $cs, $m ) ) { return $m[1]; }
+		if ( preg_match( '/(?:^|;)\s*margin:\s*([^;]+)/i', $cs, $m ) ) {
+			$parts = preg_split( '/\s+/', trim( $m[1] ) );
+			$n = count( $parts );
+			if ( $n >= 3 ) { return $parts[2]; }  // top right BOTTOM [left]
+			if ( $n === 2 ) { return $parts[0]; } // vertical horizontal → bottom = vertical
+			if ( $n === 1 ) { return $parts[0]; } // all sides
 		}
 		return '';
 	}
@@ -11423,7 +12021,22 @@ class FW_Site_Converter_Stitch {
 		if ( $img_icon !== '' ) { $custom_icon = ''; $icon = ''; $lucide = ''; } // the SVG illustration is the icon → drop a decorative arrow svg
 		if ( $image && $icon === '' && $lucide === '' ) { $custom_icon = ''; $icon_cls = ''; } // photo wins; drop the decorative overlay svg
 
+		// A group-hover GRADIENT OVERLAY (`absolute inset-0 … opacity-0 group-hover:opacity-100`) that sheens
+		// the card on hover — captured so n_icon_box reproduces it as a ::before layer that fades in on hover
+		// (it would otherwise be dropped as a decorative absolute layer). The gradient comes from the computed
+		// background-image; the layer sits BELOW the card content.
+		$hover_overlay = '';
+		foreach ( $cell->getElementsByTagName( 'div' ) as $ov ) {
+			$ocls = ' ' . strtolower( self::cls( $ov ) ) . ' ';
+			if ( strpos( $ocls, ' absolute ' ) !== false && strpos( $ocls, 'inset-0' ) !== false
+				&& strpos( $ocls, 'opacity-0' ) !== false && strpos( $ocls, 'group-hover:opacity' ) !== false ) {
+				$ocs = (string) $ov->getAttribute( 'data-sc-cs' );
+				if ( preg_match( '/background-image:\s*((?:linear|radial|conic)-gradient\([^;]+\))/i', $ocs, $om ) ) { $hover_overlay = trim( $om[1] ); break; }
+			}
+		}
+
 		return array(
+			'hoverOverlay' => $hover_overlay, // group-hover gradient sheen → a ::before fade-in on the card
 			'icon'       => $icon,
 			'iconCls'    => $icon_cls,
 			'iconColor'  => $icon_color, // the icon's COMPUTED colour (authoritative — resolves custom text-* tokens)
@@ -11438,6 +12051,12 @@ class FW_Site_Converter_Stitch {
 			// no weight utility) carries its real weight ONLY in the computed style, so without this the imgbox
 			// title falls to the theme default (500) even when the source is 400. n_image_box re-asserts it.
 			'titleWeight' => ( $heading instanceof DOMElement ) ? self::sc_css( $heading, 'font-weight' ) : '',
+			// The card title's COMPUTED font-size + bottom margin (data-sc-cs). The icon_box title defaults to
+			// 1.25rem / .5rem-below; a source card title is often smaller (16px `font-semibold`, `mb-1` = 4px), so
+			// without these the converted title reads bigger + more spaced than the source. n_icon_box scopes both
+			// onto `.icon-box__title` (parity with the body font-size).
+			'titleFontSize'    => ( $heading instanceof DOMElement ) ? self::sc_css( $heading, 'font-size' ) : '',
+			'titleMarginBottom' => ( $heading instanceof DOMElement ) ? self::heading_margin_bottom( $heading ) : '',
 			'text'       => $body,
 			'bodyFontSize' => $body_fs, // description <p> computed font-size (e.g. 14px for source `text-sm`)
 			'bodyLineHeight' => $body_lh, // and its line-height → n_icon_box scopes both onto the content
@@ -11900,8 +12519,14 @@ class FW_Site_Converter_Stitch {
 		$hifi = array_key_exists( 'hifi_css', $input ) ? ! empty( $input['hifi_css'] ) : true;
 		// Source origin (from the bundle manifest) → lets the Mapper absolutize + INLINE relative /assets/*.svg
 		// icons & illustrations. Reset every build ('' when unknown, e.g. an HTML upload → graceful fallback).
+		// When the caller didn't pass a source_url (an HTML/bundle import with no explicit URL, e.g. a
+		// re-convert from a captured rendered.html), DERIVE the origin from the page's own head
+		// (canonical / og:url / base href). Without it, same-origin root-relative assets (a Vite-bundled
+		// partner-logo /assets/dvele-*.png) can't be absolutized, so they never reach media.json and 404.
+		$eff_source_url = isset( $input['source_url'] ) ? (string) $input['source_url'] : '';
+		if ( $eff_source_url === '' ) { $eff_source_url = self::derive_origin( (string) $screens[0]['html'] ); }
 		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_source_url' ) ) {
-			FW_Site_Converter_Mapper::set_source_url( isset( $input['source_url'] ) ? (string) $input['source_url'] : '' );
+			FW_Site_Converter_Mapper::set_source_url( $eff_source_url );
 		}
 		// "Map to WooCommerce" (default OFF): when the user ticked it, WooCommerce is active, AND the source
 		// actually reads as a store, the product-grid mapping emits WooCommerce shortcodes (a live [wc_products]
@@ -11975,6 +12600,14 @@ class FW_Site_Converter_Stitch {
 				$txt_presets = self::build_text_styles( (string) $screens[0]['html'] );
 				FW_Site_Converter_Mapper::set_text_presets( isset( $txt_presets['font_sizes'] ) ? $txt_presets['font_sizes'] : array() );
 			}
+		}
+		// "Add entrance animations" opt-in (Convert panel) → the mapper's sequential reveal-on-scroll pass.
+		// "Refine with AI" sub-option + the capture-service URL let the pass ask the local AI to re-pick
+		// each element's effect/timing on top of the deterministic base (non-destructive on any failure).
+		if ( property_exists( 'FW_Site_Converter_Mapper', 'entrance_anim' ) ) {
+			FW_Site_Converter_Mapper::$entrance_anim     = ! empty( $input['entrance_anim'] );
+			FW_Site_Converter_Mapper::$entrance_anim_ai  = ! empty( $input['entrance_anim_ai'] );
+			FW_Site_Converter_Mapper::$entrance_anim_svc = isset( $input['entrance_anim_svc'] ) ? (string) $input['entrance_anim_svc'] : '';
 		}
 		$pages = class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::build_pages( $mapping_all ) : array();
 		// CONVERSION DEBUG MAP — a post-pass over the built page tree recording, per builder node, what the
@@ -12868,6 +13501,7 @@ class FW_Site_Converter_Stitch {
 	private static function is_badge( $el ) {
 		$tag = strtolower( $el->tagName );
 		if ( ! in_array( $tag, array( 'div', 'span', 'a' ), true ) ) { return false; }
+		if ( 'a' === $tag && self::is_button( $el ) ) { return false; }
 		$cls = self::cls( $el );
 		if ( strpos( $cls, 'rounded-full' ) === false ) { return false; }
 		if ( strpos( $cls, 'inline-flex' ) === false && strpos( $cls, 'inline-block' ) === false && strpos( $cls, 'inline' ) === false ) { return false; }
@@ -13417,6 +14051,66 @@ class FW_Site_Converter_Stitch {
 		);
 	}
 
+	/**
+	 * The SCRIM overlay over a full-bleed background media element (video/image) — a full-bleed
+	 * (`absolute inset-0`) layer whose fill is a GRADIENT or a semi-transparent colour, sitting over the
+	 * media to darken it for text legibility. Walks up to the hero container and returns the STRONGEST scrim
+	 * (highest stop alpha wins, so a dark `from-slate-950/90` fade beats a faint `from-brand/10` tint). '' when
+	 * none. Mirrors the image-bg overlay scan; used to carry a video hero's scrim onto Background → Overlay.
+	 */
+	private static function media_bg_overlay( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		$root = $el;
+		for ( $i = 0; $i < 4 && $root->parentNode instanceof DOMElement; $i++ ) { $root = $root->parentNode; }
+		$best = ''; $best_a = -1.0;
+		foreach ( $root->getElementsByTagName( '*' ) as $ov ) {
+			if ( ! ( $ov instanceof DOMElement ) || $ov === $el ) { continue; }
+			$ecls  = ' ' . strtolower( self::cls( $ov ) ) . ' ';
+			$bleed = ( ( strpos( $ecls, ' absolute ' ) !== false || strpos( $ecls, ' fixed ' ) !== false ) && strpos( $ecls, 'inset-0' ) !== false );
+			if ( ! $bleed ) { $pos = self::sc_css( $ov, 'position' ); if ( $pos !== 'absolute' && $pos !== 'fixed' ) { continue; } }
+			$cand = ''; $bgi = self::sc_css( $ov, 'background-image' );
+			if ( $bgi !== '' && stripos( $bgi, 'gradient' ) !== false && stripos( $bgi, 'url(' ) === false ) { $cand = $bgi; }
+			else { $bgc = self::sc_css( $ov, 'background-color' ); if ( $bgc !== '' && preg_match( '/rgba\([^)]*,\s*0?\.\d+\s*\)/i', $bgc ) ) { $cand = $bgc; } }
+			if ( $cand === '' ) { continue; }
+			// Strength = the max stop alpha (opaque stops count as 1). A 0.9 dark fade beats a 0.1 tint.
+			$a = 0.0;
+			if ( preg_match_all( '/rgba?\([^)]*?(?:,\s*|\/\s*)([01]?\.?\d+)\s*\)/i', $cand, $am ) ) { foreach ( $am[1] as $av ) { $a = max( $a, (float) $av ); } }
+			else { $a = 1.0; }
+			if ( $a > $best_a ) { $best_a = $a; $best = $cand; }
+		}
+		return $best;
+	}
+
+	/** A background-media hero's viewport HEIGHT — `min-h-screen`/`h-screen` (→100vh) or a computed vh
+	 *  min-height >=60vh on an ancestor. '' when the hero isn't viewport-tall (keeps the default frame). */
+	private static function media_hero_height( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		$a = $el;
+		for ( $i = 0; $i < 5 && ( $a instanceof DOMElement ); $i++ ) {
+			$cls = self::cls( $a );
+			if ( preg_match( '/(?:^|\s)(?:min-h-screen|h-screen)(?:\s|$)/', $cls ) ) { return '100vh'; }
+			$cs = (string) $a->getAttribute( 'data-sc-cs' );
+			if ( preg_match( '/(?:^|;)\s*min-height:\s*([0-9.]+)(?:vh|dvh|svh)/', $cs, $m ) && (float) $m[1] >= 60 ) { return $m[1] . 'vh'; }
+			$a = $a->parentNode;
+		}
+		return '';
+	}
+
+	/** A background-media hero's vertical content placement — from an ancestor's flex justify (justify-center
+	 *  → middle, justify-end → bottom, justify-start → top). Defaults to middle. */
+	private static function media_hero_valign( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return 'middle'; }
+		$a = $el;
+		for ( $i = 0; $i < 5 && ( $a instanceof DOMElement ); $i++ ) {
+			$cls = ' ' . self::cls( $a ) . ' ';
+			if ( strpos( $cls, ' justify-center ' ) !== false ) { return 'middle'; }
+			if ( strpos( $cls, ' justify-end ' ) !== false )    { return 'bottom'; }
+			if ( strpos( $cls, ' justify-start ' ) !== false )  { return 'top'; }
+			$a = $a->parentNode;
+		}
+		return 'middle';
+	}
+
 	private static function clean_inline_html( $el ) {
 		if ( ! $el->ownerDocument ) { return self::text( $el ); }
 		$clone = $el->cloneNode( true );
@@ -13490,6 +14184,22 @@ class FW_Site_Converter_Stitch {
 				if ( $hx !== '' ) { $color_inline = 'color:' . $hx; }
 			}
 		}
+		// A GRADIENT-TEXT span (`<span class="text-gradient">worlds.</span>` → `background-image:linear-gradient
+		// (...);background-clip:text;-webkit-text-fill-color:transparent`). The class is dead on the body, so
+		// capture the computed gradient NOW (before class + data-sc-cs are scrubbed) and re-express it inline,
+		// so a hero title's gradient word survives instead of flattening to the heading's ink.
+		// Capture ONLY the gradient VALUE inline (wp_kses keeps background-image:linear-gradient but STRIPS
+		// background-clip/-webkit-text-fill-color, which would leave a solid gradient BOX). The clip + fill +
+		// display live in a global `.sc-gradtext` rule (see the shortcodes CSS) that kses can't touch, so the
+		// span renders as gradient TEXT. We tag the span with that class below.
+		$grad_bg = '';
+		if ( $node->hasAttribute( 'data-sc-cs' ) ) {
+			$gcs = (string) $node->getAttribute( 'data-sc-cs' );
+			if ( preg_match( '/background-clip:\s*text/i', $gcs )
+				&& preg_match( '/background-image:\s*((?:linear|radial|conic)-gradient\([^;]+\))/i', $gcs, $gm ) ) {
+				$grad_bg = trim( $gm[1] );
+			}
+		}
 		if ( $node->hasAttribute( 'class' ) ) {
 			// PRESERVE the source semantic COLOUR utilities (text-primary / text-secondary /
 			// text-foreground, and the SVG fill-primary/fill-secondary…). The Mapper's
@@ -13504,6 +14214,12 @@ class FW_Site_Converter_Stitch {
 			if ( $keep ) { $node->setAttribute( 'class', implode( ' ', array_unique( $keep ) ) ); }
 			else { $node->removeAttribute( 'class' ); }
 		}
+		// Tag a gradient-text span with the global `.sc-gradtext` class (kses keeps class attrs) so the
+		// clip-to-text rule applies; the gradient value rides inline (below), which kses keeps.
+		if ( $grad_bg !== '' ) {
+			$cur_cls = trim( (string) $node->getAttribute( 'class' ) );
+			$node->setAttribute( 'class', trim( $cur_cls . ' sc-gradtext' ) );
+		}
 		if ( $node->hasAttribute( 'style' ) ) { $node->removeAttribute( 'style' ); }
 		// Drop the capture-only computed-style attribute at the DOM level — it must NEVER reach stored
 		// content. (strip_cs's serialized-HTML regex missed SINGLE-quoted values, which occur when the value
@@ -13514,6 +14230,7 @@ class FW_Site_Converter_Stitch {
 		$style_bits = array();
 		if ( $want_italic )        { $style_bits[] = 'font-style:italic'; }
 		if ( $color_inline !== '' ) { $style_bits[] = $color_inline; }
+		if ( $grad_bg !== '' )      { $style_bits[] = 'background-image:' . $grad_bg; } // .sc-gradtext class clips it to text
 		if ( $style_bits ) { $node->setAttribute( 'style', implode( ';', $style_bits ) ); }
 		foreach ( self::el_children( $node ) as $c ) { self::scrub( $c ); }
 	}
@@ -13607,7 +14324,9 @@ class FW_Site_Converter_Stitch {
 	/** First defined color among $keys → its hex. */
 	private static function token_color( array $tokens, array $keys ) {
 		foreach ( $keys as $k ) {
-			if ( isset( $tokens['colors'][ $k ] ) ) {
+			// Skip an ARRAY-valued token (a nested shade map like `brand: { light, DEFAULT }`) — casting it to
+			// string is a PHP "Array to string conversion" warning and yields nothing usable anyway.
+			if ( isset( $tokens['colors'][ $k ] ) && ! is_array( $tokens['colors'][ $k ] ) ) {
 				$raw = (string) $tokens['colors'][ $k ];
 				$h   = self::norm_hex( $raw );
 				// norm_hex only accepts a HEX string — but token values are commonly `rgb()/rgba()` (a
@@ -13618,6 +14337,54 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 		return '';
+	}
+
+	/**
+	 * The theme ACCENT colour, chosen by CHROMA rather than by key order. A shadcn/Tailwind source often
+	 * defines `--accent` as a muted surface (a dark slate hover tone on a dark design), while the REAL accent
+	 * is the saturated brand / CTA colour (e.g. `bg-brand` green). token_color(accent, primary, brand, cta)
+	 * returned the muted surface first, so every green accent (icons, prices, links) resolved dark. Pick the
+	 * most saturated candidate instead, lightly downweighting near-black/near-white so a dark-but-tinted
+	 * surface can't beat a mid brand colour. Falls back to the ordered pick when every candidate is neutral.
+	 */
+	private static function accent_token_color( array $tokens ) {
+		$best = ''; $best_s = -1.0;
+		foreach ( array( 'brand', 'cta', 'accent', 'primary' ) as $k ) {
+			$hex = self::token_color( $tokens, array( $k ) );
+			if ( $hex === '' || ! preg_match( '/^#?([0-9a-f]{6})$/i', $hex, $m ) ) { continue; }
+			$r = hexdec( substr( $m[1], 0, 2 ) ); $g = hexdec( substr( $m[1], 2, 2 ) ); $b = hexdec( substr( $m[1], 4, 2 ) );
+			list( $h, $s, $l ) = self::rgb_to_hsl( array( $r, $g, $b ) );
+			$score = $s * ( 1 - abs( $l - 0.5 ) * 0.6 );
+			if ( $score > $best_s ) { $best_s = $score; $best = $hex; }
+		}
+		if ( $best === '' || $best_s < 0.12 ) { return self::token_color( $tokens, array( 'accent', 'primary', 'brand', 'cta' ) ); }
+		return $best;
+	}
+
+	/**
+	 * The BRAND accent from the primary CTA — the most reliable brand-colour source. A design’s accent is the
+	 * colour of its filled call-to-action buttons (`bg-brand` etc.), not a token (which on a shadcn source is a
+	 * muted surface) nor the most-saturated colour (which can be a gradient-text endpoint, e.g. a yellow). Scan
+	 * `<a>`/`<button>` computed backgrounds for a saturated, mid-lightness fill and take the most saturated.
+	 * Returns '' when no filled CTA exists (then the caller falls back to accent_token_color()).
+	 */
+	private static function brand_accent_color( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return ''; }
+		$best = ''; $best_s = -1.0;
+		foreach ( array( 'a', 'button' ) as $tag ) {
+			foreach ( $dom->getElementsByTagName( $tag ) as $el ) {
+				$cs = (string) $el->getAttribute( 'data-sc-cs' );
+				if ( ! preg_match( '/background-color:\s*(rgba?\([^;]+\)|#[0-9a-f]{3,8})/i', $cs, $m ) ) { continue; }
+				$hex = self::color_to_hex( $m[1] );
+				if ( $hex === '' || ! preg_match( '/^#?([0-9a-f]{6})$/i', $hex, $mm ) ) { continue; }
+				$r = hexdec( substr( $mm[1], 0, 2 ) ); $g = hexdec( substr( $mm[1], 2, 2 ) ); $b = hexdec( substr( $mm[1], 4, 2 ) );
+				list( $h, $s, $l ) = self::rgb_to_hsl( array( $r, $g, $b ) );
+				if ( $s < 0.30 || $l < 0.22 || $l > 0.78 ) { continue; } // a saturated, mid-lightness action colour
+				if ( $s > $best_s ) { $best_s = $s; $best = ( $hex[0] === '#' ? $hex : '#' . $hex ); }
+			}
+		}
+		return $best;
 	}
 
 	/** Pick (headline, body) font stacks from the fontFamily tokens. */

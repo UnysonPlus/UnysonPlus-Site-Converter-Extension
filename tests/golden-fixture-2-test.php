@@ -2,7 +2,7 @@
 /**
  * Golden-fixture-2 regression guard for the Site Converter deterministic (no-AI) path.
  *
- * A SECOND, structurally different fixture (a bakery / cupcake landing page — testimonials, a badge,
+ * A SECOND, structurally different fixture (a bakery / cupcake landing page — testimonials, CTA pills,
  * meaningful section ids, a pink palette) so detector changes are guarded by more than one site type.
  * Runs FW_Site_Converter_Sources::build_from_html() over tests/fixtures/golden-fixture-2.html and ASSERTS
  * the current known-good output: per-section css_id + shortcode set, the palette, the footer fill, and the
@@ -64,9 +64,9 @@ $expect = array(
 	array( 'section-1', 'special_heading,button,button,special_heading,text_block,special_heading,text_block,special_heading,media_image' ),
 	array( 'builder',   'special_heading,code_block,code_block' ),
 	array( 'flavors',   'special_heading,testimonials' ),
-	array( 'story',     'media_image,special_heading,text_block,code_block' ),
+	array( 'story',     'media_image,special_heading,text_block,icon_box,icon_box' ),
 	array( 'reviews',   'special_heading,testimonials' ),
-	array( 'section-6', 'special_heading,special_heading,badge,special_heading' ),
+	array( 'section-6', 'special_heading,text_block,button,text_block' ),
 );
 foreach ( $expect as $i => $e ) {
 	$s = $sections[ $i ] ?? array( 'css_id' => '(missing)', 'codes' => '(missing)' );
@@ -74,10 +74,13 @@ foreach ( $expect as $i => $e ) {
 	g2_eq( "section " . ( $i + 1 ) . " ({$e[0]}) shortcode set", $e[1], $s['codes'] );
 }
 
-echo "\n[2] Recognizer coverage (testimonials + badge + media)\n";
+echo "\n[2] Recognizer coverage (testimonials + CTA-not-badge + media)\n";
 $all_codes = implode( ',', array_map( fn( $s ) => $s['codes'], $sections ) );
 g2_eq( 'testimonials blocks (flavors + reviews)', 2, substr_count( $all_codes, 'testimonials' ) );
-g2( 'a badge block is present (section-6)', strpos( $all_codes, 'badge' ) !== false );
+// The section-6 pill `<a href="#builder" px-8 py-4 rounded-full>` is a CTA BUTTON, not a decorative
+// badge — is_badge() defers to is_button() for pill links, so it maps to `button` and the page has
+// no top-level badge chip. (Real chip badges here are product-card spans, absorbed by testimonials.)
+g2( 'section-6 CTA maps to a button (not a mislabeled badge)', strpos( $sections[5]['codes'], 'button' ) !== false && strpos( $all_codes, 'badge' ) === false );
 g2( 'a media_image block is present', strpos( $all_codes, 'media_image' ) !== false );
 
 echo "\n[3] Palette (the bakery pink is detected, not defaulted)\n";

@@ -511,7 +511,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	private function run_convert_file() {
 		// New generic field names, with back-compat for the old `fw_sc_stitch_*` names.
 		$action = ( ( $_POST['fw_sc_convert_action'] ?? $_POST['fw_sc_stitch_action'] ?? '' ) === 'download' ) ? 'download' : 'import';
-		$opts   = array( 'dynamic_chrome' => true, 'hifi_css' => self::sc_hifi_opt(), 'map_woocommerce' => self::sc_wc_opt() ); // faithful source look + EDITABLE chrome + hi-fi base + optional WooCommerce mapping
+		$opts   = array( 'dynamic_chrome' => true, 'hifi_css' => self::sc_hifi_opt(), 'map_woocommerce' => self::sc_wc_opt(), 'entrance_anim' => self::sc_anim_opt(), 'entrance_anim_ai' => self::sc_anim_ai_opt(), 'entrance_anim_svc' => self::sc_anim_svc() ); // faithful source look + EDITABLE chrome + hi-fi base + optional WooCommerce mapping + optional (AI-refined) entrance animations
 		if ( isset( $_POST['opt_homepage'] ) ) { $opts['set_as_homepage'] = ( $_POST['opt_homepage'] === '1' || $_POST['opt_homepage'] === 'true' ); } // "Set as homepage" checkbox (absent = infer from the source URL path)
 		$html   = (string) wp_unslash( $_POST['fw_sc_file_html'] ?? $_POST['fw_sc_stitch_html'] ?? '' );
 		$title  = sanitize_text_field( wp_unslash( $_POST['fw_sc_file_title'] ?? $_POST['fw_sc_stitch_title'] ?? 'Home' ) );
@@ -682,6 +682,15 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		}
 		if ( ! isset( $opts['hifi_css'] ) ) {
 			$opts['hifi_css'] = true; // high-fidelity faithful base ON by default (build_from_html → build_bundle reads it)
+		}
+		if ( ! isset( $opts['entrance_anim'] ) ) {
+			$opts['entrance_anim'] = self::sc_anim_opt(); // "Add entrance animations" checkbox (URL/dashboard flow); default OFF
+		}
+		if ( ! isset( $opts['entrance_anim_ai'] ) ) {
+			$opts['entrance_anim_ai'] = self::sc_anim_ai_opt(); // "Refine with AI" sub-option
+		}
+		if ( ! isset( $opts['entrance_anim_svc'] ) ) {
+			$opts['entrance_anim_svc'] = self::sc_anim_svc(); // capture-service URL for the AI round-trip
 		}
 
 		// Pre-rendered HTML (from the capture service's headless-Chrome render) may be supplied by the
@@ -1370,6 +1379,40 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	}
 
 	/**
+	 * "Replace existing site" reset: wipe the PREVIOUS conversion's DESIGN so the incoming one starts clean.
+	 *
+	 * Deletes every Unyson Theme-Settings option (the flat `fw_theme_settings_options` AND every per-theme
+	 * `fw_theme_settings_options:<id>` — Unyson namespaces settings under the TEMPLATE/parent theme id, e.g.
+	 * `:unysonplus`, which is where a converted site's chrome / header / footer / colours / box+badge+text
+	 * presets / design tokens actually live), drops the converter's cached theme-design + generated-theme
+	 * markers, and clears the regenerable CSS caches under uploads/unysonplus/css + asset-optimizer. The
+	 * import that runs right after re-populates Theme Settings from THIS source (or leaves clean theme
+	 * defaults where the source has no chrome). Deliberately does NOT delete pages, media, or child-theme
+	 * folders — only the design state that otherwise lingers between conversions of different sources.
+	 */
+	private function reset_converted_design() {
+		global $wpdb;
+		// Theme Settings (all namespaces) — the chrome / presets / tokens store.
+		$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name = 'fw_theme_settings_options' OR option_name LIKE 'fw_theme_settings_options:%'" ); // phpcs:ignore WordPress.DB
+		// Converter design caches (regenerable) — the last theme-design + generated-theme markers.
+		delete_option( 'fw_sc_last_theme_design' );
+		delete_option( 'fw_sc_last_generated_theme' );
+		delete_option( 'fw_theme_google_fonts_link' );
+		if ( function_exists( 'wp_cache_flush' ) ) { wp_cache_flush(); } // Unyson caches settings in-process.
+
+		// Regenerable CSS caches: uploads/unysonplus/{css,asset-optimizer} — preset/page/header-footer/combined.
+		if ( function_exists( 'fw_upw_uploads_dir' ) ) {
+			foreach ( array( 'css', 'asset-optimizer' ) as $sub ) {
+				$d = fw_upw_uploads_dir( $sub );
+				$path = is_array( $d ) && isset( $d['path'] ) ? (string) $d['path'] : '';
+				if ( $path !== '' && is_dir( $path ) ) {
+					foreach ( (array) glob( $path . '/*.css' ) as $f ) { @unlink( $f ); } // phpcs:ignore
+				}
+			}
+		}
+	}
+
+	/**
 	 * @internal
 	 * File-upload Convert, step 2 (BUILD): take the user's corrected mapping, rebuild the pages, fold
 	 * in the stashed design (theme + media), import everything, ACTIVATE the generated child theme, and
@@ -1419,7 +1462,39 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_source_url' ) ) {
 			FW_Site_Converter_Mapper::set_source_url( $this->resolve_source_url( $mapping, isset( $stash ) ? $stash : null ) );
 		}
+		// "Add entrance animations" (+ "Refine with AI") — this UNIFIED build path calls build_pages() directly
+		// (not build_from_html/build_bundle), so it must set the mapper's entrance flags itself from the posted
+		// checkboxes, or the sequential-reveal pass never runs (the "no animations on a real UI conversion" bug).
+		if ( property_exists( 'FW_Site_Converter_Mapper', 'entrance_anim' ) ) {
+			FW_Site_Converter_Mapper::$entrance_anim     = self::sc_anim_opt();
+			FW_Site_Converter_Mapper::$entrance_anim_ai  = self::sc_anim_ai_opt();
+			FW_Site_Converter_Mapper::$entrance_anim_svc = self::sc_anim_svc();
+		}
 		$pages = FW_Site_Converter_Mapper::build_pages( $mapping );
+
+		// HONOR the "Set as homepage" checkbox authoritatively. The JS still sends opt_homepage on this build
+		// request, but the reviewed mapping can lose the per-page front_page flag between prepare -> build
+		// (and for an INNER-page URL the flag was auto-off and only re-enabled by re-ticking the box, which
+		// never round-tripped into the mapping). So trust the checkbox here: '1'/'true' makes the primary
+		// converted page the site front page; '0' leaves the homepage untouched. Without this, checking the
+		// box on an inner-page URL silently created a new page but never pointed the homepage at it.
+		if ( $pages && isset( $_POST['opt_homepage'] ) ) {
+			$set_home = ( $_POST['opt_homepage'] === '1' || $_POST['opt_homepage'] === 'true' );
+			$pages[0]['front_page'] = $set_home;
+		}
+
+		// "REPLACE EXISTING SITE" — wipe the PREVIOUS conversion's design before importing this one, so nothing
+		// stale lingers (the classic symptom: converting a DIFFERENT site over an old one keeps the old chrome /
+		// footer / logo because the chrome-less or inner-page source never overwrote those Theme-Settings keys).
+		// Resets ALL Unyson Theme Settings namespaces (chrome, colours, presets, design tokens) to defaults +
+		// clears the converter's regenerable CSS caches; the import right below then writes THIS source's design
+		// on a clean base (or clean theme defaults where the source has no chrome). Opt-in only (default OFF);
+		// leaves pages, media, and generated child themes untouched. Also implies a homepage conversion.
+		$do_replace = isset( $_POST['opt_replace'] ) && ( $_POST['opt_replace'] === '1' || $_POST['opt_replace'] === 'true' );
+		if ( $do_replace ) {
+			$this->reset_converted_design();
+			if ( $pages ) { $pages[0]['front_page'] = true; }
+		}
 
 		// Fold the styling the mapper just registered (sc-btn / .box / btn-row) into the stashed child-theme
 		// CSS so those rules ship alongside the corrected pages.
@@ -1892,6 +1967,43 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	}
 
 	/**
+	 * Read the Convert panel's "Add entrance animations" checkbox (posted as opt_anim '1'/'0'). When on, the
+	 * mapper gives each section's content a deterministic, sequential reveal-on-scroll. Default OFF, so a
+	 * conversion is never animated unless the user asks. Threaded into the build via $opts['entrance_anim'].
+	 *
+	 * @return bool
+	 */
+	private static function sc_anim_opt() {
+		return isset( $_POST['opt_anim'] ) && ( $_POST['opt_anim'] === '1' || $_POST['opt_anim'] === 'true' );
+	}
+
+	/**
+	 * "Refine with AI" entrance-animation sub-option (opt_anim_ai '1'/'0'). Only meaningful when
+	 * sc_anim_opt() is on AND a capture-service URL is available; the mapper then asks the local AI to
+	 * re-pick each element's effect/timing on top of the deterministic base. Default OFF.
+	 *
+	 * @return bool
+	 */
+	private static function sc_anim_ai_opt() {
+		return self::sc_anim_opt()
+			&& isset( $_POST['opt_anim_ai'] ) && ( $_POST['opt_anim_ai'] === '1' || $_POST['opt_anim_ai'] === 'true' );
+	}
+
+	/**
+	 * The capture-service base URL for the entrance-animation AI refinement round-trip. Prefers the
+	 * dedicated opt_anim_svc field, falling back to the chrome-refine service URL the panel already posts.
+	 * Empty when the AI sub-option is off (so the mapper stays deterministic).
+	 *
+	 * @return string
+	 */
+	private static function sc_anim_svc() {
+		if ( ! self::sc_anim_ai_opt() ) { return ''; }
+		$svc = isset( $_POST['opt_anim_svc'] ) ? esc_url_raw( trim( (string) wp_unslash( $_POST['opt_anim_svc'] ) ) ) : '';
+		if ( '' === $svc && isset( $_POST['refine_chrome_svc'] ) ) { $svc = esc_url_raw( trim( (string) wp_unslash( $_POST['refine_chrome_svc'] ) ) ); }
+		return $svc;
+	}
+
+	/**
 	 * Sanitize a posted screenshot data string into a clean, verified base64 PNG payload (no data: prefix),
 	 * or '' when it isn't a real PNG. Strips any `data:image/...;base64,` prefix + whitespace, then validates
 	 * strict base64 that decodes to PNG-magic bytes. Used by the URL-conversion flow to carry the capture
@@ -2096,6 +2208,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		// icons & illustrations inline/absolutise instead of 404-ing (the recurring Need-Help/Why-image bug).
 		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_source_url' ) ) {
 			FW_Site_Converter_Mapper::set_source_url( $this->resolve_source_url( $mapping, isset( $stash ) ? $stash : null ) );
+		}
+		// "Add entrance animations" (+ "Refine with AI") — this UNIFIED build path calls build_pages() directly
+		// (not build_from_html/build_bundle), so it must set the mapper's entrance flags itself from the posted
+		// checkboxes, or the sequential-reveal pass never runs (the "no animations on a real UI conversion" bug).
+		if ( property_exists( 'FW_Site_Converter_Mapper', 'entrance_anim' ) ) {
+			FW_Site_Converter_Mapper::$entrance_anim     = self::sc_anim_opt();
+			FW_Site_Converter_Mapper::$entrance_anim_ai  = self::sc_anim_ai_opt();
+			FW_Site_Converter_Mapper::$entrance_anim_svc = self::sc_anim_svc();
 		}
 		$pages = FW_Site_Converter_Mapper::build_pages( $mapping );
 		if ( $grab_only ) {
@@ -2567,18 +2687,32 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				</div><!-- /#fw-sc-src-paste -->
 
 				<!-- Shared options (apply to whichever source is selected) -->
-				<p style="margin:.6em 0 .4em;font-size:13px;color:#3c434a">
-					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-theme" checked> <?php esc_html_e( 'Create child theme', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'off = grab content only', 'fw' ); ?>)</span></label>
-					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-header" checked> <?php esc_html_e( 'Capture header', 'fw' ); ?></label>
-					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-footer" checked> <?php esc_html_e( 'Capture footer', 'fw' ); ?></label>
-					<label style="margin-right:1.2em"><input type="checkbox" id="fw-sc-opt-media" checked> <?php esc_html_e( 'Import images', 'fw' ); ?></label>
-					<?php $upw_wc_active = class_exists( 'WooCommerce' ); ?>
-					<label style="margin-right:1.2em<?php echo $upw_wc_active ? '' : ';opacity:.55'; ?>" title="<?php echo esc_attr( $upw_wc_active ? __( 'When the source is a store, map its product grids to WooCommerce shortcodes (a live [wc_products] feed) instead of static image cards. Auto-ticked when the source is detected as WooCommerce.', 'fw' ) : __( 'Install & activate WooCommerce to enable this option.', 'fw' ) ); ?>"><input type="checkbox" id="fw-sc-opt-woocommerce"<?php echo $upw_wc_active ? '' : ' disabled'; ?>> <?php esc_html_e( 'Map to WooCommerce', 'fw' ); ?><?php if ( ! $upw_wc_active ) : ?> <span style="color:#646970">(<?php esc_html_e( 'WooCommerce not installed', 'fw' ); ?>)</span><?php endif; ?></label>
-						<label style="margin-right:1.2em" title="<?php echo esc_attr__( 'Make the converted page the site\'s homepage. Auto-ON for a root URL; auto-OFF for an inner page (e.g. /services), which becomes a NEW page under its own slug and leaves your homepage untouched.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-homepage" checked> <?php esc_html_e( 'Set as homepage', 'fw' ); ?></label>
-						<span style="display:block;color:#646970;font-size:12px;margin:.15em 0 .3em"><?php esc_html_e( 'Every conversion is high-fidelity: the source is mapped into the shortcode options and Theme Settings as fully as possible, with anything not mappable written to the child theme CSS as an editable, low-priority base (theme settings / presets still override).', 'fw' ); ?></span>
-						<span style="color:#646970;font-size:12px"><?php esc_html_e( 'Runtime-CSS builder exports (Google Stitch / Tailwind CDN, Lovable, v0) are rendered in a real browser automatically when the capture service is running — no option needed. A “source bundle” (.zip of already-rendered HTML + media) always converts offline.', 'fw' ); ?></span>
-						<span id="fw-sc-inner-hint" style="display:none;color:#8a6d00;font-size:12px;margin-top:.25em"><?php esc_html_e( 'Inner page detected — it will be imported as a NEW page (content only), your homepage and chrome untouched. Re-tick any option to override.', 'fw' ); ?></span>
-					</p>
+				<div class="fw-sc-opts" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.5em 1.8em;margin:.7em 0 .4em;font-size:13px;color:#3c434a">
+					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
+						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Capture', 'fw' ); ?></legend>
+						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-theme" checked> <?php esc_html_e( 'Create child theme', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'off = grab content only', 'fw' ); ?>)</span></label>
+						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-header" checked> <?php esc_html_e( 'Capture header', 'fw' ); ?></label>
+						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-footer" checked> <?php esc_html_e( 'Capture footer', 'fw' ); ?></label>
+						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-media" checked> <?php esc_html_e( 'Import images', 'fw' ); ?></label>
+						<?php $upw_wc_active = class_exists( 'WooCommerce' ); ?>
+						<label style="display:block;margin:.2em 0<?php echo $upw_wc_active ? '' : ';opacity:.55'; ?>" title="<?php echo esc_attr( $upw_wc_active ? __( 'When the source is a store, map its product grids to WooCommerce shortcodes (a live [wc_products] feed) instead of static image cards. Auto-ticked when the source is detected as WooCommerce.', 'fw' ) : __( 'Install & activate WooCommerce to enable this option.', 'fw' ) ); ?>"><input type="checkbox" id="fw-sc-opt-woocommerce"<?php echo $upw_wc_active ? '' : ' disabled'; ?>> <?php esc_html_e( 'Map to WooCommerce', 'fw' ); ?><?php if ( ! $upw_wc_active ) : ?> <span style="color:#646970">(<?php esc_html_e( 'not installed', 'fw' ); ?>)</span><?php endif; ?></label>
+					</fieldset>
+					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
+						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Destination', 'fw' ); ?></legend>
+						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Make the converted page your homepage. Auto-ON for a root URL; auto-OFF for an inner page (e.g. /services), which becomes a NEW page under its own slug and leaves your homepage untouched.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-homepage" checked> <?php esc_html_e( 'Set as homepage', 'fw' ); ?></label>
+						<label style="display:block;margin:.2em 0;color:#b32d2e" title="<?php echo esc_attr__( 'Wipe the PREVIOUS conversion first, then convert. Resets all Theme Settings (chrome / header / footer / colours / presets) back to defaults and clears the converter CSS caches, so nothing from an earlier converted site lingers. Use when converting a DIFFERENT site over this one. Leaves your pages, media library, and generated child themes in place. Off by default.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-replace"> <?php esc_html_e( 'Replace existing site', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'reset design first', 'fw' ); ?>)</span></label>
+					</fieldset>
+					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
+						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Enhancements', 'fw' ); ?></legend>
+						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Give the converted page tasteful entrance animations — the elements in each section reveal in sequence as you scroll to them (headings fade up first, then text, then cards cascade). Applied deterministically from each element role; nothing that should stay static is animated. Edit or remove any of them per element in the builder Animations tab afterward. Off by default.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-anim"> <?php esc_html_e( 'Add entrance animations', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'sequential reveal on scroll', 'fw' ); ?>)</span></label>
+						<label id="fw-sc-opt-anim-ai-wrap" style="display:block;margin:.2em 0 .2em 1.6em;opacity:.55" title="<?php echo esc_attr__( 'Refine the entrance animations with your LOCAL AI — it re-picks a fitting effect + timing per element on top of the deterministic base (e.g. a slide-up for a hero CTA, a soft zoom for a feature image). Requires the capture service running with an AI backend (a local model, Claude Code, or an API key). If the AI is unavailable it silently keeps the deterministic animations, so this never breaks a conversion.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-anim-ai" disabled> <?php esc_html_e( 'Refine with AI', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'local AI picks per-element effects', 'fw' ); ?>)</span></label>
+					</fieldset>
+				</div>
+				<p style="margin:.2em 0 .4em;font-size:12px;color:#646970">
+					<span style="display:block;margin-bottom:.25em"><?php esc_html_e( 'Every conversion is high-fidelity: the source is mapped into the shortcode options and Theme Settings as fully as possible, with anything not mappable written to the child theme CSS as an editable, low-priority base (theme settings / presets still override).', 'fw' ); ?></span>
+					<span style="display:block"><?php esc_html_e( 'Runtime-CSS builder exports (Google Stitch / Tailwind CDN, Lovable, v0) are rendered in a real browser automatically when the capture service is running — no option needed. A “source bundle” (.zip of already-rendered HTML + media) always converts offline.', 'fw' ); ?></span>
+					<span id="fw-sc-inner-hint" style="display:none;color:#8a6d00;margin-top:.25em"><?php esc_html_e( 'Inner page detected — it will be imported as a NEW page (content only), your homepage and chrome untouched. Re-tick any option to override.', 'fw' ); ?></span>
+				</p>
 					<script>
 					/* Inner-page awareness: a NON-root source URL (e.g. /services) auto-unchecks Set-as-homepage +
 					   chrome/child-theme so it imports as a new content-only page. A checkbox the user touched wins. */
@@ -2588,6 +2722,17 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						var ids = [ 'fw-sc-opt-homepage', 'fw-sc-opt-theme', 'fw-sc-opt-header', 'fw-sc-opt-footer' ];
 						var touched = {};
 						ids.forEach( function ( id ) { var el = document.getElementById( id ); if ( el ) { el.addEventListener( 'change', function () { touched[ id ] = true; } ); } } );
+						// "Replace existing site" is a full-site convert: when ticked, force the full-site options ON
+						// (create child theme + capture header/footer + set as homepage) and mark them TOUCHED, so the
+						// inner-page auto-unchecker can't turn them back off for a non-root URL like /api/preview.
+						( function () {
+							var rep = document.getElementById( 'fw-sc-opt-replace' );
+							if ( ! rep ) { return; }
+							rep.addEventListener( 'change', function () {
+								if ( ! rep.checked ) { return; }
+								ids.forEach( function ( id ) { var el = document.getElementById( id ); if ( el ) { el.checked = true; touched[ id ] = true; } } );
+							} );
+						} )();
 						function isInner( v ) { try { var pth = new URL( v ).pathname.replace( /^\/+|\/+$/g, '' ); return pth !== '' && ! /^(index\.[a-z0-9]+|home)$/i.test( pth ); } catch ( e ) { return false; } }
 						function apply() {
 							var inner = isInner( url.value );
@@ -2596,7 +2741,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						}
 						url.addEventListener( 'input', apply ); url.addEventListener( 'change', apply ); apply();
 					} )();
-					</script>
+					/* "Refine with AI" rides on "Add entrance animations": enabled only while the entrance box is ticked. */
+						( function () {
+							var base = document.getElementById( 'fw-sc-opt-anim' );
+							var ai   = document.getElementById( 'fw-sc-opt-anim-ai' );
+							var wrap = document.getElementById( 'fw-sc-opt-anim-ai-wrap' );
+							if ( ! base || ! ai ) { return; }
+							function sync() { ai.disabled = ! base.checked; if ( ! base.checked ) { ai.checked = false; } if ( wrap ) { wrap.style.opacity = base.checked ? '1' : '.55'; } }
+							base.addEventListener( 'change', sync ); sync();
+						} )();
+						</script>
 				<p style="margin:.2em 0 1.1em">
 					<label><input type="checkbox" id="fw-sc-ai"> <strong><?php esc_html_e( 'Use AI to refine the element mapping (Experimental)', 'fw' ); ?></strong></label>
 					<span id="fw-sc-ai-status" class="description" style="margin-left:.5em"></span>
@@ -2779,6 +2933,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						fd.append( 'opt_media',  optEl( 'fw-sc-opt-media' ) );
 						fd.append( 'opt_woocommerce', optEl( 'fw-sc-opt-woocommerce' ) );
 						fd.append( 'opt_homepage', optEl( 'fw-sc-opt-homepage' ) );
+						fd.append( 'opt_replace', ( function () { var e = document.getElementById( 'fw-sc-opt-replace' ); return e && e.checked ? '1' : '0'; } )() );
+						fd.append( 'opt_anim', ( function () { var e = document.getElementById( 'fw-sc-opt-anim' ); return e && e.checked ? '1' : '0'; } )() );
+						fd.append( 'opt_anim_ai', ( function () { var e = document.getElementById( 'fw-sc-opt-anim-ai' ); return e && e.checked && ! e.disabled ? '1' : '0'; } )() );
+						fd.append( 'opt_anim_svc', ( function () { var e = document.getElementById( 'fw-sc-opt-anim-ai' ); return ( e && e.checked && ! e.disabled && typeof svc === 'function' ) ? svc() : ''; } )() );
 						fd.append( 'opt_header', optEl( 'fw-sc-opt-header' ) );
 						fd.append( 'opt_footer', optEl( 'fw-sc-opt-footer' ) );
 						fd.append( 'opt_hifi',   optEl( 'fw-sc-opt-hifi' ) );
@@ -2805,7 +2963,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						var fd = new FormData();
 						fd.append( 'action', 'fw_sc_analyze_apply' ); fd.append( '_wpnonce', nonce ); fd.append( 'phase', 'design' );
 						fd.append( 'opt_theme', optEl( 'fw-sc-opt-theme' ) ); fd.append( 'opt_media', optEl( 'fw-sc-opt-media' ) );
-						fd.append( 'opt_header', optEl( 'fw-sc-opt-header' ) ); fd.append( 'opt_footer', optEl( 'fw-sc-opt-footer' ) ); fd.append( 'opt_woocommerce', optEl( 'fw-sc-opt-woocommerce' ) ); fd.append( 'opt_homepage', optEl( 'fw-sc-opt-homepage' ) );
+						fd.append( 'opt_header', optEl( 'fw-sc-opt-header' ) ); fd.append( 'opt_footer', optEl( 'fw-sc-opt-footer' ) ); fd.append( 'opt_woocommerce', optEl( 'fw-sc-opt-woocommerce' ) ); fd.append( 'opt_homepage', optEl( 'fw-sc-opt-homepage' ) ); fd.append( 'opt_replace', ( function () { var e = document.getElementById( 'fw-sc-opt-replace' ); return e && e.checked ? '1' : '0'; } )() ); fd.append( 'opt_anim', ( function () { var e = document.getElementById( 'fw-sc-opt-anim' ); return e && e.checked ? '1' : '0'; } )() ); fd.append( 'opt_anim_ai', ( function () { var e = document.getElementById( 'fw-sc-opt-anim-ai' ); return e && e.checked && ! e.disabled ? '1' : '0'; } )() ); fd.append( 'opt_anim_svc', ( function () { var e = document.getElementById( 'fw-sc-opt-anim-ai' ); return ( e && e.checked && ! e.disabled && typeof svc === 'function' ) ? svc() : ''; } )() );
 						fd.append( 'bundle', blob, 'convert-bundle.zip' );
 						return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } );
 					}
@@ -3339,7 +3497,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					fd.append( 'opt_homepage', optEl( 'fw-sc-opt-homepage' ) );
 					fd.append( 'opt_header', optEl( 'fw-sc-opt-header' ) );
 					fd.append( 'opt_footer', optEl( 'fw-sc-opt-footer' ) );
-					fd.append( 'bundle', blob, 'convert-bundle.zip' );
+									fd.append( 'opt_replace', ( function () { var e = document.getElementById( 'fw-sc-opt-replace' ); return e && e.checked ? '1' : '0'; } )() );
+					fd.append( 'opt_anim', ( function () { var e = document.getElementById( 'fw-sc-opt-anim' ); return e && e.checked ? '1' : '0'; } )() );
+					fd.append( 'opt_anim_ai', ( function () { var e = document.getElementById( 'fw-sc-opt-anim-ai' ); return e && e.checked && ! e.disabled ? '1' : '0'; } )() );
+					fd.append( 'opt_anim_svc', ( function () { var e = document.getElementById( 'fw-sc-opt-anim-ai' ); return ( e && e.checked && ! e.disabled && typeof svc === 'function' ) ? svc() : ''; } )() );
+						fd.append( 'bundle', blob, 'convert-bundle.zip' );
 					return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } );
 				}
 				function fail( err ) {
@@ -3454,7 +3616,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				<summary><span class="dashicons dashicons-admin-appearance"></span> <?php esc_html_e( 'Generate header &amp; footer theme', 'fw' ); ?></summary>
 				<div class="fw-sc-card-body">
 			<p class="description">
-				<?php esc_html_e( 'Reproduce the source site\'s header and footer DESIGN as a real WordPress theme — logo placement, nav, CTA, fonts, colors, footer layout and any carried CSS. Only stylings are copied: the logo is always your own (Site Logo → Site Title) and the footer brand is your Site Title, never the source\'s wording. The page builder + Unyson+ plugin still power everything else.', 'fw' ); ?>
+				<?php esc_html_e( 'Reproduce the source site header and footer DESIGN as a real WordPress theme — logo placement, nav, CTA, fonts, colors, footer layout and any carried CSS. Only stylings are copied: the logo is always your own (Site Logo → Site Title) and the footer brand is your Site Title, never the source\'s wording. The page builder + Unyson+ plugin still power everything else.', 'fw' ); ?>
 			</p>
 			<form method="post" action="">
 				<?php wp_nonce_field( self::NONCE ); ?>
@@ -3526,7 +3688,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							<p class="description"><?php esc_html_e( 'Collects images from <img>, srcset, CSS url(), and the page\'s social/favicon meta tags.', 'fw' ); ?></p>
 							<label style="display:block;margin:.5em 0 0">
 								<input type="checkbox" name="fw_sc_deep" value="1" checked>
-								<?php esc_html_e( 'Also mine the site\'s JavaScript bundle for images', 'fw' ); ?>
+								<?php esc_html_e( 'Also mine the site JavaScript bundle for images', 'fw' ); ?>
 							</label>
 							<p class="description"><?php esc_html_e( 'Needed for JS apps (React / Vite / Lovable / v0) where images are injected at runtime and never appear in the static HTML. Fetches the page\'s own script bundles and extracts image assets from them. Slightly slower.', 'fw' ); ?></p>
 
@@ -3549,7 +3711,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				<summary><span class="dashicons dashicons-art"></span> <?php esc_html_e( 'Import Styling Presets', 'fw' ); ?></summary>
 				<div class="fw-sc-card-body">
 			<p class="description">
-				<?php esc_html_e( 'Paste the presets JSON your agent produced (the presets.json / _fw_presets_export payload from the conversion contract). It writes the palette, font sizes, button colors, and spacing / gap scales into your site\'s Styling Presets in one step. Only known preset keys are applied — anything else is skipped.', 'fw' ); ?>
+				<?php esc_html_e( 'Paste the presets JSON your agent produced (the presets.json / _fw_presets_export payload from the conversion contract). It writes the palette, font sizes, button colors, and spacing / gap scales into your Styling Presets in one step. Only known preset keys are applied — anything else is skipped.', 'fw' ); ?>
 			</p>
 			<form method="post" action="">
 				<?php wp_nonce_field( self::NONCE ); ?>

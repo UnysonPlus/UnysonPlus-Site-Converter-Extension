@@ -347,7 +347,17 @@ class FW_Site_Converter_Bundle {
 				if ( is_string( $u ) && preg_match( '#^(https?://[^/]+)/#i', $u, $mm ) ) { $src_url = $mm[1]; break; }
 			}
 		}
-		$res     = FW_Site_Converter_Sources::build_from_html( $html, $title, array( 'dynamic_chrome' => true, 'hifi_css' => true, 'source_url' => $src_url ) );
+		// Carry the Convert panel's "Add entrance animations" (+ "Refine with AI") checkboxes into this
+		// re-convert — WITHOUT this, capture-service (URL) conversions re-run through the PHP engine here but
+		// with hardcoded opts, so the sequential-reveal pass never ran and the boxes appeared to do nothing.
+		$entrance     = isset( $_POST['opt_anim'] ) && ( $_POST['opt_anim'] === '1' || $_POST['opt_anim'] === 'true' ); // phpcs:ignore WordPress.Security.NonceVerification
+		$entrance_ai  = $entrance && isset( $_POST['opt_anim_ai'] ) && ( $_POST['opt_anim_ai'] === '1' || $_POST['opt_anim_ai'] === 'true' ); // phpcs:ignore WordPress.Security.NonceVerification
+		$entrance_svc = '';
+		if ( $entrance_ai ) {
+			$entrance_svc = isset( $_POST['opt_anim_svc'] ) ? esc_url_raw( trim( (string) wp_unslash( $_POST['opt_anim_svc'] ) ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+			if ( '' === $entrance_svc && isset( $_POST['refine_chrome_svc'] ) ) { $entrance_svc = esc_url_raw( trim( (string) wp_unslash( $_POST['refine_chrome_svc'] ) ) ); } // phpcs:ignore WordPress.Security.NonceVerification
+		}
+		$res     = FW_Site_Converter_Sources::build_from_html( $html, $title, array( 'dynamic_chrome' => true, 'hifi_css' => true, 'source_url' => $src_url, 'entrance_anim' => $entrance, 'entrance_anim_ai' => $entrance_ai, 'entrance_anim_svc' => $entrance_svc ) );
 		$files = ( is_array( $res ) && isset( $res['files'] ) && is_array( $res['files'] ) ) ? $res['files'] : array();
 		if ( empty( $files['pages.json'] ) ) { return; } // build produced nothing usable → leave the bundle as-is.
 
