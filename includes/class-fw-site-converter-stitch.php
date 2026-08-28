@@ -356,6 +356,45 @@ class FW_Site_Converter_Stitch {
 		return '';
 	}
 
+	/**
+	 * A source CUSTOM CURSOR (the site replaces the native pointer with a JS-followed element) → the shape +
+	 * colour to map onto the Animation Engine's Site-wide UX → Cursor. Signals: the page hides the native
+	 * cursor (`body/*{cursor:none}`) AND/OR a cursor element (id/class ~cursor / cur-dot / cursor-ring) AND/OR
+	 * `data-cursor` hover targets. Shape from the element's skin: a bordered circle = ring, a filled dot = dot,
+	 * both = dot_ring. Returns array( shape, color ) or null. Requires TWO signals to avoid false positives.
+	 */
+	private static function detect_custom_cursor( $html ) {
+		$html = (string) $html;
+		if ( '' === $html ) { return null; }
+		$css   = self::all_style_css( $html );
+		$hides = (bool) preg_match( '/(?:^|[}\s,;])(?:\*|body|html)\s*\{[^}]*cursor\s*:\s*none/i', $css )
+			|| (bool) preg_match( '/<(?:body|html)\b[^>]*data-sc-cs="[^"]*cursor:\s*none/i', $html );
+		$has_targets = ( substr_count( strtolower( $html ), 'data-cursor' ) >= 2 );
+		// The cursor element itself (fixed follower). Capture its computed style for the skin.
+		$el_cs = '';
+		if ( preg_match( '/<[a-z][a-z0-9]*\b[^>]*(?:id="[^"]*cursor[^"]*"|class="[^"]*\b(?:cursor|cur-dot|cursor-dot|cursor-ring|cursor-follower)\b[^"]*")[^>]*data-sc-cs="([^"]*)"/i', $html, $m ) ) {
+			$el_cs = $m[1];
+		}
+		$has_el = ( '' !== $el_cs )
+			|| (bool) preg_match( '/<[a-z][a-z0-9]*\b[^>]*(?:id="[^"]*cursor[^"]*"|class="[^"]*\b(?:cur-dot|cursor-dot|cursor-ring|cursor-follower)\b[^"]*")/i', $html );
+		// Need at least two independent signals (element + hides/targets) so a stray "cursor" word can't trigger it.
+		$signals = ( $has_el ? 1 : 0 ) + ( $hides ? 1 : 0 ) + ( $has_targets ? 1 : 0 );
+		if ( $signals < 2 || ! $has_el ) { return null; }
+		// Shape from the cursor element's skin: rounded + border (no fill) = ring; rounded + fill = dot; both = dot_ring.
+		$round      = (bool) preg_match( '/border-radius:\s*(?:50%|9999px|[0-9]{2,}px)/i', $el_cs );
+		$has_border = preg_match( '/border-(?:top-)?width:\s*[1-9]/i', $el_cs ) && ! preg_match( '/border-(?:top-)?style:\s*none/i', $el_cs );
+		$has_fill   = (bool) preg_match( '/background(?:-color)?:\s*(?!\s*(?:transparent|none|rgba?\([^)]*,\s*0\s*\)))[a-z#0-9]/i', $el_cs );
+		$shape = ( $has_border && $has_fill ) ? 'dot_ring' : ( $has_fill ? 'dot' : ( $round ? 'ring' : 'dot_ring' ) );
+		// Colour from the element's border-color, else its color.
+		$color = '';
+		if ( preg_match( '/border-(?:top-)?color:\s*(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $el_cs, $cm ) && ! preg_match( '/rgba?\([^)]*,\s*0\s*\)/', $cm[1] ) ) {
+			$color = $cm[1];
+		} elseif ( preg_match( '/(?<![-\w])color:\s*(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $el_cs, $cm ) ) {
+			$color = $cm[1];
+		}
+		return array( 'shape' => $shape, 'color' => self::color_to_hex( $color ) );
+	}
+
 	private static function detect_body_text( $html ) {
 		$vars = self::css_root_vars( $html );
 		$dom = self::load_dom( (string) $html );
@@ -3550,6 +3589,19 @@ class FW_Site_Converter_Stitch {
 			$typo['body']['color'] = $body_ink;
 		}
 		if ( ! empty( $typo ) ) { $values['typography'] = $typo; }
+
+		// CUSTOM CURSOR — the source replaces the native pointer with a JS-followed element → the Animation
+		// Engine's Site-wide UX → Cursor (`animation_cursor`). Map the shape (ring/dot/dot_ring) + colour; the
+		// importer auto-activates animation-engine (see the needs_extensions detection in build_bundle).
+		$cursor = self::detect_custom_cursor( (string) $html );
+		if ( is_array( $cursor ) && ! empty( $cursor['shape'] ) ) {
+			$ac = array(
+				'enable' => 'yes',
+				'style'  => array( 'shape' => (string) $cursor['shape'] ),
+			);
+			if ( ! empty( $cursor['color'] ) ) { $ac['color'] = array( 'predefined' => '', 'custom' => (string) $cursor['color'] ); }
+			$values['animation_cursor'] = $ac;
+		}
 
 		return array( 'values' => $values );
 	}
@@ -12860,6 +12912,11 @@ class FW_Site_Converter_Stitch {
 		if ( ! empty( $input['map_woocommerce'] ) && isset( $screens[0]['html'] )
 			&& class_exists( 'FW_Site_Converter_Sources' ) && FW_Site_Converter_Sources::is_woocommerce_source( (string) $screens[0]['html'] ) ) {
 			$needs[] = 'woocommerce';
+		}
+		// A mapped custom cursor (animation_cursor theme setting) renders via the Animation Engine. Detection-based
+		// (on the source html) so it's independent of the build_pages emit-flag reset.
+		if ( isset( $screens[0]['html'] ) && self::detect_custom_cursor( (string) $screens[0]['html'] ) ) {
+			$needs[] = 'animation-engine';
 		}
 		if ( $needs && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {
 			$files['theme-design.json']['needs_extensions'] = array_values( array_unique( $needs ) );
