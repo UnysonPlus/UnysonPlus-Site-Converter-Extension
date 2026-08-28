@@ -162,8 +162,9 @@ class FW_Site_Converter_Mapper {
 		// The hover fill also keys the slug, so two cards that differ ONLY in their hover state get distinct
 		// presets (else the first-registered hover would apply to both).
 		$hov = is_array( $cb['hover'] ?? null ) ? self::norm_box_color( (string) ( $cb['hover']['bg'] ?? '' ) ) . '|' . trim( (string) ( $cb['hover']['scale'] ?? '' ) ) : '';
+		$bdp = trim( (string) ( $cb['backdrop'] ?? '' ) ); // frosted-glass backdrop-filter keys the slug (only when present, so non-glass slugs stay stable)
 		if ( '' === $bg && '' === $bw && '' === $radius ) { return ''; } // nothing worth a preset (padding alone isn't a box)
-		return 'box-' . substr( md5( $bg . '|' . $radius . '|' . $bw . '|' . $bd . '|' . $pad . '|' . $hov ), 0, 8 );
+		return 'box-' . substr( md5( $bg . '|' . $radius . '|' . $bw . '|' . $bd . '|' . $pad . '|' . $hov . ( '' !== $bdp ? '|' . $bdp : '' ) ), 0, 8 );
 	}
 
 	/** Register a captured box skin as a Box Preset and return its `boxp-<slug>` (for a border_preset / box_style
@@ -190,6 +191,7 @@ class FW_Site_Converter_Mapper {
 			'bw'      => $bw,
 			'bd'      => ( '' !== $bw ) ? self::norm_box_color( (string) ( $cb['bd'] ?? $cb['borderColor'] ?? '' ) ) : '',
 			'padding' => trim( (string) ( $cb['padding'] ?? '' ) ), // the card's inner padding → the preset owns it (pads the whole card, incl. a decomposed feature_list)
+			'backdrop' => trim( (string) ( $cb['backdrop'] ?? '' ) ), // frosted-glass backdrop-filter (blur) → emitted in the preset CSS
 			'hover'   => $hover, // hover state (fill/border/shadow/lift/scale) so the card's hover survives
 		) );
 		return 'boxp-' . $slug;
@@ -2046,6 +2048,14 @@ class FW_Site_Converter_Mapper {
 		// A verbatim block can carry an `<img src=*.svg>` (e.g. a centered illustration) — WordPress can't
 		// host SVG, so inline it as sanitised <svg> here so it renders instead of 404-ing.
 		$html = self::inline_svg_imgs( $html );
+		// Absolutise any RELATIVE non-SVG `<img src>` (webp/png/jpg…) against the source origin, so a
+		// verbatim/decorative block's images resolve — they hotlink at 200, or get rewritten to the
+		// sideloaded media URL on import — instead of 404-ing as a bare relative `assets/…` path.
+		$html = preg_replace_callback( '/(<img\b[^>]*\bsrc\s*=\s*")([^"]+)(")/i', function ( $m ) {
+			$src = trim( $m[2] );
+			if ( '' === $src || preg_match( '#^(?:https?:)?//#i', $src ) || 0 === strpos( $src, 'data:' ) || preg_match( '/\.svg(?:$|\?)/i', $src ) ) { return $m[0]; }
+			return $m[1] . self::abs_asset( $src ) . $m[3];
+		}, $html );
 		// Make Tailwind responsive show/hide (hidden / lg:block / lg:hidden …) actually work in verbatim HTML,
 		// so a desktop/mobile variant pair doesn't render duplicated (once-per-build CSS shim, scoped to .sc-tw).
 		$html = self::maybe_rwd_shim( $html );
@@ -3989,6 +3999,15 @@ class FW_Site_Converter_Mapper {
 			$chip = FW_Site_Converter_Tailwind::compile_class_set( (string) $card['iconChipCls'], self::$style_cfg );
 			$bg   = isset( $chip['base']['background-color'] ) ? (string) $chip['base']['background-color'] : '';
 			$bg   = trim( preg_replace( '/\s*\/\s*var\([^)]*\)/', '', $bg ) ); // drop the `/ var(--tw-bg-opacity,1)` alpha channel
+			// A TINT badge (`bg-primary/10`) uses a SOFT fill, not a solid one. Stripping the opacity above
+			// turned the 10% tint into a solid circle (opaque fill + white icon) — the wrong look. Re-apply the
+			// `/NN` opacity from the chip class so the badge renders as the source's tint (icon stays coloured).
+			if ( '' !== $bg && preg_match( '/\bbg-[a-z0-9-]+\/(\d{1,3})\b/', (string) $card['iconChipCls'], $om ) ) {
+				$alpha = max( 0, min( 100, (int) $om[1] ) ) / 100;
+				if ( $alpha > 0 && $alpha < 1 && preg_match( '/(\d+)\D+(\d+)\D+(\d+)/', $bg, $rm ) ) {
+					$bg = sprintf( 'rgba(%d, %d, %d, %s)', (int) $rm[1], (int) $rm[2], (int) $rm[3], rtrim( rtrim( sprintf( '%.2f', $alpha ), '0' ), '.' ) );
+				}
+			}
 			if ( '' !== $bg && 'transparent' !== $bg && ! preg_match( '/rgba\([^)]*,\s*0?\.?0*\)$/', $bg ) ) {
 				$card['iconBadgeColor'] = $bg;
 				$rad = isset( $chip['base']['border-radius'] ) ? (float) $chip['base']['border-radius'] : 0;
@@ -4499,6 +4518,41 @@ class FW_Site_Converter_Mapper {
 			}
 			return substr( $whole, 0, -1 ) . ' style="' . $decl . '">';
 		}, $html );
+	}
+
+	/**
+	 * Pull the gradient VALUE out of a title/subtitle's `.sc-gradtext` span(s) so the stored markup is the
+	 * clean `<span class="sc-gradtext">…</span>` (readable in the option field), and return the gradient as a
+	 * scoped `selector .sc-gradtext{background-image:…}` rule for the heading's custom_css. Modifies $html in
+	 * place (strips the inline `background-image`, keeping any other inline style + the class). Returns '' when
+	 * there is no gradient span, or when a SINGLE heading mixes DISTINCT gradients — then the values stay inline
+	 * (one scoped rule can't carry two different gradients), so nothing regresses.
+	 */
+	private static function extract_gradtext_css( &$html ) {
+		$html = (string) $html;
+		if ( '' === $html || false === stripos( $html, 'sc-gradtext' ) ) { return ''; }
+		$grads = array();
+		if ( preg_match_all( '/<span\b[^>]*\bsc-gradtext\b[^>]*>/i', $html, $tags ) ) {
+			foreach ( $tags[0] as $tag ) {
+				if ( preg_match( '/background-image:\s*((?:linear|radial|conic)-gradient\([^;"]+\))/i', $tag, $g ) ) {
+					$grads[] = trim( $g[1] );
+				}
+			}
+		}
+		$grads = array_values( array_unique( $grads ) );
+		if ( count( $grads ) !== 1 ) { return ''; } // 0 (nothing inline) or 2+ distinct → leave the markup as-is
+		$grad = $grads[0];
+		// Strip the inline background-image from every sc-gradtext span (keep other decls + the class).
+		$html = preg_replace_callback( '/<span\b[^>]*\bsc-gradtext\b[^>]*>/i', function ( $m ) {
+			return preg_replace_callback( '/\bstyle="([^"]*)"/i', function ( $sm ) {
+				$decls = array_filter( array_map( 'trim', explode( ';', $sm[1] ) ), function ( $d ) {
+					return '' !== $d && ! preg_match( '/^background-image\s*:/i', $d );
+				} );
+				return $decls ? 'style="' . implode( ';', $decls ) . '"' : '';
+			}, $m[0] );
+		}, $html );
+		$html = preg_replace( '/\s+>/', '>', preg_replace( '/\s{2,}/', ' ', $html ) ); // tidy the leftover space
+		return 'selector .sc-gradtext{background-image:' . $grad . ';}';
 	}
 
 	/** rgb()/rgba()/#hex colour string → #rrggbb (or '' if unparseable). Mapper-local (stitch has its own). */
@@ -5541,6 +5595,14 @@ class FW_Site_Converter_Mapper {
 		$overline_type_css = self::overline_typography_css( $h );
 		$kept_all = trim( $overline_class . ' ' . $title_class . ' ' . $subtitle_class . ' ' . self::keep_classes( $layout['css_class'] ?? '' ) . ' ' . implode( ' ', $measures['tokens'] ) . ' ' . implode( ' ', self::overline_kept_tokens( $h ) ) );
 		self::conv_debug_record( $uid, $src_all, self::conv_dropped_diff( $src_all, $kept_all ) );
+		// GRADIENT TEXT — keep the Title/Subtitle markup clean (`<span class="sc-gradtext">…</span>`) for a
+		// readable option field; the gradient VALUE moves OUT of the inline style into the heading's own scoped
+		// custom_css (`selector .sc-gradtext{background-image:…}`). Each heading keeps its own gradient, and a
+		// non-technical editor no longer sees a giant inline `background-image:linear-gradient(…)` string in the
+		// Title. Falls back to leaving the value inline only when a single heading mixes DISTINCT gradients.
+		$title_html    = self::map_accent_classes( (string) ( $h['title'] ?? '' ) );
+		$subtitle_html = self::map_accent_classes( (string) ( $h['subtitle'] ?? '' ) );
+		$gradtext_css  = self::extract_gradtext_css( $title_html ) . self::extract_gradtext_css( $subtitle_html );
 		return array(
 			'type' => 'simple', 'shortcode' => 'special_heading', '_items' => array(),
 			'atts' => array(
@@ -5550,6 +5612,7 @@ class FW_Site_Converter_Mapper {
 				// Re-assert each part's SOURCE font-weight on its own element (wins over the theme's
 				// hN.heading-title tag rule when no heading-weight token is set) — parity with JS to-pages.
 				'custom_css' => self::heading_weight_css( $h )
+				. $gradtext_css // gradient-text value → scoped `.sc-gradtext` rule (keeps the Title markup clean)
 				. $overline_type_css // NEVER-DROP: overline font-size + letter-spacing (no native option)
 				. self::overline_pill_skin_css( $h ) // NEVER-DROP: pill glass skin (translucent fill + border + backdrop-blur + radius)
 			. self::heading_filter_css( $h ) // NEVER-DROP: a title CSS filter (e.g. a hero drop-shadow glow) - no native option
@@ -5575,8 +5638,8 @@ class FW_Site_Converter_Mapper {
 				// Chip-before-heading pill (empty '' / neutral color for a normal heading, so unaffected).
 				'overline_container' => $overline_container,
 				'overline_color' => $overline_color,
-				'title'    => self::map_accent_classes( (string) ( $h['title'] ?? '' ) ),
-				'subtitle' => self::map_accent_classes( (string) ( $h['subtitle'] ?? '' ) ),
+				'title'    => $title_html,
+				'subtitle' => $subtitle_html,
 				'heading'  => 'h' . $lvl,
 				'alignment' => $align,
 				'element_spacing' => $layout['element_spacing'],

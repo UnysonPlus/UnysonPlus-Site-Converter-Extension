@@ -364,9 +364,20 @@ class FW_Site_Converter_Bundle {
 		// Overwrite every JS-produced file the PHP engine also emits, so pages + design stay internally
 		// consistent (all from the PHP engine). Files the PHP build doesn't emit are left as the JS bundle had.
 		foreach ( array( 'pages.json', 'theme-design.json', 'theme-settings.json', 'presets.json', 'media.json', 'mega-menus.json', 'styleguide.json', 'conversion-parity.json' ) as $fn ) {
-			if ( isset( $files[ $fn ] ) ) {
-				@file_put_contents( rtrim( $dir, '/\\' ) . '/' . $fn, wp_json_encode( $files[ $fn ] ) );
+			if ( ! isset( $files[ $fn ] ) ) { continue; }
+			$out = $files[ $fn ];
+			// MEDIA is MERGED, not overwritten: the capture service resolves + captures images the PHP engine
+			// filters as decorative (e.g. `alt=""` parallax foreground layers). Union the URL lists so nothing
+			// already captured is lost from the media library — the PHP build's own media rides on top.
+			if ( 'media.json' === $fn ) {
+				$existing = self::read_json( $dir, array( 'media.json' ) );
+				if ( is_array( $existing ) && is_array( $out ) ) {
+					$eu = ( isset( $existing['urls'] ) && is_array( $existing['urls'] ) ) ? $existing['urls'] : array();
+					$pu = ( isset( $out['urls'] ) && is_array( $out['urls'] ) ) ? $out['urls'] : array();
+					$out['urls'] = array_values( array_unique( array_merge( $pu, $eu ) ) );
+				}
 			}
+			@file_put_contents( rtrim( $dir, '/\\' ) . '/' . $fn, wp_json_encode( $out ) );
 		}
 	}
 

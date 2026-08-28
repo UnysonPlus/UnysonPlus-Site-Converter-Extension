@@ -287,13 +287,83 @@ class FW_Site_Converter_Stitch {
 	 * the palette — a dark site sets `body{color:#f8fafc}` (light text), which no accent utility carries,
 	 * so without this the palette's Ink role defaulted to a dark near-black (the "text role inverted" bug).
 	 */
+	/**
+	 * Map of CSS custom properties declared at `:root` / `html` / `body` in the source's `<style>` CSS
+	 * (`--ink:#05070a`) → their values, so a `var(--ink)` reference can be resolved to a real colour. A
+	 * hand‑built (non‑Tailwind) source often sets its canvas + ink as `body{background:var(--ink);color:
+	 * var(--bone)}` with the values living in a `:root` block — no design token carries them. Cached per html.
+	 */
+	private static function css_root_vars( $html ) {
+		static $cache = array();
+		$key = md5( (string) $html );
+		if ( isset( $cache[ $key ] ) ) { return $cache[ $key ]; }
+		$vars = array();
+		$css  = self::all_style_css( $html );
+		foreach ( array( ':root', 'html', 'body' ) as $sel ) {
+			if ( preg_match_all( '/(?:^|[}\s,;])' . preg_quote( $sel, '/' ) . '\s*\{([^}]*)\}/i', $css, $blocks ) ) {
+				foreach ( $blocks[1] as $decls ) {
+					if ( preg_match_all( '/--([a-z0-9-]+)\s*:\s*([^;]+)/i', $decls, $vm, PREG_SET_ORDER ) ) {
+						foreach ( $vm as $v ) { $n = strtolower( trim( $v[1] ) ); if ( ! isset( $vars[ $n ] ) ) { $vars[ $n ] = trim( $v[2] ); } }
+					}
+				}
+			}
+		}
+		$cache[ $key ] = $vars;
+		return $vars;
+	}
+
+	/** Resolve a CSS value that may be `var(--x[, fallback])` (chained through the root‑var map) or a literal
+	 *  colour, to a colour string ('' if it doesn't resolve to a colour). Non‑var values pass through the
+	 *  normal colour parser, so existing behaviour is unchanged. */
+	private static function resolve_css_color( $val, $vars, $depth = 0 ) {
+		$val = trim( (string) $val );
+		if ( '' === $val || $depth > 4 ) { return ''; }
+		if ( preg_match( '/var\(\s*--([a-z0-9-]+)\s*(?:,\s*([^)]*))?\)/i', $val, $m ) ) {
+			$name = strtolower( $m[1] );
+			if ( isset( $vars[ $name ] ) ) { return self::resolve_css_color( $vars[ $name ], $vars, $depth + 1 ); }
+			if ( isset( $m[2] ) && trim( $m[2] ) !== '' ) { return self::resolve_css_color( $m[2], $vars, $depth + 1 ); } // var() fallback
+			return '';
+		}
+		return self::first_color_token( $val );
+	}
+
+	/** The page CANVAS background from the source's `body{background|background-color}` rule (computed style
+	 *  first, then the `<style>` rule), resolving a `var(--x)` through the root‑var map. '' when none — used
+	 *  as a fallback for the token‑based site background so a hand‑built dark page (`body{background:var(--ink)}`)
+	 *  is detected instead of defaulting to white. */
+	private static function detect_body_background( $html ) {
+		$vars = self::css_root_vars( $html );
+		$dom  = self::load_dom( (string) $html );
+		if ( $dom ) {
+			foreach ( array( 'body', 'html' ) as $tag ) {
+				$el = $dom->getElementsByTagName( $tag )->item( 0 );
+				if ( ! $el ) { continue; }
+				foreach ( array( 'background-color', 'background' ) as $p ) {
+					$c = self::sc_css( $el, $p );
+					if ( $c !== '' && stripos( $c, 'transparent' ) === false ) { $r = self::resolve_css_color( $c, $vars ); if ( '' !== $r ) { return $r; } }
+				}
+			}
+		}
+		$css = self::all_style_css( $html );
+		foreach ( array( 'body', 'html' ) as $sel ) {
+			if ( preg_match( '/(?:^|[}\s,;])' . preg_quote( $sel, '/' ) . '\s*\{([^}]*)\}/i', $css, $mm ) ) {
+				if ( preg_match( '/(?<![-\w])background(?:-color)?\s*:\s*([^;]+)/i', $mm[1], $m ) ) {
+					$r = self::resolve_css_color( $m[1], $vars );
+					if ( '' !== $r && stripos( $r, 'transparent' ) === false ) { return $r; }
+				}
+			}
+		}
+		return '';
+	}
+
 	private static function detect_body_text( $html ) {
+		$vars = self::css_root_vars( $html );
 		$dom = self::load_dom( (string) $html );
 		if ( $dom ) {
 			foreach ( array( 'body', 'html' ) as $tag ) {
 				$el = $dom->getElementsByTagName( $tag )->item( 0 );
 				if ( $el ) {
-					$c = self::sc_css( $el, 'color' );
+					$c = self::resolve_css_color( self::sc_css( $el, 'color' ), $vars );
 					if ( $c !== '' && stripos( $c, 'transparent' ) === false ) { return $c; }
 				}
 			}
@@ -301,7 +371,7 @@ class FW_Site_Converter_Stitch {
 			if ( $body ) {
 				$st = (string) $body->getAttribute( 'style' );
 				if ( preg_match( '/(?<![-\w])color\s*:\s*([^;]+)/i', $st, $m ) ) {
-					$col = self::first_color_token( $m[1] );
+					$col = self::resolve_css_color( $m[1], $vars );
 					if ( $col !== '' ) { return $col; }
 				}
 			}
@@ -311,7 +381,7 @@ class FW_Site_Converter_Stitch {
 			foreach ( array( 'body', 'html', ':root' ) as $sel ) {
 				if ( preg_match( '/(?:^|[}\s,;])' . preg_quote( $sel, '/' ) . '\s*\{([^}]*)\}/i', $css, $mm ) ) {
 					if ( preg_match( '/(?<![-\w])color\s*:\s*([^;]+)/i', $mm[1], $m ) ) {
-						$col = self::first_color_token( $m[1] );
+						$col = self::resolve_css_color( $m[1], $vars );
 						if ( $col !== '' ) { return $col; }
 					}
 				}
@@ -1863,6 +1933,13 @@ class FW_Site_Converter_Stitch {
 				if ( ! empty( $rhv['lift'] ) ) { $reg_hover_fx[] = 'lift'; }
 				if ( $rhsh )                   { $reg_hover_fx[] = 'glow'; }
 				if ( ! empty( $rhv['scale'] ) ) { $reg_hover_css = '{{SELECTOR}}:hover{transform:scale(' . (float) $rhv['scale'] . ');}'; }
+				// FROSTED GLASS — the card's `backdrop-filter: blur()` has no native Box-Preset field, so carry it
+				// via the preset's own custom_css (applies to every element using this box). The translucent fill
+				// then reads as real frosted glass. Whitelisted chars only (a `blur(Npx)`-shape value).
+				$reg_bf     = trim( (string) ( $sk['backdrop'] ?? '' ) );
+				$reg_bf_css = ( '' !== $reg_bf && preg_match( '/^[a-z0-9()%.\s,-]+$/i', $reg_bf ) )
+					? '{{SELECTOR}}{-webkit-backdrop-filter:' . $reg_bf . ';backdrop-filter:' . $reg_bf . ';}'
+					: '';
 				$reg_states = array( 'default' => $default );
 				if ( $reg_hover ) { $reg_states['hover'] = $reg_hover; }
 				$reg[] = array(
@@ -1873,7 +1950,7 @@ class FW_Site_Converter_Stitch {
 					'padding'       => $pad0,
 					'transition'    => '200',
 					'hover_fx'      => array_values( array_unique( $reg_hover_fx ) ),
-					'custom_css'    => trim( $reg_pad_css . $reg_hover_css ),
+					'custom_css'    => trim( $reg_pad_css . $reg_hover_css . $reg_bf_css ),
 					'states'        => $reg_states,
 				);
 			}
@@ -2745,7 +2822,8 @@ class FW_Site_Converter_Stitch {
 
 		/* --- header_layout — switches/bg driven by the detected header chrome (only override defaults on a
 		   real signal, so we never write a false 'yes'). --- */
-		$header_bg_val = isset( $hstyle['bg'] ) ? $hstyle['bg'] : $header_bg;
+		$has_src_bg    = isset( $hstyle['bg'] ) && '' !== (string) $hstyle['bg']; // did the SOURCE header carry a real fill?
+		$header_bg_val = $has_src_bg ? (string) $hstyle['bg'] : $header_bg;
 		// GLASS double-reduction guard. The theme's glass frosts the header to ~72% of --header-bg. A source
 		// header fill that is ALREADY translucent (e.g. `bg-background/80` = rgba(…, .8)) would then double-
 		// reduce (.8 → .576) — too see-through, so the hero green bleeds up and it reads "too green". When the
@@ -2763,13 +2841,18 @@ class FW_Site_Converter_Stitch {
 		$h_solid   = $h_bg !== '' && empty( $hstyle['glass'] ) && ! preg_match( '/rgba?\([^)]*[,\/]\s*(0|0?\.\d+)\s*\)/i', $h_bg );
 		$h_pinned  = ! empty( $hdr['sticky'] );
 		$position  = $h_pinned ? ( $h_solid ? 'sticky' : 'overlay' ) : 'static';
+		// A header with NO captured fill that is GLASS or sits OVERLAY over the hero is TRANSPARENT by design
+		// (a frosted bar you see the hero through). Its bg_color must stay EMPTY — otherwise the #ffffff
+		// fallback default ($header_bg) turns a transparent glass nav into a solid WHITE bar (the reported bug).
+		$header_transparent = ! $has_src_bg && ( ! empty( $hstyle['glass'] ) || 'overlay' === $position );
 		$values['header_layout'] = array(
 			'header_mode'          => array( 'mode' => 'top', 'top' => array( 'header_design' => array( 'design' => $h_design ) ) ),
 			'header_position'      => $position,
 			'header_uppercase_nav' => ! empty( $mstyle['uppercase'] ) ? 'yes' : 'no',
-			// Appearance — AT TOP (the resting look only). bg_color = the resting SOLID fill; EMPTY for a
-			// transparent / overlay header (its scrolled fill, if any, is scroll_bg_color below — not here).
-			'bg_color'             => ( $header_bg_glass !== '' ) ? $hex( $header_bg_glass ) : array( 'predefined' => '', 'custom' => '' ),
+			// Appearance — AT TOP (the resting look only). bg_color = the resting SOLID fill from the SOURCE;
+			// EMPTY for a transparent / overlay header (its scrolled fill, if any, is scroll_bg_color below).
+			// Only a real source fill is used — never the #ffffff fallback on a transparent header.
+			'bg_color'             => ( ! $header_transparent && $header_bg_glass !== '' ) ? $hex( $header_bg_glass ) : array( 'predefined' => '', 'custom' => '' ),
 			'header_glass'         => ! empty( $hstyle['glass'] ) ? 'yes' : 'no',
 			'header_border'        => ! empty( $hstyle['border'] ) ? 'yes' : 'no',
 			'header_shadow'        => ! empty( $hstyle['shadow'] ) ? 'yes' : 'no',
@@ -2943,6 +3026,10 @@ class FW_Site_Converter_Stitch {
 		// NOT `background`; the old list missed it, so a dark source's <body> stayed the palette default WHITE
 		// (light body text then rendered invisible on white in any uncovered gap).
 		$site_bg = self::token_color( $tokens, array( 'background', 'bg', 'canvas', 'surface', 'surface-container-lowest' ) );
+		// FALLBACK: a hand‑built (non‑Tailwind) source has no `bg`/`canvas` design token — its canvas lives in a
+		// `body{background:var(--ink)}` rule with the value in a `:root` block. Read that directly and resolve
+		// the var, so a dark page (kage's `--ink:#05070a`) is detected instead of defaulting to WHITE.
+		if ( '' === $site_bg ) { $site_bg = self::color_to_hex( self::detect_body_background( (string) $html ) ); }
 		if ( $site_bg !== '' ) {
 			// NOTE: the theme reads Site Background from the `general_layout` container
 			// (theme-vars.php merges general_layout/sidebar/preloader → $layout['site_background']),
@@ -2984,6 +3071,15 @@ class FW_Site_Converter_Stitch {
 		// brand to the footer text color so it reads LIGHT. The framed icon tile (its own bg + mark) is left
 		// alone (it's designed to contrast). This is the native model's footer-scoped-CSS escape hatch.
 		$residual = array();
+		// HEADER GLASS — exact frost. `header_glass=yes` (native) supplies the translucent bg + the theme's
+		// default blur; the source's EXACT `backdrop-filter` has no native field, so carry it as a scoped
+		// override here. Safe unconditionally: backdrop-filter only shows over a translucent fill, so if the
+		// user later turns Translucent/Glass OFF (opaque bg), this blur has nothing behind it to show — the
+		// native toggle still governs the visible result. This is the native-option + child-CSS-override pattern.
+		if ( ! empty( $hstyle['glass_backdrop'] ) && preg_match( '/^[a-z0-9()%.\s,-]+$/i', (string) $hstyle['glass_backdrop'] ) ) {
+			$hbfv = trim( (string) $hstyle['glass_backdrop'] );
+			$residual[] = ".site-header,.site-header .header-main{-webkit-backdrop-filter:{$hbfv};backdrop-filter:{$hbfv}}";
+		}
 		$residual[] = ".footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:{$footer_text} !important}";
 		$residual[] = ".footer .site-logo__mark:not(.site-logo__mark--framed){color:{$footer_text} !important}";
 		// NEVER-DROP footer COLUMN-HEADING typography — a footer whose titles are e.g.
@@ -5933,14 +6029,23 @@ class FW_Site_Converter_Stitch {
 		}
 		$sh = self::sc_css( $header, 'box-shadow' );
 		if ( $sh !== '' && $sh !== 'none' ) { $out['shadow'] = true; }
-		if ( stripos( self::sc_css( $header, 'backdrop-filter' ), 'blur' ) !== false
-			|| stripos( self::sc_css( $header, '-webkit-backdrop-filter' ), 'blur' ) !== false ) { $out['glass'] = true; }
+		// GLASS + its EXACT backdrop-filter value. header_glass=yes maps the INTENT (native, editable); the
+		// precise blur has no native field, so we ALSO capture the exact value here → emitted as a scoped
+		// override on the header (misc_custom_css) so the frost matches the source, not the theme default.
+		$hbf = self::sc_css( $header, 'backdrop-filter' );
+		if ( '' === $hbf || stripos( $hbf, 'blur' ) === false ) { $hbf = self::sc_css( $header, '-webkit-backdrop-filter' ); }
+		if ( stripos( $hbf, 'blur' ) !== false ) { $out['glass'] = true; $out['glass_backdrop'] = trim( $hbf ); }
 		// CLASS fallbacks — capture services often DON'T record `backdrop-filter` or `border-bottom-*` in the
 		// computed style, yet a modern header declares them as utility classes (`backdrop-blur-lg`, `border-b`).
 		// Read those so a FROSTED translucent header (modfii's `bg-background/80 backdrop-blur-lg border-b`)
 		// keeps its blur + hairline instead of flattening to a bare transparent bar.
 		$hcls = ' ' . strtolower( self::cls( $header ) ) . ' ';
-		if ( empty( $out['glass'] ) && preg_match( '/\sbackdrop-blur(?:-[a-z0-9]+)?\s/', $hcls ) ) { $out['glass'] = true; }
+		if ( empty( $out['glass'] ) && preg_match( '/\sbackdrop-blur(?:-([a-z0-9]+))?\s/', $hcls, $hbm ) ) {
+			$out['glass'] = true;
+			$scale = array( '' => '8px', 'sm' => '4px', 'md' => '12px', 'lg' => '16px', 'xl' => '24px', '2xl' => '40px', '3xl' => '64px' );
+			$bk    = isset( $hbm[1] ) ? $hbm[1] : '';
+			if ( isset( $scale[ $bk ] ) && empty( $out['glass_backdrop'] ) ) { $out['glass_backdrop'] = 'blur(' . $scale[ $bk ] . ')'; }
+		}
 		if ( empty( $out['border'] ) && ( preg_match( '/\sborder-b(?:-\d+)?\s/', $hcls ) || preg_match( '/\sborder-b(?:order)?\s/', $hcls ) ) ) { $out['border'] = true; }
 		// SCROLL-STATE (data-sc-scrolled, stamped by the capture service after scrolling the page): a fixed /
 		// transparent header that reveals a bg / backdrop-blur / border / shadow ONLY on scroll. The resting
@@ -7611,6 +7716,14 @@ class FW_Site_Converter_Stitch {
 		self::register_recognizer( 'image_grid', 91,
 			function ( $el ) { return self::is_image_grid( $el ); },
 			function ( $el ) { return self::image_grid_build( $el ); }
+		);
+		// A DECORATIVE image-layer SCENE (aria-hidden / parallax-layer container of 2+ stacked images, no
+		// content) → kept VERBATIM as a code_block so the cinematic collage renders with its carried CSS,
+		// instead of the images being dropped as decorative. Above image_grid so a layer stack isn't misread
+		// as a photo grid; the matcher is strict (decorative marker + no headings/copy) so real grids fall through.
+		self::register_recognizer( 'decorative_scene', 96,
+			function ( $el ) { return self::is_decorative_scene( $el ); },
+			function ( $el ) { return self::decorative_scene_build( $el ); }
 		);
 		// A BLOG / POST LISTING → the DYNAMIC `posts` shortcode (a live WP_Query feed) rather than frozen static
 		// cards. Checked ABOVE card_grid (90) so a real blog grid becomes an auto-updating feed; the matcher is
@@ -9917,12 +10030,24 @@ class FW_Site_Converter_Stitch {
 			if ( preg_match( '/hover:-?translate-y-(?:\[[^\]]+\]|[0-9.]+)/', $cls ) ) { $hover['lift'] = true; }
 			if ( preg_match( '/hover:scale-(\d+)/', $cls, $sm ) ) { $hover['scale'] = (int) $sm[1] / 100; }
 		}
+		// FROSTED GLASS: a glass card's `backdrop-filter: blur()` (from the computed style, the -webkit- alias,
+		// or a `backdrop-blur-*` utility) — carried onto the Box Preset so a translucent card renders as real
+		// frosted glass, not a flat translucent fill. Without this the source's glassmorphism was dropped.
+		$bf = $get( 'backdrop-filter' );
+		if ( '' === $bf ) { $bf = $get( '-webkit-backdrop-filter' ); }
+		if ( '' === $bf && preg_match( '/\bbackdrop-blur(?:-([a-z0-9]+))?\b/', $cls, $bm ) ) {
+			$scale = array( '' => '8px', 'none' => '0', 'sm' => '4px', 'md' => '12px', 'lg' => '16px', 'xl' => '24px', '2xl' => '40px', '3xl' => '64px' );
+			$key   = isset( $bm[1] ) ? $bm[1] : '';
+			if ( isset( $scale[ $key ] ) && '0' !== $scale[ $key ] ) { $bf = 'blur(' . $scale[ $key ] . ')'; }
+		}
+		$backdrop = ( '' !== $bf && 'none' !== strtolower( trim( $bf ) ) && preg_match( '/blur\(/i', $bf ) ) ? trim( $bf ) : '';
 		return array(
 			'bg'          => $has_fill ? $bg : '',
 			'radius'      => $radius,
 			'borderW'     => $has_border ? $bw : '',
 			'borderColor' => $has_border ? $bc : '',
 			'padding'     => ( preg_match( '/^[0-9.]+px$/', (string) $pad ) ? $pad : '' ),
+			'backdrop'    => $backdrop,
 			'hover'       => $hover,
 		);
 	}
@@ -10508,6 +10633,47 @@ class FW_Site_Converter_Stitch {
 	 * qualifies. The tiles must be the clear majority of the container's element children (a real photo
 	 * grid), not one stray image among text blocks.
 	 */
+	/**
+	 * A DECORATIVE image-layer SCENE — a purely-decorative container (marked `aria-hidden="true"`, or a
+	 * layer/parallax/foreground/scene class) holding 2+ stacked images and NO real content (no headings, no
+	 * meaningful copy). This is the cinematic parallax collage art-directed landing pages layer BEHIND the
+	 * copy; the layers are positioned by the source's own CSS classes (`.fg-el`, `.fg-wall{position:absolute}`)
+	 * which the section's carried CSS already reproduces. Rather than dropping the images as "decorative", keep
+	 * the scene VERBATIM (a code_block) so the collage renders with that carried CSS. Purely additive — nothing
+	 * claimed this container before (its images were filtered), so no existing mapping changes.
+	 */
+	private static function is_decorative_scene( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		if ( $el->getElementsByTagName( 'img' )->length < 2 ) { return false; }
+		$aria  = 'true' === strtolower( trim( (string) $el->getAttribute( 'aria-hidden' ) ) );
+		$cls   = ' ' . strtolower( self::cls( $el ) ) . ' ';
+		$layer = (bool) preg_match( '/\s(fg|parallax|layers?|scene|foreground|backdrop-layers?|decor|bg-scene|art-layers?)\s/', $cls );
+		if ( ! $aria && ! $layer ) { return false; }
+		// A PURE decorative layer stack only — never a real content section that happens to be aria-hidden:
+		// no headings, and no substantial copy.
+		for ( $i = 1; $i <= 6; $i++ ) { if ( $el->getElementsByTagName( 'h' . $i )->length ) { return false; } }
+		if ( mb_strlen( trim( (string) self::text( $el ) ) ) > 40 ) { return false; }
+		return true;
+	}
+
+	/** Emit a decorative image-layer scene VERBATIM as a code_block: the container's markup (source classes
+	 *  intact, so the carried `.fg`/`.fg-el` CSS positions the layers), with the capture's computed-style +
+	 *  data attrs stripped. Relative image srcs are absolutised by n_code() on the mapper side. */
+	private static function decorative_scene_build( $el ) {
+		$doc  = $el->ownerDocument;
+		$html = $doc ? (string) $doc->saveHTML( $el ) : '';
+		if ( '' === trim( $html ) ) { return null; }
+		$html = preg_replace( '/\s(?:data-sc-cs|data-sc-[a-z-]+)="[^"]*"/i', '', $html );
+		// The source reveals these layers via JS on scroll (they START at `opacity:0` + an offset transform,
+		// keyed by data-attrs like `data-fg-in`/`data-rv` or `.is-in`-style classes). We keep the COMPOSITION
+		// but not that JS, so force the layers to their REVEALED state (opacity:1, no offset) — otherwise the
+		// whole scene renders invisible. Scoped to `.sc-scene`, so it only affects this decorative block.
+		$reveal = '<style>.sc-scene [data-fg-in],.sc-scene [data-rv],.sc-scene [data-reveal],.sc-scene [data-aos],.sc-scene [data-animate],.sc-scene [data-inview],.sc-scene [data-scroll],'
+			. '.sc-scene [class*="reveal"],.sc-scene [class*="rv-"],.sc-scene [style*="opacity:0"],.sc-scene [style*="opacity: 0"]'
+			. '{opacity:1 !important;transform:none !important;}</style>';
+		return array( 't' => 'html', 'role' => 'code', 'html' => '<div class="sc-tw sc-scene">' . $reveal . $html . '</div>' );
+	}
+
 	private static function is_image_grid( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		$c = ' ' . self::cls( $el ) . ' ';
@@ -11228,11 +11394,40 @@ class FW_Site_Converter_Stitch {
 	private static function looks_quote_card( $k ) {
 		if ( ! ( $k instanceof DOMElement ) ) { return false; }
 		if ( $k->getElementsByTagName( 'p' )->length === 0 && $k->getElementsByTagName( 'blockquote' )->length === 0 ) { return false; }
+		// A GALLERY image tile — a full-bleed `object-cover` image with its (often quoted) caption in an
+		// ABSOLUTE overlay — is NOT a testimonial: the image is the content, the caption just labels it.
+		// Without this, a photo grid whose captions are quoted phrases ("Cinematic mountain…") is misread as
+		// testimonials; excluding it lets the lower-priority image_grid recognizer claim the gallery.
+		if ( self::is_gallery_image_card( $k ) ) { return false; }
 		$t = self::text( $k );
 		if ( mb_strlen( $t ) < 30 ) { return false; }
 		if ( preg_match( '/["“”«»‘’]/u', $t ) ) { return true; }
 		if ( self::testimonial_rating( $k ) !== null ) { return true; }
 		return (bool) preg_match( '/(^|\s)[—–-]\s*[A-Z][a-z]+/u', $t );
+	}
+	/** A gallery-style image tile: a full-bleed cover image (object-cover) framed by the card (an
+	 *  `aspect-` ratio or `overflow-hidden`) with any caption living in an absolutely-positioned overlay —
+	 *  the photo is the content, not a testimonial avatar. */
+	private static function is_gallery_image_card( $k ) {
+		$imgs = $k->getElementsByTagName( 'img' );
+		if ( ! $imgs->length ) { return false; }
+		$img  = $imgs->item( 0 );
+		$icls = self::cls( $img );
+		$ics  = (string) $img->getAttribute( 'data-sc-cs' );
+		$cover = ( strpos( $icls, 'object-cover' ) !== false ) || (bool) preg_match( '/object-fit:\s*cover/i', $ics );
+		if ( ! $cover ) { return false; }
+		// The tile MUST be aspect-ratio framed (`aspect-square`/`aspect-[4/3]` on the card, or a computed
+		// `aspect-ratio`) — that is the gallery hallmark. A testimonial card that happens to carry a cover-image
+		// avatar + an absolute badge is NOT aspect-framed, so it stays a testimonial (regression guard).
+		$kcls = self::cls( $k );
+		$kcs  = (string) $k->getAttribute( 'data-sc-cs' );
+		if ( ! preg_match( '/\baspect-/', $kcls ) && ! preg_match( '/(?:^|;)\s*aspect-ratio:\s*[^;]+/i', $kcs ) ) { return false; }
+		// And the caption must live in an absolute overlay (a gallery labels the photo), not be a flowing quote.
+		foreach ( $k->getElementsByTagName( '*' ) as $d ) {
+			if ( strpos( self::cls( $d ), 'absolute' ) !== false
+				|| preg_match( '/position:\s*absolute/i', (string) $d->getAttribute( 'data-sc-cs' ) ) ) { return true; }
+		}
+		return false;
 	}
 	/** Star-rating glyph count in a card (svg/i with a `star` class), or null. */
 	private static function testimonial_rating( $k ) {
