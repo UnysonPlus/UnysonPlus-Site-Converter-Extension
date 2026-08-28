@@ -303,11 +303,16 @@ class FW_Site_Converter_Bundle {
 		// Regenerate the preset CSS and purge the combined bundles here so the fresh design always takes effect.
 		if ( $do_design ) {
 			if ( function_exists( 'unysonplus_ensure_preset_css_file' ) ) { unysonplus_ensure_preset_css_file(); }
-			// Drop the on-demand generated CSS (rebuilds clean on the next front-end request).
+			// Drop ALL the on-demand generated CSS (rebuilds clean on the next front-end request). Not just
+			// `unysonplus-generated*.css` — the dir also holds preset/page + header-footer CSS keyed by hashes
+			// that don't track every settings change, so a re-convert left the PREVIOUS design's CSS in place
+			// and the freshly-converted page rendered with stale/missing styling (looked "barely converted").
+			// Everything under uploads/unysonplus/css is regenerable, so clearing all of it is safe (parity with
+			// the "Replace existing site" reset).
 			if ( function_exists( 'fw_upw_uploads_dir' ) ) {
 				$cssd = fw_upw_uploads_dir( 'css' );
 				if ( ! empty( $cssd['path'] ) && is_dir( $cssd['path'] ) ) {
-					foreach ( (array) glob( $cssd['path'] . '/unysonplus-generated*.css' ) as $gf ) { @unlink( $gf ); }
+					foreach ( (array) glob( $cssd['path'] . '/*.css' ) as $gf ) { @unlink( $gf ); }
 				}
 			}
 			// Purge the Asset Optimizer combined bundles (they recombine from the fresh sources next visit).
