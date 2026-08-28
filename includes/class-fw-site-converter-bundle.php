@@ -281,6 +281,17 @@ class FW_Site_Converter_Bundle {
 			}
 		}
 
+		// --- Phase 5c: NEEDED BUNDLED EXTENSIONS — auto-activate each bundled extension this conversion depends
+		// on (animation-engine for engine features like svg_draw; newsletter-crm for a converted signup form;
+		// OUR woocommerce extension for a store the user opted into), so the converted output works without the
+		// user hunting in the Extensions manager. Same activate-on-need pattern as the Mega Menu above; for the
+		// WooCommerce case, our extension's own admin notice then nags to install/activate the third-party
+		// WooCommerce plugin — which we can't do here. ---
+		if ( $do_pages && is_array( $theme_design ) && ! empty( $theme_design['needs_extensions'] ) && is_array( $theme_design['needs_extensions'] ) ) {
+			$activated = self::activate_bundled_exts( $theme_design['needs_extensions'] );
+			if ( $activated ) { $out['activated_extensions'] = $activated; $out['sections'][] = 'extensions'; }
+		}
+
 		if ( ! $out['sections'] ) {
 			$out['error'] = __( 'The bundle had no recognized sections (media.json, presets.json, theme-settings.json, pages.json, menus.json).', 'fw' );
 		}
@@ -379,6 +390,32 @@ class FW_Site_Converter_Bundle {
 			}
 			@file_put_contents( rtrim( $dir, '/\\' ) . '/' . $fn, wp_json_encode( $out ) );
 		}
+	}
+
+	/**
+	 * Activate each bundled UnysonPlus extension in $slugs that isn't already active — the activate-on-need
+	 * mechanism the importer uses for a conversion's dependencies (mirrors the Mega Menu auto-activation). ONLY
+	 * our own bundled extensions are allowed: a third-party plugin (the WooCommerce PLUGIN, say) can't be
+	 * activated here — the relevant bundled extension raises its own admin notice for that. The allowlist is
+	 * ready for extensions the converter will learn to detect (chat, breadcrumbs, portfolio); each auto-activates
+	 * the moment a builder emits its feature via require_extension(). Returns the slugs actually activated.
+	 *
+	 * @param array $slugs
+	 * @return array activated slugs
+	 */
+	private static function activate_bundled_exts( array $slugs ) {
+		$done = array();
+		if ( ! function_exists( 'fw' ) || ! function_exists( 'fw_ext' ) ) { return $done; }
+		$allowed = array( 'animation-engine', 'woocommerce', 'newsletter-crm', 'breadcrumbs', 'chat', 'portfolio' );
+		if ( ! fw()->extensions->manager->can_activate() ) { return $done; }
+		foreach ( array_values( array_unique( $slugs ) ) as $slug ) {
+			$slug = (string) $slug;
+			if ( ! in_array( $slug, $allowed, true ) ) { continue; } // never a non-bundled / unknown slug
+			if ( fw_ext( $slug ) ) { continue; }                     // already active
+			fw()->extensions->manager->activate_extensions( array( $slug => array() ) );
+			$done[] = $slug;
+		}
+		return $done;
 	}
 
 	/* ---------------------------------------------------------------------- *

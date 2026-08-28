@@ -2398,6 +2398,7 @@ class FW_Site_Converter_Mapper {
 	 * `inline` = the side-by-side field+button row (the common newsletter layout).
 	 */
 	private static function n_newsletter( array $b ) {
+		self::require_extension( 'newsletter-crm' ); // a converted signup form → activate the Subscriber CRM so submissions are captured
 		$atts = self::shortcode_default_atts( 'newsletter' );
 		if ( ! is_array( $atts ) ) { $atts = array(); }
 		$atts['title']       = '';
@@ -3351,6 +3352,7 @@ class FW_Site_Converter_Mapper {
 	private static function n_svg_draw( array $b ) {
 		$code = (string) ( $b['code'] ?? '' );
 		if ( '' === trim( $code ) ) { return self::n_code( '' ); }
+		self::require_extension( 'animation-engine' ); // svg_draw renders via the Animation Engine → importer activates it
 		return self::finalize_widget( 'svg_draw', array(
 			'svg'     => array( 'source' => 'code', 'preset' => array( 'preset' => 'signature' ), 'code' => array( 'code' => $code ), 'upload' => array( 'file' => '' ) ),
 			'trigger' => 'view',
@@ -6019,10 +6021,27 @@ class FW_Site_Converter_Mapper {
 		return in_array( (string) $tag, $fade, true ) ? 'animate__fadeIn' : 'animate__fadeInUp';
 	}
 
+	/** Bundled UnysonPlus extensions THIS build needs active because it emitted a feature that depends on one
+	 *  (svg_draw → animation-engine; a newsletter signup → newsletter-crm). The importer reads
+	 *  needed_extensions() and auto-activates each — activate-on-EMISSION, mirroring the Mega Menu activation.
+	 *  Any n_* builder that emits an extension-owned feature calls require_extension(). Reset each build. */
+	public static $needed_extensions = array();
+
+	/** Record that this build needs a bundled extension active (deduped), called by the n_* builders as they
+	 *  emit an extension-dependent shortcode/option. */
+	public static function require_extension( $slug ) {
+		$slug = (string) $slug;
+		if ( '' !== $slug && ! in_array( $slug, self::$needed_extensions, true ) ) { self::$needed_extensions[] = $slug; }
+	}
+
+	/** The bundled extensions this build emitted a dependency on (for the importer to auto-activate). */
+	public static function needed_extensions() { return self::$needed_extensions; }
+
 	public static function build_pages( array $mapping ) {
 		self::$conv_debug = array(); // fresh per build — re-conversions must not accumulate collector records
 		self::$required_shortcodes = array(); // fresh per build — the Library shortcodes this conversion needs
 		self::$registry = array(); // fresh per build — the shared preset registry (patterns, boxes, …)
+		self::$needed_extensions = array(); // fresh per build — recomputed from what THIS build emits
 		$out = array();
 		$pages = isset( $mapping['pages'] ) && is_array( $mapping['pages'] ) ? $mapping['pages'] : array();
 		foreach ( $pages as $page ) {

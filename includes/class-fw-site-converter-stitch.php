@@ -12848,6 +12848,22 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 		if ( $pages ) { $files['pages.json'] = array( 'pages' => $pages ); }
+		// NEEDED BUNDLED EXTENSIONS — the importer auto-activates each (mirroring the Mega Menu activation), so a
+		// conversion that DEPENDS on one of our bundled extensions renders without the user hunting for it in the
+		// Extensions manager. Activate-on-NEED: the mapper accumulated what it EMITTED (animation-engine for
+		// svg_draw, newsletter-crm for a signup form, …); the woocommerce case is DETECTION-based (a store the
+		// user opted into) and independent of the WooCommerce PLUGIN — our extension's own notice nags to install
+		// that. As the converter learns to detect more (chat, breadcrumbs, portfolio), each just calls
+		// require_extension() at emit and rides this same list.
+		$needs = ( class_exists( 'FW_Site_Converter_Mapper' ) && method_exists( 'FW_Site_Converter_Mapper', 'needed_extensions' ) )
+			? (array) FW_Site_Converter_Mapper::needed_extensions() : array();
+		if ( ! empty( $input['map_woocommerce'] ) && isset( $screens[0]['html'] )
+			&& class_exists( 'FW_Site_Converter_Sources' ) && FW_Site_Converter_Sources::is_woocommerce_source( (string) $screens[0]['html'] ) ) {
+			$needs[] = 'woocommerce';
+		}
+		if ( $needs && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {
+			$files['theme-design.json']['needs_extensions'] = array_values( array_unique( $needs ) );
+		}
 		// Attach the conversion debug map to the theme-design so the generated child theme carries a
 		// conversion-map.json (served same-origin for the dashboard inspector). Best-effort.
 		if ( $conv_map && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {

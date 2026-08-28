@@ -1962,7 +1962,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 * @return bool
 	 */
 	private static function sc_wc_opt() {
-		if ( ! class_exists( 'WooCommerce' ) ) { return false; }
+		// Returns the checkbox state independent of the WooCommerce PLUGIN. When ticked, the converter activates
+		// OUR bundled woocommerce extension (which nags to install/activate the WC plugin if absent). The actual
+		// wc_products MAPPING stays gated on the plugin being active (see the $map_wc check in build_bundle) — so
+		// without WC, product grids stay as static cards and no broken [wc_products] is emitted.
 		return isset( $_POST['opt_woocommerce'] ) && ( $_POST['opt_woocommerce'] === '1' || $_POST['opt_woocommerce'] === 'true' );
 	}
 
@@ -2509,7 +2512,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							<?php esc_html_e( 'It runs entirely on your computer: your admin browser talks to it directly at localhost, and nothing about your site (or your API key) is ever sent to a third party.', 'fw' ); ?>
 						</p>
 					</div>
-					<style>.fw-sc-code{position:relative}.fw-sc-copy{position:absolute;top:.35em;right:.4em;border:0;background:transparent;cursor:pointer;color:#646970;padding:2px;line-height:1}.fw-sc-copy:hover{color:#2271b1}.fw-sc-copy .dashicons{font-size:18px;width:18px;height:18px}</style>
+					<style>.fw-sc-code{position:relative}.fw-sc-copy{position:absolute;top:.35em;right:.4em;border:0;background:transparent;cursor:pointer;color:#646970;padding:2px;line-height:1}.fw-sc-copy:hover{color:var(--fw-accent, #3858e9)}.fw-sc-copy .dashicons{font-size:18px;width:18px;height:18px}</style>
 					<p style="margin:.2em 0 .6em;padding:.5em .7em;background:#eaf6ee;border:1px solid #b6ddc2;border-radius:4px;color:#1a5c33">
 						<span class="dashicons dashicons-yes-alt" style="vertical-align:text-bottom"></span>
 						<?php echo wp_kses_post( __( '<strong>The easy way — the AI Dev Kit.</strong> One launcher starts the capture service <em>and</em> the live dashboard for you, and downloads everything it needs on first run. No manual <code>npm install</code>, no <code>node serve.mjs</code>.', 'fw' ) ); ?>
@@ -2538,7 +2541,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						</li>
 					</ol>
 					<details style="margin:.2em 0 .4em">
-						<summary style="cursor:pointer;color:#2271b1;font-weight:600"><?php esc_html_e( 'Prefer to run it by hand? (manual capture-service setup)', 'fw' ); ?></summary>
+						<summary style="cursor:pointer;color:var(--fw-accent, #3858e9);font-weight:600"><?php esc_html_e( 'Prefer to run it by hand? (manual capture-service setup)', 'fw' ); ?></summary>
 						<ol style="margin:.5em 0 .2em 1.4em;padding:0;color:#50575e;font-size:13px;line-height:1.7">
 							<li><?php echo wp_kses_post( __( 'Clone just the capture service — <a href="https://github.com/UnysonPlus/UnysonPlus-Capture-Service" target="_blank" rel="noopener">UnysonPlus/UnysonPlus-Capture-Service</a>:', 'fw' ) ); ?>
 								<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-Capture-Service.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
@@ -2633,8 +2636,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 			<!-- ================= Convert (one panel, two source ways) ================= -->
 			<details class="fw-sc-card fw-sc-conv" open>
-				<summary><span class="dashicons dashicons-randomize" style="color:#2271b1"></span> <?php esc_html_e( 'Convert', 'fw' ); ?>
-					<span style="font-size:11px;background:#2271b1;color:#fff;border-radius:9px;padding:1px 7px;vertical-align:middle">beta</span>
+				<summary><span class="dashicons dashicons-randomize" style="color:var(--fw-accent, #3858e9)"></span> <?php esc_html_e( 'Convert', 'fw' ); ?>
+					<span style="font-size:11px;background:var(--fw-accent, #3858e9);color:#fff;border-radius:9px;padding:1px 7px;vertical-align:middle">beta</span>
 				</summary>
 					<div class="fw-sc-card-body">
 				<p class="description">
@@ -2659,7 +2662,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 								<p class="description"><?php esc_html_e( 'e.g. a Google Stitch export, OR a “source bundle” — a .zip of the rendered HTML + real media (devtools.html [+ view-source.html] + video.mp4 + images, like the AI Dev Kit’s demo-pages/<slug>/ folder). Builder exports auto-detect (single frame or multi-screen); a source bundle picks the rendered HTML and sideloads its media, matched into the markup by filename.', 'fw' ); ?></p>
 								<p class="description" style="margin:.4em 0 0"><?php esc_html_e( 'A file converts as a faithful mirror, offline: the source’s exact header/footer become the child theme’s header.php/footer.php, the body becomes page-builder sections, and the compiled CSS is reproduced — pixel-identical, no AI, no capture service.', 'fw' ); ?></p>
 									<details style="margin:.6em 0 0">
-										<summary style="cursor:pointer;color:#2271b1;font-weight:600"><?php esc_html_e( 'How to capture a source bundle (.zip) from any page', 'fw' ); ?></summary>
+										<summary style="cursor:pointer;color:var(--fw-accent, #3858e9);font-weight:600"><?php esc_html_e( 'How to capture a source bundle (.zip) from any page', 'fw' ); ?></summary>
 										<ol style="margin:.5em 0 0 1.3em;color:#50575e;font-size:13px;line-height:1.7">
 											<li><?php esc_html_e( 'Open the page in your browser. Scroll to the bottom once (so lazy-loaded sections/images appear), then back to the top.', 'fw' ); ?></li>
 											<li><?php echo wp_kses_post( __( '<strong>Rendered HTML (primary)</strong> — open DevTools (F12) → <em>Elements</em>, right-click the top <code>&lt;html&gt;</code> tag → <em>Copy → Copy outerHTML</em>, and save it as <code>devtools.html</code>. This carries the JS-built content + inline SVGs a raw view-source misses.', 'fw' ) ); ?></li>
@@ -2695,7 +2698,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-footer" checked> <?php esc_html_e( 'Capture footer', 'fw' ); ?></label>
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-media" checked> <?php esc_html_e( 'Import images', 'fw' ); ?></label>
 						<?php $upw_wc_active = class_exists( 'WooCommerce' ); ?>
-						<label style="display:block;margin:.2em 0<?php echo $upw_wc_active ? '' : ';opacity:.55'; ?>" title="<?php echo esc_attr( $upw_wc_active ? __( 'When the source is a store, map its product grids to WooCommerce shortcodes (a live [wc_products] feed) instead of static image cards. Auto-ticked when the source is detected as WooCommerce.', 'fw' ) : __( 'Install & activate WooCommerce to enable this option.', 'fw' ) ); ?>"><input type="checkbox" id="fw-sc-opt-woocommerce"<?php echo $upw_wc_active ? '' : ' disabled'; ?>> <?php esc_html_e( 'Map to WooCommerce', 'fw' ); ?><?php if ( ! $upw_wc_active ) : ?> <span style="color:#646970">(<?php esc_html_e( 'not installed', 'fw' ); ?>)</span><?php endif; ?></label>
+						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr( __( 'For a store source: activates the UnysonPlus WooCommerce extension and maps product grids to a live [wc_products] feed. If the WooCommerce plugin is not installed yet, the extension is still activated and a dashboard notice guides you to install it (grids stay as static cards until then). Auto-ticked when the source is detected as a store.', 'fw' ) ); ?>"><input type="checkbox" id="fw-sc-opt-woocommerce"> <?php esc_html_e( 'Map to WooCommerce', 'fw' ); ?><?php if ( ! $upw_wc_active ) : ?> <span style="color:#646970">(<?php esc_html_e( 'not installed', 'fw' ); ?>)</span><?php endif; ?></label>
 					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Destination', 'fw' ); ?></legend>
@@ -3400,7 +3403,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						'<div class="notice notice-info" style="margin:.3em 0;padding:.6em .8em">' +
 							'<p id="fw-sc-an-barlabel" style="margin:.2em 0 .55em">' + label + '</p>' +
 							'<div style="height:8px;background:#e2e4e7;border-radius:6px;overflow:hidden">' +
-								'<div id="fw-sc-an-bar" style="height:100%;width:3%;background:#2271b1;border-radius:6px;transition:width .35s ease"></div>' +
+								'<div id="fw-sc-an-bar" style="height:100%;width:3%;background:var(--fw-accent, #3858e9);border-radius:6px;transition:width .35s ease"></div>' +
 							'</div>' +
 						'</div>';
 				}
@@ -3901,15 +3904,15 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			.fw-ext-site-converter .fw-sc-setup>summary::-webkit-details-marker,.fw-ext-site-converter .fw-sc-card>summary::-webkit-details-marker{display:none}
 			.fw-ext-site-converter .fw-sc-setup>summary::after,.fw-ext-site-converter .fw-sc-card>summary::after{content:"\f140";font-family:dashicons;margin-left:auto;color:#787c82;transition:transform .15s ease}
 			.fw-ext-site-converter .fw-sc-setup[open]>summary::after,.fw-ext-site-converter .fw-sc-card[open]>summary::after{transform:rotate(180deg)}
-			.fw-ext-site-converter .fw-sc-setup>summary:hover,.fw-ext-site-converter .fw-sc-card>summary:hover{color:#2271b1}
+			.fw-ext-site-converter .fw-sc-setup>summary:hover,.fw-ext-site-converter .fw-sc-card>summary:hover{color:var(--fw-accent, #3858e9)}
 			.fw-ext-site-converter .fw-sc-setup-body{padding:.2em 1.2em 1.1em}
-			.fw-ext-site-converter .fw-sc-why{background:#fff;border:1px solid #e0e0e0;border-left:4px solid #2271b1;border-radius:4px;padding:.7em 1em;margin:.2em 0 1em;max-width:56em}
+			.fw-ext-site-converter .fw-sc-why{background:#fff;border:1px solid #e0e0e0;border-left:4px solid var(--fw-accent, #3858e9);border-radius:4px;padding:.7em 1em;margin:.2em 0 1em;max-width:56em}
 			/* Manual-tool / diagnostics cards */
 			.fw-ext-site-converter .fw-sc-card{border:1px solid #dcdcde;border-radius:6px;background:#fff;margin:0 0 .8em;box-shadow:0 1px 1px rgba(0,0,0,.04)}
 			.fw-ext-site-converter .fw-sc-card[open]>summary{border-bottom:1px solid #f0f0f1}
 			.fw-ext-site-converter .fw-sc-card-body{padding:.6em 1.2em 1.1em}
 				.fw-ext-site-converter .fw-sc-bar{height:8px;background:#dfe3e8;border-radius:6px;overflow:hidden;margin:.2em 0}
-				.fw-ext-site-converter .fw-sc-bar-fill{height:100%;width:5%;background:#2271b1;border-radius:6px;transition:width .25s linear}
+				.fw-ext-site-converter .fw-sc-bar-fill{height:100%;width:5%;background:var(--fw-accent, #3858e9);border-radius:6px;transition:width .25s linear}
 			.fw-ext-site-converter .fw-sc-card-body>p:first-child{margin-top:.4em}
 			/* Per-editor file-import row */
 			.fw-ext-site-converter .fw-sc-filerow{display:flex;align-items:center;gap:.6em;margin:.2em 0 .45em;flex-wrap:wrap}
@@ -4498,7 +4501,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				var nonce     = <?php echo wp_json_encode( $ai_nonce ); ?>;
 				function svc() { return ( svcEl.value || 'http://localhost:8787' ).replace( /\/+$/, '' ); }
 				function busy( on ) { spin.className = on ? 'spinner is-active' : 'spinner'; spin.style.cssText = 'float:none;margin:0 0 0 .4em'; askBtn.disabled = on; }
-				function showNote( html, cls ) { note.style.display = 'block'; note.style.cssText = 'display:block;margin:.4em 0;padding:.5em .7em;border-left:4px solid ' + ( cls === 'error' ? '#d63638' : ( cls === 'ok' ? '#1a7f37' : '#72aee6' ) ) + ';background:#f6f7f7'; note.innerHTML = html; }
+				function showNote( html, cls ) { note.style.display = 'block'; note.style.cssText = 'display:block;margin:.4em 0;padding:.5em .7em;border-left:4px solid ' + ( cls === 'error' ? '#d63638' : ( cls === 'ok' ? '#1a7f37' : 'color-mix(in srgb, var(--fw-accent, #3858e9) 55%, #fff)' ) ) + ';background:#f6f7f7'; note.innerHTML = html; }
 				// Best-effort same-origin text fetch; returns '' on any failure.
 				function grab( url ) { return fetch( url, { credentials: 'same-origin' } ).then( function ( r ) { return r.ok ? r.text() : ''; } ).catch( function () { return ''; } ); }
 
@@ -4677,14 +4680,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			.fw-sc-meta{display:flex;align-items:center;gap:6px;padding:6px 8px;font-size:11px;line-height:1.3}
 			.fw-sc-meta input{margin:0;flex:0 0 auto}
 			.fw-sc-name{word-break:break-all;color:#50575e}
-			.fw-sc-badge{position:absolute;top:6px;right:6px;background:#2271b1;color:#fff;font-size:10px;padding:1px 6px;border-radius:10px}
+			.fw-sc-badge{position:absolute;top:6px;right:6px;background:var(--fw-accent, #3858e9);color:#fff;font-size:10px;padding:1px 6px;border-radius:10px}
 			.fw-sc-card.is-done{outline:2px solid #1a7f37;outline-offset:-2px}
 			.fw-sc-card.is-dup{outline:2px solid #bd8600;outline-offset:-2px}
 			.fw-sc-card.is-fail{outline:2px solid #b32d2e;outline-offset:-2px}
 			.fw-sc-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:.5em 0}
 			.fw-sc-progress{display:none;margin:1em 0;padding:12px 14px;border:1px solid #dcdcde;border-radius:6px;background:#fff;max-width:520px}
 			.fw-sc-bar{height:14px;border-radius:7px;background:#f0f0f1;overflow:hidden}
-			.fw-sc-bar-fill{height:100%;width:0;background:#2271b1;transition:width .15s ease}
+			.fw-sc-bar-fill{height:100%;width:0;background:var(--fw-accent, #3858e9);transition:width .15s ease}
 			.fw-sc-prog-text{margin:.5em 0 0;font-weight:600}
 		</style>
 		<form method="post" action="" class="fw-sc-preview" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>">
