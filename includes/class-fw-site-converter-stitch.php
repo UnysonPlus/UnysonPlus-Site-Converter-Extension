@@ -395,6 +395,182 @@ class FW_Site_Converter_Stitch {
 		return array( 'shape' => $shape, 'color' => self::color_to_hex( $color ) );
 	}
 
+	/**
+	 * Detect a source PRELOADER (a full-screen loading overlay shown on load, then hidden) and extract it as
+	 * { html, css, js } for the Preloader module's "Custom (code)" style. The chrome builder writes those into
+	 * animation_preloader (enable) + preloader_style (custom) so the converted site reproduces the loader.
+	 *
+	 * Signals (need a NAME match AND an overlay trait — the capture is post-load, so the overlay is usually
+	 * hidden/`.done`): id/class matching preload|loader|loading|splash|site-loader…, AND fixed/absolute +
+	 * viewport-covering (or a hidden final state). Extraction:
+	 *   - HTML: the overlay's outer markup, cleaned of capture noise, with its DONE-state class/inline
+	 *     opacity stripped (so it renders visible; the theme wrapper owns show/hide + fade).
+	 *   - CSS: only the rules that reference the overlay's own id/classes + descendants (+ any @keyframes they
+	 *     animate) — a scoped slice, not the whole sheet.
+	 *   - JS: a SELF-CONTAINED loader script (references the overlay, small, no three/webgl/canvas/import) if
+	 *     present; else '' — the intertwined-with-app case is left for the AI tier to synthesize.
+	 * @return array|null { html, css, js } or null when no confident preloader.
+	 */
+	private static function detect_preloader( $html ) {
+		$html = (string) $html;
+		if ( '' === $html ) { return null; }
+		// Cheap pre-filter: bail unless the markup even mentions a loader-ish token (avoids DOM cost per page).
+		// `\bpre["-]` also catches the terse `#pre` / `.pre-*` convention (kage) without matching preview/press.
+		if ( ! preg_match( '/(?:id|class)="[^"]*(?:preload|loader|loading|splash|loadscreen|\bpre["\s-])/i', $html ) ) { return null; }
+
+		// The capture's data-sc-cs records only a WHITELISTED subset of computed props (no position / z-index /
+		// visibility), so the overlay trait comes from the SOURCE stylesheet + a hide-STATE class instead.
+		$all_css = self::all_style_css( $html );
+
+		$doc = new DOMDocument();
+		libxml_use_internal_errors( true );
+		$doc->loadHTML( '<?xml encoding="utf-8"?>' . $html );
+		libxml_clear_errors();
+		$xp = new DOMXPath( $doc );
+
+		$name_re  = '/(?:^|[\s_-])(?:preload|preloader|loader|loading|loadscreen|splash|site-?loader|page-?loader|intro-?cover|pre)(?:[\s_-]|$)/i';
+		$state_re = '/\b(?:is-)?(?:done|loaded|hidden|complete|ready|finished|hide|off|closed)\b/i';
+		$overlay  = null;
+		foreach ( $xp->query( '//body//*[@id or @class]' ) as $el ) {
+			if ( ! ( $el instanceof DOMElement ) ) { continue; }
+			$id  = trim( (string) $el->getAttribute( 'id' ) );
+			$cls = trim( (string) $el->getAttribute( 'class' ) );
+			$idc = ' ' . strtolower( $id . ' ' . $cls ) . ' ';
+			if ( ! preg_match( $name_re, $idc ) ) { continue; }
+			// Overlay trait: a hide-state class (post-load), OR the source CSS positions this element
+			// fixed/absolute (its own id / a non-state class rule). Either confirms a full-screen cover.
+			$has_state = (bool) preg_match( $state_re, $cls );
+			$fixed     = false;
+			$sels = array();
+			if ( '' !== $id ) { $sels[] = '#' . preg_quote( $id, '/' ); }
+			foreach ( preg_split( '/\s+/', $cls ) as $c ) { $c = trim( $c ); if ( '' !== $c && ! preg_match( $state_re, $c ) ) { $sels[] = '\.' . preg_quote( $c, '/' ); } }
+			if ( $sels ) {
+				$fixed = (bool) preg_match( '/(?:' . implode( '|', $sels ) . ')[^{}]*\{[^}]*position\s*:\s*(?:fixed|absolute)/i', $all_css );
+			}
+			if ( ! $has_state && ! $fixed ) { continue; }
+			$overlay = $el; // document order → the OUTERMOST match (the wrapper) comes first
+			break;
+		}
+		if ( ! $overlay ) { return null; }
+
+		// --- Collect the subtree's id/class tokens (for CSS scoping) + strip DONE-state so it renders visible.
+		$tokens = array();
+		$collect = function ( DOMElement $e ) use ( &$tokens ) {
+			$id = trim( (string) $e->getAttribute( 'id' ) );
+			if ( '' !== $id ) { $tokens[ '#' . strtolower( $id ) ] = true; }
+			foreach ( preg_split( '/\s+/', (string) $e->getAttribute( 'class' ) ) as $c ) {
+				$c = trim( $c ); if ( '' !== $c ) { $tokens[ '.' . strtolower( $c ) ] = true; }
+			}
+		};
+		$collect( $overlay );
+		foreach ( $xp->query( './/*[@id or @class]', $overlay ) as $d ) { if ( $d instanceof DOMElement ) { $collect( $d ); } }
+		// The overlay root often carries a hide-state class post-load (done/loaded/hidden/complete). Drop it so
+		// the extracted markup isn't invisible; the theme wrapper handles the real show → fade → remove.
+		$root_cls = preg_replace( '/\b(?:is-)?(?:done|loaded|hidden|complete|ready|fade-?out|hide|off|closed|finished)\b/i', '', (string) $overlay->getAttribute( 'class' ) );
+		$overlay->setAttribute( 'class', trim( preg_replace( '/\s+/', ' ', $root_cls ) ) );
+		if ( $overlay->hasAttribute( 'style' ) ) {
+			$st = preg_replace( '/(?:^|;)\s*(?:opacity|visibility|display|pointer-events)\s*:[^;]*/i', '', (string) $overlay->getAttribute( 'style' ) );
+			$overlay->setAttribute( 'style', trim( $st, "; \t" ) );
+		}
+
+		// --- HTML: strip capture-only attributes (data-sc-*) from the whole subtree, then serialize. Done on
+		// the DOM (not via regex) so it's immune to attribute quoting (saveHTML single-quotes values with ").
+		$strip_attrs = function ( DOMElement $e ) use ( &$strip_attrs, $xp ) {
+			$names = array();
+			foreach ( $e->attributes as $a ) { if ( 0 === stripos( $a->nodeName, 'data-sc-' ) ) { $names[] = $a->nodeName; } }
+			foreach ( $names as $n ) { $e->removeAttribute( $n ); }
+		};
+		$strip_attrs( $overlay );
+		foreach ( $xp->query( './/*', $overlay ) as $d ) { if ( $d instanceof DOMElement ) { $strip_attrs( $d ); } }
+		$out_html = trim( (string) $doc->saveHTML( $overlay ) );
+		if ( '' === $out_html ) { return null; }
+
+		// --- CSS: the rules that reference any subtree token (+ referenced @keyframes).
+		$css = self::extract_scoped_css( $all_css, array_keys( $tokens ) );
+
+		// --- JS: a self-contained loader script, if any (else '' → AI tier).
+		$js = self::extract_preloader_js( $html, array_keys( $tokens ) );
+
+		return array( 'html' => $out_html, 'css' => $css, 'js' => $js );
+	}
+
+	/**
+	 * Return only the CSS rules whose selector references one of $tokens (`#id` / `.class` from the preloader
+	 * subtree), plus any `@keyframes` those rules animate. A bounded, single-pass brace scanner — good enough to
+	 * carry a loader's styling without dragging the whole sheet along.
+	 */
+	private static function extract_scoped_css( $css, array $tokens ) {
+		$css = (string) $css;
+		if ( '' === $css || ! $tokens ) { return ''; }
+		$tok = array();
+		foreach ( $tokens as $t ) { $q = preg_quote( $t, '/' ); if ( '' !== $q ) { $tok[] = $q; } }
+		if ( ! $tok ) { return ''; }
+		$tok_re = '/(?:' . implode( '|', $tok ) . ')(?![\w-])/i';
+
+		// Split into top-level blocks: "prelude { body }". Keep @keyframes/@font-face bodies whole.
+		$len = strlen( $css ); $i = 0; $kept = array(); $anims = array(); $keyframes = array();
+		while ( $i < $len ) {
+			$brace = strpos( $css, '{', $i );
+			if ( false === $brace ) { break; }
+			$prelude = trim( substr( $css, $i, $brace - $i ) );
+			// find matching close for this block (handle one level of nesting for @media/@keyframes)
+			$depth = 0; $j = $brace; $end = $len;
+			for ( ; $j < $len; $j++ ) {
+				if ( '{' === $css[ $j ] ) { $depth++; }
+				elseif ( '}' === $css[ $j ] ) { $depth--; if ( 0 === $depth ) { $end = $j; break; } }
+			}
+			$body = substr( $css, $brace + 1, $end - $brace - 1 );
+			$block_full = $prelude . '{' . $body . '}';
+			$i = $end + 1;
+
+			if ( 0 === stripos( $prelude, '@keyframes' ) ) {
+				if ( preg_match( '/@keyframes\s+([\w-]+)/i', $prelude, $km ) ) { $keyframes[ strtolower( $km[1] ) ] = $block_full; }
+				continue;
+			}
+			if ( 0 === stripos( $prelude, '@media' ) || 0 === stripos( $prelude, '@supports' ) ) {
+				// Recurse into the at-rule body, keep only matching inner rules.
+				$inner = self::extract_scoped_css( $body, $tokens );
+				if ( '' !== trim( $inner ) ) { $kept[] = $prelude . '{' . $inner . '}'; }
+				continue;
+			}
+			if ( preg_match( $tok_re, $prelude ) ) {
+				$kept[] = $block_full;
+				if ( preg_match_all( '/animation(?:-name)?\s*:\s*([^;]+)/i', $body, $am ) ) {
+					foreach ( $am[1] as $decl ) {
+						foreach ( preg_split( '/[\s,]+/', trim( $decl ) ) as $w ) {
+							$w = strtolower( trim( $w ) );
+							if ( '' !== $w && ! preg_match( '/^(?:\d|infinite|linear|ease|ease-in|ease-out|ease-in-out|alternate|normal|reverse|both|forwards|backwards|none|running|paused|steps|cubic-bezier)/', $w ) ) { $anims[ $w ] = true; }
+						}
+					}
+				}
+			}
+		}
+		// Append the @keyframes the kept rules actually animate.
+		foreach ( array_keys( $anims ) as $name ) { if ( isset( $keyframes[ $name ] ) ) { $kept[] = $keyframes[ $name ]; } }
+		return trim( implode( "\n", $kept ) );
+	}
+
+	/**
+	 * Return a SELF-CONTAINED preloader `<script>` verbatim, or '' when none / the loader is intertwined with
+	 * the app. Heuristic: an inline script that references the overlay's id/class, is reasonably small, and does
+	 * NOT pull in the 3D/animation app (three/webgl/canvas/gsap/import/scene) — those can't be sliced out, so
+	 * they're left to the AI tier.
+	 */
+	private static function extract_preloader_js( $html, array $tokens ) {
+		if ( ! preg_match_all( '/<script\b(?![^>]*\bsrc=)[^>]*>(.*?)<\/script>/is', (string) $html, $m ) ) { return ''; }
+		$bare = array();
+		foreach ( $tokens as $t ) { $bare[] = preg_quote( ltrim( $t, '#.' ), '/' ); }
+		$ref_re = $bare ? '/(?:getElementById|querySelector|classList|\.' . '(?:id|className)|#|\.)\s*[^\n]{0,40}(?:' . implode( '|', $bare ) . ')/i' : '';
+		foreach ( $m[1] as $code ) {
+			$code = trim( $code );
+			if ( '' === $code || strlen( $code ) > 4000 ) { continue; }               // too big → likely the app bundle
+			if ( $ref_re && ! preg_match( $ref_re, $code ) ) { continue; }             // must touch the overlay
+			if ( preg_match( '/\b(?:THREE|WebGLRenderer|getContext\(|requestAnimationFrame\s*\(\s*[a-z]*frame|import\s|buildTemple|initGL|new\s+Scene)\b/i', $code ) ) { continue; } // intertwined app → skip
+			return $code;
+		}
+		return '';
+	}
+
 	private static function detect_body_text( $html ) {
 		$vars = self::css_root_vars( $html );
 		$dom = self::load_dom( (string) $html );
@@ -2690,8 +2866,13 @@ class FW_Site_Converter_Stitch {
 		// visible wordmark text and no image logo → 'icon-only' (the title stays as the a11y name). The
 		// stacked/eyebrow and icon-right variants need icon-position/tagline signals the logo detector does not
 		// currently expose, so they keep the safe 'inline-left' default (correct for the overwhelming majority).
-		$has_mark   = ( $logo['svg'] !== '' || $logo['icon'] !== '' );
-		$logo_layout = ( $logo['text'] === '' && $logo['image'] === '' && $has_mark ) ? 'icon-only' : 'inline-left';
+		$has_mark    = ( $logo['svg'] !== '' || $logo['icon'] !== '' );
+		$has_tagline = ( trim( (string) ( $logo['tagline'] ?? '' ) ) !== '' );
+		// icon-only when there's a mark but no wordmark/image; a detected tagline → stacked (title with the
+		// sub-line under it, beside the icon — kage's KAGE / HIDDEN REALMS OF KYOTO); else inline.
+		$logo_layout = ( $logo['text'] === '' && $logo['image'] === '' && $has_mark )
+			? 'icon-only'
+			: ( $has_tagline ? 'stacked-left' : 'inline-left' );
 		$logo_custom = array(
 			'site_title'   => $site_title,
 			'logo_layout'  => $logo_layout,
@@ -2703,6 +2884,8 @@ class FW_Site_Converter_Stitch {
 			$ts = self::css_len_to_unit( $logo['title_size'] );
 			if ( $ts ) { $logo_custom['title_size'] = $ts; }
 		}
+		// Tagline / sub-line of the lockup (the source's `<i>`/`.tagline` beside the wordmark).
+		if ( $has_tagline ) { $logo_custom['tagline_text'] = (string) $logo['tagline']; }
 		// The icon mark: inline SVG (verbatim) preferred, else a Lucide library id, else a RASTER emblem.
 		if ( $logo['svg'] !== '' ) {
 			$logo_custom['logo_icon'] = array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => $logo['svg'] );
@@ -3603,6 +3786,31 @@ class FW_Site_Converter_Stitch {
 			$values['animation_cursor'] = $ac;
 		}
 
+		// PRELOADER — a full-screen loading overlay in the source → the Animation Engine's Preloader module,
+		// "Custom (code)" style, filled with the extracted HTML/CSS (+ self-contained JS when present). The
+		// importer auto-activates animation-engine (needs_extensions detection in build_bundle).
+		$pre = self::detect_preloader( (string) $html );
+		if ( is_array( $pre ) && '' !== trim( (string) ( $pre['html'] ?? '' ) ) ) {
+			$pre_js = (string) ( $pre['js'] ?? '' );
+			// AI tier: when the source loader's JS was intertwined with the app (couldn't be extracted), ask the
+			// capture service to synthesize a cosmetic loader script from the HTML+CSS. Gated by the "Refine with
+			// AI" opt-in + service URL; best-effort (stays JS-less on any failure).
+			if ( '' === trim( $pre_js ) && class_exists( 'FW_Site_Converter_Mapper' )
+				&& FW_Site_Converter_Mapper::$entrance_anim_ai && '' !== FW_Site_Converter_Mapper::$entrance_anim_svc ) {
+				$ai_js = FW_Site_Converter_Mapper::ai_preloader_js( (string) $pre['html'], (string) ( $pre['css'] ?? '' ) );
+				if ( '' !== $ai_js ) { $pre_js = $ai_js; }
+			}
+			$values['animation_preloader'] = array( 'enable' => 'yes' );
+			$values['preloader_style']     = array(
+				'style'  => 'custom',
+				'custom' => array(
+					'html' => (string) $pre['html'],
+					'css'  => (string) ( $pre['css'] ?? '' ),
+					'js'   => $pre_js,
+				),
+			);
+		}
+
 		return array( 'values' => $values );
 	}
 
@@ -4074,7 +4282,7 @@ class FW_Site_Converter_Stitch {
 	}
 
 	private static function detect_logo( $html, $title ) {
-		$out = array( 'text' => '', 'icon' => '', 'image' => '', 'image_height' => 0, 'svg' => '', 'icon_color' => '', 'frame' => 'none', 'frame_bg' => '', 'title_color' => '', 'title_size' => '', 'title_weight' => '', 'title_font' => '', 'title_ls' => '', 'title_transform' => '', 'title_hover' => '', 'icon_size' => '', 'title_accent_color' => '', 'title_accent_text' => '' );
+		$out = array( 'text' => '', 'tagline' => '', 'icon' => '', 'image' => '', 'image_height' => 0, 'svg' => '', 'icon_color' => '', 'frame' => 'none', 'frame_bg' => '', 'title_color' => '', 'title_size' => '', 'title_weight' => '', 'title_font' => '', 'title_ls' => '', 'title_transform' => '', 'title_hover' => '', 'icon_size' => '', 'title_accent_color' => '', 'title_accent_text' => '' );
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return $out; }
 		$header = self::header_root( $dom );
@@ -4122,6 +4330,24 @@ class FW_Site_Converter_Stitch {
 		// Wordmark text (icons stripped) + its computed color.
 		$txt = self::text_no_icons( $brand );
 		$txt = trim( preg_replace( '/\s+/', ' ', (string) $txt ) );
+		// Two-part brand LOCKUP: a primary wordmark element (<b>/<strong>) + a secondary TAGLINE element
+		// (<i>/<em>/<small>, or a `.tagline`/`.sub`/`.eyebrow` class). kage: `<b>KAGE</b><i>HIDDEN REALMS OF
+		// KYOTO</i>`. Splitting them keeps the long glued string ("KAGEHIDDEN REALMS…") from blowing the
+		// 24-char wordmark guard below (which otherwise drops BOTH the title and the tagline).
+		$primary_el = null; $tagline_el = null;
+		foreach ( array( 'b', 'strong' ) as $tg ) { foreach ( $brand->getElementsByTagName( $tg ) as $e ) { if ( '' !== trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $e ) ) ) ) { $primary_el = $e; break 2; } } }
+		foreach ( array( 'i', 'em', 'small' ) as $tg ) { foreach ( $brand->getElementsByTagName( $tg ) as $e ) { if ( $e !== $primary_el && '' !== trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $e ) ) ) ) { $tagline_el = $e; break 2; } } }
+		if ( ! $tagline_el ) { foreach ( array( 'span', 'small', 'div', 'p' ) as $tg ) { foreach ( $brand->getElementsByTagName( $tg ) as $e ) { if ( $e !== $primary_el && preg_match( '/\b(tagline|subtitle|eyebrow|sub|kicker)\b/i', self::cls( $e ) ) && '' !== trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $e ) ) ) ) { $tagline_el = $e; break 2; } } } }
+		if ( $primary_el ) {
+			$pt = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $primary_el ) ) );
+			if ( '' !== $pt && mb_strlen( $pt ) <= 40 ) {
+				$txt = $pt; // the wordmark is just the primary part; the guard below then accepts it
+				if ( $tagline_el ) {
+					$tg = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $tagline_el ) ) );
+					if ( '' !== $tg && mb_strlen( $tg ) <= 60 ) { $out['tagline'] = $tg; }
+				}
+			}
+		}
 		// An IMAGE logo (`<a><img alt="AURA Logo"></a>`) carries the wordmark/emblem/tagline baked into the
 		// graphic and has NO real text node — text_no_icons falls back to the <img alt>, which would set a
 		// wordmark and flip logo_type to 'custom' (rendering plain alt text INSTEAD of the logo image). So when
@@ -4195,6 +4421,15 @@ class FW_Site_Converter_Stitch {
 		$svg = null;
 		foreach ( $brand->getElementsByTagName( 'svg' ) as $s ) { $svg = $s; break; }
 		if ( $svg instanceof DOMElement ) {
+			// Strip capture-only attributes (data-sc-*) from the icon subtree before serializing — otherwise the
+			// stored inline SVG carries the whole computed-style blob on every node (bloat + noise in the option).
+			$svg_nodes = array( $svg );
+			foreach ( $svg->getElementsByTagName( '*' ) as $sn ) { if ( $sn instanceof DOMElement ) { $svg_nodes[] = $sn; } }
+			foreach ( $svg_nodes as $sn ) {
+				$rm = array();
+				foreach ( $sn->attributes as $a ) { if ( 0 === stripos( $a->nodeName, 'data-sc-' ) ) { $rm[] = $a->nodeName; } }
+				foreach ( $rm as $n ) { $sn->removeAttribute( $n ); }
+			}
 			$markup = $dom->saveHTML( $svg );
 			if ( is_string( $markup ) && $markup !== '' && strlen( $markup ) < 12000 ) { $out['svg'] = $markup; }
 			// Icon color: a `text-white`/`text-*` class or the svg's computed color; else the wordmark color.
@@ -6797,6 +7032,22 @@ class FW_Site_Converter_Stitch {
 		if ( ! $header ) { return $out; }
 		$hcls = self::cls( $header );
 		if ( strpos( $hcls, 'sticky' ) !== false || strpos( $hcls, 'fixed' ) !== false ) { $out['sticky'] = true; }
+		// Class-less fixed/sticky header (position set via a STYLESHEET rule, not a Tailwind class — e.g. kage's
+		// `<header id="nav" class="nav">` + `.nav{position:fixed}`). The capture's data-sc-cs omits `position`,
+		// so read the source sheet for the header's own tag / #id / .class rule.
+		if ( ! $out['sticky'] ) {
+			$inline = strtolower( (string) $header->getAttribute( 'style' ) );
+			if ( preg_match( '/position\s*:\s*(?:fixed|sticky)/', $inline ) ) {
+				$out['sticky'] = true;
+			} else {
+				$sels = array( preg_quote( strtolower( $header->tagName ), '/' ) );
+				$hid  = trim( (string) $header->getAttribute( 'id' ) );
+				if ( '' !== $hid ) { $sels[] = '#' . preg_quote( $hid, '/' ); }
+				foreach ( preg_split( '/\s+/', $hcls ) as $c ) { $c = trim( $c ); if ( '' !== $c ) { $sels[] = '\.' . preg_quote( $c, '/' ); } }
+				$re = '/(?:' . implode( '|', $sels ) . ')(?![\w-])[^{}]*\{[^}]*position\s*:\s*(?:fixed|sticky)/i';
+				if ( preg_match( $re, self::all_style_css( $html ) ) ) { $out['sticky'] = true; }
+			}
+		}
 		// A pill nav: a container with rounded-full. Dark fill if it carries a near-black bg.
 		foreach ( $header->getElementsByTagName( 'div' ) as $d ) {
 			$c = self::cls( $d );
@@ -7386,6 +7637,7 @@ class FW_Site_Converter_Stitch {
 					'verbatim'     => false,
 					'align'        => $align,
 					'bgPattern'    => self::detect_section_pattern( $node ), // decorative SVG/gradient tile → mapper overlay
+					'bgEffects'    => self::detect_section_bg_effects( $node ), // named ambient particle layers (leaves/petals/grain…) → stacked bg_effect slots
 					'divider'      => self::detect_section_divider( $node ), // edge shape divider (wave/tilt/…) → native section divider option
 					'blocks'       => $blocks,
 				);
@@ -7647,6 +7899,70 @@ class FW_Site_Converter_Stitch {
 				'cs'    => (string) $ch->getAttribute( 'data-sc-cs' ),
 			);
 			if ( count( $out ) >= 8 ) { break; } // a section's band layers are the first few children; cap the scan
+		}
+		return $out;
+	}
+
+	/**
+	 * Ambient-background detection (deterministic, high-precision). Scans a section's subtree for DECORATIVE
+	 * particle/ambient LAYERS that a source names descriptively — `fg-leaves`, `fg-sakura`, `#grain`, a
+	 * `.snow`/`.rain` overlay, etc. — and maps each to the NEAREST built-in Background Effect. The mapper
+	 * turns the returned list into stacked `bg_effect` slots (petals + embers + grain …) on the section.
+	 *
+	 * This only fires on OBVIOUS, well-named layers (the 80% case): the element must both read as decorative
+	 * (a <canvas>, aria-hidden, a layer-marker class like `fg`/`particle`/`layer`, or absolute/fixed position)
+	 * AND carry an effect keyword. A bespoke WebGL scene with no naming hint (kage's three.js `#gl` garden,
+	 * whose "embers" live only in JS) is deliberately NOT guessed here — that ambiguous long tail is where the
+	 * AI tiers (local model / Claude) pick the closest effect or skip. Never forces a wrong guess.
+	 */
+	private static function detect_section_bg_effects( $node ) {
+		if ( ! ( $node instanceof DOMElement ) ) { return array(); }
+		// keyword (word-boundary within a class/id token) → [ effect, variant ]. Order = specificity; the
+		// `snow` engine renders petals/embers/ash/snow via its `variant` sub-option, so those share an effect.
+		$map = array(
+			'leaf|leaves|sakura|petal|petals|blossom|cherry' => array( 'snow', 'petals' ),
+			'ember|embers|cinder|cinders'                    => array( 'snow', 'embers' ),
+			'\bash\b|ashes'                                  => array( 'snow', 'ash' ),
+			'snow|snowflake|flake|flakes'                    => array( 'snow', 'snow' ),
+			'rain|rainfall|drizzle|droplet|droplets'         => array( 'rain', '' ),
+			'starfield|stars'                                => array( 'starfield', '' ),
+			'constellation'                                  => array( 'constellation', '' ),
+			'confetti'                                       => array( 'confetti', '' ),
+			'bubble|bubbles'                                 => array( 'bubbles', '' ),
+			'firefly|fireflies'                              => array( 'fireflies', '' ),
+			'meteor|meteors|shooting-?stars?'                => array( 'meteors', '' ),
+			'particle|particles'                             => array( 'particles', '' ),
+			'grain|film-?grain|noise'                        => array( 'noise', '' ),
+			'matrix'                                         => array( 'matrix', '' ),
+			'aurora'                                         => array( 'aurora', '' ),
+			'borealis'                                       => array( 'borealis', '' ),
+		);
+		$layer_marker = '/(?:^|\s)(?:fg|fg-el|particles?|layers?|decor|backdrop|bg-scene|art-layers?|overlay|ambient)(?:-[a-z0-9]+)?(?:\s|$)/';
+		$out  = array();
+		$seen = array();
+		$scanned = 0;
+		foreach ( $node->getElementsByTagName( '*' ) as $el ) {
+			if ( ++$scanned > 600 ) { break; } // bound the walk on huge sections
+			if ( ! ( $el instanceof DOMElement ) ) { continue; }
+			$hay = ' ' . strtolower( trim( self::cls( $el ) . ' ' . (string) $el->getAttribute( 'id' ) ) ) . ' ';
+			if ( ' ' === $hay ) { continue; }
+			// Decorative gate — cheap checks first.
+			$tag = strtolower( $el->tagName );
+			$decor = ( 'canvas' === $tag )
+				|| 'true' === strtolower( trim( (string) $el->getAttribute( 'aria-hidden' ) ) )
+				|| (bool) preg_match( $layer_marker, $hay )
+				|| in_array( self::sc_css( $el, 'position' ), array( 'absolute', 'fixed' ), true );
+			if ( ! $decor ) { continue; }
+			foreach ( $map as $pat => $spec ) {
+				if ( preg_match( '/(?:^|[\s_-])(?:' . $pat . ')(?:[\s_-]|$)/', $hay ) ) {
+					$key = $spec[0] . ':' . $spec[1];
+					if ( isset( $seen[ $key ] ) ) { break; }         // de-dupe identical layers (leaves + sakura → one petals)
+					$seen[ $key ] = true;
+					$out[] = array( 'effect' => $spec[0], 'variant' => $spec[1] );
+					break; // first (most specific) keyword wins for this element
+				}
+			}
+			if ( count( $out ) >= 4 ) { break; } // auto-detection cap (users can add more by hand)
 		}
 		return $out;
 	}
@@ -8184,6 +8500,37 @@ class FW_Site_Converter_Stitch {
 				return 'animate__fadeInUp';
 			}
 		}
+		return '';
+	}
+
+	/**
+	 * Text-SPLIT reveal intent — a word/line/char split-reveal on a source text element (kage's `.word-reveal`
+	 * / `.mask-line`, a SplitText/Splitting.js lockup, per-word/char span lockups) → the split_by the Text
+	 * Effects `split_reveal` should use. Returns 'words' | 'lines' | 'chars' | '' (no split). This is RICHER
+	 * than anim_intent (a whole-element entrance) — it animates the text piece-by-piece, so the mapper prefers
+	 * it over the plain entrance when present.
+	 */
+	private static function text_split_intent( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		$attr_names = '';
+		if ( $el->hasAttributes() ) { foreach ( $el->attributes as $a ) { $attr_names .= ' ' . $a->nodeName; } }
+		$hay = ' ' . strtolower( (string) $el->getAttribute( 'class' ) . ' ' . $attr_names ) . ' ';
+		if ( preg_match( '/(?:char|letter)[\s_-]*(?:reveal|split|anim|in|mask)|split[\s_-]*chars|chars?[\s_-]*reveal/', $hay ) ) { return 'chars'; }
+		if ( preg_match( '/(?:line)[\s_-]*(?:reveal|mask|split|clip)|mask[\s_-]*line|line[\s_-]*mask/', $hay ) ) { return 'lines'; }
+		if ( preg_match( '/(?:word)[\s_-]*(?:reveal|split|anim|in|mask)|split[\s_-]*words|words?[\s_-]*reveal/', $hay ) ) { return 'words'; }
+		// Structural: a run of per-word/char child spans (a split-text signature).
+		if ( $el->getElementsByTagName( 'span' )->length >= 4 ) {
+			$wordish = 0; $charish = 0; $seen = 0;
+			foreach ( $el->getElementsByTagName( 'span' ) as $s ) {
+				$sc = ' ' . strtolower( self::cls( $s ) ) . ' ';
+				if ( preg_match( '/(?:^|[\s_-])(?:word|w)(?:[\s_-]|$)/', $sc ) ) { $wordish++; }
+				if ( preg_match( '/(?:^|[\s_-])(?:char|letter|c)(?:[\s_-]|$)/', $sc ) ) { $charish++; }
+				if ( ++$seen > 40 ) { break; }
+			}
+			if ( $charish >= 4 ) { return 'chars'; }
+			if ( $wordish >= 3 ) { return 'words'; }
+		}
+		if ( preg_match( '/(?:^|[\s_-])(?:splittext|split-text|splitting|data-splitting)(?:[\s_-]|$)/', $hay ) ) { return 'words'; }
 		return '';
 	}
 
@@ -10160,9 +10507,10 @@ class FW_Site_Converter_Stitch {
 				if ( ! call_user_func( $r['match'], $child, $tag, $rules ) ) { continue; }
 				$out = call_user_func( $r['build'], $child, $tag, $rules );
 				$ai  = self::anim_intent( $child ); // source reveal/scroll-animation intent (AOS / animate.css / hooks)
+				$tfx = self::text_split_intent( $child ); // word/line/char split-reveal → Text Effects split_reveal
 				if ( is_array( $out ) ) {
-					if ( isset( $out['t'] ) ) { if ( '' !== $ai && empty( $out['anim'] ) ) { $out['anim'] = $ai; } $blocks[] = $out; } // one block
-					else { foreach ( $out as $blk ) { if ( is_array( $blk ) && isset( $blk['t'] ) ) { if ( '' !== $ai && empty( $blk['anim'] ) ) { $blk['anim'] = $ai; } $blocks[] = $blk; } } } // a list
+					if ( isset( $out['t'] ) ) { if ( '' !== $ai && empty( $out['anim'] ) ) { $out['anim'] = $ai; } if ( '' !== $tfx && empty( $out['text_fx'] ) ) { $out['text_fx'] = $tfx; } $blocks[] = $out; } // one block
+					else { foreach ( $out as $blk ) { if ( is_array( $blk ) && isset( $blk['t'] ) ) { if ( '' !== $ai && empty( $blk['anim'] ) ) { $blk['anim'] = $ai; } if ( '' !== $tfx && empty( $blk['text_fx'] ) ) { $blk['text_fx'] = $tfx; } $blocks[] = $blk; } } } // a list
 				}
 				$claimed = true;
 				break;
@@ -12916,6 +13264,11 @@ class FW_Site_Converter_Stitch {
 		// A mapped custom cursor (animation_cursor theme setting) renders via the Animation Engine. Detection-based
 		// (on the source html) so it's independent of the build_pages emit-flag reset.
 		if ( isset( $screens[0]['html'] ) && self::detect_custom_cursor( (string) $screens[0]['html'] ) ) {
+			$needs[] = 'animation-engine';
+		}
+		// A detected preloader (animation_preloader / preloader_style theme settings) also renders via the
+		// Animation Engine → ensure it's activated on import.
+		if ( isset( $screens[0]['html'] ) && self::detect_preloader( (string) $screens[0]['html'] ) ) {
 			$needs[] = 'animation-engine';
 		}
 		if ( $needs && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {

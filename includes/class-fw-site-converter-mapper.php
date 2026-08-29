@@ -1589,6 +1589,19 @@ class FW_Site_Converter_Mapper {
 	 * come from the animation-engine registry, so they're left at their safe default (no invalid value written).
 	 */
 	private static function apply_block_anim( array &$node, array $b ) {
+		// Text Effects: a WORD / LINE / CHAR split-reveal on the source text → the split_reveal effect (animates
+		// the text piece-by-piece). Only on text-bearing blocks. It REPLACES the whole-element entrance (they'd
+		// otherwise double up), and needs the Animation Engine → record the dependency.
+		if ( ! empty( $b['text_fx'] ) && in_array( (string) ( $b['t'] ?? '' ), array( 'heading', 'text' ), true )
+			&& isset( $node['atts'] ) && is_array( $node['atts'] ) ) {
+			$split = in_array( $b['text_fx'], array( 'lines', 'chars', 'words' ), true ) ? (string) $b['text_fx'] : 'words';
+			$node['atts']['text_effect'] = array(
+				'effect'       => 'split_reveal',
+				'split_reveal' => array( 'split_by' => $split, 'direction' => 'up' ),
+			);
+			self::require_extension( 'animation-engine' ); // Text Effects render via the Animation Engine
+			return; // the split-reveal is the text's animation; skip the plain entrance below
+		}
 		if ( empty( $b['anim'] ) || ! isset( $node['atts']['animation'] ) || ! is_array( $node['atts']['animation'] ) ) { return; }
 		if ( ! array_key_exists( 'enable', $node['atts']['animation'] ) ) { return; } // multi-picker shape → leave default
 		$node['atts']['animation'] = self::anim_att( (string) $b['anim'] );
@@ -5605,7 +5618,7 @@ class FW_Site_Converter_Mapper {
 		$title_html    = self::map_accent_classes( (string) ( $h['title'] ?? '' ) );
 		$subtitle_html = self::map_accent_classes( (string) ( $h['subtitle'] ?? '' ) );
 		$gradtext_css  = self::extract_gradtext_css( $title_html ) . self::extract_gradtext_css( $subtitle_html );
-		return array(
+		$sh_node = array(
 			'type' => 'simple', 'shortcode' => 'special_heading', '_items' => array(),
 			'atts' => array(
 				'unique_id' => $uid, 'css_id' => '',
@@ -5657,6 +5670,26 @@ class FW_Site_Converter_Mapper {
 				'title_color'    => $title_color,    // source title colour when it's a real non-default tone
 			),
 		);
+		// A word/line/char split-reveal on the source heading (kage's `.word-reveal` / `.mask-line`) → the Text
+		// Effects split_reveal, so the heading animates piece-by-piece like the source.
+		$sh_tfx = self::text_effect_from_cls(
+			(string) ( $h['title_class'] ?? '' ) . ' ' . (string) ( $h['subtitle_class'] ?? '' ) . ' '
+			. (string) ( $h['overline_class'] ?? '' ) . ' ' . (string) ( $layout['css_class'] ?? '' )
+		);
+		if ( $sh_tfx ) { $sh_node['atts']['text_effect'] = $sh_tfx; self::require_extension( 'animation-engine' ); }
+		return $sh_node;
+	}
+
+	/** Map a source class string to a Text Effects `text_effect` split_reveal att (or null). Shared by the
+	 *  special_heading builder and apply_block_anim so word/line/char reveals map the same way everywhere. */
+	private static function text_effect_from_cls( $cls ) {
+		$hay = ' ' . strtolower( (string) $cls ) . ' ';
+		$split = '';
+		if ( preg_match( '/(?:char|letter)[\s_-]*(?:reveal|split|anim|in|mask)|chars?[\s_-]*reveal/', $hay ) ) { $split = 'chars'; }
+		elseif ( preg_match( '/(?:line)[\s_-]*(?:reveal|mask|split|clip)|mask[\s_-]*line/', $hay ) ) { $split = 'lines'; }
+		elseif ( preg_match( '/(?:word)[\s_-]*(?:reveal|split|anim|in|mask)|words?[\s_-]*reveal|(?:^|[\s_-])split(?:text|ting)(?:[\s_-]|$)/', $hay ) ) { $split = 'words'; }
+		if ( '' === $split ) { return null; }
+		return array( 'effect' => 'split_reveal', 'split_reveal' => array( 'split_by' => $split, 'direction' => 'up' ) );
 	}
 
 	/**
@@ -5991,6 +6024,26 @@ class FW_Site_Converter_Mapper {
 				$targets[ $i ]['ref']['atts']['animation_settings']['delay'] = max( 0.0, min( 1.2, (float) $it['delay'] ) );
 			}
 		}
+	}
+
+	/** Ask the capture service's AI to synthesize a COSMETIC loader script for a detected preloader whose
+	 *  original JS was intertwined with the app (so it couldn't be extracted). POSTs the extracted { html, css }
+	 *  to `<svc>/ai-preloader-js`; returns the JS (script-tags stripped, length-capped) or '' on any error /
+	 *  AI-off. Gated by the same "Refine with AI" opt-in + service URL as the entrance-animation refine. */
+	public static function ai_preloader_js( $html, $css ) {
+		if ( ! self::$entrance_anim_ai || '' === self::$entrance_anim_svc || '' === trim( (string) $html ) ) { return ''; }
+		$url  = rtrim( self::$entrance_anim_svc, '/' ) . '/ai-preloader-js';
+		$resp = wp_remote_post( $url, array(
+			'timeout' => 90,
+			'headers' => array( 'Content-Type' => 'application/json' ),
+			'body'    => wp_json_encode( array( 'html' => (string) $html, 'css' => (string) $css ) ),
+		) );
+		if ( is_wp_error( $resp ) || 200 !== (int) wp_remote_retrieve_response_code( $resp ) ) { return ''; }
+		$data = json_decode( (string) wp_remote_retrieve_body( $resp ), true );
+		$js   = ( is_array( $data ) && isset( $data['js'] ) ) ? (string) $data['js'] : '';
+		$js   = preg_replace( '#</?script[^>]*>#i', '', $js );          // never let a <script> tag slip into the field
+		if ( strlen( $js ) > 8000 ) { $js = substr( $js, 0, 8000 ); }   // bound it
+		return trim( $js );
 	}
 
 	/** Set the modern Entrance-Animation atts on a widget node: a role-appropriate Animate.css effect on
@@ -6703,6 +6756,38 @@ class FW_Site_Converter_Mapper {
 		if ( ! $node ) { return $node; }
 		$node = self::apply_section_pattern( $node, $sec );
 		$node = self::apply_section_divider( $node, $sec );
+		$node = self::apply_section_bg_effects( $node, $sec );
+		return $node;
+	}
+
+	/**
+	 * Apply stitch-detected ambient background layers (detect_section_bg_effects) onto the section as STACKED
+	 * `bg_effect` slots — the Animation Engine Backgrounds module renders them layered behind the content. A
+	 * source that named its decorative layers (kage's `fg-leaves` + `fg-sakura` + `#grain`) reproduces as
+	 * petals + grain out of the box; the de-dupe on the stitch side means leaves+sakura collapse to one petals
+	 * layer. Emits a dependency on the animation-engine extension so the importer activates it.
+	 */
+	private static function apply_section_bg_effects( $node, array $sec ) {
+		if ( ! is_array( $node ) ) { return $node; }
+		$fx = ( isset( $sec['bgEffects'] ) && is_array( $sec['bgEffects'] ) ) ? $sec['bgEffects'] : array();
+		if ( ! $fx ) { return $node; }
+		$i = 1;
+		foreach ( $fx as $spec ) {
+			$effect = isset( $spec['effect'] ) ? (string) $spec['effect'] : '';
+			if ( '' === $effect ) { continue; }
+			$key = ( 1 === $i ) ? 'bg_effect' : 'bg_effect__' . $i;
+			$val = array( 'effect' => $effect );
+			// The `snow` engine (petals/embers/ash/snow) carries its look in a `variant` sub-option.
+			$variant = isset( $spec['variant'] ) ? (string) $spec['variant'] : '';
+			if ( 'snow' === $effect && '' !== $variant ) {
+				$val['snow'] = array( 'variant' => $variant );
+			}
+			$node['atts'][ $key ] = $val;
+			$i++;
+		}
+		if ( $i > 1 ) {
+			self::require_extension( 'animation-engine' ); // backgrounds render via the Animation Engine → importer activates it
+		}
 		return $node;
 	}
 
