@@ -2594,6 +2594,38 @@ class FW_Site_Converter_Mapper {
 		return array( 'type' => 'simple', 'shortcode' => 'testimonials', '_items' => array(), 'atts' => $atts );
 	}
 
+	/** Build the `parallax_scene` node from a decorative image-layer scene (stitch scene_image_layers). Each
+	 *  source layer → an anchored image layer with a back-to-front parallax depth + staggered entrance; the
+	 *  wall/backdrop stretches full-width. Requires the animation-engine? No — the shortcode is self-contained. */
+	private static function n_parallax_scene( array $b ) {
+		$src = ( isset( $b['layers'] ) && is_array( $b['layers'] ) ) ? $b['layers'] : array();
+		$n   = max( 1, count( $src ) );
+		$layers = array();
+		foreach ( $src as $L ) {
+			if ( ! is_array( $L ) || '' === (string) ( $L['src'] ?? '' ) ) { continue; }
+			$idx   = (int) ( $L['i'] ?? count( $layers ) );
+			$h     = in_array( ( $L['h'] ?? 'center' ), array( 'left', 'center', 'right', 'stretch' ), true ) ? $L['h'] : 'center';
+			$depth = (int) round( 15 + ( $idx / $n ) * 70 );                 // back → front gradient
+			$width = ( 'stretch' === $h ) ? 100 : ( in_array( $h, array( 'left', 'right' ), true ) ? 28 : 60 );
+			$layers[] = array(
+				'image'    => array( 'url' => (string) $L['src'], 'attachment_id' => false ),
+				'h_anchor' => $h, 'offset_x' => 0, 'v_anchor' => ( $L['v'] ?? 'bottom' ), 'offset_y' => 0,
+				'width'    => $width, 'z' => $idx + 1, 'flip' => ! empty( $L['flip'] ) ? 'yes' : 'no', 'opacity' => 100,
+				'depth'    => $depth, 'entrance' => (string) ( $L['entrance'] ?? 'up' ), 'delay' => $idx * 120,
+				'sway'     => (string) ( $L['sway'] ?? 'none' ), 'sway_amt' => 3,
+			);
+		}
+		return array(
+			'type' => 'simple', 'shortcode' => 'parallax_scene', '_items' => array(),
+			'atts' => array(
+				'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '',
+				'responsive_hide' => array(), 'custom_attrs' => array(),
+				'placement' => 'in_flow', 'height' => '70vh', 'source' => 'scroll', 'intensity' => 60, 'pass_clicks' => 'yes',
+				'layers' => $layers,
+			),
+		);
+	}
+
 	/**
 	 * A native `table` shortcode node from a captured `<table>` (recognizer block `{ rows:[[{html,header}…]…] }`).
 	 * Builds the option-type's canonical `{ header_options, cols, rows, content }` value: one `cols` entry per
@@ -6277,6 +6309,15 @@ class FW_Site_Converter_Mapper {
 		foreach ( ( $mapping['pages'] ?? array() ) as $page ) {
 			foreach ( ( $page['sections'] ?? array() ) as $sec ) {
 				if ( ! empty( $sec['omit'] ) ) { continue; } // dropped section contributes no CSS
+				// OVERLAY-HEADER CLEARANCE OVERRIDE — emitted even when the section carries no source CSS.
+				// The chrome CSS faithfully carries the source hero's own `#hero{padding-top:0}` (a `.hero`
+				// that padded its INNER wrapper, not the section, to clear a transparent overlay nav). That
+				// ID rule out-ranks the native clearance's class, so the hero rode under the nav. Emit an
+				// id+attribute override (specificity 1,1,0) that beats it, so the clearance actually wins.
+				if ( ! empty( $sec['heroTopPad'] ) && (int) $sec['heroTopPad'] > 0 ) {
+					$hid = isset( $sec['css_id'] ) ? sanitize_html_class( (string) $sec['css_id'] ) : '';
+					if ( $hid !== '' ) { $out[] = '#' . $hid . '[class]{padding-top:' . (int) $sec['heroTopPad'] . 'px !important;}'; }
+				}
 				$css = trim( (string) ( $sec['css'] ?? '' ) );
 				if ( $css === '' ) { continue; }
 				// Verbatim sections keep their source wrapper chain → used as-is. Card sections
@@ -7062,6 +7103,14 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 				$node = self::n_testimonials( $b['items'], isset( $b['design'] ) && is_array( $b['design'] ) ? $b['design'] : null );
 				self::apply_block_anim( $node, $b );
 				$items[] = self::n_column( '1_1', array( $node ) );
+				continue;
+			}
+
+			// A decorative image-LAYER scene → the native `parallax_scene` shortcode (editable diorama) in its
+			// own full-width column, instead of a frozen code_block.
+			if ( ( $b['t'] ?? '' ) === 'parallax_scene' && ! empty( $b['layers'] ) && is_array( $b['layers'] ) ) {
+				$flush_buf();
+				$items[] = self::n_column( '1_1', array( self::n_parallax_scene( $b ) ) );
 				continue;
 			}
 
@@ -7888,9 +7937,21 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 			$hpad    = (int) $sec['heroTopPad'];
 			$cur_top = isset( $sec_node['atts']['padding_top'] ) ? self::spacing_token_px( $sec_node['atts']['padding_top'] ) : 0.0;
 			if ( $hpad > $cur_top + 1 ) {
+				// NATIVE padding_top, mirroring the converter's own section-rhythm shape: a mobile-clamped BASE
+				// token plus the EXACT value on `lg` as an ARBITRARY `pt-[Npx]` token. The section CSS generator
+				// (sc_section_dynamic_css / page-<id>.css) emits a real padding rule ONLY for the arbitrary
+				// `pt-lg-[Npx]` form — the standard `pt-N` utilities are not shipped — so the desktop clearance
+				// actually renders. This native option (not a custom_css offset, which needs the editor's
+				// client-side CSS pass a raw import skips) is what carries the clearance server-side.
+				$cap_h = 112.0;
+				$sec_node['atts']['padding_top'] = array(
+					'base' => self::spacing_token( 'pt', min( (float) $hpad, $cap_h ) ),
+					'md'   => '',
+					'lg'   => 'pt-[' . (int) $hpad . 'px]',
+				);
+				// Belt-and-suspenders for a FULL-BLEED hero where `.sc-mirror` !important-resets native
+				// padding to 0: a `selector[class]` (specificity 0,2,0) + !important rule that outranks it.
 				$hcur = (string) ( $sec_node['atts']['custom_css'] ?? '' );
-				// selector[class] (specificity 0,2,0) + !important raises specificity above `.sc-mirror`
-				// (padding-top:0 !important) so the overlay-header offset actually renders on a full-bleed hero.
 				$sec_node['atts']['custom_css'] = trim( $hcur . " selector[class]{padding-top:{$hpad}px !important;}" );
 			}
 		}
@@ -7927,7 +7988,13 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 			$vs = self::section_vspace( $raw_cls );
 			$sv = array();
 			if ( ! $vspace_native ) {
-				$sv['padding-top']    = round( $vs['pt'] ) . 'px';
+				// OVERLAY-HEADER CLEARANCE: when the source cleared a transparent masthead via an INNER
+				// wrapper's top padding, the SECTION's own computed top padding is 0 — reproducing
+				// `#hero{padding-top:0 !important}` here (id specificity) would clobber the native clearance
+				// and the hero rides under the nav. Emit the clearance value at the same id authority so it
+				// wins. (heroTopPad is 0 for every non-first / non-overlay section, so it's a no-op there.)
+				$hpad_clear = (int) ( $sec['heroTopPad'] ?? 0 );
+				$sv['padding-top']    = ( $hpad_clear > 0 ? $hpad_clear : round( $vs['pt'] ) ) . 'px';
 				$sv['padding-bottom'] = round( $vs['pb'] ) . 'px';
 				if ( $vs['mt'] > 0 ) { $sv['margin-top']    = round( $vs['mt'] ) . 'px'; }
 				if ( $vs['mb'] > 0 ) { $sv['margin-bottom'] = round( $vs['mb'] ) . 'px'; }

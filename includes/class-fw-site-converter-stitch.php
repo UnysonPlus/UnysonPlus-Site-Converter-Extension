@@ -495,6 +495,82 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/**
+	 * Detect a SCROLL-PROGRESS RAIL — a fixed/absolute edge element (kage's `.rail`, a `.scroll-progress` /
+	 * `.reading-progress` / `.progress-rail` / `.scroll-indicator` side rail) that tracks reading progress,
+	 * often with per-chapter markers/labels. Mapped to the Animation Engine Scroll Progress module's
+	 * "Custom (code)" style, carrying the extracted HTML + scoped CSS (+ self-contained JS when present).
+	 * The module's driver publishes `window.upwScrollProgress` / a `--sp-progress` CSS var / a `upw:scroll`
+	 * event, so a CSS-only rail animates even when its own JS wasn't self-contained. Returns { html, css, js }
+	 * or null. Kept STRICT (a rail-named element that the source CSS positions fixed/absolute) so an ordinary
+	 * progress bar / a scrollbar isn't mis-claimed.
+	 */
+	private static function detect_scroll_rail( $html ) {
+		$html = (string) $html;
+		if ( '' === $html ) { return null; }
+		// Cheap pre-filter: a rail-ish token must appear (avoids DOM cost per page). Deliberately NOT the bare
+		// word "progress" (that matches native progress-bar widgets) — require the rail/indicator vocabulary.
+		if ( ! preg_match( '/(?:id|class)="[^"]*(?:\brail\b|scroll-?progress|scroll-?indicator|reading-?progress|progress-?rail|side-?rail|scroll-?rail|chapter-?rail)/i', $html ) ) { return null; }
+
+		$all_css = self::all_style_css( $html );
+
+		$doc = new DOMDocument();
+		libxml_use_internal_errors( true );
+		$doc->loadHTML( '<?xml encoding="utf-8"?>' . $html );
+		libxml_clear_errors();
+		$xp = new DOMXPath( $doc );
+
+		$name_re = '/(?:^|[\s_-])(?:rail|scroll-?progress|scroll-?indicator|reading-?progress|progress-?rail|side-?rail|scroll-?rail|chapter-?rail)(?:[\s_-]|$)/i';
+		$rail    = null;
+		foreach ( $xp->query( '//body//*[@id or @class]' ) as $el ) {
+			if ( ! ( $el instanceof DOMElement ) ) { continue; }
+			$tag = strtolower( $el->tagName );
+			if ( in_array( $tag, array( 'nav', 'header', 'main', 'section', 'footer' ), true ) ) { continue; } // structural, never the rail
+			$id  = trim( (string) $el->getAttribute( 'id' ) );
+			$cls = trim( (string) $el->getAttribute( 'class' ) );
+			$idc = ' ' . strtolower( $id . ' ' . $cls ) . ' ';
+			if ( ! preg_match( $name_re, $idc ) ) { continue; }
+			// Rail trait: the source CSS positions this element fixed/absolute (a floating edge rail). Read it
+			// off the id / a class rule, same as the preloader overlay test (capture omits computed position).
+			$sels = array();
+			if ( '' !== $id ) { $sels[] = '#' . preg_quote( $id, '/' ); }
+			foreach ( preg_split( '/\s+/', $cls ) as $c ) { $c = trim( $c ); if ( '' !== $c ) { $sels[] = '\.' . preg_quote( $c, '/' ); } }
+			if ( ! $sels ) { continue; }
+			if ( ! preg_match( '/(?:' . implode( '|', $sels ) . ')[^{}]*\{[^}]*position\s*:\s*(?:fixed|absolute)/i', $all_css ) ) { continue; }
+			$rail = $el; // document order → outermost match (the rail wrapper) first
+			break;
+		}
+		if ( ! $rail ) { return null; }
+
+		// Collect subtree id/class tokens (for CSS scoping).
+		$tokens  = array();
+		$collect = function ( DOMElement $e ) use ( &$tokens ) {
+			$id = trim( (string) $e->getAttribute( 'id' ) );
+			if ( '' !== $id ) { $tokens[ '#' . strtolower( $id ) ] = true; }
+			foreach ( preg_split( '/\s+/', (string) $e->getAttribute( 'class' ) ) as $c ) {
+				$c = trim( $c ); if ( '' !== $c ) { $tokens[ '.' . strtolower( $c ) ] = true; }
+			}
+		};
+		$collect( $rail );
+		foreach ( $xp->query( './/*[@id or @class]', $rail ) as $d ) { if ( $d instanceof DOMElement ) { $collect( $d ); } }
+
+		// HTML: strip capture-only data-sc-* attributes across the subtree, then serialize.
+		$strip_attrs = function ( DOMElement $e ) {
+			$names = array();
+			foreach ( $e->attributes as $a ) { if ( 0 === stripos( $a->nodeName, 'data-sc-' ) ) { $names[] = $a->nodeName; } }
+			foreach ( $names as $n ) { $e->removeAttribute( $n ); }
+		};
+		$strip_attrs( $rail );
+		foreach ( $xp->query( './/*', $rail ) as $d ) { if ( $d instanceof DOMElement ) { $strip_attrs( $d ); } }
+		$out_html = trim( (string) $doc->saveHTML( $rail ) );
+		if ( '' === $out_html ) { return null; }
+
+		$css = self::extract_scoped_css( $all_css, array_keys( $tokens ) );
+		$js  = self::extract_preloader_js( $html, array_keys( $tokens ) ); // a self-contained rail script, if any
+
+		return array( 'html' => $out_html, 'css' => $css, 'js' => $js );
+	}
+
+	/**
 	 * Return only the CSS rules whose selector references one of $tokens (`#id` / `.class` from the preloader
 	 * subtree), plus any `@keyframes` those rules animate. A bounded, single-pass brace scanner — good enough to
 	 * carry a loader's styling without dragging the whole sheet along.
@@ -3807,6 +3883,23 @@ class FW_Site_Converter_Stitch {
 					'html' => (string) $pre['html'],
 					'css'  => (string) ( $pre['css'] ?? '' ),
 					'js'   => $pre_js,
+				),
+			);
+		}
+
+		// SCROLL-PROGRESS RAIL — a fixed edge rail (kage's `.rail`) tracking reading progress → the Animation
+		// Engine's Scroll Progress module, "Custom (code)" style, carrying the extracted HTML/CSS (+ self-
+		// contained JS). The module driver exposes --sp-progress / window.upwScrollProgress so the carried rail
+		// animates on scroll. Same auto-activation of animation-engine as the preloader (needs_extensions).
+		$rail = self::detect_scroll_rail( (string) $html );
+		if ( is_array( $rail ) && '' !== trim( (string) ( $rail['html'] ?? '' ) ) ) {
+			$values['animation_scrollprog'] = array( 'enable' => 'yes' );
+			$values['scrollprog']           = array(
+				'kind'   => 'custom',
+				'custom' => array(
+					'html' => (string) $rail['html'],
+					'css'  => (string) ( $rail['css'] ?? '' ),
+					'js'   => (string) ( $rail['js'] ?? '' ),
 				),
 			);
 		}
@@ -7632,7 +7725,11 @@ class FW_Site_Converter_Stitch {
 
 					'css_id'       => self::section_id( $node, $idx ),
 					'sectionId'    => ( $node instanceof DOMElement && $node->hasAttribute( 'id' ) ) ? self::slug_from_id( $node->getAttribute( 'id' ) ) : '', // raw source id (anchor target) → Mapper::auto_id fallback agrees with section_id()
-					'heroTopPad'   => ( 0 === $idx && $overlay_px > 0 ) ? $overlay_px : 0, // overlay-header offset
+					// Overlay-header offset for the FIRST section: the detected masthead height, OR — when the
+					// header's position/height wasn't captured (a hand-authored source often omits them) — the
+					// hero's OWN top clearance (`.hero-top{padding-top:107px}`), which wrapper-flattening drops,
+					// leaving the hero riding under the nav. Carry whichever is larger so the hero clears the header.
+					'heroTopPad'   => ( 0 === $idx ) ? max( (int) $overlay_px, ( $mh instanceof DOMElement ? self::hero_top_clearance( $node ) : 0 ) ) : 0,
 					'omit'         => false,
 					'verbatim'     => false,
 					'align'        => $align,
@@ -9334,8 +9431,12 @@ class FW_Site_Converter_Stitch {
 			$cc = strtolower( (string) $c->getAttribute( 'class' ) );
 			if ( preg_match( '/\b(title|name|heading|plan-?name|step-?title)\b/', $cc ) && self::text( $c ) !== '' ) { return self::text( $c ); }
 		}
-		$strong = $el->getElementsByTagName( 'strong' )->item( 0 );
-		if ( $strong && self::text( $strong ) !== '' ) { return self::text( $strong ); }
+		// A bold LABEL used as the item title — <strong> or its presentational twin <b> (a hand-authored
+		// "chapters"/"chip" card titles with a styled <b>, not a semantic heading). Treated identically.
+		foreach ( array( 'strong', 'b' ) as $bt ) {
+			$bn = $el->getElementsByTagName( $bt )->item( 0 );
+			if ( $bn && self::text( $bn ) !== '' ) { return self::text( $bn ); }
+		}
 		return '';
 	}
 
@@ -10797,7 +10898,10 @@ class FW_Site_Converter_Stitch {
 
 	private static function is_card_grid( $el ) {
 		$cls = self::cls( $el );
-		if ( strpos( $cls, 'grid' ) === false && strpos( $cls, 'flex' ) === false ) { return false; }
+		// A hand-authored (non-Tailwind) source declares its grid via COMPUTED style, not a `grid`/`flex`
+		// class — e.g. `.chapters{display:grid}`. Consult data-sc-cs `display:grid` too, so a semantic-class
+		// grid (`.chapters`, `.features`) isn't bailed on here and flattened into a vertical stack.
+		if ( strpos( $cls, 'grid' ) === false && strpos( $cls, 'flex' ) === false && self::sc_css( $el, 'display' ) !== 'grid' ) { return false; }
 		$kids = self::el_children( $el );
 		if ( count( $kids ) < 2 ) { return false; }
 		// A fixed-width ASYMMETRIC layout (a visual + body two-column: `lg:w-[506px]` + `flex-1`, arbitrary
@@ -10821,7 +10925,77 @@ class FW_Site_Converter_Stitch {
 		foreach ( $kids as $k ) {
 			if ( self::is_card_cell( $k ) ) { $cards++; }
 		}
+		// h-tag-only card counting misses a hand-authored content grid whose cell TITLE is a styled <b>/<span>
+		// rather than a semantic heading (a "chapters"/"features" nav: <b>Label</b> + <p>desc</p>). Accept it
+		// as a real columns row when it is a strict UNIFORM content grid, so the N cells become N columns
+		// instead of 2N stacked text blocks.
+		if ( $cards < 2 && self::is_uniform_content_grid( $el, $kids ) ) { return true; }
 		return $cards >= 2;
+	}
+
+	/**
+	 * A hand-authored (non-Tailwind) GRID of uniform CONTENT cells that the h-tag-only card test misses —
+	 * e.g. a 4-up "chapters" nav where each cell is `<b>Label</b><p>desc</p>` (a styled <b>, not a semantic
+	 * heading). Strict on purpose: a REAL computed grid (display:grid, or a `grid` class), 2..6 children that
+	 * are STRUCTURALLY UNIFORM (identical tag + semantic-class signature) and each carrying substantive text.
+	 * Grid-only (never a bare flex strip) + capped + uniform, so a big multi-row gallery or a random inline
+	 * flex row is NOT mis-claimed as a columns row.
+	 */
+	/** The first hero section's OWN top clearance in px — the largest `padding-top` on a near-top content
+	 *  wrapper (e.g. `.hero-top{padding-top:107px}`) that the source uses to clear a transparent overlay
+	 *  masthead. Wrapper-flattening drops this inner padding, so the hero rides under the nav; carrying it as
+	 *  the section's overlay offset restores the source clearance. Only the first two descendant levels are
+	 *  considered (the hero's own content wrapper, not deep nested padding), and the value is gated to a
+	 *  header-sized band (60..200px) so ordinary section padding isn't mistaken for a clearance. */
+	private static function hero_top_clearance( $section ) {
+		if ( ! ( $section instanceof DOMElement ) ) { return 0; }
+		$max = 0.0;
+		foreach ( self::el_children( $section ) as $c1 ) {
+			$max = max( $max, self::sc_pad_top_px( $c1 ) );
+			foreach ( self::el_children( $c1 ) as $c2 ) { $max = max( $max, self::sc_pad_top_px( $c2 ) ); }
+		}
+		$max = (int) round( $max );
+		return ( $max >= 60 && $max <= 200 ) ? $max : 0;
+	}
+
+	/** The computed top padding (px) of an element from data-sc-cs — reads a `padding-top:` or the top value
+	 *  of a `padding:` shorthand (the first length). 0 when none. */
+	private static function sc_pad_top_px( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return 0.0; }
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*padding-top:\s*([\d.]+)px/i', $cs, $m ) ) { return (float) $m[1]; }
+		if ( preg_match( '/(?:^|;)\s*padding:\s*([\d.]+)px/i', $cs, $m ) ) { return (float) $m[1]; }
+		return 0.0;
+	}
+
+	private static function is_uniform_content_grid( $el, $kids = null ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		// ONLY the case the class-driven path misses: a HAND-AUTHORED grid declared purely in CSS
+		// (`display:grid` computed) with NO `grid`/`flex` utility class. A Tailwind `grid grid-cols-*`
+		// container already has an established mapping (card_grid / layout-row decomposition) — never
+		// override it, so this can't regress utility-class layouts.
+		$cls = self::cls( $el );
+		if ( strpos( $cls, 'grid' ) !== false || strpos( $cls, 'flex' ) !== false ) { return false; }
+		if ( self::sc_css( $el, 'display' ) !== 'grid' ) { return false; }
+		if ( $kids === null ) { $kids = self::el_children( $el ); }
+		$n = count( $kids );
+		if ( $n < 2 || $n > 6 ) { return false; }
+		$sig = null;
+		foreach ( $kids as $k ) {
+			if ( ! ( $k instanceof DOMElement ) ) { return false; }
+			$tag = strtolower( $k->tagName );
+			if ( in_array( $tag, array( 'button', 'input', 'img', 'br', 'hr', 'a' ), true ) ) { return false; }
+			// A cell that carries a SEMANTIC heading (h1-h6) is handled by the richer card / layout-row
+			// decomposition (which preserves the special_heading + text pairing) — this helper is ONLY for
+			// heading-LESS cells (a styled <b>/<span> title), so defer those and don't collapse them to text.
+			foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
+				if ( $k->getElementsByTagName( $h )->length > 0 ) { return false; }
+			}
+			$s = self::el_signature( $k );
+			if ( $sig === null ) { $sig = $s; } elseif ( $s !== $sig ) { return false; }
+			if ( mb_strlen( trim( self::text( $k ) ) ) < 4 ) { return false; }
+		}
+		return true;
 	}
 
 	/**
@@ -11060,6 +11234,12 @@ class FW_Site_Converter_Stitch {
 	 *  intact, so the carried `.fg`/`.fg-el` CSS positions the layers), with the capture's computed-style +
 	 *  data attrs stripped. Relative image srcs are absolutised by n_code() on the mapper side. */
 	private static function decorative_scene_build( $el ) {
+		// PREFER an editable Parallax Scene: if the scene decomposes into clean IMAGE layers, emit the native
+		// parallax_scene shortcode (mapper n_parallax_scene) instead of a frozen code_block.
+		$layers = self::scene_image_layers( $el );
+		if ( count( $layers ) >= 2 ) {
+			return array( 't' => 'parallax_scene', 'layers' => $layers );
+		}
 		$doc  = $el->ownerDocument;
 		$html = $doc ? (string) $doc->saveHTML( $el ) : '';
 		if ( '' === trim( $html ) ) { return null; }
@@ -11072,6 +11252,40 @@ class FW_Site_Converter_Stitch {
 			. '.sc-scene [class*="reveal"],.sc-scene [class*="rv-"],.sc-scene [style*="opacity:0"],.sc-scene [style*="opacity: 0"]'
 			. '{opacity:1 !important;transform:none !important;}</style>';
 		return array( 't' => 'html', 'role' => 'code', 'html' => '<div class="sc-tw sc-scene">' . $reveal . $html . '</div>' );
+	}
+
+	/**
+	 * Extract a decorative scene's IMAGE LAYERS for the parallax_scene shortcode. Each <img> in the scene
+	 * becomes a layer, reading its wrapper for the entrance direction (data-fg-in), sway (a `sway` class),
+	 * and flip (a `flip` class); z-order + a staggered delay come from DOM order. The capture doesn't record
+	 * layer POSITION, so the anchor is inferred (entrance direction → side; a wall/hill/backdrop → full-width),
+	 * with the mapper filling depth/width defaults. Returns [] when there aren't real image layers.
+	 */
+	private static function scene_image_layers( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return array(); }
+		$layers = array(); $i = 0; $seen = array();
+		foreach ( $el->getElementsByTagName( 'img' ) as $img ) {
+			$src = trim( (string) $img->getAttribute( 'src' ) );
+			if ( '' === $src || 0 === strpos( $src, 'data:' ) || isset( $seen[ $src ] ) ) { continue; }
+			$seen[ $src ] = true;
+			$w  = ( $img->parentNode instanceof DOMElement ) ? $img->parentNode : $img;
+			$wc = ' ' . strtolower( self::cls( $w ) . ' ' . self::cls( $img ) ) . ' ';
+			$fgin = strtolower( trim( (string) $w->getAttribute( 'data-fg-in' ) . ' ' . (string) $img->getAttribute( 'data-fg-in' ) ) );
+			$entrance = ( preg_match( '/\b(left|right|up|down)\b/', $fgin, $m ) ) ? $m[1] : 'up';
+			$h = ( 'left' === $entrance ) ? 'left' : ( ( 'right' === $entrance ) ? 'right' : 'center' );
+			if ( preg_match( '/(?:^|[\s_-])(?:wall|hill|backdrop|sky|bg|ground|horizon)(?:[\s_-]|$)/', $wc ) ) { $h = 'stretch'; }
+			$layers[] = array(
+				'src'      => $src,
+				'h'        => $h,
+				'v'        => 'bottom',
+				'entrance' => $entrance,
+				'sway'     => ( strpos( $wc, 'sway' ) !== false ) ? 'sway' : 'none',
+				'flip'     => ( strpos( $wc, 'flip' ) !== false ),
+				'i'        => $i,
+			);
+			if ( ++$i >= 24 ) { break; }
+		}
+		return $layers;
 	}
 
 	private static function is_image_grid( $el ) {
@@ -13271,6 +13485,11 @@ class FW_Site_Converter_Stitch {
 		if ( isset( $screens[0]['html'] ) && self::detect_preloader( (string) $screens[0]['html'] ) ) {
 			$needs[] = 'animation-engine';
 		}
+		// A detected scroll-progress rail (animation_scrollprog / scrollprog theme settings) renders via the
+		// Animation Engine's Scroll Progress module -> ensure it's activated on import.
+		if ( isset( $screens[0]['html'] ) && self::detect_scroll_rail( (string) $screens[0]['html'] ) ) {
+			$needs[] = 'animation-engine';
+		}
 		if ( $needs && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {
 			$files['theme-design.json']['needs_extensions'] = array_values( array_unique( $needs ) );
 		}
@@ -14871,10 +15090,21 @@ class FW_Site_Converter_Stitch {
 			if ( preg_match( '/' . $bp . ':grid-cols-(\d{1,2})/', $cls, $m ) ) { return (int) $m[1]; }
 		}
 		if ( preg_match( '/(?:^|\s)grid-cols-(\d{1,2})/', $cls, $m ) ) { return (int) $m[1]; }
+		// Explicit computed grid-template-columns (a hand-CSS source: `repeat(4, 1fr)` or an N-track list).
+		$cs = (string) $grid->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/grid-template-columns\s*:\s*repeat\(\s*(\d{1,2})/i', $cs, $m ) ) { return (int) $m[1]; }
+		if ( preg_match( '/grid-template-columns\s*:\s*([^;]+)/i', $cs, $m ) && stripos( $m[1], 'repeat' ) === false ) {
+			$tracks = preg_split( '/\s+/', trim( $m[1] ) );
+			$tc = 0; foreach ( $tracks as $t ) { if ( '' !== $t && 'none' !== $t ) { $tc++; } }
+			if ( $tc >= 2 ) { return $tc; }
+		}
 		// Non-Tailwind fallback: a plain flex/grid row of N card cells → N columns (each gets 12/N width).
 		$n = 0;
 		foreach ( self::el_children( $grid ) as $k ) { if ( self::is_card_cell( $k ) ) { $n++; } }
-		return $n >= 2 ? $n : 0;
+		if ( $n >= 2 ) { return $n; }
+		// A uniform hand-authored content grid (styled <b> labels, no h-tags) → one column per cell.
+		if ( self::is_uniform_content_grid( $grid ) ) { return count( self::el_children( $grid ) ); }
+		return 0;
 	}
 
 	/** Does the icon span lead the button (appears before the label text)? */

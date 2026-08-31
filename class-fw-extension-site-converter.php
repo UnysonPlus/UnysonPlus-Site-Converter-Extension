@@ -41,11 +41,22 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-mapper.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-tailwind.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-stitch.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-landing.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sources.php' );
 
 		// REST API for the AI Dev Kit dashboard (external local Node tool): token + localhost auth,
 		// so it can drive a full "convert a source URL and install it into THIS site" over HTTP.
 		add_action( 'rest_api_init', array( $this, '_register_rest_routes' ) );
+
+		// FRONT-END: viewport-lock CSS for a "Duplicate as landing page" mirror (front-end only — never
+		// in the builder editor, so the admin UI isn't affected).
+		add_action( 'wp_head', array( 'FW_Site_Converter_Landing', 'frontend_head' ), 100 );
+		// Re-write a landing mirror's served file when its page is saved (so Code Block edits take effect).
+		add_action( 'save_post_page', array( 'FW_Site_Converter_Landing', 'on_save' ), 20 );
+		// FRONT-END: on an INLINE "native hero" landing page, enqueue its three.js + scene scripts.
+		add_action( 'wp_enqueue_scripts', array( 'FW_Site_Converter_Landing', 'enqueue_inline' ) );
+		// FRONT-END: turn off wpautop/wptexturize on an inline landing page (raw hero markup — no <br> injection).
+		add_action( 'wp', array( 'FW_Site_Converter_Landing', 'maybe_disable_autop' ) );
 
 		if ( is_admin() ) {
 			add_action( 'admin_menu', array( $this, '_action_admin_menu' ), 30 );
@@ -69,6 +80,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			add_action( 'wp_ajax_fw_sc_export_rules', array( $this, '_ajax_export_rules' ) );
 			add_action( 'wp_ajax_fw_sc_import_rules', array( $this, '_ajax_import_rules' ) );
 			add_action( 'wp_ajax_fw_sc_selftest', array( $this, '_ajax_selftest' ) );
+			add_action( 'wp_ajax_fw_sc_landing', array( $this, '_ajax_landing' ) );
 			// AI header/footer fidelity pass: persist the verified, chrome-scoped CSS the capture service
 			// returned into the active converted theme's style.css (labeled, idempotent block).
 			add_action( 'wp_ajax_fw_sc_apply_chrome_css', array( $this, '_ajax_apply_chrome_css' ) );
@@ -1111,6 +1123,29 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$t['version'] = is_object( $this->manifest ) && method_exists( $this->manifest, 'get_version' ) ? $this->manifest->get_version() : '';
 		$t['opcache'] = function_exists( 'opcache_get_status' );
 		wp_send_json_success( $t );
+	}
+
+	/**
+	 * "Duplicate as landing page" — mirror a WebGL/three.js URL verbatim (capture service /mirror) and
+	 * import it as a Page (section → column → code_block iframe, Landing Page template). One AJAX call:
+	 * the mirror + import both run server-side (the capture service is on the same machine).
+	 */
+	public function _ajax_landing() {
+		check_ajax_referer( self::NONCE );
+		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 ); }
+		if ( ! class_exists( 'FW_Site_Converter_Landing' ) ) { wp_send_json_error( array( 'message' => __( 'Landing importer unavailable.', 'fw' ) ), 500 ); }
+		$url   = isset( $_POST['url'] ) ? esc_url_raw( wp_unslash( $_POST['url'] ) ) : '';
+		$title = isset( $_POST['title'] ) ? sanitize_text_field( wp_unslash( $_POST['title'] ) ) : '';
+		$svc   = isset( $_POST['svc'] ) ? esc_url_raw( wp_unslash( $_POST['svc'] ) ) : '';
+		if ( ! preg_match( '#^https?://#i', $url ) ) { wp_send_json_error( array( 'message' => __( 'Enter a full URL (https://…).', 'fw' ) ), 400 ); }
+		$r = FW_Site_Converter_Landing::from_url( $url, $title, $svc );
+		if ( empty( $r['ok'] ) ) { wp_send_json_error( array( 'message' => isset( $r['error'] ) ? $r['error'] : __( 'Mirror failed.', 'fw' ) ), 500 ); }
+		wp_send_json_success( array(
+			'post_id' => (int) $r['post_id'],
+			'url'     => (string) $r['url'],
+			'edit'    => get_edit_post_link( (int) $r['post_id'], 'raw' ),
+			'assets'  => (int) $r['assets'],
+		) );
 	}
 
 	public function _ajax_export_rules() {
@@ -3547,6 +3582,51 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			<p class="description" style="margin:0 0 1.2em">
 				<?php esc_html_e( 'Piece-by-piece and fallback tools. Each runs independently of the one-shot Convert flow — use them to re-run a single phase, import a bundle by hand, or apply an export your agent produced. Click a card to open it.', 'fw' ); ?>
 			</p>
+
+			<details class="fw-sc-card">
+				<summary><span class="dashicons dashicons-admin-page"></span> <?php esc_html_e( 'Duplicate as landing page (verbatim mirror)', 'fw' ); ?></summary>
+				<div class="fw-sc-card-body">
+			<p class="description">
+				<?php esc_html_e( 'For a WebGL / three.js / scroll-hijacked page the normal converter can’t decompose into editable shortcodes: grab it AS-IS. The capture service records every file the page loads (scripts, three.js, textures, fonts) in a real browser, self-hosts them under uploads, and creates a Page — one section → column → code_block holding the mirrored site in a full-viewport iframe — set to the Landing Page template. It runs exactly like the original; the rest of your site stays a normal UnysonPlus build.', 'fw' ); ?>
+			</p>
+			<p>
+				<input type="url" id="fw-sc-landing-url" class="regular-text" placeholder="https://example.com/landing-page.html" style="min-width:min(560px,90%)">
+			</p>
+			<p>
+				<button type="button" class="button button-primary" id="fw-sc-landing-go" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>"><span class="dashicons dashicons-images-alt2" style="vertical-align:text-bottom"></span> <?php esc_html_e( 'Duplicate as landing page', 'fw' ); ?></button>
+				<span id="fw-sc-landing-status" style="margin-left:.6em"></span>
+			</p>
+			<script>
+			( function () {
+				var $u = document.getElementById( 'fw-sc-landing-url' ), $b = document.getElementById( 'fw-sc-landing-go' ), $s = document.getElementById( 'fw-sc-landing-status' );
+				if ( ! $b ) { return; }
+				function svcUrl() { try { return ( typeof svc === 'function' ) ? svc() : ''; } catch ( e ) { return ''; } }
+				$b.addEventListener( 'click', function () {
+					var url = ( $u.value || '' ).trim();
+					if ( ! /^https?:\/\//i.test( url ) ) { $s.innerHTML = '<span style="color:#b32d2e"><?php echo esc_js( __( 'Enter a full URL (https://…).', 'fw' ) ); ?></span>'; return; }
+					$b.disabled = true;
+					$s.innerHTML = '<span class="spinner is-active" style="float:none;margin:0 4px 0 0"></span><?php echo esc_js( __( 'Mirroring the page in a real browser & self-hosting its assets… (~20–40s)', 'fw' ) ); ?>';
+					var fd = new FormData();
+					fd.append( 'action', 'fw_sc_landing' );
+					fd.append( '_wpnonce', $b.getAttribute( 'data-nonce' ) );
+					fd.append( 'url', url );
+					fd.append( 'svc', svcUrl() );
+					fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } )
+						.then( function ( r ) { return r.json(); } )
+						.then( function ( j ) {
+							$b.disabled = false;
+							if ( j && j.success && j.data && j.data.url ) {
+								$s.innerHTML = '<span style="color:#1a7f37">✓ <?php echo esc_js( __( 'Landing page created', 'fw' ) ); ?></span> — <a href="' + j.data.url + '" target="_blank" rel="noopener"><?php echo esc_js( __( 'View', 'fw' ) ); ?></a>' + ( j.data.edit ? ' · <a href="' + j.data.edit + '"><?php echo esc_js( __( 'Edit', 'fw' ) ); ?></a>' : '' ) + ' (' + ( j.data.assets || 0 ) + ' <?php echo esc_js( __( 'assets', 'fw' ) ); ?>)';
+							} else {
+								$s.innerHTML = '<span style="color:#b32d2e">✕ ' + ( ( j && j.data && j.data.message ) || '<?php echo esc_js( __( 'Failed. Is the capture service running?', 'fw' ) ); ?>' ) + '</span>';
+							}
+						} )
+						.catch( function ( e ) { $b.disabled = false; $s.innerHTML = '<span style="color:#b32d2e">✕ ' + ( e && e.message ? e.message : e ) + '</span>'; } );
+				} );
+			} )();
+			</script>
+				</div>
+			</details>
 
 			<details class="fw-sc-card">
 				<summary><span class="dashicons dashicons-media-archive"></span> <?php esc_html_e( 'Convert from a bundle (.zip)', 'fw' ); ?></summary>
