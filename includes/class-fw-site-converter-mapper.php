@@ -3578,8 +3578,11 @@ class FW_Site_Converter_Mapper {
 			if ( ! isset( $atts['design_settings'][ $dkey ] ) || ! is_array( $atts['design_settings'][ $dkey ] ) ) { $atts['design_settings'][ $dkey ] = array(); }
 			if ( 'grid' === $dkey ) {
 				// Uniform grid — carry the source col-spans as the per-column ratio (a featured tile stays wider).
+				// The gallery view reads the desktop column COUNT from INSIDE `columns` ({ count:'N', 'N':{…} }) — a
+				// sibling `count` is ignored, so without it the grid fell back to the default and stacked the tiles
+				// full-width. Put count inside columns (the sibling stays, harmless) so the N-col grid renders.
 				$atts['design_settings']['grid']['count']   = (string) $count;
-				$atts['design_settings']['grid']['columns'] = array( (string) $count => array( 'col_ratio' => $ratio ) );
+				$atts['design_settings']['grid']['columns'] = array( 'count' => (string) $count, (string) $count => array( 'col_ratio' => $ratio ) );
 			} elseif ( in_array( $dkey, array( 'masonry', 'metro' ), true ) ) {
 				// Column-count designs use the nested `columns` shape `{ count:'N', 'N':{} }` + a gap default.
 				$n = ! empty( $gd['columns'] ) ? (string) $gd['columns'] : '3';
