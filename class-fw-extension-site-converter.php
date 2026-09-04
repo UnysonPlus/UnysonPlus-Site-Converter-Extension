@@ -902,6 +902,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'error'         => '',
 		);
 
+		// The plugin-free FSE output is gated on the Page Builder being OFF (a deliberate opt-out of the
+		// builder). Refuse to install a block theme while the Page Builder extension is active — the
+		// authoritative guard for every entry point into this worker (the UI radio is merely disabled).
+		if ( function_exists( 'fw_ext' ) && fw_ext( 'page-builder' ) ) {
+			$out['error'] = __( 'Block Theme output is unavailable while the Page Builder extension is active. Deactivate the Page Builder (Unyson+ → Extensions) to convert to a standalone block theme.', 'fw' );
+			return $out;
+		}
+
 		if ( $source_url === '' || ! preg_match( '#^https?://#i', $source_url ) ) {
 			$out['error'] = __( 'A valid http(s) source URL is required.', 'fw' );
 			return $out;
@@ -1530,6 +1538,12 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		// standalone FSE block theme from the source URL (capture.mjs --target=block-theme → import_dir →
 		// install_block_theme). Reuses the same "redirect to the done page" the faithful fast-path uses.
 		if ( 'block-theme' === self::sc_target_opt() ) {
+			// Defense-in-depth for the disabled radio: the Block Theme (plugin-free FSE) output is gated on the
+			// Page Builder being OFF. Refuse it while the Page Builder extension is active, so a stale / crafted
+			// POST can't bypass the UI gate and install an FSE theme out from under an active builder.
+			if ( function_exists( 'fw_ext' ) && fw_ext( 'page-builder' ) ) {
+				wp_send_json_error( array( 'message' => __( 'Block Theme output is unavailable while the Page Builder extension is active. Deactivate the Page Builder (Unyson+ → Extensions) to convert to a standalone block theme.', 'fw' ) ) );
+			}
 			if ( $sc_src === '' ) {
 				wp_send_json_error( array( 'message' => __( 'Block Theme output converts from a URL. Enter the source URL above.', 'fw' ) ) );
 			}
@@ -2945,9 +2959,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				<!-- Shared options (apply to whichever source is selected) -->
 				<div class="fw-sc-opts" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.5em 1.8em;margin:.7em 0 .4em;font-size:13px;color:#3c434a">
 				<?php
-				// Block Theme output needs the block editor: disable it when the Classic Editor is enforced.
+				// Block Theme is the standalone, plugin-free FSE output — for people NOT using the Unyson+ page
+				// builder. Gate it on the Page Builder extension being ACTIVE (the normal case): the user
+				// deliberately deactivates the Page Builder to opt into a block theme, so it isn't an accidental
+				// sibling of the default builder path. (Was gated on the Classic Editor being enforced — a proxy
+				// for "wants the builder" that broke once the page builder stopped requiring Classic Editor.) It
+				// also needs the BLOCK editor, so it stays disabled while the Classic Editor is enforced too (an
+				// FSE theme can't be edited in the classic editor).
+				$upw_pb_active      = ( function_exists( 'fw_ext' ) && fw_ext( 'page-builder' ) );
 				$upw_classic        = ( class_exists( 'Classic_Editor' ) || 'classic' === get_option( 'classic-editor-replace' ) );
-				$upw_block_disabled = $upw_classic;
+				$upw_block_disabled = $upw_pb_active || $upw_classic;
 				?>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Output', 'fw' ); ?></legend>
@@ -2958,7 +2979,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							<label style="display:block;margin:.1em 0" title="<?php echo esc_attr__( 'Portable: WordPress core blocks only. The theme runs with no plugin dependency — the broadest-reach option.', 'fw' ); ?>"><input type="radio" name="fw_sc_vocab" value="core" checked> <?php esc_html_e( 'Core blocks', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'portable', 'fw' ); ?>)</span></label>
 							<label style="display:block;margin:.1em 0" title="<?php echo esc_attr__( 'Richer: emit UnysonPlus blocks where they map (button / heading / text / section). The output then depends on the UnysonPlus plugin being active.', 'fw' ); ?>"><input type="radio" name="fw_sc_vocab" value="enriched"> <?php esc_html_e( 'UnysonPlus blocks', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'needs the plugin', 'fw' ); ?>)</span></label>
 						</div>
-						<?php if ( $upw_block_disabled ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme needs the block editor — it is disabled while the Classic Editor is enforced.', 'fw' ); ?></p><?php endif; ?>
+						<?php if ( $upw_pb_active ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme is a standalone, plugin-free output — deactivate the Page Builder extension (Unyson+ → Extensions) to use it.', 'fw' ); ?></p><?php elseif ( $upw_block_disabled ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme needs the block editor — it is disabled while the Classic Editor is enforced.', 'fw' ); ?></p><?php endif; ?>
 					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Capture', 'fw' ); ?></legend>
