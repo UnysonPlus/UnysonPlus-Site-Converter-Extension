@@ -91,6 +91,9 @@ class FW_Site_Converter_Theme_Generator {
 			// header.php/footer.php — it stays NEAR-EMPTY so get_header()/get_footer() fall back to
 			// the PARENT theme's templates, which render the Header/Footer Theme Settings we wrote.
 			'chrome_via_settings' => ! empty( $c['chrome_via_settings'] ),
+			// Source design-token :root custom properties (--dark, --brand-*, --background, …) → emitted into
+			// the child theme's :root so arbitrary/semantic var-based classes resolve. Sanitised on emit.
+			'css_vars' => ( isset( $c['css_vars'] ) && is_array( $c['css_vars'] ) ) ? $c['css_vars'] : array(),
 			'layout' => array(
 				// Source content-container width (Bootstrap .container / Tailwind max-w-* / any
 				// centered wrapper) → applied to .fw-container. Validated to a CSS length.
@@ -98,6 +101,7 @@ class FW_Site_Converter_Theme_Generator {
 			),
 			'fonts' => array(
 				'heading'        => isset( $fonts['heading'] ) && $fonts['heading'] !== '' ? (string) $fonts['heading'] : '',
+				'heading_stack'  => isset( $fonts['heading_stack'] ) && $fonts['heading_stack'] !== '' ? (string) $fonts['heading_stack'] : '',
 				'heading_weight' => self::css_weight( isset( $fonts['heading_weight'] ) ? $fonts['heading_weight'] : '' ),
 				'body'    => isset( $fonts['body'] ) && $fonts['body'] !== '' ? (string) $fonts['body'] : '',
 				'google'  => isset( $fonts['google'] ) && $fonts['google'] !== '' ? esc_url_raw( (string) $fonts['google'] ) : '',
@@ -313,7 +317,8 @@ class FW_Site_Converter_Theme_Generator {
 		$heading_face = isset( $cap['typography']['heading']['fontFamily'] ) ? (string) $cap['typography']['heading']['fontFamily'] : '';
 		if ( '' === trim( $heading_face ) ) { $heading_face = self::section_heading_face( $cap ); }
 		if ( '' === trim( (string) $heading_face ) && isset( $logo['computed']['fontFamily'] ) ) { $heading_face = (string) $logo['computed']['fontFamily']; }
-		$heading_font = self::first_family( $heading_face );
+		$heading_font  = self::first_family( $heading_face );
+		$heading_stack = self::heading_fallback_stack( $heading_face );
 		$body_font    = self::first_family( isset( $body['fontFamily'] ) ? $body['fontFamily'] : '' );
 		// Fall back to the design-config's own `fonts` block (the PHP conversion path fills these from the
 		// source's computed font-family — detect_computed_fonts — where the nested logo/section computed
@@ -321,6 +326,7 @@ class FW_Site_Converter_Theme_Generator {
 		// for self-hosted-font sources, so the family in the carried CSS never actually loaded.
 		$cfg_fonts = isset( $cap['fonts'] ) && is_array( $cap['fonts'] ) ? $cap['fonts'] : array();
 		if ( $heading_font === '' && ! empty( $cfg_fonts['heading'] ) ) { $heading_font = self::first_family( (string) $cfg_fonts['heading'] ); }
+		if ( $heading_stack === '' && ! empty( $cfg_fonts['heading'] ) ) { $heading_stack = self::heading_fallback_stack( (string) $cfg_fonts['heading'] ); }
 		if ( $body_font === '' && ! empty( $cfg_fonts['body'] ) )       { $body_font = self::first_family( (string) $cfg_fonts['body'] ); }
 		$google       = self::pick_google_fonts(
 			isset( $assets['fonts'] ) ? (array) $assets['fonts'] : array(),
@@ -526,10 +532,11 @@ class FW_Site_Converter_Theme_Generator {
 				'mode' => isset( $provided['mode'] ) && $provided['mode'] === 'standalone' ? 'standalone' : 'child',
 			),
 			'fonts' => array_filter( array(
-				'heading' => $heading_font,
-				'body'    => $body_font,
-				'google'  => $google,
-				'icons'   => $icons_url,
+				'heading'       => $heading_font,
+				'heading_stack' => $heading_stack,
+				'body'          => $body_font,
+				'google'        => $google,
+				'icons'         => $icons_url,
 			), $nonempty ),
 			'colors' => array_filter( array(
 				'ink'         => $ink,
@@ -582,6 +589,30 @@ class FW_Site_Converter_Theme_Generator {
 			return '';
 		}
 		return $first;
+	}
+
+	/**
+	 * A source heading font-family stack normalised to a CSS value — returned ONLY when the source
+	 * pairs the primary display face with a SECOND NAMED (non-generic) fallback (e.g. a licensed
+	 * `Neutraface Condensed Titling` backed by the web-safe `Alfa Slab One`). We can't rehost the
+	 * licensed primary, so preserving the named fallback (which DOES load, via the source's own
+	 * @font-face) keeps headings in the intended display font instead of collapsing to a serif.
+	 * Returns '' for the common single-face case, so the caller keeps its default `'<primary>',Georgia,serif`.
+	 */
+	public static function heading_fallback_stack( $raw ) {
+		$raw = trim( (string) $raw );
+		if ( $raw === '' ) { return ''; }
+		$generics = array( 'serif', 'sans-serif', 'monospace', 'system-ui', 'ui-sans-serif', 'ui-serif', 'ui-monospace', 'cursive', 'fantasy', 'inherit', 'initial' );
+		$named = 0; $parts = array();
+		foreach ( explode( ',', $raw ) as $fam ) {
+			$fam = trim( $fam );
+			if ( $fam === '' ) { continue; }
+			$bare = trim( $fam, "\"'" );
+			if ( in_array( strtolower( $bare ), $generics, true ) ) { $parts[] = strtolower( $bare ); }
+			else { $named++; $parts[] = "'" . $bare . "'"; }
+		}
+		if ( $named < 2 ) { return ''; } // single display face → caller keeps its default stack
+		return implode( ',', $parts );
 	}
 
 	/** The display font from the first section that has a heading, if any. */
@@ -1389,22 +1420,20 @@ class FW_Site_Converter_Theme_Generator {
 			$files['assets/js/interactivity.js'] = self::interactivity_js();
 		}
 
-		// CROSS-ORIGIN-SAFE INSPECTOR — a self-contained vanilla script bundled into EVERY converted
-		// theme. It stays dormant on the live site and only activates when the page URL carries
-		// `?upw-inspect=1` (the dashboard adds it to the embedded iframe). Because it runs INSIDE the
-		// converted page it is same-origin to the page + its conversion-map.json, so the hover-inspector
-		// and the footer-gap/height report work where the parent dashboard (a different origin) cannot.
-		// Always emitted; the query-param guard (here + the functions.php enqueue) keeps it inert live.
-		$files['assets/inspector.js'] = self::inspector_js();
-
-		// CONVERSION DEBUG MAP — bundle the per-node conversion-map.json (hash → { sc, mapped, src_cls,
-		// dropped, custom_css }) into the theme so the dashboard hover-inspector can fetch it same-origin at
-		// <site>/wp-content/themes/<slug>/conversion-map.json. Best-effort: a failure must never break the
-		// theme build, and it rides BOTH the install and zip paths (both feed off build_files()).
-		if ( ! empty( $cfg['conversion_map'] ) && is_array( $cfg['conversion_map'] ) ) {
-			$json = function_exists( 'wp_json_encode' ) ? wp_json_encode( $cfg['conversion_map'] ) : json_encode( $cfg['conversion_map'] );
-			if ( is_string( $json ) && $json !== '' ) {
-				$files['conversion-map.json'] = $json;
+		// CROSS-ORIGIN-SAFE INSPECTOR + CONVERSION DEBUG MAP — a dashboard-preview dev aid (hover-inspect,
+		// iframe auto-height, footer-gap report), dormant on the live site (guarded to `?upw-inspect`). It's
+		// OFF by default now, so a SHIPPED theme stays clean — it only ever mattered inside the converter's
+		// preview iframe. Re-enable when you want the dashboard inspector:
+		//   add_filter( 'fw_sc_include_inspector', '__return_true' );
+		if ( apply_filters( 'fw_sc_include_inspector', false, $cfg ) ) {
+			$files['assets/inspector.js'] = self::inspector_js();
+			// The per-node map (hash → { sc, mapped, src_cls, dropped, custom_css }) the inspector fetches
+			// same-origin. Best-effort: a failure must never break the build (rides both install + zip paths).
+			if ( ! empty( $cfg['conversion_map'] ) && is_array( $cfg['conversion_map'] ) ) {
+				$json = function_exists( 'wp_json_encode' ) ? wp_json_encode( $cfg['conversion_map'] ) : json_encode( $cfg['conversion_map'] );
+				if ( is_string( $json ) && $json !== '' ) {
+					$files['conversion-map.json'] = $json;
+				}
 			}
 		}
 
@@ -2080,11 +2109,28 @@ JS;
 		$col = isset( $cfg['colors'] ) && is_array( $cfg['colors'] ) ? $cfg['colors'] : array();
 		$fh  = isset( $cfg['fonts']['heading'] ) ? $cfg['fonts']['heading'] : '';
 		$fb  = isset( $cfg['fonts']['body'] ) ? $cfg['fonts']['body'] : '';
-		$head_stack = $fh !== '' ? "'" . $fh . "',Georgia,serif" : 'Georgia,serif';
+		$head_stack = ( isset( $cfg['fonts']['heading_stack'] ) && $cfg['fonts']['heading_stack'] !== '' ) ? (string) $cfg['fonts']['heading_stack'] : ( $fh !== '' ? "'" . $fh . "',Georgia,serif" : 'Georgia,serif' );
 		$body_stack = $fb !== '' ? "'" . $fb . "',system-ui,sans-serif" : 'system-ui,sans-serif';
 
 		$out = "/* ---- Design tokens & typography (self-contained — independent of the parent\n"
 			. "   theme's Theme Settings typography) ---- */\n";
+		// Source design-token :root custom properties (--dark, --brand-red, --background, …) so the converted
+		// page's arbitrary `bg-[hsl(var(--dark))]` and semantic `bg-background` classes resolve (else a dark
+		// section renders white and its white heading vanishes). Values are sanitised: only safe CSS-value
+		// characters, no braces/semicolons/url()/expression, to keep the emitted rule injection-proof.
+		$cvars = ( isset( $cfg['css_vars'] ) && is_array( $cfg['css_vars'] ) ) ? $cfg['css_vars'] : array();
+		if ( $cvars ) {
+			$decls = array();
+			foreach ( $cvars as $name => $val ) {
+				$name = preg_replace( '/[^a-zA-Z0-9-]/', '', (string) $name );
+				if ( '' === $name || 0 !== strpos( $name, '--' ) ) { $name = '--' . ltrim( (string) $name, '-' ); }
+				$val = trim( (string) $val );
+				if ( '' === $name || '--' === $name || '' === $val ) { continue; }
+				if ( preg_match( '/[{}<>;]|url\(|expression|javascript:/i', $val ) ) { continue; } // reject unsafe values
+				$decls[] = "\t{$name}: {$val};";
+			}
+			if ( $decls ) { $out .= ":root {\n" . implode( "\n", $decls ) . "\n}\n"; }
+		}
 		if ( ! empty( $col['bg'] ) ) {
 			// Defer to the editable Site Background option (--site-bg-color, set by the converter's
 			// site_background value) so the page canvas stays EDITABLE in Theme Settings; the detected
@@ -2497,7 +2543,7 @@ JS;
 		$bg    = $cfg['background'];
 		$fh    = $cfg['fonts']['heading'];
 		$fb    = $cfg['fonts']['body'];
-		$head_stack = $fh !== '' ? "'" . $fh . "',Georgia,serif" : 'Georgia,serif';
+		$head_stack = ( isset( $cfg['fonts']['heading_stack'] ) && $cfg['fonts']['heading_stack'] !== '' ) ? (string) $cfg['fonts']['heading_stack'] : ( $fh !== '' ? "'" . $fh . "',Georgia,serif" : 'Georgia,serif' );
 		$body_stack = $fb !== '' ? "'" . $fb . "',system-ui,sans-serif" : 'system-ui,sans-serif';
 
 		$css  = self::contrast_review_comment( $cfg );
@@ -2773,12 +2819,14 @@ JS;
 		// CROSS-ORIGIN-SAFE INSPECTOR — enqueue the bundled inspector.js ONLY when the page URL carries
 		// `?upw-inspect` (the dashboard adds it to the embedded iframe). The script itself re-guards on the
 		// query param, so it stays inert on the live site. Loaded on BOTH the raw-chrome + normal paths.
-		$out .= "/** In-page inspector — only when the URL carries ?upw-inspect (dashboard-embedded). */\n";
-		$out .= "function {$fn}_inspector() {\n";
-		$out .= "\tif ( ! isset( \$_GET['upw-inspect'] ) ) { return; }\n";
-		$out .= "\twp_enqueue_script( '{$slug}-inspector', get_theme_file_uri( 'assets/inspector.js' ), array(), wp_get_theme()->get( 'Version' ), true );\n";
-		$out .= "}\n";
-		$out .= "add_action( 'wp_enqueue_scripts', '{$fn}_inspector', 30 );\n\n";
+		if ( apply_filters( 'fw_sc_include_inspector', false, $cfg ) ) {
+			$out .= "/** In-page inspector — only when the URL carries ?upw-inspect (dashboard-embedded). */\n";
+			$out .= "function {$fn}_inspector() {\n";
+			$out .= "\tif ( ! isset( \$_GET['upw-inspect'] ) ) { return; }\n";
+			$out .= "\twp_enqueue_script( '{$slug}-inspector', get_theme_file_uri( 'assets/inspector.js' ), array(), wp_get_theme()->get( 'Version' ), true );\n";
+			$out .= "}\n";
+			$out .= "add_action( 'wp_enqueue_scripts', '{$fn}_inspector', 30 );\n\n";
+		}
 
 		// FAVICON — the source site's favicon, bundled into the theme as favicon.<ext>.
 		//  • A self-contained <head> link (every format, incl. .ico) shown ONLY while no WP Site Icon is set,
@@ -2790,14 +2838,16 @@ JS;
 		// Conversion-map <head> link — lets the AI Dev Kit dashboard inspector locate this theme's
 		// conversion-map.json regardless of theme slug or asset-optimizer combining (which strips any
 		// /themes/<slug>/ URL from the page). Best-effort; a 404 just disables the inspector map.
-		$out .= "/** Points the Site-Converter inspector at this theme's conversion map. */\n";
-		$out .= "function {$fn}_conversion_map_link() {\n";
-		$out .= "\t\$sc_map = get_theme_file_path( 'conversion-map.json' );\n";
-		$out .= "\tif ( \$sc_map && file_exists( \$sc_map ) ) {\n";
-		$out .= "\t\techo '<link rel=\"unysonplus-conversion-map\" href=\"' . esc_url( get_theme_file_uri( 'conversion-map.json' ) ) . '\">' . \"\\n\";\n";
-		$out .= "\t}\n";
-		$out .= "}\n";
-		$out .= "add_action( 'wp_head', '{$fn}_conversion_map_link' );\n\n";
+		if ( apply_filters( 'fw_sc_include_inspector', false, $cfg ) ) {
+			$out .= "/** Points the Site-Converter inspector at this theme's conversion map. */\n";
+			$out .= "function {$fn}_conversion_map_link() {\n";
+			$out .= "\t\$sc_map = get_theme_file_path( 'conversion-map.json' );\n";
+			$out .= "\tif ( \$sc_map && file_exists( \$sc_map ) ) {\n";
+			$out .= "\t\techo '<link rel=\"unysonplus-conversion-map\" href=\"' . esc_url( get_theme_file_uri( 'conversion-map.json' ) ) . '\">' . \"\\n\";\n";
+			$out .= "\t}\n";
+			$out .= "}\n";
+			$out .= "add_action( 'wp_head', '{$fn}_conversion_map_link' );\n\n";
+		}
 
 		if ( $favicon_file !== '' ) {
 			$out .= "/** Self-contained favicon <head> link — only while no WP Site Icon is set. */\n";

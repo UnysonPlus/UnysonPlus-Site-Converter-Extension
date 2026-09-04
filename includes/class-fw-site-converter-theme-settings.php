@@ -277,6 +277,21 @@ class FW_Site_Converter_Theme_Settings {
 			}
 			return $value; // resolved media value — don't recurse into it
 		}
+		// ROOT-RELATIVE media (a header/footer LOGO stored as `/assets/logo.png`) — the http branch above
+		// misses it, so it would 404 as `localhost/assets/logo.png`. Basename-match it to the imported copy
+		// (else absolutise to the source origin for a working hotlink) via the mapper's shared resolver.
+		if ( $is_media && '/' === $url[0] && '//' !== substr( $url, 0, 2 ) && 0 !== strpos( $url, '/wp-content/' )
+			&& class_exists( 'FW_Site_Converter_Mapper' ) ) {
+			$v = FW_Site_Converter_Mapper::upload_val( $url );
+			if ( ! empty( $v['url'] ) ) {
+				$value['url'] = (string) $v['url'];
+				if ( ! empty( $v['attachment_id'] ) ) {
+					if ( array_key_exists( 'attachment-id', $value ) ) { $value['attachment-id'] = (string) $v['attachment_id']; }
+					if ( array_key_exists( 'attachment_id', $value ) )  { $value['attachment_id']  = (string) $v['attachment_id']; }
+				}
+			}
+			return $value;
+		}
 		foreach ( $value as $k => $v ) { $value[ $k ] = self::localize_media( $v ); }
 		return $value;
 	}

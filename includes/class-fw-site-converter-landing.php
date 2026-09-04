@@ -145,7 +145,11 @@ class FW_Site_Converter_Landing {
 		$json = wp_json_encode( $tree );
 
 		// --- 6) create (or update) the Page + wire the builder + the Landing Page template. ---
-		$template = isset( $opts['template'] ) && '' !== $opts['template'] ? (string) $opts['template'] : self::pick_template();
+		// No dedicated page template: the per-page layout meta (apply_landing_layout) + the forced-override
+		// hook make the page chrome-less + full-width on the DEFAULT template, so a bespoke template like
+		// page-landing.php / page-full-width.php would just duplicate the Page Settings. A caller can still
+		// opt into a specific template via $opts['template'].
+		$template = isset( $opts['template'] ) && '' !== $opts['template'] ? (string) $opts['template'] : '';
 		$status   = isset( $opts['status'] ) ? (string) $opts['status'] : 'publish';
 		$post_id  = isset( $opts['post_id'] ) ? (int) $opts['post_id'] : 0;
 
@@ -158,12 +162,14 @@ class FW_Site_Converter_Landing {
 		update_post_meta( $post_id, '_upw_import_hash', md5( $json ) );
 		update_post_meta( $post_id, '_upw_landing_mirror', 1 ); // → frontend_head() emits the viewport-lock CSS (front-end only)
 		update_post_meta( $post_id, '_upw_landing_file', $live_file ); // → on_save() re-writes this pristine file from the edited code
-		update_post_meta( $post_id, '_wp_page_template', $template );
+		if ( '' !== $template ) { update_post_meta( $post_id, '_wp_page_template', $template ); }
+		else { delete_post_meta( $post_id, '_wp_page_template' ); } // default template — chrome handled by meta + hook
 		// fw_options: the builder_active flag is what makes the theme render builder output (per page-builder AGENTS).
 		$fw_options = get_post_meta( $post_id, 'fw_options', true );
 		if ( ! is_array( $fw_options ) ) { $fw_options = array(); }
 		$fw_options['page-builder'] = array( 'json' => $json, 'builder_active' => true );
 		update_post_meta( $post_id, 'fw_options', $fw_options );
+		self::apply_landing_layout( $post_id ); // chrome-less + full-width via per-page meta (robust, survives saves)
 
 		$out['ok']      = true;
 		$out['post_id'] = (int) $post_id;
@@ -286,6 +292,10 @@ class FW_Site_Converter_Landing {
 		$out['assets'] = self::copy_tree( $mirror_dir, $dest_path );
 
 		$html    = (string) file_get_contents( $index );
+		// Captured landing pages can be multiple MB. The `.*?` regexes below (style/script extraction,
+		// script-stripping) would otherwise hit PHP's default pcre.backtrack_limit (1M) and return false —
+		// which previously fell through to storing the whole <!DOCTYPE> document and rendered blank.
+		if ( (int) ini_get( 'pcre.backtrack_limit' ) < 50000000 ) { @ini_set( 'pcre.backtrack_limit', '50000000' ); }
 		$hero_id = 'upw-hero-' . substr( md5( $slug ), 0, 8 ); // stable per slug → JS proxy anchor + wrapper id
 
 		// 1) <style> → one blob, scoped to the block, asset urls absolutised.
@@ -295,7 +305,7 @@ class FW_Site_Converter_Landing {
 		// DOM in a themed page, the theme's base rules (e.g. `.btn{background:#141414}`) would otherwise
 		// tie with a class-scoped `selector .btn` and win on load order. Anchoring on the id lifts every
 		// hero rule to id-level specificity (1,x,0), so the source's own styling always beats theme bleed.
-		$css = self::absolutise_assets( self::scope_css( $css, 'selector#' . $hero_id ), $dest_url );
+		$css = self::externalise_data_uris( self::absolutise_assets( self::scope_css( $css, 'selector#' . $hero_id ), $dest_url ), $dest_path, $dest_url );
 		// Defensive: neutralise any stray empty <p> wpautop might still inject into the hero markup.
 		$css = 'selector p:empty{display:none!important;margin:0!important}' . $css;
 
@@ -330,12 +340,21 @@ class FW_Site_Converter_Landing {
 		if ( '' !== $scene_url ) { $scripts[] = $scene_url; }
 
 		// 4) <body> inner → strip scripts (enqueued separately), <main>→<div> (no clash with theme <main>),
-		//    absolutise asset urls.
-		$body = preg_match( '#<body[^>]*>(.*?)</body>#is', $html, $bm ) ? $bm[1] : $html;
+		//    absolutise asset urls. Extract the body with STRING ops (not a `(.*?)` regex) so a multi-MB
+		//    page can never blow the PCRE backtrack limit and fall through to the whole <!DOCTYPE> document.
+		$body   = $html;
+		$bopen  = stripos( $html, '<body' );
+		if ( false !== $bopen ) {
+			$bopen = strpos( $html, '>', $bopen );          // end of the opening <body …> tag
+			$bclose = strripos( $html, '</body>' );
+			if ( false !== $bopen && false !== $bclose && $bclose > $bopen ) {
+				$body = substr( $html, $bopen + 1, $bclose - $bopen - 1 );
+			}
+		}
 		$body = preg_replace( '#<script[^>]*>.*?</script>#is', '', $body );
 		$body = preg_replace( '#<main\b#i', '<div', $body, 1 );
 		$body = preg_replace( '#</main\s*>#i', '</div>', $body, 1 );
-		$body = trim( self::absolutise_assets( $body, $dest_url ) );
+		$body = trim( self::externalise_data_uris( self::absolutise_assets( $body, $dest_url ), $dest_path, $dest_url ) );
 		// Collapse blank lines: wpautop turns a blank line (\n\n) into an empty <p>. Removing them (while
 		// keeping indentation) stops those artifacts without hurting the editor's readability.
 		$body = preg_replace( "#\n[ \t]*\n+#", "\n", $body );
@@ -376,7 +395,11 @@ class FW_Site_Converter_Landing {
 		$json = wp_json_encode( $tree );
 
 		// 6) create/update the Page + wire the builder + the no-chrome template.
-		$template = isset( $opts['template'] ) && '' !== $opts['template'] ? (string) $opts['template'] : self::pick_template();
+		// No dedicated page template: the per-page layout meta (apply_landing_layout) + the forced-override
+		// hook make the page chrome-less + full-width on the DEFAULT template, so a bespoke template like
+		// page-landing.php / page-full-width.php would just duplicate the Page Settings. A caller can still
+		// opt into a specific template via $opts['template'].
+		$template = isset( $opts['template'] ) && '' !== $opts['template'] ? (string) $opts['template'] : '';
 		$status   = isset( $opts['status'] ) ? (string) $opts['status'] : 'publish';
 		$post_id  = isset( $opts['post_id'] ) ? (int) $opts['post_id'] : 0;
 		$postarr  = array( 'post_title' => $title, 'post_type' => 'page', 'post_status' => $status, 'post_name' => $slug, 'post_content' => '' );
@@ -389,7 +412,8 @@ class FW_Site_Converter_Landing {
 		update_post_meta( $post_id, '_upw_landing_inline', 1 );          // → enqueue_inline() loads the scripts on this page
 		update_post_meta( $post_id, '_upw_hero_id', $hero_id );          // → the wrapper/proxy id the scene JS binds to
 		update_post_meta( $post_id, '_upw_hero_scripts', wp_json_encode( $scripts ) );
-		update_post_meta( $post_id, '_wp_page_template', $template );
+		if ( '' !== $template ) { update_post_meta( $post_id, '_wp_page_template', $template ); }
+		else { delete_post_meta( $post_id, '_wp_page_template' ); } // default template — chrome handled by meta + hook
 		// Clear any prior iframe-mirror markers if this page was previously a sandbox import.
 		delete_post_meta( $post_id, '_upw_landing_mirror' );
 		delete_post_meta( $post_id, '_upw_landing_file' );
@@ -397,6 +421,7 @@ class FW_Site_Converter_Landing {
 		if ( ! is_array( $fw_options ) ) { $fw_options = array(); }
 		$fw_options['page-builder'] = array( 'json' => $json, 'builder_active' => true );
 		update_post_meta( $post_id, 'fw_options', $fw_options );
+		self::apply_landing_layout( $post_id ); // chrome-less + full-width via per-page meta (robust, survives saves)
 
 		$out['ok'] = true; $out['post_id'] = (int) $post_id; $out['url'] = get_permalink( $post_id );
 		return $out;
@@ -445,6 +470,30 @@ class FW_Site_Converter_Landing {
 	}
 
 	/**
+	 * FRONT-END (hooked wp): force chrome-less + full-width on ANY landing page (inline or iframe mirror)
+	 * by setting the theme's layout override directly — keyed off our own `_upw_landing_*` meta, NOT the
+	 * page template. This is the reliable path: `_wp_page_template` can fail to resolve (e.g. reset by an
+	 * editor save, or not honored on a child theme), so relying on `page-landing.php` to set the override
+	 * is fragile; the per-page Page-Settings meta is also read late (get_the_ID, after the loop) so it can
+	 * miss at footer render. Setting the static override here — early, once per request — covers header AND
+	 * footer regardless. Still overridable per-page: an explicit Page-Settings value is layout-cascade
+	 * level 1 and wins over this (level 2). No-op if the theme isn't Unyson (function absent).
+	 */
+	public static function maybe_force_landing_layout() {
+		if ( is_admin() || ! is_singular( 'page' ) ) { return; }
+		if ( ! function_exists( 'unysonplus_set_layout_override' ) ) { return; }
+		$id = get_queried_object_id();
+		if ( ! $id ) { return; }
+		if ( ! get_post_meta( $id, '_upw_landing_inline', true ) && ! get_post_meta( $id, '_upw_landing_mirror', true ) ) { return; }
+		unysonplus_set_layout_override( array(
+			'hide_header' => true,
+			'hide_footer' => true,
+			'width'       => 'full',
+			'hide_title'  => true,
+		) );
+	}
+
+	/**
 	 * Heuristic: does a captured page HIJACK the window scroll (Lenis/Locomotive, or a wheel/touchmove
 	 * listener that preventDefault-s)? Such pages must stay in the iframe (inlining would let the hijack
 	 * take over the whole site). A plain requestAnimationFrame render loop + pointer parallax is NOT a
@@ -464,6 +513,38 @@ class FW_Site_Converter_Landing {
 	 */
 	private static function absolutise_assets( $s, $dest_url ) {
 		return preg_replace( '#(["\'(])\s*assets/#', '$1' . $dest_url . '/assets/', (string) $s );
+	}
+
+	/**
+	 * Externalise large inline `data:` URIs (base64 images/media the capture embedded straight into the
+	 * markup). A single captured page can carry megabytes of them, which bloats the stored Code Block past
+	 * what shortcode parsing can handle (it renders blank) and re-decodes on every request. We decode each
+	 * large one to a real file under assets/ and swap the URI for its uploads URL. Only URIs whose base64
+	 * payload is over ~1.5KB are externalised (tiny icons stay inline). Char-class match = linear, so this
+	 * is safe on multi-MB strings.
+	 */
+	private static function externalise_data_uris( $s, $dest_path, $dest_url ) {
+		return preg_replace_callback(
+			'#data:([a-z0-9.+/-]+);base64,([A-Za-z0-9+/=]{2000,})#i',
+			function ( $m ) use ( $dest_path, $dest_url ) {
+				$data = base64_decode( $m[2], true );
+				if ( false === $data ) { return $m[0]; }
+				$exts = array(
+					'image/jpeg' => 'jpg', 'image/jpg' => 'jpg', 'image/png' => 'png', 'image/gif' => 'gif',
+					'image/webp' => 'webp', 'image/avif' => 'avif', 'image/svg+xml' => 'svg', 'image/x-icon' => 'ico',
+					'video/mp4' => 'mp4', 'video/webm' => 'webm', 'audio/mpeg' => 'mp3',
+					'font/woff2' => 'woff2', 'font/woff' => 'woff', 'application/font-woff' => 'woff',
+				);
+				$ext  = isset( $exts[ strtolower( $m[1] ) ] ) ? $exts[ strtolower( $m[1] ) ] : 'bin';
+				$name = 'inline-' . substr( md5( $m[2] ), 0, 16 ) . '.' . $ext;
+				$dir  = $dest_path . '/assets';
+				if ( ! is_dir( $dir ) ) { wp_mkdir_p( $dir ); }
+				$file = $dir . '/' . $name;
+				if ( ! is_file( $file ) ) { file_put_contents( $file, $data ); }
+				return $dest_url . '/assets/' . $name;
+			},
+			(string) $s
+		);
 	}
 
 	/**
@@ -527,6 +608,13 @@ class FW_Site_Converter_Landing {
 		if ( preg_match( '/^(\.(?:js|is-ready|intro-done|hot|press)(?:[.:#\[][^\s>+~,]*)*)(.*)$/', $s, $m ) ) { // body-level state class
 			return $sel . $m[1] . $m[2];
 		}
+		// A LEADING bare `[data-…]` is a body-state attribute (e.g. `[data-mode="detail"] #panel`, from
+		// `<body data-mode>`); attach it to the root (the body proxy) instead of treating it as a descendant,
+		// or the JS toggling data-mode on the wrapper would never light up its rules. (Element-level data
+		// attributes carry a tag/class prefix — `.book-card[data-hovered]` — so they don't match here.)
+		if ( preg_match( '/^(\[data-[^\]]*\](?:[.:#\[][^\s>+~,]*)*)(.*)$/i', $s, $m ) ) {
+			return $sel . $m[1] . $m[2];
+		}
 		return $sel . ' ' . $s;                                                    // ordinary → descendant
 	}
 
@@ -542,12 +630,19 @@ class FW_Site_Converter_Landing {
 		return $parts;
 	}
 
-	/** Pick the best "no chrome" page template that exists in the active theme. */
-	private static function pick_template() {
-		$templates = wp_get_theme()->get_page_templates( null, 'page' );
-		foreach ( array( 'page-landing.php', 'page-no-header.php', 'page-full-width.php' ) as $t ) {
-			if ( isset( $templates[ $t ] ) ) { return $t; }
-		}
-		return 'default';
+	/**
+	 * Make a landing page chrome-less + full-width via PER-PAGE meta (the theme's Page Settings), NOT
+	 * only the page template. These metas are level 1 in the theme's layout cascade — the HIGHEST
+	 * priority, above the template override (level 2) — and, unlike `_wp_page_template` (which WordPress
+	 * quietly resets to default on some editor/builder saves), they are ordinary saved page options that
+	 * survive. So the hero stays header-less / footer-less / edge-to-edge even if the template assignment
+	 * is lost. Harmless on non-Unyson themes (the option is simply never read).
+	 */
+	private static function apply_landing_layout( $post_id ) {
+		if ( ! function_exists( 'fw_set_db_post_option' ) ) { return; }
+		fw_set_db_post_option( $post_id, 'page_header', 'd-none' );    // Header -> Hidden
+		fw_set_db_post_option( $post_id, 'hide_site_footer', 'yes' );  // Hide Site Footer -> Yes
+		fw_set_db_post_option( $post_id, 'content_width', 'full' );    // Content Width -> Full (edge-to-edge)
+		fw_set_db_post_option( $post_id, 'hide_page_title', true );    // Hide Page Title -> Yes
 	}
 }

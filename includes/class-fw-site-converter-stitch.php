@@ -797,6 +797,29 @@ class FW_Site_Converter_Stitch {
 	 * @param array $tokens
 	 * @return string CSS
 	 */
+	/**
+	 * The source's DESIGN-token `:root` custom properties (from the captured `tokens.vars`), MINUS
+	 * Tailwind's internal runtime vars (`--tw-*`, which are transform/ring/shadow STATE and must never
+	 * be frozen to a static value). Returned as a `--name => value` map. These back both arbitrary-value
+	 * classes (`bg-[hsl(var(--dark))]`) and semantic classes (`bg-background`), so a child theme that
+	 * doesn't define them renders those as transparent/invalid — e.g. a dark section going white with its
+	 * white heading then invisible. Emitted verbatim into the child theme's `:root`.
+	 */
+	public static function design_root_vars( array $tokens ) {
+		$out  = array();
+		$vars = ( isset( $tokens['vars'] ) && is_array( $tokens['vars'] ) ) ? $tokens['vars'] : array();
+		foreach ( $vars as $name => $val ) {
+			$name = trim( (string) $name );
+			if ( '' === $name || is_array( $val ) ) { continue; }
+			if ( 0 !== strpos( $name, '--' ) ) { $name = '--' . ltrim( $name, '-' ); }
+			if ( 0 === strpos( $name, '--tw-' ) ) { continue; } // Tailwind runtime state — never freeze
+			$val = trim( (string) $val );
+			if ( '' === $val || strlen( $val ) > 120 ) { continue; }
+			$out[ $name ] = $val;
+		}
+		return $out;
+	}
+
 	public static function tokens_to_css_vars( array $tokens ) {
 		$lines = array();
 
@@ -4551,6 +4574,30 @@ class FW_Site_Converter_Stitch {
 				$anc = $anc->parentNode;
 			}
 		}
+		// CSS-COMPOSED MARK → inline SVG. A brand whose icon is drawn in pure CSS (nested gradient <div>s, no
+		// <img>/<svg>) carries no capturable mark — the capture stage reconstructs it as a faithful inline SVG and
+		// stamps it on the mark root as `data-sc-logo-svg`. Lift that verbatim into the icon (svg-inline) so the
+		// gradient logo survives, sized to the mark's own box. (Synthesis lives in capture-extract.mjs, where the
+		// live geometry is; PHP just consumes the stamped markup — one source of truth, no duplicated geometry math.)
+		if ( $out['svg'] === '' ) {
+			$mark_el = null;
+			$b_svg   = trim( (string) $brand->getAttribute( 'data-sc-logo-svg' ) );
+			if ( 0 === stripos( $b_svg, '<svg' ) ) { $mark_el = $brand; }
+			else {
+				foreach ( $brand->getElementsByTagName( '*' ) as $el ) {
+					$v = trim( (string) $el->getAttribute( 'data-sc-logo-svg' ) );
+					if ( 0 === stripos( $v, '<svg' ) ) { $mark_el = $el; $b_svg = $v; break; }
+				}
+			}
+			if ( $mark_el && strlen( $b_svg ) < 12000 ) {
+				$out['svg'] = $b_svg;
+				// Size the icon to the reconstructed mark's own box (the capture stamped the source width).
+				$mw = self::sc_css( $mark_el, 'width' );
+				if ( $mw === '' ) { $mw = self::tw_size_px( self::cls( $mark_el ) ); }
+				if ( $out['icon_size'] === '' && $mw !== '' && preg_match( '/^([0-9.]+)(px|rem|em)?$/', trim( $mw ) ) ) { $out['icon_size'] = trim( $mw ); }
+				// The synthesized mark carries its OWN gradient fills → no icon tint / frame tile to infer.
+			}
+		}
 		if ( $out['svg'] === '' ) { $out['icon'] = self::detect_lucide_in( $brand ); }
 		return $out;
 	}
@@ -6859,9 +6906,11 @@ class FW_Site_Converter_Stitch {
 		// renders. Prefer these OVER the tailwind fontFamily token and the Google-Fonts URL order, both of
 		// which can mislabel heading vs body (e.g. a wordmark/token or an Inter-first URL → heading=Inter over
 		// the true display face Playfair Display, which then overrides the correct css-tokens heading var).
-		list( $c_head, $c_body ) = self::detect_computed_fonts( (string) $html );
+		list( $c_head, $c_body, $c_head_stack ) = self::detect_computed_fonts( (string) $html );
+		$head_stack = '';
 		if ( $c_head !== '' ) { $head_font = $c_head; }
 		if ( $c_body !== '' ) { $body_font = $c_body; }
+		if ( isset( $c_head_stack ) && $c_head_stack !== '' ) { $head_stack = (string) $c_head_stack; }
 		// Fall back to the families named in the Google-Fonts URL only when a computed face is still missing.
 		if ( $head_font === '' && isset( $gfonts[0] ) ) { $head_font = $gfonts[0]; }
 		if ( $body_font === '' ) { $body_font = isset( $gfonts[1] ) ? $gfonts[1] : ( isset( $gfonts[0] ) ? $gfonts[0] : '' ); }
@@ -6912,7 +6961,10 @@ class FW_Site_Converter_Stitch {
 			// as an absolute URL. Bundled into the child theme at build time and used as the Site Icon /
 			// <head> link. '' when none could be resolved.
 			'favicon' => self::detect_favicon( (string) $html, '' ),
-			'fonts'  => array( 'heading' => $head_font, 'body' => $body_font, 'google' => $google ),
+			// The source's design-token :root custom properties (--dark, --brand-*, --background, …) so
+			// arbitrary `[hsl(var(--dark))]` + semantic `bg-background` classes resolve in the child theme.
+			'css_vars' => self::design_root_vars( $tokens ),
+			'fonts'  => array( 'heading' => $head_font, 'heading_stack' => $head_stack, 'body' => $body_font, 'google' => $google ),
 			'colors' => array(
 				'ink'          => $ink !== '' ? $ink : '#1a1a1a',
 				'accent'       => $accent,
@@ -7439,11 +7491,21 @@ class FW_Site_Converter_Stitch {
 		// real family. Do NOT pool h3+ into the vote: card/section titles (icon-box, article, "Quick Links")
 		// are numerous and usually render in the BODY font, so tallying them lets the body font outvote the
 		// true display face (e.g. 11 Inter h3s drowning the 5 Playfair Display h1/h2s → heading mis-set to Inter).
-		$head = '';
+		$head = ''; $head_stack = '';
 		foreach ( array( 'h1', 'h2' ) as $tag ) {
 			foreach ( $dom->getElementsByTagName( $tag ) as $h ) {
-				$fam = $first_family( self::sc_css( $h, 'font-family' ) );
-				if ( $fam !== '' ) { $head = $fam; break 2; }
+				$raw = self::sc_css( $h, 'font-family' );
+				$fam = $first_family( $raw );
+				if ( $fam !== '' ) {
+					$head = $fam;
+					// Keep the FULL computed stack too (e.g. `Neutraface Condensed Titling, Alfa Slab One, cursive`)
+					// so a licensed primary that we can't rehost still resolves to its web-safe NAMED fallback
+					// instead of a system serif — used for the global `--font-heading` / `:is(h…)` stack.
+					if ( class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
+						$head_stack = FW_Site_Converter_Theme_Generator::heading_fallback_stack( $raw );
+					}
+					break 2;
+				}
 			}
 		}
 		if ( $head === '' ) { // no h1/h2 face → fall back to the most common h3 face
@@ -7462,7 +7524,7 @@ class FW_Site_Converter_Stitch {
 		// If body ended up equal to the heading display face (headings dominate the <p> sample on a sparse
 		// page), leave body empty rather than mislabel — the theme's default body stack is safer than a serif.
 		if ( $body !== '' && $head !== '' && strcasecmp( $body, $head ) === 0 ) { $body = ''; }
-		return array( $head, $body );
+		return array( $head, $body, $head_stack );
 	}
 
 	/** (headline, body) RAW font family names from the fontFamily tokens (the generator wraps them). */
@@ -7721,7 +7783,12 @@ class FW_Site_Converter_Stitch {
 					'sectionCs'    => (string) $node->getAttribute( 'data-sc-cs' ), // the section's COMPUTED style → faithful full-width band background (mapper reproduces bg the class parse misses)
 					'sectionLayers' => self::section_layers( $node ), // direct-child "full-bleed" layers (class/style/computed) → mapper hoists a solid band fill that lives on an INNER layer, not the section root
 					'sectionBgImage' => $section_bg, // a HERO full-bleed background <img> → the section's Background image (detected + removed from content above)
-					'sectionContainerW' => self::map_container_width( self::section_content_max_width( $node ) ), // content-band max-width → Container Width preset (shared named width)
+					// TWO levels of width: the section's OUTER container (~1400, incl. the hero which has NO inner
+					// grid cap) → the section's own container_width; and the GRID band cap (a max-w-5xl/6xl card
+					// grid = 1024/1152) → pushed onto that band's flexbox content_width so it stays narrower than
+					// the container. The mapper falls back to the container when a section has no narrower band.
+					'sectionContainerW' => self::map_container_width( self::section_content_max_width( $node, 1600.0 ) ), // OUTER container (hero + all)
+					'sectionBandW'      => self::map_container_width( self::section_content_max_width( $node, 1300.0 ) ), // inner GRID band cap
 
 					'css_id'       => self::section_id( $node, $idx ),
 					'sectionId'    => ( $node instanceof DOMElement && $node->hasAttribute( 'id' ) ) ? self::slug_from_id( $node->getAttribute( 'id' ) ) : '', // raw source id (anchor target) → Mapper::auto_id fallback agrees with section_id()
@@ -7948,16 +8015,21 @@ class FW_Site_Converter_Stitch {
 	 * @param DOMElement $node
 	 * @return float px, or 0
 	 */
-	private static function section_content_max_width( $node ) {
+	private static function section_content_max_width( $node, $max_px = 1300.0 ) {
 		if ( ! ( $node instanceof DOMElement ) ) { return 0.0; }
 		$best = 0.0;
 		foreach ( $node->getElementsByTagName( '*' ) as $el ) {
 			$cs = (string) $el->getAttribute( 'data-sc-cs' );
 			if ( $cs === '' || ! preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/', $cs, $m ) ) { continue; }
 			$px = (float) $m[1];
-			// Only a REAL constraint (narrower than a normal page container) → a named Container Width. A cap
-			// at/above ~1300px is effectively the global width, so that section should Inherit, not pin a width.
-			if ( $px < 480 || $px > 1300 ) { continue; }
+			// The section's real CONTENT-BAND cap is the widest CENTERED content wrapper that is NARROWER than
+			// the page's outer container — a `max-w-5xl` card grid (1024), a `max-w-6xl` grid (1152), etc. The
+			// outer full-width container (~1400px, `max-w-[1400px]`/`max-w-7xl`) is NOT the content band — the
+			// bands INSIDE it are narrower and vary per section, and THAT is what a converted section/flexbox
+			// must reproduce (else every grid renders 1400px = too wide). Two callers: $max_px=1300 (default)
+			// finds the GRID band cap (the outer ~1400 wrapper is excluded, the 5xl/6xl grid wins); $max_px=1600
+			// finds the section's OUTER CONTAINER (the ~1400 wrapper) for the section's own container_width.
+			if ( $px < 480 || $px > $max_px ) { continue; }
 			$cls = ' ' . strtolower( (string) $el->getAttribute( 'class' ) ) . ' ';
 			$centered = strpos( $cls, 'mx-auto' ) !== false || strpos( $cls, 'container' ) !== false
 				|| strpos( $cls, 'max-w-' ) !== false || preg_match( '/margin(?:-left|-right)?:\s*auto|(?:^|;)\s*margin:\s*[^;]*\bauto\b/', $cs );
@@ -7983,6 +8055,12 @@ class FW_Site_Converter_Stitch {
 			// to Narrow (768) and rendered cramped. The heading keeps its own narrower cap via its block_max_width.
 			if ( $px > $best ) { $best = $px; }
 		}
+		// $best is now the section's OUTERMOST/widest content container (the source's real per-section
+		// container — e.g. modfii's consistent 1400px), NOT an inner text cap. Every section pins to it, so the
+		// converted site reproduces the source's ONE consistent container instead of a jumble of per-section
+		// widths (768/896/1024/…). A section genuinely narrower than the site container pins its own (narrower)
+		// width; the inner text caps a heading keeps via block_max_width. (map_container_width turns a
+		// non-standard width like 1400 into a shared "Content 1400" preset via build_container_width_presets.)
 		return $best;
 	}
 
@@ -8162,7 +8240,21 @@ class FW_Site_Converter_Stitch {
 		// Mirrors the JS testimonialsOf() structural fallback.
 		self::register_recognizer( 'testimonials', 92,
 			function ( $el ) { return self::is_testimonials_grid( $el ); },
-			function ( $el ) { $rows = self::testimonials_items( $el ); return count( $rows ) >= 2 ? array( 't' => 'testimonials', 'items' => $rows, 'design' => self::detect_testimonial_design( $el, count( $rows ) ) ) : null; }
+			function ( $el ) {
+				$rows = self::testimonials_items( $el );
+				if ( count( $rows ) < 2 ) { return null; }
+				// PER-CARD BOX + text alignment — the source often boxes each testimonial (bg/border/radius/
+				// shadow, e.g. modfii's `bg-background rounded-2xl p-8 border`). Read the first card's skin +
+				// its text-align so the mapper sets the shortcode's Box Style + text_align (each card boxed,
+				// left/centre matching the source) instead of the hardcoded unboxed+centred default.
+				$card_box = null; $align = '';
+				foreach ( self::el_children( $el ) as $card ) {
+					if ( null === $card_box ) { $card_box = self::read_card_skin( $card ); }
+					if ( '' === $align ) { $ccs = (string) $card->getAttribute( 'data-sc-cs' ); if ( preg_match( '/(?:^|;)\s*text-align:\s*(left|center|right|start|end)/i', $ccs, $am ) ) { $align = strtolower( $am[1] ); } }
+					if ( null !== $card_box && '' !== $align ) { break; }
+				}
+				return array( 't' => 'testimonials', 'items' => $rows, 'design' => self::detect_testimonial_design( $el, count( $rows ) ), 'cardBox' => $card_box, 'align' => $align );
+			}
 		);
 		// A SINGLE featured testimonial (not a grid) → the `testimonials` shortcode with one item, so the
 		// star RATING, the quote, and the AUTHOR name/role (split, not run together) all render natively —
@@ -8199,10 +8291,23 @@ class FW_Site_Converter_Stitch {
 			function ( $el ) { return self::is_posts_grid( $el ); },
 			function ( $el ) { return self::posts_grid_build( $el ); }
 		);
+		// An AUTO-SCROLL MARQUEE / horizontal reel strip (`animate-marquee`/`animate-scroll-left`, or an
+		// `overflow-x-auto` flex row of many fixed-width `flex-shrink-0` cards) → ONE verbatim code_block,
+		// so the horizontal scroll strip (video reels / logo ticker) survives instead of being split into
+		// stacked columns. Above card_grid/layout_row so it wins the split. JS twin: isMarqueeStrip().
+		self::register_recognizer( 'marquee_strip', 95,
+			function ( $el ) { return self::is_marquee_strip( $el ); },
+			function ( $el ) {
+				$doc = $el->ownerDocument;
+				if ( ! $doc ) { return null; }
+				$v = self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) );
+				return '' !== $v ? array( 't' => 'html', 'role' => 'code', 'wide' => true, 'html' => '<div class="sc-tw">' . $v . '</div>', 'marquee' => true ) : null;
+			}
+		);
 		// A grid/flex of uniform cards → one "columns" row (each cell → icon_box / text / code).
 		self::register_recognizer( 'card_grid', 90,
 			function ( $el ) { return self::is_card_grid( $el ); },
-			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'cols' => $cols ) : null; }
+			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols ) : null; }
 		);
 		// A NEWSLETTER / email-signup FORM — a `<form>` with a text/email input (+ usually a submit button) →
 		// the native `newsletter` shortcode (an AJAX signup wired to the Mailer extension), NOT a stray button
@@ -8339,8 +8444,21 @@ class FW_Site_Converter_Stitch {
 					$anc = $anc->parentNode; $vd++;
 				}
 				$is_bg = $covers && ( $self_abs || $anc_abs );
+				// Aspect ratio from the video's own `aspect-[W/H]` class (a portrait reel is `aspect-[9/16]`), so
+				// the media_video box matches instead of letterboxing a portrait clip inside a forced 16:9 frame.
+				$vaspect = '';
+				if ( preg_match( '/aspect-\[(\d+)\/(\d+)\]/', $vcls, $am ) ) {
+					$k = $am[1] . 'x' . $am[2];
+					if ( in_array( $k, array( '16x9', '4x3', '1x1', '21x9', '9x16', '3x4' ), true ) ) { $vaspect = $k; }
+				}
+				// Responsive visibility: the source often ships a MOBILE `sm:hidden` reel beside a desktop one —
+				// carry that so the mobile-only clip doesn't ALSO show on desktop (a stray letterboxed box). Read
+				// the video's own + wrapping-ancestor classes (the toggle usually sits on the wrapper).
+				$rcls = ' ' . self::cls( $el ); $ra = $el->parentNode; $rd = 0;
+				while ( $ra instanceof DOMElement && $rd < 3 ) { $rcls .= ' ' . self::cls( $ra ); $ra = $ra->parentNode; $rd++; }
 				return array(
 					't' => 'video', 'role' => 'video', 'mode' => 'self_hosted', 'bg' => (bool) $is_bg,
+					'aspect' => $vaspect, 'cover' => (bool) $covers, 'rhideCls' => $rcls,
 					// The scrim over a background video (a `from-slate-950/90` gradient the source layers for text
 					// legibility) → carried as the section Background Overlay, matching the image-bg hero path.
 					'overlay' => $is_bg ? self::media_bg_overlay( $el ) : '',
@@ -8432,7 +8550,7 @@ class FW_Site_Converter_Stitch {
 		// using the precise class-based recognizers and any-other-framework site falls through to these.
 		self::register_recognizer( 'card_grid_cs', 85,
 			function ( $el ) { return self::cs_is_card_grid( $el ); },
-			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'cols' => $cols ) : null; }
+			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols ) : null; }
 		);
 		self::register_recognizer( 'button_cs', 55,
 			function ( $el ) { return self::cs_is_button( $el ); },
@@ -8447,7 +8565,7 @@ class FW_Site_Converter_Stitch {
 		// kept verbatim WITH its classes (.sc-tw wrapper, so Tailwind styling survives) at its measured width.
 		self::register_recognizer( 'layout_row', 82,
 			function ( $el ) { return self::is_layout_row( $el ); },
-			function ( $el ) { $cols = self::layout_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'cols' => $cols ) : null; }
+			function ( $el ) { $cols = self::layout_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols ) : null; }
 		);
 
 		// A DIV-based ICON+TEXT LIST — a container whose every child is an inline icon (svg / lucide) + a short
@@ -8665,7 +8783,7 @@ class FW_Site_Converter_Stitch {
 		// Capture the NUMBER's colour (the leaf element that renders the digits) so a stat on a DARK panel
 		// keeps its light / accent tone (e.g. modfii's `$12K` in accent-orange, `7`/`94%` in white on the
 		// glass hero card) instead of collapsing to the default dark foreground = invisible on dark.
-		$num_color = ''; $label_color = ''; $num_size = '';
+		$num_color = ''; $label_color = ''; $num_size = ''; $label_size = '';
 		foreach ( $cell->getElementsByTagName( '*' ) as $e ) {
 			if ( $e->getElementsByTagName( '*' )->length > 0 ) { continue; } // leaf only
 			$et = trim( self::text( $e ) );
@@ -8679,12 +8797,13 @@ class FW_Site_Converter_Stitch {
 				if ( $num_size === '' && preg_match( '/^([0-9.]+)px$/', $fs, $fm ) ) { $num_size = $fm[1]; }
 			} elseif ( $label_color === '' && $label !== '' && $cc !== '' && stripos( $cc, 'inherit' ) === false && strpos( $et, substr( $label, 0, 6 ) ) !== false ) {
 				$label_color = self::color_to_hex( $cc );
+				if ( $label_size === '' ) { $lfs = trim( (string) self::sc_css( $e, 'font-size' ) ); if ( preg_match( '/^([0-9.]+)px$/', $lfs, $lm ) ) { $label_size = $lm[1]; } }
 			}
 		}
 		// The stat cell's text-ALIGN (source hero stats are centered) → the counter + its label centre to match.
 		$ta = trim( (string) self::sc_css( $cell, 'text-align' ) );
 		$align = in_array( $ta, array( 'center', 'right' ), true ) ? $ta : '';
-		return array( 'number' => $number, 'prefix' => $prefix, 'suffix' => $suffix, 'decimals' => (string) $decimals, 'label' => $label, 'numberColor' => $num_color, 'suffixColor' => $num_color, 'prefixColor' => $num_color, 'labelColor' => $label_color, 'numberSize' => $num_size, 'suffixSize' => $num_size, 'prefixSize' => $num_size, 'align' => $align );
+		return array( 'number' => $number, 'prefix' => $prefix, 'suffix' => $suffix, 'decimals' => (string) $decimals, 'label' => $label, 'numberColor' => $num_color, 'suffixColor' => $num_color, 'prefixColor' => $num_color, 'labelColor' => $label_color, 'labelSize' => $label_size, 'numberSize' => $num_size, 'suffixSize' => $num_size, 'prefixSize' => $num_size, 'align' => $align );
 	}
 
 	/** TIGHT: a grid/row of >=2 cells where EVERY substantial cell is a numeric stat (counter_cell_parse). */
@@ -8728,7 +8847,7 @@ class FW_Site_Converter_Stitch {
 			if ( $box ) { $col['cardBox'] = $box; }
 			$cols[] = $col;
 		}
-		return count( $cols ) >= 2 ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'cols' => $cols ) : null;
+		return count( $cols ) >= 2 ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'gap' => self::grid_gap_px( $el ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols ) : null;
 	}
 
 	/* --------------------------------------------------------------------- *
@@ -10596,6 +10715,33 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 		return $r;
+	}
+
+	/**
+	 * An AUTO-SCROLL MARQUEE / horizontal reel strip: a continuously scrolling track
+	 * (`animate-marquee` / `animate-scroll-left|right`, on the element OR its single track child), or an
+	 * `overflow-x-auto` flex row of many fixed-width `flex-shrink-0` cards. Kept ONE verbatim code_block —
+	 * splitting it into builder columns stacks the cards and loses the horizontal scroll. JS twin: isMarqueeStrip().
+	 */
+	private static function is_marquee_strip( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$has_anim = function ( $c ) { return (bool) preg_match( '/\banimate-(marquee|scroll(?:-left|-right)?)\b/', $c ); };
+		$cls = ' ' . strtolower( self::cls( $el ) ) . ' ';
+		if ( $has_anim( $cls ) ) { return true; }
+		$kids_all = array();
+		foreach ( $el->childNodes as $k ) { if ( $k instanceof DOMElement ) { $kids_all[] = $k; } }
+		if ( 1 === count( $kids_all ) && $has_anim( ' ' . strtolower( self::cls( $kids_all[0] ) ) . ' ' ) ) { return true; }
+		$ox = self::sc_css( $el, 'overflow-x' );
+		if ( 'auto' === $ox || 'scroll' === $ox || strpos( $cls, 'overflow-x-auto' ) !== false || strpos( $cls, 'overflow-x-scroll' ) !== false ) {
+			$kids = array();
+			foreach ( $el->childNodes as $k ) {
+				if ( $k instanceof DOMElement && ! in_array( strtolower( $k->tagName ), array( 'script', 'style', 'template' ), true ) ) { $kids[] = $k; }
+			}
+			$shrink0 = 0;
+			foreach ( $kids as $k ) { if ( preg_match( '/\b(?:flex-)?shrink-0\b/', strtolower( self::cls( $k ) ) ) ) { $shrink0++; } }
+			if ( count( $kids ) >= 4 && $shrink0 >= (int) ceil( count( $kids ) / 2 ) ) { return true; }
+		}
+		return false;
 	}
 
 	private static function collect_blocks( $node, array &$blocks, array $rules ) {
@@ -13143,11 +13289,35 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** Flat {label,url} list for the anchors + menu-trigger buttons inside ONE nav cluster (dedup by label). */
+	/**
+	 * Is this nav element HIDDEN at desktop? (A responsive overflow toggle — a "More" button or a
+	 * mobile-only duplicate menu — is `lg:hidden` / `md:hidden` / `sr-only` / display:none, so it must
+	 * not leak into the captured nav.) PHP twin of the JS nav visibility filter (which uses computed
+	 * styles); here we parse static HTML, so we read the element's + its ancestors' class/style signals.
+	 */
+	private static function nav_el_hidden( $el ) {
+		$node  = $el;
+		$depth = 0;
+		while ( $node instanceof DOMElement && $depth < 5 ) {
+			$cls = ' ' . strtolower( (string) $node->getAttribute( 'class' ) ) . ' ';
+			// Tailwind responsive-hide from tablet/desktop up, screen-reader-only, or an inline display:none.
+			if ( preg_match( '/(?:^|[\s:])(?:sm|md|lg|xl|2xl):hidden(?:\s|$)/', $cls ) ) { return true; }
+			if ( strpos( $cls, ' sr-only ' ) !== false || strpos( $cls, ' visually-hidden ' ) !== false ) { return true; }
+			if ( 'true' === strtolower( (string) $node->getAttribute( 'aria-hidden' ) ) ) { return true; }
+			$style = strtolower( str_replace( ' ', '', (string) $node->getAttribute( 'style' ) ) );
+			if ( strpos( $style, 'display:none' ) !== false || strpos( $style, 'visibility:hidden' ) !== false ) { return true; }
+			$node = $node->parentNode;
+			$depth++;
+		}
+		return false;
+	}
+
 	private static function nav_links( $host ) {
 		$out = array(); $seen = array();
 		if ( ! ( $host instanceof DOMElement ) || ! $host->ownerDocument ) { return $out; }
 		$xp = new DOMXPath( $host->ownerDocument );
 		foreach ( $xp->query( './/a | .//button', $host ) as $el ) {
+			if ( self::nav_el_hidden( $el ) ) { continue; } // skip a hidden overflow toggle / mobile-only dup
 			if ( strtolower( $el->nodeName ) === 'button' ) {
 				if ( ! $el->hasAttribute( 'aria-controls' ) && ! $el->hasAttribute( 'aria-expanded' ) && ! $el->hasAttribute( 'aria-haspopup' ) ) { continue; }
 				$label = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $el ) ) );
@@ -13200,6 +13370,7 @@ class FW_Site_Converter_Stitch {
 			// text label) as an item with url '#'; import_mega then attaches its columns under it.
 			$xp = new DOMXPath( $host->ownerDocument );
 			foreach ( $xp->query( './/a | .//button', $host ) as $el ) {
+				if ( self::nav_el_hidden( $el ) ) { continue; } // skip a hidden overflow toggle / mobile-only dup
 				$tag = strtolower( $el->nodeName );
 				if ( $tag === 'button' ) {
 					if ( ! $drop_buttons ) { continue; } // trigger buttons are a header-nav concern only
@@ -14022,16 +14193,26 @@ class FW_Site_Converter_Stitch {
 		return $out;
 	}
 
-	/** The source's own inline <style> (font-smoothing, material-symbol settings) — scoped to `.sc-tw`. */
+	/** The source's own inline <style> (font-smoothing, material-symbol settings, and its @font-face
+	 *  webfonts) — plain selectors scoped to `.sc-tw`; AT-RULES left intact. */
 	private static function mirror_inline_css( $html ) {
 		if ( ! preg_match_all( '/<style[^>]*>(.*?)<\/style>/s', (string) $html, $m ) ) { return ''; }
 		$css = implode( "\n", $m[1] );
-		return (string) preg_replace_callback( '/([^{}@]+)\{/', function ( $mm ) {
+		// Match EITHER an at-rule header (`@font-face`, `@media …`, `@keyframes …`, `@supports …`, `@page`)
+		// OR a normal selector list, before each `{`. At-rule headers must NOT be prefixed: scoping
+		// `@font-face` produced invalid `@.sc-tw font-face{…}` and silently dropped EVERY webfont the source
+		// declared inline (a display heading then fell back to a serif). Keyframe STEPS (`0%`, `from`, `to`)
+		// are likewise not selectors, so they stay verbatim. @media/@supports headers pass through while their
+		// inner selectors are matched separately and get scoped.
+		return (string) preg_replace_callback( '/(@[a-zA-Z-]+[^{}]*|[^{}@]+)\{/', function ( $mm ) {
+			$sel = $mm[1];
+			if ( isset( $sel[0] ) && '@' === substr( ltrim( $sel ), 0, 1 ) ) { return $sel . '{'; } // at-rule header — verbatim
 			$sels = array_map( function ( $s ) {
 				$s = trim( $s );
 				if ( $s === '' ) { return ''; }
+				if ( $s === 'from' || $s === 'to' || preg_match( '/^-?\d+(?:\.\d+)?%$/', $s ) ) { return $s; } // keyframe step — verbatim
 				return $s === 'body' ? '.sc-tw' : '.sc-tw ' . $s;
-			}, explode( ',', $mm[1] ) );
+			}, explode( ',', $sel ) );
 			return implode( ',', array_filter( $sels ) ) . '{';
 		}, $css );
 	}
@@ -14567,6 +14748,21 @@ class FW_Site_Converter_Stitch {
 		// composite); claiming it would SILENTLY DROP that text column. Reject so the walk descends to the
 		// multi-column recognizer. Floating-card text lives inside an absolute overlay, so a frame still passes.
 		if ( self::composite_has_outside_content( $el ) ) { return false; }
+		// TEXT-OVER-IMAGE HERO guard: a full-bleed `.absolute inset-0` overlay carrying a HEADING (h1–h6) is the
+		// hero's MAIN content (headline + subtext + CTA centered over the photo), NOT a small floating badge/card.
+		// The decompose path only captures skinned floating cards + the photo, so it would SILENTLY DROP that
+		// heading/CTA (the "boxed image, no headline" bug). Reject → the recognizer falls through to the verbatim
+		// code block, so the hero renders exactly. (A floating badge is corner-positioned + a label, not inset-0
+		// with a heading, so a genuine photo+badge composite still decomposes.)
+		foreach ( $el->getElementsByTagName( 'div' ) as $d ) {
+			if ( ! ( $d instanceof DOMElement ) ) { continue; }
+			$dcls = ' ' . strtolower( self::cls( $d ) ) . ' ';
+			if ( strpos( $dcls, ' absolute ' ) === false || strpos( $dcls, 'inset-0' ) === false ) { continue; }
+			if ( $d->getElementsByTagName( 'img' )->length > 0 ) { continue; } // the image frame, not a content overlay
+			foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $ht ) {
+				if ( $d->getElementsByTagName( $ht )->length > 0 && '' !== trim( self::text( $d ) ) ) { return false; }
+			}
+		}
 		return true;
 	}
 

@@ -1628,6 +1628,21 @@ class FW_Site_Converter_Mapper {
 		self::$assets = is_array( $map ) ? $map : array();
 	}
 
+	/**
+	 * MERGE additional sideloaded assets (basename => { id, url, mime }) into the map WITHOUT clobbering
+	 * entries already present — so a user "Attach media" upload always wins over an auto-sideloaded copy of
+	 * the same filename. Used to pre-seed the bundle re-convert with the media.json sideload map, so captured
+	 * image URLs (partner-logo grids, media images, backgrounds) resolve to their Media-Library copies at BUILD
+	 * time via upload_val() instead of hotlinking the source (the bundle's own media sideload runs AFTER the
+	 * pages are built, so without this the built pages kept source URLs).
+	 *
+	 * @param array $map basename => { id, url, mime }
+	 */
+	public static function merge_assets( $map ) {
+		if ( ! is_array( $map ) || ! $map ) { return; }
+		self::$assets = self::$assets + $map; // union: existing (user uploads) keys win over the seeded ones
+	}
+
 	/** Match a captured media URL to an uploaded asset by filename. Returns { id, url, mime } or null. */
 	private static function asset_for( $url ) {
 		if ( empty( self::$assets ) || ! is_string( $url ) || $url === '' ) { return null; }
@@ -1636,10 +1651,24 @@ class FW_Site_Converter_Mapper {
 		return ( $base !== '' && isset( self::$assets[ $base ] ) ) ? self::$assets[ $base ] : null;
 	}
 
-	/** An `upload`-type option value ({attachment_id,url}) for a URL — using the sideloaded copy if one matches. */
-	private static function upload_val( $url ) {
+	/** An `upload`-type option value ({attachment_id,url}) for a URL — using the sideloaded copy if one matches.
+	 * Public so the theme-settings importer can localize a root-relative header/footer LOGO the same way
+	 * (basename-match to the imported copy, else absolutise to the source origin for a working hotlink). */
+	public static function upload_val( $url ) {
 		$url = (string) $url;
 		if ( $url === '' ) { return array(); }
+		// A data:image URI (an inline base64/SVG logo embedded in the markup, e.g. the Skyline wordmark) →
+		// DECODE + sideload it to a real attachment. scan_html skips data: URIs, so they never reach the
+		// bulk media import; resolve them here on demand. Content-hash de-dup (in sideload_upload) makes
+		// repeat calls reuse the same attachment. Without this the inline logo was dropped and a wrong
+		// image substituted.
+		if ( stripos( $url, 'data:image/' ) === 0 && class_exists( 'FW_Site_Converter_Media' ) ) {
+			$id = FW_Site_Converter_Media::sideload( $url );
+			if ( $id && ! is_wp_error( $id ) && function_exists( 'wp_get_attachment_url' ) ) {
+				return array( 'attachment_id' => (string) $id, 'url' => (string) wp_get_attachment_url( $id ) );
+			}
+			return array(); // decode failed → no image (better than a wrong substitute)
+		}
 		$a = self::asset_for( $url );
 		// No sideloaded copy? Absolutise a source-relative src against the source origin so a bare
 		// `/assets/hero.jpg` HOTLINKS to `https://<source>/assets/hero.jpg` (200) instead of resolving
@@ -1880,6 +1909,424 @@ class FW_Site_Converter_Mapper {
 		);
 	}
 	/**
+	 * Emit a `flexbox` (the "Div") builder node — the HYBRID converter's row/cell primitive.
+	 * A source content ROW becomes ONE n_flexbox() (display:flex, direction row) whose cells are
+	 * child n_flexbox() boxes carrying their Width (see flex_width_preset()). Sections and
+	 * containers are UNCHANGED — only the inner row→column grid is replaced by flex Divs.
+	 *
+	 * $over merges (whole-key) over the defaults, which mirror flexbox/options.php exactly — so a
+	 * caller sets only what differs (display, gap, direction, width, align_items, …) while the full
+	 * atts set is always present, so the builder's options modal renders every control without an
+	 * illegal-offset on a missing responsive value.
+	 *
+	 * @param array $items builder child nodes (_items)
+	 * @param array $over  atts overrides (whole keys)
+	 * @return array flexbox node
+	 */
+	private static function n_flexbox( array $items, array $over = array() ) {
+		$atts = array(
+			// --- group_container (flexbox/options.php 228-374) ---
+			'html_tag'        => 'div',
+			'display'         => 'flex',
+			'grid_columns'    => '3',
+			'grid_autofit'    => 'no',
+			'grid_min'        => array( 'value' => '240', 'unit' => 'px' ),
+			'direction'       => array( 'base' => 'row', 'md' => '', 'lg' => '' ),
+			'gap'             => array( 'base' => '', 'md' => '', 'lg' => '' ), // responsive spacing-scale slug
+			'justify_content' => array( 'base' => '', 'md' => '', 'lg' => '' ),
+			'align_items'     => array( 'base' => '', 'md' => '', 'lg' => '' ),
+			'wrap'            => array( 'base' => 'yes', 'md' => '', 'lg' => '' ),
+			'reverse'         => array( 'base' => 'no', 'md' => '', 'lg' => '' ),
+			'align_content'   => array( 'base' => '', 'md' => '', 'lg' => '' ),
+			// --- group_placement: THIS box as a child of a parent flexbox (options.php 376-461) ---
+			'width'           => array( 'base' => array( 'preset' => 'none' ), 'md' => array( 'preset' => 'none' ), 'lg' => array( 'preset' => 'none' ) ),
+			'flex_grow'       => array( 'base' => 'no', 'md' => '', 'lg' => '' ),
+			'align_self'      => array( 'base' => '', 'md' => '', 'lg' => '' ),
+			'order'           => array( 'base' => '', 'md' => '', 'lg' => '' ),
+			// --- Styling (options.php 465-503): full background-pro shape (mirror of n_section) ---
+			'background'      => array(
+				'color'    => array( 'value' => array( 'predefined' => '', 'custom' => '' ) ),
+				'gradient' => array( 'data' => array( 'type' => 'linear', 'angle' => 90, 'stops' => array() ) ),
+				'image'    => array( 'src' => array(), 'position' => 'center center', 'size' => array( 'selected' => 'cover', 'custom' => '' ), 'repeat' => 'no-repeat', 'attachment' => 'scroll' ),
+				'video'    => array( 'enabled' => 'no', 'external_url' => '', 'source_mp4' => array(), 'source_webm' => array(), 'poster' => array(), 'fallback' => array(), 'loop' => 'yes', 'autoplay' => 'yes', 'mute' => 'yes', 'playsinline' => 'yes' ),
+				'advanced' => array(),
+			),
+			'border_preset'   => '',
+			'min_height'      => array( 'base' => array( 'value' => '', 'unit' => 'vh' ), 'md' => array( 'value' => '', 'unit' => 'vh' ), 'lg' => array( 'value' => '', 'unit' => 'vh' ) ),
+			'spacing'         => self::def_spacing(),
+			// --- animation + advanced ---
+			'animation'       => self::def_animation(),
+			'unique_id'       => self::uid(),
+			'css_id'          => '',
+			'css_class'       => '',
+			'custom_css'      => '',
+			'responsive_hide' => array(),
+			'custom_attrs'    => array(),
+		);
+		foreach ( $over as $k => $v ) { $atts[ $k ] = $v; } // whole-key override
+		return array(
+			'type'   => 'flexbox',
+			'atts'   => $atts,
+			'_items' => $items,
+		);
+	}
+	/**
+	 * A 12-grid span (1–12) → the flexbox Width-Override PRESET. Flexbox presets are the twelfths
+	 * as plain integer strings ('6' = 1/2, '4' = 1/3, '3' = 1/4, '12' = full) — NOT the column
+	 * model's '1_2' slug (frac12()). 0 / out-of-range / 12-as-auto → 'none' (Auto width, flows).
+	 * Wrap in the responsive Width value at the call site: array( base=>array('preset'=>$p), md, lg ).
+	 *
+	 * @param int $n 12-grid span
+	 * @return string flexbox width preset ('1'..'12' or 'none')
+	 */
+	private static function flex_width_preset( $n ) {
+		$n = (int) $n;
+		return ( $n >= 1 && $n <= 12 ) ? (string) $n : 'none';
+	}
+	/**
+	 * A section container_width value ({preset:narrow|medium|wide|custom} …) → its pixel max-width, so a
+	 * full-width flexbox child can be re-constrained to the same band via its content_width. 0 = inherit /
+	 * unconstrainable (%, vw). Preset px match the section option's labels (Narrow 768 / Medium 896 / Wide 1024).
+	 */
+	private static function container_width_px( $cw ) {
+		if ( ! is_array( $cw ) ) { return 0; }
+		$preset = isset( $cw['preset'] ) ? (string) $cw['preset'] : '';
+		switch ( $preset ) {
+			case 'small':    return 640;
+			case 'prose':    return 672;
+			case 'narrow':   return 768;
+			case 'medium':   return 896;
+			case 'wide':     return 1024;
+			case 'wide-l':   return 1152;
+			case 'wide-xl':  return 1280;
+			case 'wide-xxl': return 1440;
+			case 'custom':
+				$c = ( isset( $cw['custom'] ) && is_array( $cw['custom'] ) ) ? $cw['custom'] : $cw;
+				$v = isset( $c['value'] ) ? (float) $c['value'] : 0;
+				$u = isset( $c['unit'] ) ? (string) $c['unit'] : 'px';
+				if ( $v <= 0 ) { return 0; }
+				if ( 'rem' === $u ) { return (int) round( $v * 16 ); }
+				if ( 'px' === $u ) { return (int) round( $v ); }
+				return 0; // %/vw — not a fixed px cap
+			default:
+				// A non-standard "Content NNNN" preset (build_container_width_presets emits these for a source
+				// container that isn't a standard Tailwind step, e.g. modfii's 1400px) → its px value, so a
+				// flexbox band in that section is capped at the same container as the source. Else inherit.
+				if ( preg_match( '/^content-(\d+)$/', $preset, $m ) ) { return (int) $m[1]; }
+				return 0; // inherit / empty
+		}
+	}
+
+	/**
+	 * A px content-band cap → a flexbox `content_width` VALUE for the multi-picker option. The value MUST be a
+	 * NAMED preset ({ preset:'wide' }, { preset:'content-1400' }, …): a bare { value, unit } is normalized to
+	 * { preset:'' } on read and the cap is silently dropped (the section grid then escaped to the full container
+	 * width — the "grids too wide" regression). Reverse of container_width_px()'s standard steps; a non-standard
+	 * width uses the shared `content-NNNN` preset (build_container_width_presets registers these from the source's
+	 * own container widths, e.g. modfii's 1400), so it renders exactly like the section's own container_width.
+	 *
+	 * @param int|float $px
+	 * @return array a content_width multi-picker value ({ preset: … })
+	 */
+	private static function content_width_value( $px ) {
+		$px = (int) round( (float) $px );
+		if ( $px <= 0 ) { return array( 'preset' => 'inherit' ); }
+		$steps = array( 640 => 'small', 672 => 'prose', 768 => 'narrow', 896 => 'medium', 1024 => 'wide', 1152 => 'wide-l', 1280 => 'wide-xl', 1440 => 'wide-xxl' );
+		foreach ( $steps as $spx => $key ) { if ( abs( $spx - $px ) <= 2 ) { return array( 'preset' => $key ); } }
+		return array( 'preset' => 'content-' . $px );
+	}
+
+	/** A width fraction slug ('1_2', '1_3', '7_12', …) → its 12-grid span (6, 4, 7). Inverse of frac12(). */
+	private static function slug_to_span( $slug ) {
+		if ( preg_match( '/^(\d+)_(\d+)$/', (string) $slug, $m ) && (int) $m[2] > 0 ) {
+			return max( 1, min( 12, (int) round( (int) $m[1] / (int) $m[2] * 12 ) ) );
+		}
+		return 12;
+	}
+	/**
+	 * HYBRID row emission gate: can this row of built column nodes safely become a flex-Div row?
+	 * A column and a flexbox differ structurally — a column has an OUTER grid element + an optional
+	 * INNER wrapper div (which carries box/max-width CSS via `inner_class` + `selector .cls{}`),
+	 * whereas a flexbox is ONE element. Cells that lean on that inner wrapper (`inner_class`) or need
+	 * to be a positioned ancestor (`element_position`, floating-card anchor) don't translate 1:1 to a
+	 * single flex element, so a row containing ANY such cell stays as columns (current behaviour) —
+	 * we only flex-Div the rows that map cleanly. Also requires ≥2 plain `column` cells (a lone cell
+	 * or a product/wc grid is not a row).
+	 */
+	private static function row_flex_safe( array $cols ) {
+		if ( count( $cols ) < 2 ) { return false; }
+		foreach ( $cols as $col ) {
+			if ( ! is_array( $col ) || ( $col['type'] ?? '' ) !== 'column' ) { return false; }
+		}
+		// NOTE: `inner_class` (inner-wrapper box/max-width CSS) and `element_position` (positioned-ancestor
+		// floating card) USED to veto flexing here — they don't translate 1:1 to a SINGLE flex element. They
+		// no longer block: column_to_flexbox_cell() now emits a TWO-NODE cell (an outer width track wrapping an
+		// inner Div that carries the box + max-width) for any cell with an inner wrapper, and carries
+		// element_position onto the cell. So a hero (text col with a `max-w-*` cap) and floating-card rows flex
+		// too, matching the JS/capture path (which never set those atts). See column_to_flexbox_cell().
+		return true;
+	}
+	/**
+	 * Translate a finished `column` node → a `flexbox` ("Div") CELL node, preserving its width,
+	 * cross-axis self-alignment, box preset, visibility and inner content-layout. Called only for
+	 * rows that pass row_flex_safe(). The column's CONTENT-layout options (which the column expresses
+	 * through an inner flex wrapper) map onto the flexbox's OWN flex props, since the flexbox IS the
+	 * flex container for its children:
+	 *   content_direction 'row'         → direction row (else column when a gap/align is set, else block)
+	 *   content_gap                     → gap
+	 *   content_h / content_v           → justify_content / align_items (axis-aware)
+	 *   align_self / border_preset / responsive_hide → same-named flexbox atts
+	 *   text_align                      → a scoped `selector{text-align}` (flexbox has no text_align option)
+	 *   width slug + w_phone/tablet/desktop → the flexbox Width-Override preset (twelfths)
+	 */
+	private static function column_to_flexbox_cell( array $col ) {
+		$a    = isset( $col['atts'] ) && is_array( $col['atts'] ) ? $col['atts'] : array();
+		$over = array();
+
+		// --- Width: explicit per-device spans (w_phone→base, w_tablet→md, w_desktop→lg) when set;
+		//     otherwise the base fraction slug at all widths (Wrap lets narrow screens reflow). ---
+		$num = function ( $v ) { return ( is_string( $v ) || is_int( $v ) ) && (string) $v !== '' && ctype_digit( (string) $v ); };
+		$wp = $a['w_phone'] ?? 'default'; $wt = $a['w_tablet'] ?? 'default'; $wd = $a['w_desktop'] ?? 'default';
+		if ( $num( $wd ) || $num( $wt ) || $num( $wp ) ) {
+			$over['width'] = array(
+				'base' => array( 'preset' => $num( $wp ) ? self::flex_width_preset( $wp ) : 'none' ),
+				'md'   => array( 'preset' => $num( $wt ) ? self::flex_width_preset( $wt ) : 'none' ),
+				'lg'   => array( 'preset' => $num( $wd ) ? self::flex_width_preset( $wd ) : 'none' ),
+			);
+		} else {
+			$span = self::slug_to_span( $col['width'] ?? '1_1' );
+			$over['width'] = array(
+				'base' => array( 'preset' => self::flex_width_preset( $span ) ),
+				'md'   => array( 'preset' => 'none' ),
+				'lg'   => array( 'preset' => 'none' ),
+			);
+		}
+
+		// --- OUTER-track carries (grid-cell level): self-alignment, visibility, spacing, position, ids. These
+		//     belong on the width track regardless of single- vs two-node. `element_position` (a positioned
+		//     ancestor for a floating card) is now CARRIED (it used to veto flexing in row_flex_safe). ---
+		if ( ! empty( $a['align_self'] ) && is_array( $a['align_self'] ) ) { $over['align_self'] = $a['align_self']; }
+		if ( ! empty( $a['responsive_hide'] ) ) { $over['responsive_hide'] = $a['responsive_hide']; }
+		if ( ! empty( $a['spacing'] ) ) { $over['spacing'] = $a['spacing']; }
+		if ( ! empty( $a['animation'] ) ) { $over['animation'] = $a['animation']; }
+		if ( ! empty( $a['css_id'] ) ) { $over['css_id'] = (string) $a['css_id']; }
+		if ( ! empty( $a['custom_attrs'] ) ) { $over['custom_attrs'] = $a['custom_attrs']; }
+		if ( ! empty( $a['element_position'] ) ) { $over['element_position'] = $a['element_position']; }
+
+		// RECURSE: flex any nested column runs inside this cell too, so a nested grid becomes a nested
+		// flexbox (not nested fw-rows). Mutual recursion with flexify_items() → depth is mirrored.
+		$items = ( isset( $col['_items'] ) && is_array( $col['_items'] ) ) ? self::flexify_items( $col['_items'] ) : array();
+
+		// --- TWO-NODE cell: a column that boxes/caps its content through an INNER WRAPPER (`inner_class` — a
+		//     card skin `sc-cb-*`, a `max-width;margin:auto` cap `sc-cw-*`, or a box-with-button wrapper) maps
+		//     to an OUTER flex track (this width) wrapping an INNER Div that carries the box + content-layout —
+		//     the faithful twin of the column's grid-cell + inner-wrapper pair. Crucially this keeps
+		//     `max-width;margin:auto` on a BLOCK inner child (classic left-align) instead of on a flex item,
+		//     where `margin:auto` eats main-axis free space and mis-places the content. A plain cell (no
+		//     inner_class) stays single-node. This is what lets heroes/boxed rows flex on the PHP path. ---
+		$inner_class = trim( (string) ( $a['inner_class'] ?? '' ) );
+		if ( '' !== $inner_class ) {
+			$inner_over = self::content_layout_over( $a ); // content-layout lives on the inner wrapper, not the track
+			list( $outer_css, $inner_css ) = self::split_col_css( (string) ( $a['custom_css'] ?? '' ), preg_split( '/\s+/', $inner_class, -1, PREG_SPLIT_NO_EMPTY ) );
+			$ta = (string) ( $a['text_align'] ?? '' );
+			if ( in_array( $ta, array( 'center', 'right', 'left' ), true ) ) {
+				$inner_css = trim( $inner_css . ( '' !== $inner_css ? "\n" : '' ) . 'selector{text-align:' . $ta . ';}' );
+			}
+			if ( '' !== $inner_css ) { $inner_over['custom_css'] = $inner_css; }
+			if ( ! empty( $a['border_preset'] ) ) { $inner_over['border_preset'] = (string) $a['border_preset']; } // box preset → inner wrapper
+			if ( ! empty( $a['css_class'] ) ) { $inner_over['css_class'] = (string) $a['css_class']; }            // column css_class → inner wrapper (matches the column view)
+			$inner_div = self::n_flexbox( $items, $inner_over );
+			// Outer track: width + carries above + any COLUMN-LEVEL (bare `selector{}`) CSS, e.g. gutter padding.
+			// `display:block` so the single inner Div flows normally and `margin:auto` stays classic.
+			$over['display'] = 'block';
+			if ( '' !== $outer_css ) { $over['custom_css'] = $outer_css; }
+			return self::n_flexbox( array( $inner_div ), $over );
+		}
+
+		// --- SINGLE-NODE cell (no inner wrapper): content-layout maps onto the cell's OWN flex props. ---
+		$over = array_merge( $over, self::content_layout_over( $a ) );
+		if ( ! empty( $a['border_preset'] ) ) { $over['border_preset'] = (string) $a['border_preset']; }
+		if ( ! empty( $a['css_class'] ) ) { $over['css_class'] = (string) $a['css_class']; }
+		$ta  = (string) ( $a['text_align'] ?? '' );
+		$css = (string) ( $a['custom_css'] ?? '' );
+		if ( in_array( $ta, array( 'center', 'right', 'left' ), true ) ) {
+			$css = trim( $css . ( '' !== $css ? "\n" : '' ) . 'selector{text-align:' . $ta . ';}' ); // no flexbox text_align option
+		}
+		if ( $css !== '' ) { $over['custom_css'] = $css; }
+		if ( ! empty( $a['unique_id'] ) ) { $over['unique_id'] = (string) $a['unique_id']; }
+		return self::n_flexbox( $items, $over );
+	}
+	/**
+	 * The column's inner CONTENT-layout options → a flexbox's own flex props (axis-aware). Shared by the
+	 * single-node cell (props on the cell itself) and the two-node cell (props on the inner wrapper Div).
+	 * Returns an $over fragment: display + direction/wrap/gap/justify/align/reverse, or display:block.
+	 */
+	private static function content_layout_over( array $a ) {
+		$over = array();
+		$cd   = (string) ( $a['content_direction'] ?? '' );
+		$cgap = ( isset( $a['content_gap']['base'] ) ) ? (string) $a['content_gap']['base'] : '';
+		$ch   = (string) ( $a['content_h'] ?? '' );
+		$cv   = (string) ( $a['content_v'] ?? '' );
+		$is_row = ( $cd === 'row' );
+		$h_map = array( 'left' => 'start', 'start' => 'start', 'center' => 'center', 'right' => 'end', 'end' => 'end', 'between' => 'between', 'around' => 'around' );
+		$v_map = array( 'top' => 'start', 'start' => 'start', 'middle' => 'center', 'center' => 'center', 'bottom' => 'end', 'end' => 'end' );
+		$h = isset( $h_map[ $ch ] ) ? $h_map[ $ch ] : '';
+		$v = isset( $v_map[ $cv ] ) ? $v_map[ $cv ] : '';
+		if ( $is_row || $cgap !== '' || $h !== '' || $v !== '' ) {
+			$over['display']   = 'flex';
+			$over['direction'] = array( 'base' => ( $is_row ? 'row' : 'column' ), 'md' => '', 'lg' => '' );
+			// A COLUMN-direction flex is a vertical STACK — it must NOT wrap. With wrap:yes (the n_flexbox
+			// default, right for rows) a stack whose items exceed a constrained height wraps into multiple
+			// side-by-side columns and overflows horizontally (the "The Problem / Our Solution" bug).
+			if ( ! $is_row ) { $over['wrap'] = array( 'base' => 'no', 'md' => '', 'lg' => '' ); }
+			if ( $cgap !== '' ) { $over['gap'] = array( 'base' => $cgap, 'md' => '', 'lg' => '' ); }
+			// Row: main axis = horizontal → justify=h, align=v. Column: main axis = vertical → justify=v, align=h.
+			$main  = $is_row ? $h : $v;
+			$cross = $is_row ? $v : $h;
+			if ( $main !== '' )  { $over['justify_content'] = array( 'base' => $main, 'md' => '', 'lg' => '' ); }
+			if ( $cross !== '' ) { $over['align_items'] = array( 'base' => $cross, 'md' => '', 'lg' => '' ); }
+			if ( ( $a['content_order'] ?? '' ) === 'reverse' ) { $over['reverse'] = array( 'base' => 'yes', 'md' => '', 'lg' => '' ); }
+		} else {
+			$over['display'] = 'block'; // plain stack / single item → normal flow (keeps text_align etc. natural)
+		}
+		return $over;
+	}
+	/**
+	 * Split a column's `custom_css` for the two-node cell: INNER-wrapper rules (`selector .CLS{…}` whose CLS is
+	 * one of the column's inner_class names) are rewritten to `selector{…}` and returned as the INNER Div's CSS;
+	 * everything else (bare `selector{…}` column-level rules like gutter padding, plus any unrelated-class rules)
+	 * stays as the OUTER track's CSS. Returns array( outer_css, inner_css ).
+	 */
+	private static function fix_iconbox_full_height( array &$items ) {
+		foreach ( $items as &$node ) {
+			if ( ! is_array( $node ) ) { continue; }
+			if ( isset( $node['_items'] ) && is_array( $node['_items'] ) && $node['_items'] ) {
+				$ib_idx = null; $others = 0;
+				foreach ( $node['_items'] as $i => $ch ) {
+					if ( ! is_array( $ch ) ) { continue; }
+					if ( ( $ch['shortcode'] ?? '' ) === 'icon_box' ) { $ib_idx = $i; }
+					elseif ( in_array( ( $ch['type'] ?? '' ), array( 'simple', 'flexbox', 'column' ), true ) ) { $others++; }
+				}
+				if ( $ib_idx !== null && $others > 0 && isset( $node['_items'][ $ib_idx ]['atts'] ) ) {
+					// icon_box + a sibling (e.g. a feature_list) → the icon_box must NOT be full-height, or its
+					// height:100% fills the cell and clips the sibling (the "Loan Types" list cut off). The CELL
+					// still stretches for uniform card heights; the icon_box just sizes to its own content.
+					$node['_items'][ $ib_idx ]['atts']['full_height'] = 'no';
+				}
+				self::fix_iconbox_full_height( $node['_items'] );
+			}
+		}
+		unset( $node );
+	}
+	/**
+	 * Split a column's `custom_css` for the two-node cell: INNER-wrapper rules (`selector .CLS{…}` whose CLS is
+	 * one of the column's inner_class names) are rewritten to `selector{…}` and returned as the INNER Div's CSS;
+	 * everything else (bare `selector{…}` column-level rules like gutter padding, plus any unrelated-class rules)
+	 * stays as the OUTER track's CSS. Returns array( outer_css, inner_css ).
+	 */
+	private static function split_col_css( $css, array $inner_classes ) {
+		$css   = (string) $css;
+		$inner = array();
+		$rest  = preg_replace_callback(
+			'/selector\s+\.([A-Za-z0-9_-]+)\s*\{([^}]*)\}/',
+			function ( $m ) use ( &$inner, $inner_classes ) {
+				if ( in_array( $m[1], $inner_classes, true ) ) {
+					$inner[] = 'selector{' . trim( $m[2] ) . '}';
+					return '';
+				}
+				return $m[0];
+			},
+			$css
+		);
+		return array( trim( (string) $rest ), trim( implode( "\n", $inner ) ) );
+	}
+	/**
+	 * Recursively flex NESTED column runs: given a list of builder child nodes, replace every run of
+	 * ≥2 consecutive `column` siblings that pass row_flex_safe() with ONE flexbox Div (whose cells are
+	 * child flex-Divs via column_to_flexbox_cell(), which itself calls back here for the next level).
+	 * Non-column items and unsafe/lone columns pass through unchanged. This is what turns a nested grid
+	 * into a nested flexbox, closing the "depth ≥ 2 reverts to fw-row" gap. PHP twin of JS flexifyItems().
+	 *
+	 * @param array $items builder child nodes
+	 * @return array
+	 */
+	private static function flexify_items( array $items ) {
+		$out = array();
+		$run = array();
+		$flush = function () use ( &$out, &$run ) {
+			if ( empty( $run ) ) { return; }
+			if ( count( $run ) >= 2 && self::row_flex_safe( $run ) ) {
+				$cells = array();
+				foreach ( $run as $rc ) { $cells[] = self::column_to_flexbox_cell( $rc ); }
+				$over = array(
+					'display'   => 'flex',
+					'direction' => array( 'base' => 'row', 'md' => '', 'lg' => '' ),
+					'wrap'      => array( 'base' => 'yes', 'md' => '', 'lg' => '' ),
+				);
+				// UNIFORM NON-RESPONSIVE GRID → let the cells GROW to fill the row. A wrapping flex row sizes each
+				// span cell `width:calc(pct - var(--fw-flex-gap))`, subtracting the FULL gap from EVERY cell — but
+				// only N-1 gaps sit between N cells, so the row ends up exactly ONE gap short and leaves a trailing
+				// empty strip on the right. When every cell is the SAME 12-col span summing to 12 (a `grid-cols-N`
+				// with no responsive change — see cells_uniform_grid), giving each cell flex-grow:1 distributes that
+				// one-gap remainder equally back into the cells: they fill the row, stay equal, and the strip is gone.
+				// (Scoped to uniform multi-cell grids only, so a lone/asymmetric cell never grows past its span.)
+				if ( self::cells_uniform_grid( $cells ) ) {
+					foreach ( $cells as &$uc ) { $uc['atts']['flex_grow'] = array( 'base' => 'yes', 'md' => '', 'lg' => '' ); }
+					unset( $uc );
+				}
+				$out[] = self::n_flexbox( $cells, $over );
+			} else {
+				// A LONE column (a run of 1 — a heading/overline band, a single-column section) still becomes
+				// a flexbox Div, NEVER a classic fw-row/fw-col. column_to_flexbox_cell converts it (full-width,
+				// its content-layout preserved), so the converter emits ZERO classic columns — all flexbox.
+				foreach ( $run as $rc ) { $out[] = self::column_to_flexbox_cell( $rc ); }
+			}
+			$run = array();
+		};
+		foreach ( $items as $it ) {
+			if ( is_array( $it ) && ( $it['type'] ?? '' ) === 'column' ) {
+				$run[] = $it;
+			} else {
+				$flush();
+				$out[] = $it;
+			}
+		}
+		$flush();
+		return $out;
+	}
+
+	/**
+	 * Do these flex cells form a UNIFORM, non-responsive 12-column grid — every cell the SAME numeric
+	 * base span, the spans summing to 12, and NO per-device (md/lg) width override on any cell? Then the
+	 * container is faithfully a `grid grid-cols-N` (3×span-4, 4×span-3, 2×span-6, …) and should render as a
+	 * real CSS grid so the gap is distributed by the tracks (a wrapping flex row leaves one gap of trailing
+	 * space — see the call site). A cell that is absolutely positioned (a floating card via element_position)
+	 * disqualifies the run — it's out of normal flow and must not become a grid track.
+	 *
+	 * @param array $cells column_to_flexbox_cell() outputs
+	 * @return bool
+	 */
+	private static function cells_uniform_grid( array $cells ) {
+		if ( count( $cells ) < 2 ) { return false; }
+		$base = null;
+		$sum  = 0;
+		foreach ( $cells as $c ) {
+			if ( ! is_array( $c ) || ! empty( $c['atts']['element_position'] ) ) { return false; }
+			$w = ( isset( $c['atts']['width'] ) && is_array( $c['atts']['width'] ) ) ? $c['atts']['width'] : null;
+			if ( ! $w ) { return false; }
+			$b  = (string) ( $w['base']['preset'] ?? '' );
+			$md = (string) ( $w['md']['preset'] ?? 'none' );
+			$lg = (string) ( $w['lg']['preset'] ?? 'none' );
+			if ( ! ctype_digit( $b ) ) { return false; }                          // needs a real 1–12 span
+			if ( '' !== $md && 'none' !== $md ) { return false; }                  // any responsive change → keep flex
+			if ( '' !== $lg && 'none' !== $lg ) { return false; }
+			if ( null === $base ) { $base = $b; } elseif ( $b !== $base ) { return false; } // all cells equal
+			$sum += (int) $b;
+		}
+		return 12 === $sum;
+	}
+
+	/**
 	 * Parse a source column's `col-*` classes → the builder column's base WIDTH fraction (the
 	 * desktop span, so the builder displays the real width — e.g. col-lg-4 → 1/3, col-lg-7 → 7/12 —
 	 * instead of "1/1"). The fraction's frontend class is `fw-col-12 fw-col-sm-N`, i.e. full on
@@ -2086,6 +2533,105 @@ class FW_Site_Converter_Mapper {
 		) );
 	}
 
+	/**
+	 * TIER-3 structural mirror: turn an un-decomposable HTML subtree into a NESTED FLEXBOX clone —
+	 * containers become flexbox Divs carrying the source's flex/grid direction + gap; leaves become
+	 * native media_image / text_block; a too-deep subtree stays a scoped code_block. "Mirror the
+	 * container skeleton, decompose the leaves" — an EDITABLE degradation that beats a flat code_block.
+	 * Conservative: only the CALLER prefers it (for a real multi-child container); a trivial region
+	 * still returns something the caller can reject in favour of a verbatim code_block, so it never
+	 * regresses simple fidelity. See the "DOM duplication vs semantic decomposition" design decision.
+	 *
+	 * @param string $html raw HTML fragment (carries data-sc-cs computed styles)
+	 * @return array a builder node (flexbox, media_image, text_block, or code_block)
+	 */
+	private static function n_structural_mirror( $html ) {
+		$html = trim( (string) $html );
+		if ( '' === $html || ! class_exists( 'DOMDocument' ) ) { return self::n_code( $html ); }
+		$doc  = new DOMDocument();
+		$prev = libxml_use_internal_errors( true );
+		$ok   = $doc->loadHTML( '<?xml encoding="utf-8"?><div id="scmirror">' . $html . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+		libxml_clear_errors();
+		libxml_use_internal_errors( $prev );
+		$root = $ok ? $doc->getElementById( 'scmirror' ) : null;
+		if ( ! ( $root instanceof DOMElement ) ) { return self::n_code( $html ); }
+		$node = self::mirror_el( $root, 0 );
+		return is_array( $node ) ? $node : self::n_code( $html );
+	}
+
+	/** Element (not text/comment) children of $el. */
+	private static function mirror_child_els( DOMElement $el ) {
+		$out = array();
+		foreach ( $el->childNodes as $c ) { if ( $c instanceof DOMElement ) { $out[] = $c; } }
+		return $out;
+	}
+
+	/** Inner HTML of $el. */
+	private static function mirror_inner_html( DOMElement $el ) {
+		$html = '';
+		foreach ( $el->childNodes as $c ) { $html .= $el->ownerDocument->saveHTML( $c ); }
+		return $html;
+	}
+
+	/**
+	 * Recursively mirror a DOM element → a builder node. Returns null for "nothing useful" (empty leaf),
+	 * which the caller drops. $depth caps recursion (deep subtrees stay verbatim code_blocks).
+	 */
+	private static function mirror_el( DOMElement $el, $depth ) {
+		$tag  = strtolower( $el->nodeName );
+		if ( 'img' === $tag ) { return self::n_media_image( $el->ownerDocument->saveHTML( $el ) ); }
+		$kids = self::mirror_child_els( $el );
+
+		// Own (direct) text, excluding descendant elements.
+		$own_text = '';
+		foreach ( $el->childNodes as $c ) { if ( XML_TEXT_NODE === $c->nodeType ) { $own_text .= $c->nodeValue; } }
+		$own_text = trim( preg_replace( '/\s+/', ' ', (string) $own_text ) );
+
+		// LEAF (no element children) → a text_block when it carries text/inline media, else nothing.
+		if ( empty( $kids ) ) {
+			$inner = self::mirror_inner_html( $el );
+			$plain = trim( preg_replace( '/\s+/', ' ', strip_tags( $inner ) ) );
+			if ( '' === $plain && ! preg_match( '/<(?:img|svg|br|hr)\b/i', $inner ) ) { return null; }
+			$wrap = in_array( $tag, array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p' ), true ) ? $tag : 'p';
+			return self::n_text( '<' . $wrap . '>' . $inner . '</' . $wrap . '>' );
+		}
+
+		// Too deep → keep the exact subtree (fidelity over structure past a few levels).
+		if ( $depth >= 4 ) { return self::n_code( $el->ownerDocument->saveHTML( $el ) ); }
+
+		// A pure single-element wrapper (no own text) → unwrap, no needless flexbox level.
+		if ( 1 === count( $kids ) && '' === $own_text ) { return self::mirror_el( $kids[0], $depth ); }
+
+		// CONTAINER → a flexbox mirroring the source's flex/grid layout (from data-sc-cs).
+		$cs   = self::cs_decls( (string) $el->getAttribute( 'data-sc-cs' ), array( 'display', 'flex-direction', 'gap', 'grid-template-columns' ) );
+		$over = array();
+		$disp = isset( $cs['display'] ) ? (string) $cs['display'] : '';
+		if ( false !== strpos( $disp, 'grid' ) ) {
+			$over['display'] = 'grid';
+			$tracks = array_filter( preg_split( '/\s+/', trim( (string) ( $cs['grid-template-columns'] ?? '' ) ) ), function ( $t ) { return '' !== $t && 'none' !== $t; } );
+			$n = count( $tracks );
+			if ( $n >= 1 && $n <= 12 ) { $over['grid_columns'] = (string) $n; }
+		} elseif ( false !== strpos( $disp, 'flex' ) ) {
+			$over['display'] = 'flex';
+			$dir = ( false !== strpos( (string) ( $cs['flex-direction'] ?? '' ), 'column' ) ) ? 'column' : 'row';
+			$over['direction'] = array( 'base' => $dir, 'md' => '', 'lg' => '' );
+			if ( 'column' === $dir ) { $over['wrap'] = array( 'base' => 'no', 'md' => '', 'lg' => '' ); }
+		} else {
+			$over['display'] = 'block';
+		}
+		$gslug = self::gap_slug( isset( $cs['gap'] ) ? (string) $cs['gap'] : '' );
+		if ( '' !== $gslug ) { $over['gap'] = array( 'base' => $gslug, 'md' => '', 'lg' => '' ); }
+
+		$items = array();
+		if ( '' !== $own_text ) { $items[] = self::n_text( '<p>' . htmlspecialchars( $own_text, ENT_QUOTES ) . '</p>' ); }
+		foreach ( $kids as $k ) {
+			$child = self::mirror_el( $k, $depth + 1 );
+			if ( is_array( $child ) ) { $items[] = $child; }
+		}
+		if ( empty( $items ) ) { return self::n_code( $el->ownerDocument->saveHTML( $el ) ); }
+		return self::n_flexbox( $items, $over );
+	}
+
 	/** Slug of the first (default) Table Preset — the skin the converter applies to verbatim tables. */
 	private static function default_table_slug() {
 		if ( ! function_exists( 'unysonplus_get_table_presets' ) ) { return ''; }
@@ -2205,20 +2751,29 @@ class FW_Site_Converter_Mapper {
 				'controls'    => isset( $b['controls'] ) ? (string) $b['controls'] : 'yes',
 				'playsinline' => isset( $b['playsinline'] ) ? (string) $b['playsinline'] : 'yes',
 				'preload'     => 'metadata',
-				'object_fit'  => 'contain',
+				// A cover-fill source (`object-cover`, e.g. a portrait reel) should FILL the ratio box, not
+				// letterbox inside it — carry object-fit so it matches the source instead of black bars.
+				'object_fit'  => ! empty( $b['cover'] ) ? 'cover' : 'contain',
 			),
 		);
 		// Autoplay implies muted (browser policy) — mirror view.php so the atts stay coherent.
 		if ( $source_type['self_hosted']['autoplay'] === 'yes' ) { $source_type['self_hosted']['muted'] = 'yes'; }
 
+		// Ratio from the source's own aspect (portrait `9x16` reel, `1x1`, …); default landscape 16:9.
+		$ratio = ( isset( $b['aspect'] ) && in_array( (string) $b['aspect'], array( '16x9', '4x3', '1x1', '21x9', '9x16', '3x4' ), true ) ) ? (string) $b['aspect'] : '16x9';
+		// Portrait clips shouldn't be forced to a 600px-wide landscape box — narrow the max width.
+		$vwidth = in_array( $ratio, array( '9x16', '3x4' ), true ) ? 320 : 600;
+		// Carry the source's responsive visibility (`sm:hidden` mobile-only reel → hidden on desktop, etc.).
+		$rhide = ( isset( $b['rhideCls'] ) && '' !== trim( (string) $b['rhideCls'] ) ) ? self::responsive_hide_from_classes( (string) $b['rhideCls'] ) : array();
+
 		return array( 'type' => 'simple', 'shortcode' => 'media_video', '_items' => array(), 'atts' => array(
 			'source_type' => $source_type,
-			'width'       => array( 'value' => 600, 'unit' => 'px' ),
-			'ratio'       => '16x9',
+			'width'       => array( 'value' => $vwidth, 'unit' => 'px' ),
+			'ratio'       => $ratio,
 			'bg_color'    => self::empty_color(),
 			'spacing'     => self::def_spacing(),
 			'animation'   => self::def_animation(),
-			'unique_id'   => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => array(), 'custom_attrs' => array(),
+			'unique_id'   => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => $rhide, 'custom_attrs' => array(),
 		) );
 	}
 
@@ -2507,7 +3062,7 @@ class FW_Site_Converter_Mapper {
 	 * rating defaults to 5 (the shortcode default). The avatar carries the source URL only — the
 	 * media phase localizes it to the imported attachment (the view renders from `url`).
 	 */
-	private static function n_testimonials( array $rows, $design = null ) {
+	private static function n_testimonials( array $rows, $design = null, $card_box = null, $align = '' ) {
 		$items = array();
 		$any_extra = false;
 		foreach ( $rows as $r ) {
@@ -2570,7 +3125,9 @@ class FW_Site_Converter_Mapper {
 			'testimonials'    => $items,
 			'design_settings' => $design_settings,
 			'container_type'  => 'container',
-			'text_align'      => 'text-center',
+			// text alignment from the source card (start/left → left, center default). A BOXED left-aligned
+			// testimonial (modfii) must not be force-centred.
+			'text_align'      => ( in_array( $align, array( 'left', 'start' ), true ) ? 'text-left' : ( 'right' === $align || 'end' === $align ? 'text-right' : 'text-center' ) ),
 			'avatar_shape'    => 'rounded-circle',
 			'avatar_size'     => 'avatar-lg',
 			'show_rating'     => 'yes',
@@ -2584,12 +3141,22 @@ class FW_Site_Converter_Mapper {
 		// When any testimonial carries a footer stat, pin the Card Rows so the Extra Texts slot renders at the
 		// card footer (a divider + the stat rows). Omitted otherwise, so plain testimonials keep the option default.
 		if ( $any_extra ) {
+			// Justify/align the card rows to the SOURCE alignment (a left-aligned boxed card keeps its rating,
+			// avatar+author and footer left, not force-centred).
+			$j = in_array( $align, array( 'left', 'start' ), true ) ? 'start' : ( ( 'right' === $align || 'end' === $align ) ? 'end' : 'center' );
 			$atts['card_rows'] = array(
-				array( 'slots' => array( 'rating' ),           'direction' => 'inline', 'justify' => 'center', 'align' => 'center' ),
-				array( 'slots' => array( 'quote' ),            'direction' => 'stack',  'justify' => 'start',  'align' => 'center' ),
-				array( 'slots' => array( 'avatar', 'author' ), 'direction' => 'inline', 'justify' => 'center', 'align' => 'center' ),
-				array( 'slots' => array( 'extra' ),            'direction' => 'stack',  'justify' => 'start',  'align' => 'center' ),
+				array( 'slots' => array( 'rating' ),           'direction' => 'inline', 'justify' => $j,      'align' => 'center' ),
+				array( 'slots' => array( 'quote' ),            'direction' => 'stack',  'justify' => 'start', 'align' => $j ),
+				array( 'slots' => array( 'avatar', 'author' ), 'direction' => 'inline', 'justify' => $j,      'align' => 'center' ),
+				array( 'slots' => array( 'extra' ),            'direction' => 'stack',  'justify' => 'start', 'align' => $j ),
 			);
+		}
+		// BOX STYLE — the source's per-card box skin (fill / border / radius / shadow / hover, e.g. modfii's
+		// `bg-background rounded-2xl border`) → a shared Box Preset applied to EACH testimonial card, so the
+		// converted testimonials are boxed like the source instead of bare text on the section background.
+		if ( is_array( $card_box ) ) {
+			$bpref = self::register_box_preset( $card_box );
+			if ( '' !== $bpref ) { $atts['box_style'] = $bpref; }
 		}
 		return array( 'type' => 'simple', 'shortcode' => 'testimonials', '_items' => array(), 'atts' => $atts );
 	}
@@ -2924,11 +3491,17 @@ class FW_Site_Converter_Mapper {
 			);
 		}
 		if ( count( $logos ) < 1 ) { return self::n_code( (string) ( $b['html'] ?? '' ) ); }
-		// SHOW the brand NAMES when most logos carry one — an icon+label "trusted by" row (the source shows
-		// "◆ Unity  ⬟ Blender …", not bare icons). A pure image-logo wall (no names) keeps labels off.
-		$named = 0;
-		foreach ( $logos as $l ) { if ( trim( (string) ( $l['name'] ?? '' ) ) !== '' ) { $named++; } }
-		$show_labels = ( $named >= (int) ceil( count( $logos ) * 0.5 ) ) ? 'yes' : 'no';
+		// SHOW the brand NAMES only for an ICON/SVG "trusted by" row (a mark + a visible name, e.g. the
+		// source's "◆ Unity  ⬟ Blender …"). An IMAGE logo carries the brand IN the artwork, so its `name`
+		// is alt text (accessibility), NOT a visible label — rendering it duplicates the wordmark (a
+		// "Dvele" caption under the Dvele logo). So count only icon/svg logos that carry a name; a wall of
+		// image logos keeps labels off (parity with the JS logoGridNode, which captures <img> logos only).
+		$icon_named = 0;
+		foreach ( $logos as $l ) {
+			$is_img = '' !== trim( (string) ( $l['image']['url'] ?? '' ) ) || '' !== trim( (string) ( $l['image']['attachment_id'] ?? '' ) );
+			if ( ! $is_img && trim( (string) ( $l['name'] ?? '' ) ) !== '' ) { $icon_named++; }
+		}
+		$show_labels = ( $icon_named >= (int) ceil( count( $logos ) * 0.5 ) ) ? 'yes' : 'no';
 		$atts = array(
 			'logos'       => $logos,
 			'design'      => 'grid',
@@ -3376,6 +3949,30 @@ class FW_Site_Converter_Mapper {
 		$ffs = trim( (string) ( $feat['fontSize'] ?? '' ) );
 		if ( preg_match( '/^(\d+(?:\.\d+)?)px$/', $ffs, $m ) && ( (float) $m[1] < 14 || (float) $m[1] > 15.5 ) ) {
 			$overlay['custom_css'] = trim( (string) ( $overlay['custom_css'] ?? '' ) . 'selector .fw-pt__feature{font-size:' . $ffs . ';}' );
+		}
+		// READABILITY GUARD: a uniform pricing_table can't carry per-plan backgrounds, so a source whose menu
+		// bands ALTERNATE dark/red/cream flattens to one card_bg. On that single card_bg the theme-default plan
+		// title/price — and a feature colour captured for a DIFFERENTLY-coloured source band — can render at near-
+		// zero contrast (the "invisible menu text" bug). Pin the plan title/price to a colour that contrasts the
+		// card_bg, and re-colour the feature text unless the captured colour already contrasts it.
+		$cbg  = isset( $overlay['card_bg']['custom'] ) ? (string) $overlay['card_bg']['custom'] : '';
+		$crgb = self::rgb_triplet( $cbg );
+		if ( $crgb ) {
+			$clum      = ( 0.2126 * $crgb[0] + 0.7152 * $crgb[1] + 0.0722 * $crgb[2] ) / 255; // 0 black .. 1 white
+			$dark_card = $clum < 0.5;
+			$ink       = $dark_card ? 'rgb(245, 245, 245)' : 'rgb(20, 20, 20)';
+			$overlay['title_color'] = array( 'predefined' => '', 'custom' => $ink );
+			$overlay['price_color'] = array( 'predefined' => '', 'custom' => $ink );
+			$ft   = isset( $overlay['text_color']['custom'] ) ? (string) $overlay['text_color']['custom'] : '';
+			$frgb = self::rgb_triplet( $ft );
+			$contrasts = false;
+			if ( $frgb ) {
+				$flum      = ( 0.2126 * $frgb[0] + 0.7152 * $frgb[1] + 0.0722 * $frgb[2] ) / 255;
+				$contrasts = abs( $flum - $clum ) > 0.35;
+			}
+			if ( ! $contrasts ) {
+				$overlay['text_color'] = array( 'predefined' => '', 'custom' => $dark_card ? 'rgb(210, 210, 210)' : 'rgb(70, 70, 70)' );
+			}
 		}
 		return self::finalize_widget( 'pricing_table', $overlay );
 	}
@@ -4879,7 +5476,16 @@ class FW_Site_Converter_Mapper {
 				// mis-folded CTA (a "View All →" link beside a section heading became an empty-title
 				// special_heading whose subtitle = the link, duplicating the real link). A title-less head with
 				// a PLAIN-text subtitle is still legitimate, so keep those. (Parity to add in JS to-pages.)
-				if ( ! self::head_is_stray_link( $head ) ) { $items[] = self::n_heading( $head ); }
+				if ( ! self::head_is_stray_link( $head ) ) {
+						$hn = self::n_heading( $head );
+						// Carry the heading GROUP wrapper's OWN bottom margin (e.g. the stat card header's
+						// `mb-6` = 24px, captured as mbAdd) onto the special_heading's Spacing, so the
+						// header → content gap matches the source instead of only the title's inner mb-2.
+						if ( ! empty( $head['mbAdd'] ) && isset( $hn['atts']['spacing']['margin'] ) ) {
+							$hn['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', (float) $head['mbAdd'] );
+						}
+						$items[] = $hn;
+					}
 				$head = null;
 			}
 		};
@@ -4907,6 +5513,9 @@ class FW_Site_Converter_Mapper {
 				if ( $head[ $role ] !== '' ) { $flush_head(); $head = $fresh; }
 				$head[ $role ]            = $val;
 				$head[ $role . '_class' ] = (string) ( $b['cls'] ?? '' );
+				// The heading GROUP wrapper's bottom margin (mbAdd, e.g. `mb-6`) lands on the LAST part block —
+				// carry the largest onto $head so flush_head can put it on the special_heading's Spacing.
+				if ( ! empty( $b['mbAdd'] ) ) { $head['mbAdd'] = max( (float) ( $head['mbAdd'] ?? 0 ), (float) $b['mbAdd'] ); }
 				// Carry chip-before-heading pill metadata onto the head so n_heading emits the filled-pill overline.
 				if ( 'overline' === $role ) {
 					if ( isset( $b['overline_svg'] ) )   { $head['overline_svg']   = (string) $b['overline_svg']; }
@@ -4998,7 +5607,7 @@ class FW_Site_Converter_Mapper {
 						if ( ! is_array( $cc ) || ! isset( $cc['counter'] ) || ! is_array( $cc['counter'] ) ) { continue; }
 						$ci   = array( self::n_counter( $cc['counter'] ) );
 						$clbl = trim( (string) ( $cc['counter']['label'] ?? '' ) );
-						if ( '' !== $clbl ) { $lc = trim( (string) ( $cc['counter']['labelColor'] ?? '' ) ); $ci[] = self::n_text( '<p' . ( $lc !== '' ? ' style="color:' . esc_attr( $lc ) . '"' : '' ) . '>' . esc_html( $clbl ) . '</p>' ); }
+						if ( '' !== $clbl ) { $lc = trim( (string) ( $cc['counter']['labelColor'] ?? '' ) ); $ls = trim( (string) ( $cc['counter']['labelSize'] ?? '' ) ); $lsty = ( $lc !== '' ? 'color:' . esc_attr( $lc ) . ';' : '' ) . ( $ls !== '' ? 'font-size:' . esc_attr( $ls ) . 'px;' : '' ); $ci[] = self::n_text( '<p' . ( $lsty !== '' ? ' style="' . $lsty . '"' : '' ) . '>' . esc_html( $clbl ) . '</p>' ); }
 						$lay = self::geom_layout( isset( $cc['wResp'] ) ? $cc['wResp'] : null );
 						$w   = ( null !== $lay ) ? $lay['width'] : self::frac12( (int) round( 12 / max( 1, count( $b['cols'] ) ) ) );
 						$cCol = self::n_column( $w, $ci );
@@ -5010,10 +5619,6 @@ class FW_Site_Converter_Mapper {
 							$bpref = self::register_box_preset( $cc['cardBox'] );
 							if ( '' !== $bpref ) {
 								$cCol['atts']['border_preset'] = $bpref; // the column view expects the full class
-								if ( count( $b['cols'] ) > 1 ) { // keep the row-gap gutter so adjacent preset boxes don't touch
-									$cur = isset( $cCol['atts']['custom_css'] ) ? (string) $cCol['atts']['custom_css'] : '';
-									$cCol['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . 'selector{padding-left:8px;padding-right:8px;}' );
-								}
 							} else {
 								$cCol = ( count( $b['cols'] ) > 1 ) ? self::apply_card_box_inner( $cCol, $cc['cardBox'] ) : self::apply_card_box( $cCol, $cc['cardBox'] );
 							}
@@ -5030,7 +5635,31 @@ class FW_Site_Converter_Mapper {
 					// Spread the counter columns directly (NOT inside an extra 1_1 wrapper — that double-nests
 					// and the builder mis-renders it). Consecutive sibling columns in a column's _items wrap as
 					// a row, so the 3 counters sit side by side beneath the panel heading.
-					if ( $ncols ) { foreach ( $ncols as $nc ) { $items[] = $nc; } continue; }
+					if ( $ncols ) {
+						// Wrap the stat columns in ONE flexbox row carrying the SOURCE grid's GAP (gap-4 → 16px,
+						// spacing the boxes) and vertical MARGIN (mb-6 → 24px below), so the stat grid matches the
+						// source rhythm — instead of touching boxes + no gap below (the columns were spread bare and
+						// a later flexify wrapped them with default no-gap atts).
+						$srow = array( 'display' => 'flex', 'direction' => array( 'base' => 'row', 'md' => '', 'lg' => '' ), 'wrap' => array( 'base' => 'yes', 'md' => '', 'lg' => '' ) );
+						$rgap = self::gap_slug( isset( $b['gap'] ) ? $b['gap'] : '' );
+						if ( '' !== $rgap ) { $srow['gap'] = array( 'base' => $rgap, 'md' => '', 'lg' => '' ); }
+						$scells = array(); foreach ( $ncols as $nc ) { $scells[] = self::column_to_flexbox_cell( $nc ); }
+						// UNIFORM stat grid → grow the cells to fill the row (a wrapping flex row subtracts the full
+						// gap from every cell but only N-1 gaps sit between N, leaving one gap of trailing space on
+						// the right). flex-grow:1 on equal cells distributes that remainder back. See cells_uniform_grid().
+						if ( self::cells_uniform_grid( $scells ) ) {
+							foreach ( $scells as &$ug ) { $ug['atts']['flex_grow'] = array( 'base' => 'yes', 'md' => '', 'lg' => '' ); }
+							unset( $ug );
+						}
+						$sband  = self::n_flexbox( $scells, $srow );
+						$g_mt = isset( $b['mt'] ) ? (float) $b['mt'] : 0.0; $g_mb = isset( $b['mb'] ) ? (float) $b['mb'] : 0.0;
+						if ( ( $g_mt > 0 || $g_mb > 0 ) && isset( $sband['atts']['spacing']['margin'] ) ) {
+							if ( $g_mt > 0 ) { $sband['atts']['spacing']['margin']['top']    = self::spacing_token( 'mt', $g_mt ); }
+							if ( $g_mb > 0 ) { $sband['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', $g_mb ); }
+						}
+						$items[] = $sband;
+						continue;
+					}
 				}
 				// GENERIC nested column row (not counters) — e.g. a hero trust-badge strip (icon+text items in a
 				// flex-wrap). Without this, build_cell_items ignores a row/columns block and DROPS every cell.
@@ -6374,12 +7003,41 @@ class FW_Site_Converter_Mapper {
 	public static function strip_animations( $css ) {
 		$css = (string) $css;
 		if ( trim( $css ) === '' ) { return ''; }
+		// CONTINUOUS TICKER animations (marquee / auto-scroll reel / logo strip) are LAYOUT, not entrance
+		// decoration — the source's own horizontal scroll. Preserve their @keyframes AND the `animation:`
+		// decls that reference them, so a kept marquee/reel strip actually scrolls, while the usual entrance/
+		// reveal animation noise is still stripped.
+		$keep = 'marquee|scroll-left|scroll-right|scroll-x|ticker';
+		// (a) Stash the allow-listed @keyframes blocks so the generic remove below can't take them.
+		$stash = array();
+		$css = self::stash_at_blocks( $css, '/@(?:-webkit-|-moz-|-o-|-ms-)?keyframes\s+(?:' . $keep . ')\b/i', $stash );
 		// 1. @keyframes / vendor-prefixed keyframes blocks (brace-matched, may nest one level).
 		$css = self::remove_at_blocks( $css, '/@(?:-webkit-|-moz-|-o-|-ms-)?keyframes\b/i' );
 		// 2. Rule-sets whose selector references an animation library (drop the whole rule).
 		$css = preg_replace( '/[^{}]*(?:animate__|\.animated\b|\.wow\b|\[data-aos|\.aos-)[^{}]*\{[^{}]*\}/i', '', $css );
-		// 3. animation / animation-* declarations inside surviving rules (keep transition/transform).
-		$css = preg_replace( '/(?<![-\w])(?:-webkit-|-moz-|-o-|-ms-)?animation(?:-[a-z]+)?\s*:[^;{}]*;?/i', '', $css );
+		// 3. animation / animation-* declarations inside surviving rules (keep transition/transform) — but
+		// KEEP any that reference an allow-listed ticker keyframe (the marquee/reel scroll).
+		$css = preg_replace_callback( '/(?<![-\w])(?:-webkit-|-moz-|-o-|-ms-)?animation(?:-[a-z]+)?\s*:[^;{}]*;?/i', function ( $m ) use ( $keep ) {
+			return preg_match( '/\b(?:' . $keep . ')\b/i', $m[0] ) ? $m[0] : '';
+		}, $css );
+		// Restore the preserved ticker keyframes (position is irrelevant for @keyframes).
+		if ( $stash ) { $css .= "\n" . implode( "\n", $stash ); }
+		return $css;
+	}
+
+	/** Extract every at-block whose header matches $regex (brace-matched) into $stash and remove it from
+	 *  the returned CSS. Used to shield allow-listed @keyframes from strip_animations' generic removal. */
+	private static function stash_at_blocks( $css, $regex, array &$stash ) {
+		$guard = 0;
+		while ( $guard++ < 1000 && preg_match( $regex, $css, $m, PREG_OFFSET_CAPTURE ) ) {
+			$start = $m[0][1];
+			$brace = strpos( $css, '{', $start );
+			if ( false === $brace ) { break; }
+			$depth = 1; $j = $brace + 1; $len = strlen( $css );
+			while ( $j < $len && $depth > 0 ) { $c = $css[ $j ]; if ( '{' === $c ) { $depth++; } elseif ( '}' === $c ) { $depth--; } $j++; }
+			$stash[] = substr( $css, $start, $j - $start );
+			$css = substr( $css, 0, $start ) . substr( $css, $j );
+		}
 		return $css;
 	}
 
@@ -6565,8 +7223,13 @@ class FW_Site_Converter_Mapper {
 	/** The built-in block→shortcode builders (the original elseif chain, now table-driven + extensible). */
 	private static function register_builtin_builders() {
 		self::register_builder( 'heading', function ( $b ) {
-			$cw = ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) ? self::cs_decls( (string) $b['cs'], array( 'font-weight' ) ) : array();
-			$node = self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'title_weight' => isset( $cw['font-weight'] ) ? $cw['font-weight'] : '', 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
+			$cw = ( isset( $b['cs'] ) && '' !== (string) $b['cs'] ) ? self::cs_decls( (string) $b['cs'], array( 'font-weight', 'color' ) ) : array();
+			// Carry the source title's computed COLOR onto the native title_color option. Without this the
+			// heading builder declared `color` as "already reproduced" (in the apply_hifi_base $already list
+			// below, so the base CSS skips it) yet never actually set it — a real non-default title colour
+			// (e.g. a WHITE heading on a dark glass card) then collapsed to the theme's default black ink.
+			// mk_color in n_heading keeps plain default ink as inherit, so only a real tone is pinned.
+			$node = self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'title_weight' => isset( $cw['font-weight'] ) ? $cw['font-weight'] : '', 'title_color_src' => isset( $cw['color'] ) ? (string) $cw['color'] : '', 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
 			$cs = (string) ( $b['cs'] ?? '' );
 			// Pass-1: source vertical margin → the special_heading's NATIVE spacing option (fill only sides
 			// the class mapping left empty). Pass-2: the typography/color the unified styler already re-asserts
@@ -6608,7 +7271,15 @@ class FW_Site_Converter_Mapper {
 			return $node;
 		} );
 		self::register_builder( 'code', function ( $b ) {
-			return self::n_code( (string) ( $b['html'] ?? '' ) );
+			$html = (string) ( $b['html'] ?? '' );
+			// TIER-3: try a structural (nested-flexbox) mirror of an un-decomposable region — an EDITABLE
+			// clone. Prefer it ONLY when it yields a real multi-child container (a genuine layout to
+			// reproduce); a trivial region keeps its verbatim code_block (safest fidelity, no regression).
+			$mirror = self::n_structural_mirror( $html );
+			if ( is_array( $mirror ) && 'flexbox' === ( $mirror['type'] ?? '' ) && count( isset( $mirror['_items'] ) && is_array( $mirror['_items'] ) ? $mirror['_items'] : array() ) >= 2 ) {
+				return $mirror;
+			}
+			return self::n_code( $html );
 		} );
 		self::register_builder( 'video', function ( $b ) {
 			return self::n_video( $b );
@@ -7100,7 +7771,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 			// (the shortcode renders its own container_type). Content only; design not preserved.
 			if ( ( $b['t'] ?? '' ) === 'testimonials' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
 				$flush_buf();
-				$node = self::n_testimonials( $b['items'], isset( $b['design'] ) && is_array( $b['design'] ) ? $b['design'] : null );
+				$node = self::n_testimonials( $b['items'], isset( $b['design'] ) && is_array( $b['design'] ) ? $b['design'] : null, isset( $b['cardBox'] ) && is_array( $b['cardBox'] ) ? $b['cardBox'] : null, (string) ( $b['align'] ?? '' ) );
 				self::apply_block_anim( $node, $b );
 				$items[] = self::n_column( '1_1', array( $node ) );
 				continue;
@@ -7340,6 +8011,9 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 				// sharing ONE column is a different path and keeps box_style per icon-box.)
 				$grid_has_decomposed = false;
 				foreach ( $b['cols'] as $gc ) { if ( is_array( $gc ) && ! empty( $gc['blocks'] ) && is_array( $gc['blocks'] ) ) { $grid_has_decomposed = true; break; } }
+				// HYBRID: collect this row's built column cells, then (after the loop) decide whether to emit
+				// them as a flex-Div row (row_flex_safe) or — for the tricky inner-wrapper cases — as columns.
+				$row_cols = array();
 				foreach ( $b['cols'] as $ci => $c ) {
 					$box_on_column = ''; // box class for this column's Inner Wrapper Class (box card WITH a button)
 					$col_border_preset = ''; // a Box Preset (boxp-*) for the column's border_preset (box card WITH a button)
@@ -7430,7 +8104,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 						// Animated stat: a `counter` shortcode + the label as a text_block below.
 						$inner_items = array( self::n_counter( $c['counter'] ) );
 						$clbl = trim( (string) ( $c['counter']['label'] ?? '' ) );
-						if ( $clbl !== '' ) { $lc = trim( (string) ( $c['counter']['labelColor'] ?? '' ) ); $inner_items[] = self::n_text( '<p' . ( $lc !== '' ? ' style="color:' . esc_attr( $lc ) . '"' : '' ) . '>' . esc_html( $clbl ) . '</p>' ); }
+						if ( $clbl !== '' ) { $lc = trim( (string) ( $c['counter']['labelColor'] ?? '' ) ); $ls = trim( (string) ( $c['counter']['labelSize'] ?? '' ) ); $lsty = ( $lc !== '' ? 'color:' . esc_attr( $lc ) . ';' : '' ) . ( $ls !== '' ? 'font-size:' . esc_attr( $ls ) . 'px;' : '' ); $inner_items[] = self::n_text( '<p' . ( $lsty !== '' ? ' style="' . $lsty . '"' : '' ) . '>' . esc_html( $clbl ) . '</p>' ); }
 					} elseif ( isset( $c['text'] ) && is_array( $c['text'] ) ) {
 						$inner_items = self::n_text_cell( $c['text'] );
 					} elseif ( isset( $c['card'] ) && is_array( $c['card'] ) && ! empty( $c['card']['image']['src'] ) ) {
@@ -7645,7 +8319,35 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 						if ( $slug !== '' ) { $col['atts']['content_gap'] = array( 'base' => $slug, 'md' => '', 'lg' => '' ); }
 						if ( strpos( (string) $c['flex']['dir'], 'row-reverse' ) === 0 ) { $col['atts']['content_order'] = 'reverse'; }
 					}
-					$items[] = $col;
+					$row_cols[] = $col;
+				}
+				// HYBRID row emission: a clean multi-cell row → ONE flex-Div (flexbox, direction row) whose
+				// cells are child flex-Divs; otherwise (single cell, or a cell needing the column inner
+				// wrapper / positioned ancestor) emit the columns unchanged. Sections/containers untouched.
+				if ( self::row_flex_safe( $row_cols ) ) {
+					$cells = array();
+					foreach ( $row_cols as $rc ) { $cells[] = self::column_to_flexbox_cell( $rc ); }
+					$row_atts = array(
+						'display'   => 'flex',
+						'direction' => array( 'base' => 'row', 'md' => '', 'lg' => '' ),
+						'wrap'      => array( 'base' => 'yes', 'md' => '', 'lg' => '' ),
+					);
+					if ( $row_valign !== '' ) { $row_atts['align_items'] = array( 'base' => $row_valign, 'md' => '', 'lg' => '' ); }
+					$rgap = self::gap_slug( isset( $b['gap'] ) ? $b['gap'] : '' );
+					if ( $rgap !== '' ) { $row_atts['gap'] = array( 'base' => $rgap, 'md' => '', 'lg' => '' ); }
+					$band = self::n_flexbox( $cells, $row_atts );
+					// The source grid's OWN vertical margin (e.g. `mb-8` = 32px below the grid, spacing it from the
+					// next block/CTA) → the band's native Spacing margin, so that rhythm isn't dropped.
+					$g_mt = isset( $b['mt'] ) ? (float) $b['mt'] : 0.0;
+					$g_mb = isset( $b['mb'] ) ? (float) $b['mb'] : 0.0;
+					if ( ( $g_mt > 0 || $g_mb > 0 ) && isset( $band['atts']['spacing']['margin'] ) ) {
+						// The Spacing option's slots hold spacing-scale CLASSES (mb-3 / mb-[32px]), not raw px.
+						if ( $g_mt > 0 ) { $band['atts']['spacing']['margin']['top']    = self::spacing_token( 'mt', $g_mt ); }
+						if ( $g_mb > 0 ) { $band['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', $g_mb ); }
+					}
+					$items[] = $band;
+				} else {
+					foreach ( $row_cols as $rc ) { $items[] = $rc; }
 				}
 			} else {
 				// Standalone block -> the block-builder REGISTRY (heading / text / button / code, plus any
@@ -7667,7 +8369,37 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 		// centered `.fw-container` (is_fullwidth = false) to match the source's `.container`.
 		// NOT `sc-mirror` (whose reset would nuke the container back to full width). The section
 		// element is still full-width, so a section background still spans edge to edge.
-		$sec_node = self::n_section( $src_cls_str, $css_id, $css, $items, false );
+		// FULL-BLEED IMAGE HERO: when the mapped section's SOLE content is one verbatim code_block that is a
+		// full-bleed image hero (an `object-cover` image filling an `aspect-[…]` container with an `inset-0`
+		// text overlay, and NO inner `max-w-*` content cap), the content-width `.fw-container` would box it to
+		// ~gutter width and clip the overlay. Make the section full-width so the source's own `w-full` layout
+		// spans edge to edge (the overlay heading/subtext/CTA then has the full stage the source intended).
+		$hero_fullbleed = false;
+		if ( 1 === count( $items ) && isset( $items[0]['type'] ) && 'column' === $items[0]['type']
+			&& 1 === count( (array) ( $items[0]['_items'] ?? array() ) ) ) {
+			$only = $items[0]['_items'][0];
+			if ( isset( $only['shortcode'] ) && 'code_block' === $only['shortcode'] ) {
+				$hcode = (string) ( $only['atts']['code'] ?? '' );
+				// object-cover image filling an `aspect-[…]` frame + an `inset-0` text overlay = the full-bleed
+				// image-hero pattern. (A `max-w-*` on the hero's inner subtext PARAGRAPH is line-length, not a
+				// content-band cap, so it must NOT disqualify — that was capping the section at max-w-xl=576px.)
+				if ( false !== stripos( $hcode, 'object-cover' ) && preg_match( '/\baspect-\[/', $hcode )
+					&& false !== stripos( $hcode, 'inset-0' ) ) {
+					$hero_fullbleed = true;
+				}
+			}
+		}
+		// SECTION-LEVEL ROW → flexbox. Until now flexify_items() only ran on a row NESTED inside a
+		// section; a section that is ITSELF the row (its direct children are ≥2 clean columns — a hero's
+		// text+image, a 2-up/3-up feature band) stayed `section → [column, column]`, i.e. the classic
+		// bootstrap fw-row/fw-col. Run the section's own items through the SAME flexify pass so those
+		// section-as-row bands emit a flexbox Div (fw-flex) too. A run that doesn't qualify (single
+		// column, inner_class, element_position) falls back to columns unchanged, and a single-column
+		// section is untouched (so the hero_fullbleed shape detected just above is preserved). The
+		// container_width → flexbox content_width push below then keeps the new band constrained.
+		$items = self::flexify_items( $items );
+		self::fix_iconbox_full_height( $items ); // icon_box + sibling (e.g. feature_list) → icon_box not full-height (else it clips the sibling)
+		$sec_node = self::n_section( $src_cls_str, $css_id, $css, $items, $hero_fullbleed );
 		// A CENTERED source band (flex items-center / text-center, detected by Stitch::section_center
 		// and carried here as $sec['align']) → the section's native `text_align='center'`. text-align
 		// is INHERITED, so this centers the whole band's heading + paragraph + buttons together (the
@@ -7681,8 +8413,29 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 		// clobbering the correct 112px with the 80px nav height (the "hero top padding stuck at 80" bug).
 		// Container Width — the source's content-band cap (e.g. `container-narrow` = 64rem) → a shared named
 		// Container Width preset (Components → Section Styles → Container Widths), so the whole site reuses it.
-		if ( isset( $sec['sectionContainerW'] ) && is_array( $sec['sectionContainerW'] ) && isset( $sec_node['atts'] ) ) {
+		if ( ! $hero_fullbleed && isset( $sec['sectionContainerW'] ) && is_array( $sec['sectionContainerW'] ) && isset( $sec_node['atts'] ) ) {
 			$sec_node['atts']['container_width'] = $sec['sectionContainerW'];
+			// A direct FLEXBOX child makes the section render it FULL-WIDTH (the items-corrector skips the
+			// section's own .fw-container for a self-managed flex band), so the section's container_width can't
+			// constrain it — the grid escapes to edge-to-edge. Push a content cap onto each such flexbox's own
+			// `content_width`. Prefer the section's INNER GRID cap (a `max-w-5xl` card grid = 1024) so the band
+			// stays narrower than the container; fall back to the OUTER container (~1400) for a section with no
+			// narrower band — the hero (text + card, capped only by the outer container) — so it isn't full-width.
+			$cwpx = self::container_width_px( $sec['sectionBandW'] ?? null );
+			if ( $cwpx <= 0 ) { $cwpx = self::container_width_px( $sec['sectionContainerW'] ); }
+			if ( $cwpx > 0 && isset( $sec_node['_items'] ) && is_array( $sec_node['_items'] ) ) {
+				$cw_val = self::content_width_value( $cwpx );
+				foreach ( $sec_node['_items'] as &$child ) {
+					if ( ! is_array( $child ) || ( $child['type'] ?? '' ) !== 'flexbox' || ! isset( $child['atts'] ) ) { continue; }
+					// Already carries a real content-width cap (legacy {value} or the multi-picker's own preset/custom)? Leave it.
+					$ex = $child['atts']['content_width'] ?? null;
+					$has_cw = is_array( $ex ) && ( ! empty( $ex['value'] ) || ! empty( $ex['custom']['custom_width']['value'] )
+						|| ( ! empty( $ex['preset'] ) && 'inherit' !== $ex['preset'] ) );
+					if ( $has_cw ) { continue; }
+					$child['atts']['content_width'] = $cw_val;
+				}
+				unset( $child );
+			}
 		}
 		// Reproduce the source section's FULL container styling — not just vertical rhythm. Its Tailwind
 		// classes (`max-w-[..] mx-auto px-.. py-.. border-y border-<color> rounded-.. bg-..`) describe a

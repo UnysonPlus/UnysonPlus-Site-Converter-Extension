@@ -57,6 +57,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		add_action( 'wp_enqueue_scripts', array( 'FW_Site_Converter_Landing', 'enqueue_inline' ) );
 		// FRONT-END: turn off wpautop/wptexturize on an inline landing page (raw hero markup — no <br> injection).
 		add_action( 'wp', array( 'FW_Site_Converter_Landing', 'maybe_disable_autop' ) );
+		// FRONT-END: force chrome-less + full-width on any landing page via the theme layout override
+		// (reliable — independent of whether the page template resolves).
+		add_action( 'wp', array( 'FW_Site_Converter_Landing', 'maybe_force_landing_layout' ) );
 
 		if ( is_admin() ) {
 			add_action( 'admin_menu', array( $this, '_action_admin_menu' ), 30 );
@@ -653,6 +656,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				switch_theme( $slug );
 				$result['theme']['activated'] = true;
 				$this->cleanup_previous_conversion( $slug ); // a new conversion replaces the last one's theme
+				$this->apply_converted_site_title( $result ); // reproduce the source's Site Title
+				$this->apply_converted_logo();               // wire the header logo to the imported attachment (Site Identity)
 			}
 		}
 
@@ -660,6 +665,60 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$result['convert_source'] = (string) $source_label;
 		$result['stitch_screens'] = (int) $screens;
 		return $result;
+	}
+
+	/**
+	 * Reproduce the SOURCE site's identity: set the WordPress Site Title from the converted theme's name
+	 * (the source site name; the "(Child)" suffix stripped). A conversion reproduces the source, so the
+	 * browser <title>, the header logo-fallback, and the footer should read the source brand — not a
+	 * leftover "Fresh WordPress" or a previous conversion's title. Filterable; return '' to skip.
+	 */
+	private function apply_converted_site_title( array $result ) {
+		$name = isset( $result['theme']['name'] ) ? (string) $result['theme']['name'] : '';
+		$name = wp_strip_all_tags( html_entity_decode( $name, ENT_QUOTES, 'UTF-8' ) ); // "&amp;" → "&", drop any markup
+		$name = trim( preg_replace( '/\s*\((?:child|copy)\)\s*$/i', '', $name ) );
+		// A source <title> is often "Brand | Tagline" / "Brand – Tagline"; keep the BRAND (first segment) so
+		// the Site Title isn't the whole verbose page title. Only when it leaves a substantial name.
+		if ( preg_match( '/^(.{2,60}?)\s*[|\x{2013}\x{2014}\x{00B7}]\s+\S/u', $name, $mm ) ) {
+			$first = trim( $mm[1] );
+			if ( function_exists( 'mb_strlen' ) ? mb_strlen( $first ) >= 2 : strlen( $first ) >= 2 ) { $name = $first; }
+		}
+		$name = (string) apply_filters( 'fw_sc_converted_site_title', $name, $result );
+		if ( '' !== $name && function_exists( 'update_option' ) ) {
+			update_option( 'blogname', $name );
+		}
+	}
+
+	/**
+	 * Wire the captured header LOGO to the imported attachment — the clean, WordPress-native way. Runs
+	 * AFTER the full import (media included), so the logo attachment already exists and resolves reliably
+	 * (the theme-settings importer runs BEFORE the media import, so its own sideload can miss and fall back
+	 * to the source alt-text — the "Home" bug). We read the Simple-Logo image URL from the theme settings,
+	 * resolve it to the imported attachment, then (1) set it as the WP Site Identity logo (Customizer →
+	 * Site Identity → Logo — editable, theme-native) and (2) point the theme-settings Simple-Logo image at
+	 * the local attachment so it renders the image instead of the alt-text fallback.
+	 */
+	private function apply_converted_logo() {
+		if ( ! function_exists( 'fw_get_db_settings_option' ) || ! class_exists( 'FW_Site_Converter_Media' ) ) { return; }
+		$hl  = fw_get_db_settings_option( 'header_logo' );
+		$img = ( is_array( $hl ) && isset( $hl['logo_type']['simple']['image'] ) && is_array( $hl['logo_type']['simple']['image'] ) )
+			? $hl['logo_type']['simple']['image'] : array();
+		$url = isset( $img['url'] ) ? (string) $img['url'] : '';
+		if ( '' === $url ) { return; }
+		$id = (int) FW_Site_Converter_Media::find_by_source( $url ); // exact source-URL match (media import has run)
+		if ( ! $id && class_exists( 'FW_Site_Converter_Mapper' ) ) {  // else basename-match / absolutise fallback
+			$v  = FW_Site_Converter_Mapper::upload_val( $url );
+			$id = ! empty( $v['attachment_id'] ) ? (int) $v['attachment_id'] : 0;
+		}
+		if ( ! $id || ! function_exists( 'wp_get_attachment_url' ) ) { return; }
+		$local = (string) wp_get_attachment_url( $id );
+		set_theme_mod( 'custom_logo', $id );      // WP Site Identity logo (Customizer-editable, theme-native)
+		update_option( 'site_logo', $id );        // newer-WP Site Logo option (kept in sync)
+		if ( '' !== $local ) {                    // and point the theme-settings Simple Logo at the local file
+			$hl['logo_type']['simple']['image']['url']           = $local;
+			$hl['logo_type']['simple']['image']['attachment_id'] = (string) $id;
+			fw_set_db_settings_option( 'header_logo', $hl );
+		}
 	}
 
 	/**
@@ -686,6 +745,13 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'home_url'      => home_url(),
 			'error'         => '',
 		);
+
+		// OUTPUT TARGET — 'block-theme' routes through the JS emitter (capture.mjs --target=block-theme),
+		// which produces a portable FSE block theme the plugin installs via install_block_theme(). The
+		// default 'page-builder' path below (PHP Mapper → child theme + builder pages) is unchanged.
+		if ( 'block-theme' === ( isset( $opts['target'] ) ? (string) $opts['target'] : 'page-builder' ) ) {
+			return $this->run_block_theme_conversion( trim( (string) $source_url ), $opts );
+		}
 
 		$dry_run = ! empty( $opts['dry_run'] );
 		unset( $opts['dry_run'] );
@@ -812,6 +878,126 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		return $out;
 	}
 
+	/**
+	 * BLOCK-THEME output target. Runs the JS emitter locally — `capture.mjs <url> <out>
+	 * --target=block-theme --vocab=<core|enriched>` — which writes a block-bundle.json, then installs
+	 * it as a standalone FSE block theme via FW_Site_Converter_Bundle::import_dir() (which detects the
+	 * block bundle and calls FW_Site_Converter_Blocks::install_block_theme). No PHP Mapper, no child
+	 * theme: the output is a portable, plugin-independent block theme.
+	 *
+	 * Needs the local capture service (Node + capture.mjs), the same requirement as URL rendering.
+	 *
+	 * @param string $source_url
+	 * @param array  $opts  { vocabulary: 'core'|'enriched' }
+	 * @return array run_url_conversion-shaped result
+	 */
+	private function run_block_theme_conversion( $source_url, array $opts = array() ) {
+		$out = array(
+			'ok'            => false,
+			'theme_slug'    => '',
+			'theme_name'    => '',
+			'activated'     => false,
+			'pages_created' => 0,
+			'home_url'      => home_url(),
+			'error'         => '',
+		);
+
+		if ( $source_url === '' || ! preg_match( '#^https?://#i', $source_url ) ) {
+			$out['error'] = __( 'A valid http(s) source URL is required.', 'fw' );
+			return $out;
+		}
+		$vocab = ( isset( $opts['vocabulary'] ) && 'enriched' === $opts['vocabulary'] ) ? 'enriched' : 'core';
+		// Capture SERVICE URL (HTTP) — the same service that renders URLs for the page-builder path. The
+		// JS posts it; default to the launcher's localhost:8787 so a running service just works.
+		$svc = isset( $opts['service_url'] ) ? esc_url_raw( trim( (string) $opts['service_url'] ) ) : '';
+		if ( $svc === '' ) { $svc = 'http://localhost:8787'; }
+
+		$tmp = trailingslashit( get_temp_dir() ) . 'fw-sc-blk-' . wp_generate_password( 10, false );
+		if ( ! wp_mkdir_p( $tmp ) ) {
+			$out['error'] = __( 'Could not create a temp folder for the capture.', 'fw' );
+			return $out;
+		}
+		$found = '';
+
+		if ( $this->node_capture_ready() ) {
+			// LOCAL Node exec: "<node>" "<script>" "<url>" "<outdir>" --target=block-theme --vocab=<v>.
+			// capture.mjs writes block-bundle.json into a per-site subfolder under $tmp.
+			$dir = $this->capture_dir();
+			$cmd = '"' . $this->node_bin() . '" "' . $dir . '/capture.mjs" "' . $source_url . '" "' . $tmp . '" --target=block-theme --vocab=' . $vocab;
+			@set_time_limit( 300 );
+			$res = $this->run_cmd( $cmd, $dir, 240 );
+			if ( $res['code'] !== 0 ) {
+				$out['error'] = sprintf( __( 'Block Theme capture failed (exit %1$d). %2$s', 'fw' ), $res['code'], substr( trim( $res['err'] . ' ' . $res['out'] ), -400 ) );
+				return $out;
+			}
+			foreach ( (array) glob( $tmp . '/*', GLOB_ONLYDIR ) as $d ) {
+				if ( is_file( $d . '/block-bundle.json' ) ) { $found = $d; break; }
+			}
+			if ( $found === '' && is_file( $tmp . '/block-bundle.json' ) ) { $found = $tmp; }
+		} else {
+			// HTTP capture SERVICE: GET /capture?target=block-theme returns the block-bundle.json body
+			// directly (the same service the URL-render flow already uses — so a "detected" service works
+			// without also configuring a local capture folder).
+			$endpoint = rtrim( $svc, '/' ) . '/capture?' . http_build_query( array( 'url' => $source_url, 'target' => 'block-theme', 'vocab' => $vocab ) );
+			$resp = wp_remote_get( $endpoint, array( 'timeout' => 240 ) );
+			if ( is_wp_error( $resp ) ) {
+				$out['error'] = sprintf( __( 'Could not reach the capture service at %1$s: %2$s. Start it with the AI Dev Kit launcher, or set the “Capture folder” for local Node.', 'fw' ), $svc, $resp->get_error_message() );
+				return $out;
+			}
+			$code = (int) wp_remote_retrieve_response_code( $resp );
+			$body = (string) wp_remote_retrieve_body( $resp );
+			if ( 200 !== $code || $body === '' ) {
+				$msg = '';
+				$j   = json_decode( $body, true );
+				if ( is_array( $j ) && isset( $j['error'] ) ) { $msg = (string) $j['error']; }
+				$out['error'] = sprintf( __( 'The capture service returned HTTP %1$d. %2$s', 'fw' ), $code, $msg );
+				return $out;
+			}
+			if ( false === file_put_contents( $tmp . '/block-bundle.json', $body ) ) { // phpcs:ignore
+				$out['error'] = __( 'Could not save the block bundle returned by the capture service.', 'fw' );
+				return $out;
+			}
+			$found = $tmp;
+		}
+
+		if ( $found === '' ) {
+			$out['error'] = __( 'The capture ran but produced no block-bundle.json (the page may have failed to render).', 'fw' );
+			return $out;
+		}
+
+		if ( ! class_exists( 'FW_Site_Converter_Bundle' ) ) {
+			$out['error'] = __( 'The Site Converter engine is not available.', 'fw' );
+			return $out;
+		}
+		$result = FW_Site_Converter_Bundle::import_dir( $found );
+		if ( ! empty( $result['error'] ) && empty( $result['block_theme'] ) ) {
+			$out['error'] = $result['error'];
+			return $out;
+		}
+
+		$bt                   = isset( $result['block_theme'] ) && is_array( $result['block_theme'] ) ? $result['block_theme'] : array();
+		$out['ok']            = true;
+		$out['target']        = 'block-theme';
+		$out['theme_slug']    = isset( $bt['slug'] ) ? $bt['slug'] : '';
+		$out['theme_name']    = $out['theme_slug'];
+		$out['activated']     = true;
+		$out['pages_created'] = 1;
+		$out['block_theme']   = $bt;
+		return $out;
+	}
+
+	/** OUTPUT TARGET request reader — 'block-theme' or the default 'page-builder'. */
+	private static function sc_target_opt() {
+		$t = isset( $_POST['fw_sc_target'] ) ? sanitize_key( wp_unslash( $_POST['fw_sc_target'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		return ( 'block-theme' === $t ) ? 'block-theme' : 'page-builder';
+	}
+
+	/** BLOCK VOCABULARY request reader — 'enriched' (UnysonPlus blocks) or the default 'core'. */
+	private static function sc_vocab_opt() {
+		$v = isset( $_POST['fw_sc_vocab'] ) ? sanitize_key( wp_unslash( $_POST['fw_sc_vocab'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		return ( 'enriched' === $v ) ? 'enriched' : 'core';
+	}
+
 	/** Count the pages a bundle's pages.json would create (for the dry-run stat). */
 	private function count_bundle_pages( array $bundle ) {
 		$pages = isset( $bundle['files']['pages.json'] ) ? $bundle['files']['pages.json'] : null;
@@ -904,6 +1090,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				'dry_run'       => array( 'required' => false, 'type' => 'boolean', 'default' => false ),
 				'hifi_css'      => array( 'required' => false, 'type' => 'boolean', 'default' => true ),
 				'rendered_html' => array( 'required' => false, 'type' => 'string' ),
+				'target'        => array( 'required' => false, 'type' => 'string', 'default' => 'page-builder' ),
+				'vocabulary'    => array( 'required' => false, 'type' => 'string', 'default' => 'core' ),
 			),
 		) );
 		register_rest_route( 'fw-sc/v1', '/ping', array(
@@ -939,11 +1127,17 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		// run_url_conversion uses it directly instead of a raw wp_remote_get of the SPA shell.
 		$rendered_html = (string) $request->get_param( 'rendered_html' );
 
+		// Output target — 'block-theme' emits a standalone FSE block theme; default 'page-builder'.
+		$target = (string) $request->get_param( 'target' );
+		$vocab  = (string) $request->get_param( 'vocabulary' );
+
 		$result = $this->run_url_conversion( $source_url, array(
 			'dynamic_chrome' => true,
 			'dry_run'        => $dry_run,
 			'hifi_css'       => $hifi,
 			'rendered_html'  => $rendered_html,
+			'target'         => ( 'block-theme' === $target ) ? 'block-theme' : 'page-builder',
+			'vocabulary'     => ( 'enriched' === $vocab ) ? 'enriched' : 'core',
 		) );
 
 		if ( empty( $result['ok'] ) ) {
@@ -1332,6 +1526,26 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$sc_src = esc_url_raw( trim( (string) wp_unslash( $_POST['fw_sc_source_url'] ?? '' ) ) );
 		if ( $sc_src !== '' ) { $opts['source_url'] = $sc_src; }
 
+		// BLOCK-THEME output target — skip the page-builder Mapper + per-element review and install a
+		// standalone FSE block theme from the source URL (capture.mjs --target=block-theme → import_dir →
+		// install_block_theme). Reuses the same "redirect to the done page" the faithful fast-path uses.
+		if ( 'block-theme' === self::sc_target_opt() ) {
+			if ( $sc_src === '' ) {
+				wp_send_json_error( array( 'message' => __( 'Block Theme output converts from a URL. Enter the source URL above.', 'fw' ) ) );
+			}
+			$bt = $this->run_block_theme_conversion( $sc_src, array(
+				'vocabulary'  => self::sc_vocab_opt(),
+				'service_url' => isset( $_POST['fw_sc_service_url'] ) ? esc_url_raw( trim( (string) wp_unslash( $_POST['fw_sc_service_url'] ) ) ) : '', // phpcs:ignore WordPress.Security.NonceVerification
+			) );
+			if ( empty( $bt['ok'] ) ) {
+				wp_send_json_error( array( 'message' => ( '' !== $bt['error'] ) ? $bt['error'] : __( 'Block Theme conversion failed.', 'fw' ) ) );
+			}
+			$bt['stage']          = 'block_theme_result';
+			$bt['convert_source'] = __( 'Block theme (FSE)', 'fw' );
+			set_transient( $this->results_transient_key(), $bt, 5 * MINUTE_IN_SECONDS );
+			wp_send_json_success( array( 'redirect' => add_query_arg( array( 'page' => self::PAGE_SLUG, 'fw-sc-done' => '1' ), admin_url( 'admin.php' ) ) ) );
+		}
+
 		$bundle = null;
 		$file   = $_FILES['fw_sc_file'] ?? null;
 		if ( $file && ! empty( $file['tmp_name'] ) && empty( $file['error'] ) && is_uploaded_file( $file['tmp_name'] ) ) {
@@ -1627,6 +1841,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			switch_theme( $result['theme']['slug'] );
 			$result['theme']['activated'] = true;
 			$this->cleanup_previous_conversion( $result['theme']['slug'] ); // a new conversion replaces the last one's theme
+			$this->apply_converted_site_title( $result ); // reproduce the source's Site Title
+				$this->apply_converted_logo();               // wire the header logo to the imported attachment (Site Identity)
 		}
 		$learned = FW_Site_Converter_Mapper::learn( $mapping );
 
@@ -2499,6 +2715,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				$this->render_menus_scanned( $data );
 			} elseif ( $stage === 'bundle_result' ) {
 				$this->render_bundle_result( $data );
+			} elseif ( $stage === 'block_theme_result' ) {
+				$this->render_block_theme_result( $data );
 			} elseif ( $stage === 'theme_generated' ) {
 				$this->render_theme_generated( $data );
 			}
@@ -2726,6 +2944,22 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 				<!-- Shared options (apply to whichever source is selected) -->
 				<div class="fw-sc-opts" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.5em 1.8em;margin:.7em 0 .4em;font-size:13px;color:#3c434a">
+				<?php
+				// Block Theme output needs the block editor: disable it when the Classic Editor is enforced.
+				$upw_classic        = ( class_exists( 'Classic_Editor' ) || 'classic' === get_option( 'classic-editor-replace' ) );
+				$upw_block_disabled = $upw_classic;
+				?>
+					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
+						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Output', 'fw' ); ?></legend>
+						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'A child theme of the UnysonPlus parent theme, with the body as editable page-builder sections and the full framework — Theme Settings, presets, shortcodes.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="page-builder" checked onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display='none';}"> <?php esc_html_e( 'Page Builder', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'Unyson+ child theme', 'fw' ); ?>)</span></label>
+						<label style="display:block;margin:.2em 0<?php echo $upw_block_disabled ? ';opacity:.5' : ''; ?>" title="<?php echo esc_attr__( 'Generate a standalone WordPress block theme (FSE): theme.json, editable header/footer parts, templates and section patterns, in core blocks — it renders with no plugin dependency. Requires the local capture service, and converts from a URL.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="block-theme" id="fw-sc-target-block"<?php disabled( $upw_block_disabled ); ?> onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display=this.checked?'block':'none';}"> <?php esc_html_e( 'Block Theme', 'fw' ); ?> <span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#8a6d00;background:#fcf3cd;border:1px solid #f0e3a8;border-radius:3px;padding:0 .35em;vertical-align:middle"><?php esc_html_e( 'Experimental', 'fw' ); ?></span> <span style="color:#646970">(<?php esc_html_e( 'standalone FSE, no plugin', 'fw' ); ?>)</span></label>
+						<div id="fw-sc-vocab-wrap" style="display:none;margin:.15em 0 0 1.4em">
+							<span style="color:#646970;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em"><?php esc_html_e( 'Blocks', 'fw' ); ?></span>
+							<label style="display:block;margin:.1em 0" title="<?php echo esc_attr__( 'Portable: WordPress core blocks only. The theme runs with no plugin dependency — the broadest-reach option.', 'fw' ); ?>"><input type="radio" name="fw_sc_vocab" value="core" checked> <?php esc_html_e( 'Core blocks', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'portable', 'fw' ); ?>)</span></label>
+							<label style="display:block;margin:.1em 0" title="<?php echo esc_attr__( 'Richer: emit UnysonPlus blocks where they map (button / heading / text / section). The output then depends on the UnysonPlus plugin being active.', 'fw' ); ?>"><input type="radio" name="fw_sc_vocab" value="enriched"> <?php esc_html_e( 'UnysonPlus blocks', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'needs the plugin', 'fw' ); ?>)</span></label>
+						</div>
+						<?php if ( $upw_block_disabled ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme needs the block editor — it is disabled while the Classic Editor is enforced.', 'fw' ); ?></p><?php endif; ?>
+					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Capture', 'fw' ); ?></legend>
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-theme" checked> <?php esc_html_e( 'Create child theme', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'off = grab content only', 'fw' ); ?>)</span></label>
@@ -3042,6 +3276,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						// The pasted SOURCE URL -> the PHP build's source origin, so relative /assets/*.svg icons &
 						// illustrations inline/absolutise instead of 404-ing (else they ship as bare /assets paths).
 						fd.append( 'fw_sc_source_url', window.__fwSCSourceUrl || '' );
+							( function () {
+								var t = document.querySelector( 'input[name=fw_sc_target]:checked' );
+								var v = document.querySelector( 'input[name=fw_sc_vocab]:checked' );
+								fd.append( 'fw_sc_target', t ? t.value : 'page-builder' );
+								fd.append( 'fw_sc_vocab', v ? v.value : 'core' );
+								// Capture-service URL — block-theme output re-captures through it (--target=block-theme).
+								fd.append( 'fw_sc_service_url', ( typeof svc === 'function' ) ? svc() : '' );
+							} )();
 						// Carry the "High-fidelity CSS" choice into the prepare step (this manual FormData does
 						// not include the form's named fields). present-flag + value = default-ON, unchecked→off.
 						( function () { var e = document.getElementById( 'fw-sc-opt-hifi' ); fd.append( 'fw_sc_hifi_present', '1' ); fd.append( 'fw_sc_hifi', ( ! e || e.checked ) ? '1' : '0' ); } )();
@@ -4092,6 +4334,36 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 *
 	 * @param array $data
 	 */
+	/** Success notice for a BLOCK-THEME conversion (the FSE output target). */
+	private function render_block_theme_result( array $data ) {
+		$slug = isset( $data['theme_slug'] ) ? (string) $data['theme_slug'] : '';
+		$bt   = isset( $data['block_theme'] ) && is_array( $data['block_theme'] ) ? $data['block_theme'] : array();
+		$files = isset( $bt['files'] ) ? (int) $bt['files'] : 0;
+		$media = isset( $bt['media'] ) ? (int) $bt['media'] : 0;
+		$logo  = ! empty( $bt['logo'] );
+		?>
+		<div class="notice notice-success is-dismissible">
+			<p><strong><?php esc_html_e( 'Block theme created and activated.', 'fw' ); ?></strong>
+			<?php
+			echo esc_html( sprintf(
+				/* translators: 1: theme slug, 2: theme-file count, 3: image count */
+				__( 'A standalone WordPress block theme “%1$s” was generated (%2$d theme files, %3$d image(s) localized%4$s) and set as your active theme, with the converted page as the front page.', 'fw' ),
+				$slug,
+				$files,
+				$media,
+				$logo ? ', ' . __( 'logo applied', 'fw' ) : ''
+			) );
+			?>
+			</p>
+			<p>
+				<a class="button button-primary" href="<?php echo esc_url( home_url( '/' ) ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'View site', 'fw' ); ?></a>
+				<a class="button" href="<?php echo esc_url( admin_url( 'site-editor.php' ) ); ?>"><?php esc_html_e( 'Open the Site Editor', 'fw' ); ?></a>
+			</p>
+			<p class="description"><?php esc_html_e( 'This is a portable, plugin-independent FSE theme — its header, footer, templates and section patterns are editable in the Site Editor. The UnysonPlus plugin is not required for it to render.', 'fw' ); ?></p>
+		</div>
+		<?php
+	}
+
 	private function render_presets_result( array $data ) {
 		$imported = isset( $data['imported'] ) && is_array( $data['imported'] ) ? $data['imported'] : array();
 		$skipped  = isset( $data['skipped'] ) && is_array( $data['skipped'] ) ? $data['skipped'] : array();

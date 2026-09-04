@@ -1644,9 +1644,10 @@ foreach ( (array) $cmap as $hash => $rec ) {
 ga( "conversion_map has >=1 entry carrying sc + non-empty mapped", $cmap_ok );
 
 /* --------------------------------------------------------------------- *
- * Cross-origin-safe inspector — build_files() must emit assets/inspector.js
- * (the in-page hover-inspector + footer-gap/height reporter that the
- * dashboard embeds via ?upw-inspect=1). Guard against a silent drop.
+ * Cross-origin-safe inspector — now OPT-IN (a dashboard-preview dev aid),
+ * so build_files() OMITS assets/inspector.js by default (shipped themes stay
+ * clean) and only emits it when `fw_sc_include_inspector` is filtered on —
+ * where it still guards on ?upw-inspect + posts its height.
  * --------------------------------------------------------------------- */
 if ( class_exists( 'FW_Site_Converter_Theme_Generator' )
 	&& method_exists( 'FW_Site_Converter_Theme_Generator', 'build_files' )
@@ -1654,10 +1655,14 @@ if ( class_exists( 'FW_Site_Converter_Theme_Generator' )
 	&& is_array( $td ) && ! empty( $td ) ) {
 	$gen_cfg   = FW_Site_Converter_Theme_Generator::normalize( $td );
 	$gen_files = FW_Site_Converter_Theme_Generator::build_files( $gen_cfg );
-	ga( "build_files emits assets/inspector.js", isset( $gen_files['assets/inspector.js'] ) );
-	$insp = (string) ( $gen_files['assets/inspector.js'] ?? '' );
-	ga( "inspector.js guards on upw-inspect + posts upw-inspect height",
-		strpos( $insp, 'upw-inspect' ) !== false && strpos( $insp, 'postMessage' ) !== false && strpos( $insp, '__upw_nofill' ) !== false );
+	ga( "build_files omits assets/inspector.js by default (opt-in)", ! isset( $gen_files['assets/inspector.js'] ) );
+	add_filter( 'fw_sc_include_inspector', '__return_true' );
+	$gen_files_insp = FW_Site_Converter_Theme_Generator::build_files( $gen_cfg );
+	remove_filter( 'fw_sc_include_inspector', '__return_true' );
+	$insp = (string) ( $gen_files_insp['assets/inspector.js'] ?? '' );
+	ga( "fw_sc_include_inspector filter emits guarded inspector.js",
+		isset( $gen_files_insp['assets/inspector.js'] )
+		&& strpos( $insp, 'upw-inspect' ) !== false && strpos( $insp, 'postMessage' ) !== false && strpos( $insp, '__upw_nofill' ) !== false );
 } else {
 	ga( "build_files inspector.js (skipped — generator/normalize absent; mirror to activate)", true );
 }

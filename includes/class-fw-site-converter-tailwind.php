@@ -49,6 +49,12 @@ class FW_Site_Converter_Tailwind {
 
 		$out  = self::preflight( $scope );
 		if ( $need_kf ) { $out .= "@keyframes pulse{50%{opacity:.5}}\n"; }
+		// Marquee / auto-scroll ticker keyframes — emitted only when the class is used. A -50% translate loops
+		// seamlessly against a duplicated 2× track (the standard marquee build). Names match the decls above.
+		$allcls = ' ' . implode( ' ', $classes ) . ' ';
+		if ( strpos( $allcls, ' animate-marquee ' ) !== false )      { $out .= "@keyframes sc-marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}\n"; }
+		if ( strpos( $allcls, ' animate-scroll-left ' ) !== false )  { $out .= "@keyframes sc-scroll-left{from{transform:translateX(0)}to{transform:translateX(-50%)}}\n"; }
+		if ( strpos( $allcls, ' animate-scroll-right ' ) !== false ) { $out .= "@keyframes sc-scroll-right{from{transform:translateX(-50%)}to{transform:translateX(0)}}\n"; }
 		$out .= implode( "\n", array_unique( $base ) ) . "\n";
 		foreach ( array( 'sm', 'md', 'lg' ) as $k ) {
 			$rules = array_unique( $media[ $k ] );
@@ -281,6 +287,12 @@ class FW_Site_Converter_Tailwind {
 		}
 
 		if ( $u === 'animate-pulse' ) { $kf = true; return 'animation:pulse 2s cubic-bezier(0.4,0,0.6,1) infinite'; }
+		// Marquee / auto-scroll tickers (custom source animations). The @keyframes are emitted by compile()
+		// when the class is present. A seamless loop assumes a duplicated 2× track (the standard technique),
+		// so the track translates by -50%. Kept as a linear infinite scroll; hover-pause is the source's own.
+		if ( $u === 'animate-marquee' )      { return 'animation:sc-marquee 25s linear infinite'; }
+		if ( $u === 'animate-scroll-left' )  { return 'animation:sc-scroll-left 30s linear infinite'; }
+		if ( $u === 'animate-scroll-right' ) { return 'animation:sc-scroll-right 30s linear infinite'; }
 
 		// --- font-family (config fontFamily: font-body, font-h1, …) — checked AFTER the weight map above ---
 		if ( preg_match( '/^font-(.+)$/', $u, $m ) && isset( $cfg['fontFamily'][ $m[1] ] ) ) {
@@ -330,6 +342,17 @@ class FW_Site_Converter_Tailwind {
 		if ( preg_match( '/^(top|bottom|left|right)-(\[[^\]]+\]|\d+(?:\.\d+)?|full|auto)$/', $u, $m ) ) {
 			$v = $m[2] === 'full' ? '100%' : ( $m[2] === 'auto' ? 'auto' : self::len( $m[2] ) );
 			return "{$m[1]}:{$v}";
+		}
+		// inset-* — the full-bleed overlay utility (`inset-0` = all four offsets 0). Without this a
+		// `absolute inset-0` overlay collapses to a zero-size top-left box, so a text-over-image hero's
+		// heading/CTA never lays over the photo. inset-x/y map to the L/R and T/B pairs.
+		if ( preg_match( '/^inset-(x|y)-(\[[^\]]+\]|\d+(?:\.\d+)?|full|auto)$/', $u, $m ) ) {
+			$v = $m[2] === 'full' ? '100%' : ( $m[2] === 'auto' ? 'auto' : self::len( $m[2] ) );
+			return 'x' === $m[1] ? "left:{$v};right:{$v}" : "top:{$v};bottom:{$v}";
+		}
+		if ( preg_match( '/^inset-(\[[^\]]+\]|\d+(?:\.\d+)?|full|auto)$/', $u, $m ) ) {
+			$v = $m[1] === 'full' ? '100%' : ( $m[1] === 'auto' ? 'auto' : self::len( $m[1] ) );
+			return "top:{$v};right:{$v};bottom:{$v};left:{$v}";
 		}
 		if ( preg_match( '/^z-(\d+)$/', $u, $m ) ) { return 'z-index:' . $m[1]; }
 
@@ -383,7 +406,13 @@ class FW_Site_Converter_Tailwind {
 			'6xl' => '3.75rem;line-height:1', '7xl' => '4.5rem;line-height:1',
 		);
 		if ( isset( $scale[ $name ] ) ) { return 'font-size:' . $scale[ $name ]; }
-		if ( preg_match( '/^\[(.+)\]$/', $name, $m ) ) { return 'font-size:' . $m[1]; }
+		if ( preg_match( '/^\[(.+)\]$/', $name, $m ) ) {
+			$v = trim( $m[1] );
+			// A COLOUR value in `text-[…]` (e.g. `text-[hsl(var(--brand-yellow))]`) is a text colour, not a
+			// font-size — return '' so the caller's colour handler emits `color:` instead of `font-size:`.
+			if ( preg_match( '/^(#[0-9a-fA-F]{3,8}$|rgba?\(|hsla?\(|var\()/', $v ) ) { return ''; }
+			return 'font-size:' . $v;
+		}
 		// config fontSize: { name => [size, {lineHeight,letterSpacing,fontWeight}] }
 		if ( isset( $cfg['fontSize'][ $name ] ) ) {
 			$fs = $cfg['fontSize'][ $name ];

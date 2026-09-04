@@ -39,13 +39,21 @@ class FW_Site_Converter_Media {
 	 */
 	public static function sideload( $url, $post_id = 0, $desc = '' ) {
 		self::$last_reused = false;
-		$url = esc_url_raw( trim( (string) $url ) );
+		$url = trim( (string) $url );
 
+		// A data:image URI (an inline base64/urlencoded logo — e.g. a wordmark PNG or SVG embedded
+		// straight into the markup) → DECODE + save it as a real attachment. This must run BEFORE
+		// esc_url_raw(), which strips the `data:` protocol. Previously these were skipped, which dropped
+		// the logo and let a wrong/stock image substitute (the Skyline-logo bug).
+		if ( stripos( $url, 'data:image/' ) === 0 ) {
+			return self::sideload_data_uri( $url, $post_id, $desc );
+		}
+
+		$url = esc_url_raw( $url );
 		if ( $url === '' ) {
 			return new WP_Error( 'empty_url', __( 'Empty URL.', 'fw' ) );
 		}
-		// data: URIs (inline SVG/base64) can't be downloaded; skip — they already
-		// live inline in the markup and need no media-library entry.
+		// Any OTHER data: URI (e.g. a raw inline SVG used elsewhere) can't be downloaded; skip it.
 		if ( stripos( $url, 'data:' ) === 0 ) {
 			return new WP_Error( 'data_uri', __( 'Skipped inline data: URI (no fetch needed).', 'fw' ) );
 		}
@@ -169,6 +177,53 @@ class FW_Site_Converter_Media {
 		}
 
 		return (int) $id;
+	}
+
+	/**
+	 * Decode a `data:image/…` URI (base64 or url-encoded) and sideload the bytes as a real attachment.
+	 * SVG data URIs are sanitized (sanitize_svg_markup) before import. De-dup by content is handled by
+	 * sideload_upload(). Returns the attachment id or a WP_Error.
+	 *
+	 * @param string $uri     a data:image/… URI
+	 * @param int    $post_id attach-to post
+	 * @param string $desc    optional description
+	 * @return int|WP_Error
+	 */
+	private static function sideload_data_uri( $uri, $post_id = 0, $desc = '' ) {
+		if ( ! preg_match( '#^data:image/([a-z0-9.+-]+)\s*;\s*(base64\s*,)?(.*)$#is', $uri, $m ) ) {
+			return new WP_Error( 'data_uri', __( 'Unrecognized inline image (data: URI).', 'fw' ) );
+		}
+		$subtype = strtolower( trim( $m[1] ) );
+		$is_b64  = ( '' !== trim( (string) $m[2] ) );
+		$payload = trim( (string) $m[3] );
+		$bytes   = $is_b64 ? base64_decode( $payload, true ) : rawurldecode( $payload );
+		if ( false === $bytes || '' === $bytes ) {
+			return new WP_Error( 'data_uri', __( 'Could not decode the inline image.', 'fw' ) );
+		}
+
+		// image/subtype → file extension.
+		$ext_map = array( 'svg+xml' => 'svg', 'jpeg' => 'jpg', 'x-icon' => 'ico', 'vnd.microsoft.icon' => 'ico' );
+		$ext = isset( $ext_map[ $subtype ] ) ? $ext_map[ $subtype ] : preg_replace( '/[^a-z0-9]/', '', $subtype );
+		if ( '' === $ext ) { $ext = 'png'; }
+
+		// Inline SVG → sanitize the markup (strip scripts/handlers/foreignObject) before it lands.
+		if ( 'svg' === $ext ) {
+			$bytes = self::sanitize_svg_markup( $bytes );
+			if ( '' === trim( (string) $bytes ) ) {
+				return new WP_Error( 'data_uri', __( 'Unsafe or empty inline SVG.', 'fw' ) );
+			}
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		$name = 'embedded-' . substr( md5( $bytes ), 0, 10 ) . '.' . $ext;
+		$tmp  = wp_tempnam( $name );
+		if ( ! $tmp || false === file_put_contents( $tmp, $bytes ) ) { // phpcs:ignore
+			if ( $tmp ) { @unlink( $tmp ); }
+			return new WP_Error( 'data_uri', __( 'Could not stage the decoded image.', 'fw' ) );
+		}
+		$id = self::sideload_upload( $name, $tmp, $post_id, $desc );
+		@unlink( $tmp );
+		return $id;
 	}
 
 	/**

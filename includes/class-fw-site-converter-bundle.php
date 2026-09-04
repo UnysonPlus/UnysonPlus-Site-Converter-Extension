@@ -105,13 +105,33 @@ class FW_Site_Converter_Bundle {
 
 		$dir = self::locate_root( $dir );
 
+		// BLOCK-THEME target — a `block-bundle.json` (written by `capture.mjs --target=block-theme`) means the
+		// user chose portable FSE block-theme output for this capture. Install that instead of the classic
+		// page-builder + child-theme import. Additive: absent for the default page-builder target.
+		$block_bundle = self::read_json( $dir, array( 'block-bundle.json' ) );
+		if ( is_array( $block_bundle ) && isset( $block_bundle['target'] ) && 'block-theme' === $block_bundle['target'] ) {
+			require_once dirname( __FILE__ ) . '/class-fw-site-converter-blocks.php';
+			if ( class_exists( 'FW_Site_Converter_Blocks' ) ) {
+				$res = FW_Site_Converter_Blocks::install_block_theme( $block_bundle );
+				if ( is_wp_error( $res ) ) {
+					$out['error'] = $res->get_error_message();
+					return $out;
+				}
+				$out['block_theme'] = $res;
+				$out['sections'][]  = 'block-theme';
+				return $out;
+			}
+		}
+
 		// DETERMINISTIC bundle carrying the captured DOM (rendered.html) → re-run the (superior, maintained)
 		// PHP build_from_html on it and OVERWRITE the JS-produced files, so the import uses the PHP engine's
 		// decomposition. This closes the JS↔PHP converter divergence — a deterministic capture no longer
 		// loses elements (hero video, feature cards → icon_box, tables, headings, buttons) that the JS
 		// to-pages path dropped to code_block. AI-refined bundles and older bundles (no rendered.html) are
 		// left untouched (keep their pages.json). See capture.mjs (converter:'deterministic' + rendered.html).
-		self::maybe_reconvert_with_php( $dir );
+		// Pass the "import media" toggle through: the re-convert pre-seeds the sideloaded-media map so captured
+		// image URLs localize at build time (see maybe_reconvert_with_php) — skip that when media import is off.
+		self::maybe_reconvert_with_php( $dir, ! isset( $opts['media'] ) || ! empty( $opts['media'] ) );
 
 		// Phase gating for the review-first flow: 'design' applies the design system
 		// (media, presets, theme settings, theme + the Style Guide page) and defers the
@@ -172,6 +192,31 @@ class FW_Site_Converter_Bundle {
 		// Skipped when "create child theme" is off — the converted sections are then imported as
 		// page content into the ACTIVE theme (dev wants to grab structure into an existing site).
 		$theme_design = self::read_json( $dir, self::FILE_THEME_DESIGN );
+		// The pre-built design-config.json (from the JS capture) can lack the design-token :root vars and the
+		// full heading font stack — enrich it from the bundle's design-capture.json (which carries tokens.vars
+		// + per-section headingComputed) so `bg-[hsl(var(--dark))]`/semantic classes resolve and a licensed
+		// display heading keeps its web-safe named fallback (parity with the PHP run_url_conversion path).
+		if ( is_array( $theme_design ) && class_exists( 'FW_Site_Converter_Stitch' ) ) {
+			$cap = self::read_json( $dir, array( 'design-capture.json' ) );
+			if ( is_array( $cap ) ) {
+				if ( empty( $theme_design['css_vars'] ) && isset( $cap['tokens'] ) && is_array( $cap['tokens'] ) ) {
+					$cv = FW_Site_Converter_Stitch::design_root_vars( $cap['tokens'] );
+					if ( $cv ) { $theme_design['css_vars'] = $cv; }
+				}
+				if ( class_exists( 'FW_Site_Converter_Theme_Generator' ) && empty( $theme_design['fonts']['heading_stack'] )
+					&& isset( $cap['sections'] ) && is_array( $cap['sections'] ) ) {
+					foreach ( $cap['sections'] as $sc ) {
+						$raw = isset( $sc['headingComputed']['fontFamily'] ) ? (string) $sc['headingComputed']['fontFamily'] : '';
+						$hs  = '' !== $raw ? FW_Site_Converter_Theme_Generator::heading_fallback_stack( $raw ) : '';
+						if ( '' !== $hs ) {
+							if ( ! isset( $theme_design['fonts'] ) || ! is_array( $theme_design['fonts'] ) ) { $theme_design['fonts'] = array(); }
+							$theme_design['fonts']['heading_stack'] = $hs;
+							break;
+						}
+					}
+				}
+			}
+		}
 		if ( $do_design && $do_theme && $scope_chrome && $theme_design !== null && class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
 			// Honor the header/footer toggles: drop the mirrored chrome the user didn't want, so the
 			// generated theme reproduces only the requested parts (the rest fall back to the theme's).
@@ -338,7 +383,7 @@ class FW_Site_Converter_Bundle {
 	 *
 	 * @param string $dir bundle root (writable temp dir)
 	 */
-	private static function maybe_reconvert_with_php( $dir ) {
+	private static function maybe_reconvert_with_php( $dir, $do_media = true ) {
 		if ( ! class_exists( 'FW_Site_Converter_Sources' ) || ! method_exists( 'FW_Site_Converter_Sources', 'build_from_html' ) ) { return; }
 
 		$meta = self::read_json( $dir, self::FILE_MANIFEST );
@@ -372,6 +417,29 @@ class FW_Site_Converter_Bundle {
 		if ( $entrance_ai ) {
 			$entrance_svc = isset( $_POST['opt_anim_svc'] ) ? esc_url_raw( trim( (string) wp_unslash( $_POST['opt_anim_svc'] ) ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
 			if ( '' === $entrance_svc && isset( $_POST['refine_chrome_svc'] ) ) { $entrance_svc = esc_url_raw( trim( (string) wp_unslash( $_POST['refine_chrome_svc'] ) ) ); } // phpcs:ignore WordPress.Security.NonceVerification
+		}
+		// PRE-SEED the media map so the build LOCALIZES captured image URLs. upload_val() rewrites a source
+		// image URL to its Media-Library copy only when a sideloaded asset matches by filename — but the bundle
+		// sideloads media.json in Phase 1, AFTER this re-convert builds the pages. Without seeding, every external
+		// image URL (partner-logo grids, media images, section backgrounds) was HOTLINKED to the source instead of
+		// grabbed into the library. Sideload media.json now (content-hash de-dup makes the later Phase-1 import
+		// reuse these attachments) and merge the basename→attachment map — user "Attach media" uploads still win.
+		if ( $do_media && class_exists( 'FW_Site_Converter_Media' ) && method_exists( 'FW_Site_Converter_Media', 'import_urls' )
+			&& method_exists( 'FW_Site_Converter_Mapper', 'merge_assets' ) ) {
+			$seed = self::read_json( $dir, array( 'media.json' ) );
+			$su   = ( is_array( $seed ) && isset( $seed['urls'] ) && is_array( $seed['urls'] ) )
+				? $seed['urls']
+				: ( ( is_array( $seed ) && self::is_list( $seed ) ) ? $seed : array() );
+			$su   = array_slice( array_values( array_filter( array_map( 'trim', array_map( 'strval', (array) $su ) ) ) ), 0, 500 );
+			if ( $su ) {
+				$map = array();
+				foreach ( FW_Site_Converter_Media::import_urls( $su ) as $r ) {
+					if ( empty( $r['ok'] ) || empty( $r['url'] ) ) { continue; }
+					$base = strtolower( basename( (string) preg_replace( '/[?#].*$/', '', (string) $r['source'] ) ) );
+					if ( '' !== $base ) { $map[ $base ] = array( 'id' => (string) $r['id'], 'url' => (string) $r['url'], 'mime' => '' ); }
+				}
+				FW_Site_Converter_Mapper::merge_assets( $map );
+			}
 		}
 		$res     = FW_Site_Converter_Sources::build_from_html( $html, $title, array( 'dynamic_chrome' => true, 'hifi_css' => true, 'source_url' => $src_url, 'entrance_anim' => $entrance, 'entrance_anim_ai' => $entrance_ai, 'entrance_anim_svc' => $entrance_svc ) );
 		$files = ( is_array( $res ) && isset( $res['files'] ) && is_array( $res['files'] ) ) ? $res['files'] : array();
