@@ -326,11 +326,44 @@ class FW_Site_Converter_Theme_Generator {
 		// for self-hosted-font sources, so the family in the carried CSS never actually loaded.
 		$cfg_fonts = isset( $cap['fonts'] ) && is_array( $cap['fonts'] ) ? $cap['fonts'] : array();
 		if ( $heading_font === '' && ! empty( $cfg_fonts['heading'] ) ) { $heading_font = self::first_family( (string) $cfg_fonts['heading'] ); }
+		// Prefer the design-config's FULL captured stack ('Neutraface Condensed Titling','Alfa Slab One',cursive)
+		// over the single primary family: heading_fallback_stack() needs ≥2 named faces to recognise a licensed
+		// primary, and that "second named fallback" signal ONLY survives in heading_stack — $cfg_fonts['heading']
+		// is just the first family, so passing it collapses to '' and the google_lookalike() insertion below never
+		// fires (the browser then falls through to the source's coarse web-safe fallback, e.g. Alfa Slab One,
+		// instead of the intended condensed lookalike Oswald). Fall back to the single family only if no stack.
+		if ( $heading_stack === '' && ! empty( $cfg_fonts['heading_stack'] ) ) { $heading_stack = self::heading_fallback_stack( (string) $cfg_fonts['heading_stack'] ); }
 		if ( $heading_stack === '' && ! empty( $cfg_fonts['heading'] ) ) { $heading_stack = self::heading_fallback_stack( (string) $cfg_fonts['heading'] ); }
 		if ( $body_font === '' && ! empty( $cfg_fonts['body'] ) )       { $body_font = self::first_family( (string) $cfg_fonts['body'] ); }
+		// NON-GOOGLE / LICENSED display face → insert the closest FREE Google-Font LOOKALIKE, so headings render
+		// in a near match (a condensed titling face like Neutraface → Oswald) instead of the source's coarse
+		// web-safe fallback (Alfa Slab One = a WIDE slab, wrong proportions) — WITHOUT rehosting the licensed
+		// font (a licensing minefield; Neutraface is commercial). A non-empty $heading_stack means the source
+		// declared a NAMED fallback after the primary — the signal that the primary is a self-hosted / licensed
+		// (non-Google) face. The original name stays FIRST, so a user who uploads their licensed copy (Typography
+		// → Custom Fonts) still wins; the lookalike is the loadable middle ground the browser actually renders.
+		$heading_lookalike = '';
+		if ( $heading_stack !== '' && $heading_font !== '' ) {
+			// Curated name map wins when it has an entry (the ~40 famous faces). On a MISS, fall back to the
+			// capture's VISUAL match: `heading_visual` is the nearest free Google font the capture service
+			// measured from the source's ACTUAL rendered licensed glyphs (self-owned shape matcher, no rehosting)
+			// — so an unmapped licensed heading (e.g. a bespoke condensed titling face) still resolves to a
+			// shape-matched free face instead of collapsing to the source's coarse web-safe fallback. Gated on
+			// the same 2-named-stack "licensed primary" signal, so an ordinary Google heading is never rewritten.
+			$look = self::google_lookalike( $heading_font );
+			if ( $look === '' && ! empty( $cfg_fonts['heading_visual'] )
+				&& 0 !== strcasecmp( (string) $cfg_fonts['heading_visual'], $heading_font ) ) {
+				$look = (string) $cfg_fonts['heading_visual'];
+			}
+			if ( $look !== '' && 0 !== strcasecmp( $look, $heading_font ) && stripos( $heading_stack, "'" . $look . "'" ) === false ) {
+				$heading_lookalike = $look;
+				// Slot the lookalike right AFTER the primary family (before the source's own fallback).
+				$heading_stack = preg_replace( '/^(\s*(?:"[^"]+"|\'[^\']+\'|[^,]+))/', "$1, '" . $look . "'", $heading_stack, 1 );
+			}
+		}
 		$google       = self::pick_google_fonts(
 			isset( $assets['fonts'] ) ? (array) $assets['fonts'] : array(),
-			array( $heading_font, $body_font )
+			array_values( array_filter( array( $heading_font, $heading_lookalike, $body_font ) ) )
 		);
 		// FALLBACK: the source may SELF-HOST a Google family (e.g. Lovable ships "Cormorant Garamond"
 		// as a bundled webfont, with no fonts.googleapis.com <link>), so pick_google_fonts finds nothing
@@ -338,7 +371,9 @@ class FW_Site_Converter_Theme_Generator {
 		// serif. Synthesize a css2 URL for the detected heading/body families so the real font actually loads
 		// (rehost then self-hosts it). Best-effort: a non-Google family 400s harmlessly and the stack falls back.
 		if ( $google === '' ) {
-			$google = self::synth_google_fonts_url( array( $heading_font, $body_font ) );
+			// Load the LOOKALIKE (a real Google font) rather than the licensed primary (which 400s); the primary
+			// still 400s harmlessly if included, so pass the lookalike when we have one.
+			$google = self::synth_google_fonts_url( array_values( array_filter( array( $heading_lookalike !== '' ? $heading_lookalike : $heading_font, $body_font ) ) ) );
 		}
 
 		// Icon webfont (Material Symbols) — only carried when the page uses icon-ligature
@@ -613,6 +648,107 @@ class FW_Site_Converter_Theme_Generator {
 		}
 		if ( $named < 2 ) { return ''; } // single display face → caller keeps its default stack
 		return implode( ',', $parts );
+	}
+
+	/**
+	 * The closest FREE Google Font for a licensed / non-Google display face — so a heading renders in a near
+	 * match rather than a coarse web-safe fallback, WITHOUT rehosting the licensed font (a licensing minefield:
+	 * most non-Google faces are commercial or personal-use-only; Neutraface, Gotham, Avenir, DIN … are paid).
+	 * Keyed off a small curated map of well-known commercial families, then the name's own SHAPE words
+	 * (condensed / slab / mono / script / serif / display). Returns '' when nothing matches confidently — the
+	 * caller then keeps the source's own declared fallback rather than guessing a wrong face.
+	 *
+	 * @param string $name a single family name (already unquoted), e.g. "Neutraface Condensed Titling"
+	 * @return string a Google Fonts family name, or ''
+	 */
+	public static function google_lookalike( $name ) {
+		$n = strtolower( trim( (string) $name ) );
+		if ( $n === '' ) { return ''; }
+		// A CONDENSED / NARROW variant of any face → a condensed Google display font, whatever the base family.
+		$condensed = ( strpos( $n, 'condens' ) !== false || strpos( $n, 'narrow' ) !== false || strpos( $n, 'compress' ) !== false );
+		// Curated map: well-known commercial / non-Google families → the closest free Google font.
+		$map = array(
+			'neutraface' => 'Josefin Sans', 'gotham' => 'Montserrat', 'proxima' => 'Montserrat', 'avenir' => 'Nunito Sans',
+			'futura' => 'Poppins', 'circular' => 'Manrope', 'brandon' => 'Poppins', 'din' => 'Oswald',
+			'trade gothic' => 'Oswald', 'knockout' => 'Anton', 'druk' => 'Anton', 'sohne' => 'Inter', "s\xc3\xb6hne" => 'Inter',
+			'graphik' => 'Inter', 'helvetica' => 'Inter', 'arial' => 'Inter', 'akzidenz' => 'Inter',
+			'garamond' => 'EB Garamond', 'baskerville' => 'Libre Baskerville', 'caslon' => 'Libre Caslon Text',
+			'didot' => 'Playfair Display', 'bodoni' => 'Playfair Display', 'minion' => 'Lora',
+			'clarendon' => 'Roboto Slab', 'rockwell' => 'Roboto Slab', 'cooper' => 'Alfa Slab One',
+		);
+		// A few geometric-DECO faces read closer to a geometric Google font than to a condensed grotesque even in
+		// their condensed/titling cut — their personality (high-waisted geometric Art-Deco) dominates the width.
+		// For these the curated value WINS over the blanket condensed→Oswald override (Neutraface Condensed Titling
+		// → Josefin Sans, not Oswald). Every other mapped face still condenses to Oswald when its name says so.
+		$keep_curated_when_condensed = array( 'neutraface' );
+		foreach ( $map as $needle => $g ) {
+			if ( strpos( $n, $needle ) !== false ) {
+				return ( $condensed && ! in_array( $needle, $keep_curated_when_condensed, true ) ) ? 'Oswald' : $g;
+			}
+		}
+		// Name-SHAPE heuristic when the family isn't in the map.
+		if ( strpos( $n, 'mono' ) !== false || strpos( $n, 'code' ) !== false ) { return 'JetBrains Mono'; }
+		if ( strpos( $n, 'script' ) !== false || strpos( $n, 'hand' ) !== false || strpos( $n, 'brush' ) !== false ) { return 'Dancing Script'; }
+		if ( strpos( $n, 'slab' ) !== false ) { return 'Roboto Slab'; }
+		if ( strpos( $n, 'serif' ) !== false || strpos( $n, 'times' ) !== false || strpos( $n, 'georgia' ) !== false ) { return 'Merriweather'; }
+		if ( $condensed ) { return 'Oswald'; }
+		if ( strpos( $n, 'titling' ) !== false || strpos( $n, 'headline' ) !== false || strpos( $n, 'poster' ) !== false ) { return 'Anton'; }
+		return ''; // unknown shape → keep the source's declared fallback (don't guess)
+	}
+
+	/**
+	 * Insert the closest free Google-Font LOOKALIKE into a heading font stack, right after the primary
+	 * family. Used everywhere the `--font-heading` stack is emitted (typography_layer + the full theme CSS),
+	 * so a licensed primary that can't load renders in a near-match (Neutraface Condensed Titling → Oswald)
+	 * instead of falling through to the source's coarse web-safe fallback (Alfa Slab One). No-op unless the
+	 * stack already carries a SECOND named face (the licensed-primary signal) and the lookalike is (a) known,
+	 * (b) different from the primary, and (c) not already present. Idempotent.
+	 *
+	 * @param string $stack   the heading font-family stack (e.g. "'Neutraface…','Alfa Slab One',cursive")
+	 * @param string $primary the primary family name (unquoted), e.g. "Neutraface Condensed Titling"
+	 * @return string the stack, with the lookalike slotted after the primary when applicable
+	 */
+	public static function stack_with_lookalike( $stack, $primary ) {
+		$stack   = trim( (string) $stack );
+		$primary = trim( (string) $primary );
+		if ( $stack === '' || $primary === '' ) { return $stack; }
+		if ( self::heading_fallback_stack( $stack ) === '' ) { return $stack; } // single face → no licensed-primary signal
+		$look = self::google_lookalike( $primary );
+		if ( $look === '' || 0 === strcasecmp( $look, $primary ) ) { return $stack; }
+		if ( stripos( $stack, "'" . $look . "'" ) !== false || stripos( $stack, '"' . $look . '"' ) !== false ) { return $stack; }
+		return preg_replace( '/^(\s*(?:"[^"]+"|\'[^\']+\'|[^,]+))/', "$1, '" . $look . "'", $stack, 1 );
+	}
+
+	/**
+	 * Rewrite every `font-family` declaration in a block of CARRIED CSS (source header/footer/page-mirror rules,
+	 * and the per-section SECTIONS block) so a licensed DISPLAY face gets its free Google lookalike slotted in —
+	 * the same translation the global `--font-heading` stack gets. Without this, a carried section rule like
+	 * `#section-1 h2{font-family:"Neutraface Condensed Titling","Alfa Slab One",cursive}` (specificity 0,1,1)
+	 * out-ranks the global `:is(h1…)` rule and the heading still collapses to the coarse web-safe fallback.
+	 *
+	 * Only fires on a stack whose PRIMARY family is a display/licensed face that maps to a lookalike; web-safe /
+	 * neutral body families (Arial, Helvetica, Graphik, system-ui …) are skipped so ordinary body text is left
+	 * exactly as the source authored it. Idempotent (a stack already carrying the lookalike is untouched).
+	 *
+	 * @param string $css a block of CSS
+	 * @return string
+	 */
+	public static function augment_carried_font_stacks( $css ) {
+		$css = (string) $css;
+		if ( $css === '' || stripos( $css, 'font-family' ) === false ) { return $css; }
+		// Primaries that are web-safe / neutral body faces — never translate these (they load fine or are body text).
+		static $websafe = array( 'arial', 'helvetica', 'helvetica neue', 'verdana', 'tahoma', 'trebuchet ms',
+			'georgia', 'times', 'times new roman', 'courier', 'courier new', 'system-ui', 'ui-sans-serif',
+			'ui-serif', 'inherit', 'initial', 'unset', 'graphik', 'akzidenz', 'sohne', "s\xc3\xb6hne", 'roboto',
+			'inter', 'open sans', 'lato', 'montserrat', 'poppins', 'nunito', 'nunito sans', 'kreon' );
+		return preg_replace_callback( '/font-family\s*:\s*([^;{}]+)/i', function ( $m ) use ( $websafe ) {
+			$val   = trim( $m[1] );
+			if ( $val === '' || stripos( $val, 'var(' ) === 0 ) { return $m[0]; } // var(--…) → leave for the cascade
+			$first = strtolower( trim( trim( explode( ',', $val )[0] ), " \t\"'" ) );
+			if ( $first === '' || in_array( $first, $websafe, true ) ) { return $m[0]; }
+			$new = self::stack_with_lookalike( $val, $first );
+			return $new === $val ? $m[0] : 'font-family:' . $new;
+		}, $css );
 	}
 
 	/** The display font from the first section that has a heading, if any. */
@@ -1823,20 +1959,20 @@ JS;
 	}
 
 	/**
-	 * When logged in, WordPress shows a fixed 32px admin bar at the top of the page. A fixed/sticky
-	 * site header would sit underneath it — so push the header down to clear it (46px on the ≤782px
-	 * mobile bar). Just spacing; nothing else needed (the theme stylesheet doesn't load in wp-admin,
-	 * and element resets are scoped so they don't touch the admin bar).
+	 * When logged in, WordPress shows a fixed 32px admin bar (46px on the ≤782px mobile bar) at the top of
+	 * the page. A genuinely fixed/overlay header would sit underneath it and get clipped — so it needs a top
+	 * offset. But the BUILDER header (#masthead) is already handled by the theme stylesheet, and must NOT get
+	 * a blanket offset here: a STATIC builder header is `position:relative`, so a `top:32px` on it is NOT
+	 * inert — it shoves the header DOWN and leaves a 32px white gap above it (the reported "white space above
+	 * the header"). A STICKY / transparent-overlay builder header is already offset by `--admin-bar-offset`
+	 * in the theme. So the ONLY header this needs to touch is the raw-chrome MIRROR header (`.sc-tw header` =
+	 * a bare `<header class="fixed top-0 …">` with no #masthead), which is truly `position:fixed` and which
+	 * the theme's rules don't cover.
 	 */
 	private static function admin_bar_css() {
-		// `.sc-tw header` = the raw-chrome MIRROR header (a bare <header class="fixed top-0 …"> — no
-		// #masthead / role="banner"), so it needs its own offset or the admin bar clips it. `top` on a
-		// static header is inert, so applying it unconditionally is safe. `!important` beats the carried
-		// `.sc-tw .top-0` (top:0) utility.
-		return "\n/* Keep a fixed header below the logged-in admin bar */\n"
-			. ".admin-bar .sc-header,.admin-bar #masthead,.admin-bar header[role=\"banner\"]{top:32px;}\n"
+		return "\n/* Keep the raw-chrome MIRROR header below the logged-in admin bar (the builder #masthead header is offset by the theme's --admin-bar-offset when pinned, and needs NO offset when static). `!important` beats the carried `.sc-tw .top-0` utility. */\n"
 			. ".admin-bar .sc-tw header{top:32px !important;}\n"
-			. "@media screen and (max-width:782px){.admin-bar .sc-header,.admin-bar #masthead,.admin-bar header[role=\"banner\"]{top:46px;}.admin-bar .sc-tw header{top:46px !important;}}\n";
+			. "@media screen and (max-width:782px){.admin-bar .sc-tw header{top:46px !important;}}\n";
 	}
 
 	/** The merge markers + (optional) per-section CSS. The Build step replaces the body. */
@@ -1865,9 +2001,10 @@ JS;
 	 * the page-builder sections use the fw- grid instead.)
 	 */
 	private static function clean_carried( $css ) {
-		if ( ! class_exists( 'FW_Site_Converter_Mapper' ) ) { return self::pretty_css( (string) $css ); }
+		if ( ! class_exists( 'FW_Site_Converter_Mapper' ) ) { return self::pretty_css( self::augment_carried_font_stacks( (string) $css ) ); }
 		$css = FW_Site_Converter_Mapper::strip_animations( (string) $css );
 		$css = FW_Site_Converter_Mapper::tidy_css( $css );
+		$css = self::augment_carried_font_stacks( $css ); // translate carried licensed display faces → Google lookalike
 		return self::pretty_css( $css );
 	}
 
@@ -2110,6 +2247,7 @@ JS;
 		$fh  = isset( $cfg['fonts']['heading'] ) ? $cfg['fonts']['heading'] : '';
 		$fb  = isset( $cfg['fonts']['body'] ) ? $cfg['fonts']['body'] : '';
 		$head_stack = ( isset( $cfg['fonts']['heading_stack'] ) && $cfg['fonts']['heading_stack'] !== '' ) ? (string) $cfg['fonts']['heading_stack'] : ( $fh !== '' ? "'" . $fh . "',Georgia,serif" : 'Georgia,serif' );
+		$head_stack = self::stack_with_lookalike( $head_stack, $fh ); // slot Oswald etc. after a licensed primary
 		$body_stack = $fb !== '' ? "'" . $fb . "',system-ui,sans-serif" : 'system-ui,sans-serif';
 
 		$out = "/* ---- Design tokens & typography (self-contained — independent of the parent\n"
@@ -2544,6 +2682,7 @@ JS;
 		$fh    = $cfg['fonts']['heading'];
 		$fb    = $cfg['fonts']['body'];
 		$head_stack = ( isset( $cfg['fonts']['heading_stack'] ) && $cfg['fonts']['heading_stack'] !== '' ) ? (string) $cfg['fonts']['heading_stack'] : ( $fh !== '' ? "'" . $fh . "',Georgia,serif" : 'Georgia,serif' );
+		$head_stack = self::stack_with_lookalike( $head_stack, $fh ); // slot Oswald etc. after a licensed primary
 		$body_stack = $fb !== '' ? "'" . $fb . "',system-ui,sans-serif" : 'system-ui,sans-serif';
 
 		$css  = self::contrast_review_comment( $cfg );

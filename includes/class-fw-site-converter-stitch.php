@@ -1810,6 +1810,19 @@ class FW_Site_Converter_Stitch {
 		if ( ! ( $node instanceof DOMElement ) || ! $node->ownerDocument ) { return null; }
 		$html = (string) $node->ownerDocument->saveHTML( $node );
 		if ( '' === $html ) { return null; }
+		// A section's DECORATIVE BACKDROP is very often a `::before` / `::after` overlay (a faint diagonal-stripe
+		// `repeating-linear-gradient`, a data-URI SVG grid). getComputedStyle(el) — and therefore this deterministic
+		// converter reading rendered.html — can NEVER see a pseudo-element, so the capture STAMPS it as
+		// `data-sc-pattern` (image) + `data-sc-pattern-opacity` on the hosting block. Read that FIRST: it is the
+		// faithful source that no inline style carries. (The inline/class checks below still cover a real element bg.)
+		if ( preg_match( '/data-sc-pattern\s*=\s*(["\'])(.*?)\1/is', $html, $pm ) ) {
+			$pimg = trim( html_entity_decode( $pm[2], ENT_QUOTES ) );
+			if ( '' !== $pimg && 'none' !== strtolower( $pimg ) ) {
+				$pop = 0.3;
+				if ( preg_match( '/data-sc-pattern-opacity\s*=\s*(["\'])([0-9.]+)\1/i', $html, $pom ) ) { $pop = min( 1.0, (float) $pom[2] ); }
+				return array( 'image' => $pimg, 'opacity' => $pop );
+			}
+		}
 		$img = '';
 		if ( preg_match( '/bg-\[url\((?:&#0?39;|&quot;|[\'"])?(data:image\/svg[^)\'"]+?)(?:&#0?39;|&quot;|[\'"])?\)\]/i', $html, $m ) ) {
 			$img = 'url("' . html_entity_decode( $m[1] ) . '")';
@@ -3288,11 +3301,40 @@ class FW_Site_Converter_Stitch {
 					'custom_html_content' => '<span style="color:' . esc_attr( $tcolor ) . '">' . $inner . '</span>',
 				) ) );
 			};
-			$values['header_topbar'] = array(
-				'topbar_left'   => '' !== $tb['left']   ? array( $tcell( $tb['left'] ) )   : array(),
-				'topbar_center' => '' !== $tb['center'] ? array( $tcell( $tb['center'] ) ) : array(),
-				'topbar_right'  => '' !== $tb['right']  ? array( $tcell( $tb['right'] ) )  : array(),
-			);
+			if ( ! empty( $tb['ticker'] ) ) {
+				// Scrolling announcement strip → a self-contained CSS marquee in the topbar CENTER: the phrase
+				// repeated to fill the track + a scoped @keyframes translating the doubled track by -50% for a
+				// seamless loop. Reproduces the source's scrolling ticker (which the theme topbar has no native
+				// control for) while keeping the phrase editable in the custom_html element.
+				$seg   = '<span style="padding:0 1.25em;white-space:nowrap">' . esc_html( $tb['ticker'] ) . '</span>';
+				// FULL-BLEED, edge-to-edge like the source announcement bar. The doubled track is very wide, so the
+				// ticker must (a) span the full VIEWPORT — break out of the topbar's centered container with 100vw +
+				// symmetric negative margins (kept in flow so it can't push the page wider), and (b) CLIP the track.
+				// `min-width:0` lets the centre column shrink so the break-out isn't fought by a content-sized column.
+				//
+				// The clip MUST live on `.header-topbar` (a block element that is exactly clientWidth wide, with NO
+				// scrollbar gutter), not on the 100vw span itself: `100vw` INCLUDES the vertical scrollbar width, so a
+				// 100vw span overshoots clientWidth by ~15px on any browser that shows a scrollbar. Clipping on the
+				// span can't hide the span's own 15px overflow — that reaches <body> and produces a page-wide
+				// horizontal scrollbar. Clipping on the clientWidth-wide topbar with overflow-x:clip swallows that
+				// overshoot before it propagates, so the ticker still spans the full visible viewport with no hscroll.
+				$marq  = '<span style="display:block;overflow:hidden;width:100vw;max-width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);color:' . esc_attr( $tcolor ) . ';font-weight:600">'
+					. '<span style="display:inline-flex;white-space:nowrap;animation:fw-sc-tick 30s linear infinite">' . str_repeat( $seg, 8 ) . '</span>'
+					. '<style>@keyframes fw-sc-tick{from{transform:translateX(0)}to{transform:translateX(-50%)}}'
+					. '.header-topbar{overflow-x:clip;}'
+					. '.header-topbar .header-col--center,.header-topbar .header-element--custom_html,.header-topbar .header-custom-html{min-width:0;}</style></span>';
+				$values['header_topbar'] = array(
+					'topbar_left'   => array(),
+					'topbar_center' => array( array( 'element_type' => array( 'element' => 'custom_html', 'custom_html' => array( 'custom_html_content' => $marq ) ) ) ),
+					'topbar_right'  => array(),
+				);
+			} else {
+				$values['header_topbar'] = array(
+					'topbar_left'   => '' !== $tb['left']   ? array( $tcell( $tb['left'] ) )   : array(),
+					'topbar_center' => '' !== $tb['center'] ? array( $tcell( $tb['center'] ) ) : array(),
+					'topbar_right'  => '' !== $tb['right']  ? array( $tcell( $tb['right'] ) )  : array(),
+				);
+			}
 			if ( '' !== $tb['bg'] ) {
 				$values['header_topbar']['topbar_custom_styling'] = array(
 					'enabled' => 'yes',
@@ -3320,9 +3362,17 @@ class FW_Site_Converter_Stitch {
 			'bottombar_left' => array(), 'bottombar_center' => array(), 'bottombar_right' => array(),
 		);
 
+		// Lift a leading FILLED CTA band (the red "Craving a Juicy Burger? … BOOK A TABLE" pre-footer that lives
+		// inside <footer>) out FIRST, so every MAIN-footer detector below reads the CTA-stripped html. Otherwise
+		// the CTA's white 30px display heading is the "first footer heading" and its colour/size get applied to
+		// the real column headings (white-on-white), and the CTA's white text is read as the footer text colour.
+		// `$html` keeps the CTA (footer_split_cta works on a copy) for the lead/CTA styling that needs it.
+		$cta_split  = self::footer_split_cta( (string) $html );
+		$route_html = ( is_array( $cta_split ) && isset( $cta_split['rest'] ) ) ? (string) $cta_split['rest'] : (string) $html;
+
 		/* --- footer colors (background-pro shape for the fill) --- read the SOURCE footer's real colors
 		   from its captured computed style, falling back to palette-dark only when unknown. --- */
-		$fstyle      = self::detect_footer_style( (string) $html );
+		$fstyle      = self::detect_footer_style( $route_html );
 		$footer_text = $fstyle['text'] !== '' ? $fstyle['text'] : '#94a3b8';
 		$footer_bg   = $fstyle['bg'];
 		// Contrast guard: NEVER pair a dark bg with dark text (the old palette-dark fallback did exactly that
@@ -3406,11 +3456,13 @@ class FW_Site_Converter_Stitch {
 		// NEVER-DROP footer COLUMN-HEADING typography — a footer whose titles are e.g.
 		// `uppercase tracking-[0.3em] text-[10px]` has no native footer-heading option, so carry the
 		// transform / letter-spacing / weight / size / colour as a scoped `.footer-links-title` rule.
-		$fh_css = self::footer_heading_css( (string) $html );
+		// Read from the CTA-stripped html so the FIRST heading/link/tagline sampled is a real MAIN-footer one —
+		// not the CTA band's white 30px display heading (which would paint every column title white-on-white).
+		$fh_css = self::footer_heading_css( $route_html );
 		if ( $fh_css !== '' ) { $residual[] = $fh_css; }
-		$fl_css = self::footer_link_css( (string) $html );
+		$fl_css = self::footer_link_css( $route_html );
 		if ( $fl_css !== '' ) { $residual[] = $fl_css; }
-		$ft_css = self::footer_tagline_css( (string) $html );
+		$ft_css = self::footer_tagline_css( $route_html );
 		if ( $ft_css !== '' ) { $residual[] = $ft_css; }
 		// NEVER-DROP footer LEAD-HEADING (display CTA lockup, e.g. "Tell us your story / Get in touch") →
 		// scoped `.footer-lead-title` / `.footer-lead-subtitle` rules. detect_footer_lead_heading() emits the
@@ -3527,7 +3579,24 @@ class FW_Site_Converter_Stitch {
 				}
 			}
 		}
-		$values['misc_custom_css'] = array( 'custom_css' => "/* converted header/footer styles */\n" . implode( "\n", $residual ) . $container_ladder_css );
+		// PROMINENT HEADER BORDER — the theme's `header_border=yes` draws only a 1px hairline (an inset
+		// box-shadow, no layout shift). A source with a THICK accent rule under the header (jukebox's
+		// `border-b-4 border-primary` = 4px red) needs the real border reproduced. Emit a scoped override that
+		// replaces the hairline with the captured width + colour. A named token → the theme's own colour var
+		// (so it tracks the palette); a hex/rgb → used verbatim.
+		$hdr_border_css = '';
+		if ( ! empty( $hstyle['border_width'] ) && (int) $hstyle['border_width'] >= 2 ) {
+			$bw  = (int) $hstyle['border_width'];
+			$bc  = (string) ( $hstyle['border_color'] ?? '' );
+			$col = '';
+			if ( in_array( $bc, array( 'primary', 'secondary', 'accent' ), true ) ) { $col = 'var(--color-' . $bc . ')'; }
+			elseif ( preg_match( '/^#[0-9a-f]{3,8}$/i', $bc ) || preg_match( '/^rgba?\(/i', $bc ) ) { $col = $bc; }
+			if ( '' !== $col ) {
+				$hdr_border_css = "\n/* Source header accent border (thicker than the theme's default hairline) */\n"
+					. '.site-header.site-header--border{box-shadow:none !important;border-bottom:' . $bw . 'px solid ' . $col . ' !important;}';
+			}
+		}
+		$values['misc_custom_css'] = array( 'custom_css' => "/* converted header/footer styles */\n" . implode( "\n", $residual ) . $container_ladder_css . $hdr_border_css );
 
 		/* --- D2: global border/divider colour → layout_border_color (--color-border) --- */
 		$bcol = self::detect_border_color( (string) $html );
@@ -3560,11 +3629,11 @@ class FW_Site_Converter_Stitch {
 		}
 
 		/* --- social_profiles (brand column) — footer social links → Lucide icons --- */
-		$social = self::detect_footer_social( (string) $html );
+		$social = self::detect_footer_social( $route_html );
 		if ( $social ) { $values['social_profiles'] = $social; }
 		// The LOOK of those footer social icons (circular chip + fill + hover) → the native `social_style` group,
 		// so the converted footer reproduces the source's shaped icons instead of the default bare glyphs.
-		$sstyle = self::detect_footer_social_style( (string) $html );
+		$sstyle = self::detect_footer_social_style( $route_html );
 		if ( $sstyle ) { $values['social_style'] = $sstyle; }
 
 		/* --- footer bars: BAND-AWARE routing (footer.md "map each band to a bar"). When the source footer has
@@ -3572,8 +3641,8 @@ class FW_Site_Converter_Stitch {
 		   bar (Pre / Main / Post); a single content band keeps the classic single-bar behavior exactly. --- */
 		// One footer scope → its brand column (logo + tagline + social + newsletter). $skip_nl drops the
 		// newsletter when a newsletter COLUMN already exists in that scope's grid (no duplicate signup).
-		$footer_contact = self::detect_footer_contact( (string) $html );
-		$footer_brand_col = function ( $scope_html, $skip_nl = false ) use ( $el, $footer_contact ) {
+		$footer_contact = self::detect_footer_contact( $route_html );
+		$footer_brand_col = function ( $scope_html, $skip_nl = false, $skip_contact = false, $skip_social = false ) use ( $el, $footer_contact ) {
 			// Reproduce the source's ACTUAL first footer column. When it's a display HEADING (e.g.
 			// "Tell us your story / Get in touch") rather than a logo/brand lockup, keep that heading —
 			// don't substitute the site logo + a disclaimer tagline (which replaced the source's real CTA).
@@ -3585,10 +3654,12 @@ class FW_Site_Converter_Stitch {
 				$tg  = self::detect_footer_tagline( $scope_html );
 				if ( $tg !== '' ) { $col[] = array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<p class="footer-tagline">' . esc_html( $tg ) . '</p>' ) ) ); }
 				// The brand column's CONTACT block (email + "Headquartered in …" address) — often dropped
-				// because it sits between the tagline and the social row and isn't a nav list.
-				if ( $footer_contact !== '' ) { $col[] = array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $footer_contact ) ) ); }
+				// because it sits between the tagline and the social row and isn't a nav list. SKIPPED when the
+				// footer already has a DEDICATED contact column (a "Get in Touch" column owns the email/social),
+				// so the brand column stays logo + tagline and the contact/social don't duplicate into it.
+				if ( ! $skip_contact && $footer_contact !== '' ) { $col[] = array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $footer_contact ) ) ); }
 			}
-			if ( self::detect_footer_social( $scope_html ) ) { $col[] = $el( 'social_icons' ); }
+			if ( ! $skip_social && self::detect_footer_social( $scope_html ) ) { $col[] = $el( 'social_icons' ); }
 			if ( ! $skip_nl ) {
 				$nl = self::detect_footer_newsletter( $scope_html );
 				if ( $nl ) {
@@ -3638,7 +3709,9 @@ class FW_Site_Converter_Stitch {
 			return $cols;
 		};
 
-		$fbands  = self::footer_bands_html( (string) $html );
+		// The CTA band was already lifted out above ($cta_split / $route_html); the band routing runs on the
+		// CTA-stripped html so the CTA doesn't leak into the main brand column or steal the brand tagline.
+		$fbands  = self::footer_bands_html( $route_html );
 		$content = array_values( array_filter( $fbands, function ( $b ) { return empty( $b['is_copyright'] ); } ) );
 		if ( count( $content ) >= 2 ) {
 			// Anchor on Main = the densest content band; the brand-signal band (tagline/newsletter/social) that
@@ -3651,24 +3724,62 @@ class FW_Site_Converter_Stitch {
 				if ( self::detect_footer_tagline( $b['html'] ) !== '' || self::detect_footer_newsletter( $b['html'] ) || self::detect_footer_social( $b['html'] ) ) { $brand_i = $i; break; }
 			}
 			$pre = array(); $main = array(); $post = array();
+			$pre_el = null; $post_el = null;
 			foreach ( $content as $i => $b ) {
 				$cols = $band_cols( $b['html'], $i === $brand_i );
-				if ( $i < $main_i )      { $pre  = array_merge( $pre, $cols ); }
-				elseif ( $i > $main_i )  { $post = array_merge( $post, $cols ); }
+				if ( $i < $main_i )      { $pre  = array_merge( $pre, $cols ); if ( isset( $b['el'] ) && null === $pre_el ) { $pre_el = $b['el']; } }
+				elseif ( $i > $main_i )  { $post = array_merge( $post, $cols ); if ( isset( $b['el'] ) && null === $post_el ) { $post_el = $b['el']; } }
 				else                     { $main = $cols; }
 			}
 			$mb = self::footer_columns_to_bar( $main, 'main_footer', (string) $html ); if ( $mb ) { $values['main_footer_columns'] = $mb; }
 			$pb = self::footer_columns_to_bar( $pre,  'pre_footer',  (string) $html ); if ( $pb ) { $values['pre_footer_columns']  = $pb; }
 			$sb = self::footer_columns_to_bar( $post, 'post_footer', (string) $html ); if ( $sb ) { $values['post_footer_columns'] = $sb; }
+			// Carry each side band's OWN fill/border (a coloured CTA band, e.g. the red "Craving a Juicy Burger?"
+			// pre-footer) onto its bar's Custom Styling, so the white heading/button read on the source's red band
+			// instead of white-on-white in the main footer's column.
+			if ( $pb && $pre_el instanceof DOMElement ) {
+				$pf = self::detect_band_custom_fields( $pre_el, 'pre_footer' );
+				if ( $pf ) { $values['pre_footer_custom_styling'] = array( 'enabled' => 'yes', 'yes' => $pf ); }
+			}
+			if ( $sb && $post_el instanceof DOMElement ) {
+				$sf = self::detect_band_custom_fields( $post_el, 'post_footer' );
+				if ( $sf ) { $values['post_footer_custom_styling'] = array( 'enabled' => 'yes', 'yes' => $sf ); }
+			}
 		} else {
-			// SINGLE content band — classic single-bar behavior (unchanged).
-			$fcols = self::detect_footer_columns( (string) $html );
+			// SINGLE content band — classic single-bar behavior (unchanged). Runs on the CTA-stripped html so a
+			// lifted CTA band doesn't reappear as the brand column here.
+			$fcols = self::detect_footer_columns( $route_html );
 			if ( $fcols ) {
 				$has_nl_col = false;
-				foreach ( $fcols as $g ) { if ( ( $g['kind'] ?? '' ) === 'newsletter' ) { $has_nl_col = true; break; } }
-				$brand_col = $footer_brand_col( (string) $html, $has_nl_col );
-				$bar = self::build_footer_bar( $fcols, 'main_footer', (string) $html, array( $brand_col ) );
+				$contact_ci = null;
+				foreach ( $fcols as $gi => $g ) {
+					if ( ( $g['kind'] ?? '' ) === 'newsletter' ) { $has_nl_col = true; }
+					if ( null === $contact_ci && ( $g['kind'] ?? '' ) === 'contact' ) { $contact_ci = $gi; }
+				}
+				// A DEDICATED contact column (the source's "Get in Touch" column owning the email + social row)
+				// means the brand column must NOT also carry contact/social — otherwise the email + social icons
+				// duplicate into the logo column. Skip them in the brand column and hang the social icons on the
+				// contact column, where the source puts them.
+				$has_social  = (bool) self::detect_footer_social( $route_html );
+				$dedicated   = ( null !== $contact_ci );
+				if ( $dedicated && $has_social ) { $fcols[ $contact_ci ]['append_social'] = true; }
+				$brand_col = $footer_brand_col( $route_html, $has_nl_col, $dedicated, $dedicated && $has_social );
+				$bar = self::build_footer_bar( $fcols, 'main_footer', $route_html, array( $brand_col ) );
 				if ( $bar ) { $values['main_footer_columns'] = $bar; }
+			}
+		}
+
+		// The lifted CTA band → the Pre-Footer bar (a single centred lockup column) with its own fill, unless the
+		// band router already produced a Pre bar. Its white heading/button now read on the source's red band.
+		if ( empty( $values['pre_footer_columns'] ) && is_array( $cta_split ) ) {
+			$lead = self::detect_footer_lead_heading( (string) $cta_split['cta'] );
+			if ( '' !== $lead ) {
+				$pre_cols = array( array( array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $lead ) ) ) ) );
+				$pb = self::footer_columns_to_bar( $pre_cols, 'pre_footer', (string) $html );
+				if ( $pb ) {
+					$values['pre_footer_columns'] = $pb;
+					if ( ! empty( $cta_split['bg'] ) ) { $values['pre_footer_custom_styling'] = array( 'enabled' => 'yes', 'yes' => $cta_split['bg'] ); }
+				}
 			}
 		}
 
@@ -5186,13 +5297,23 @@ class FW_Site_Converter_Stitch {
 			if ( trim( $k->textContent ) !== '' || $k->getElementsByTagName( 'img' )->length || $k->getElementsByTagName( 'svg' )->length ) { $rows[] = $k; }
 		}
 		if ( count( $rows ) < 2 ) { return array(); }
-		// STRONG signal gate: a border divider on some row, or a copyright strip present. Without it, treat the
-		// footer as one band (don’t split a normal single-row footer into false pre/main strips).
+		// STRONG signal gate: a border divider on some row, a copyright strip, OR a row with its OWN opaque
+		// background fill that differs from the footer's (a coloured CTA band — the jukeboxburgers red
+		// "Craving a Juicy Burger?" pre-footer sits in a `bg-primary` div above the white link grid). Without a
+		// strong signal, treat the footer as one band (don't split a normal single-row footer into false strips).
+		$footer_bg = self::color_to_hex( (string) self::sc_css( $footer, 'background-color' ) );
+		$is_filled_band = function ( $r ) use ( $footer_bg ) {
+			$bg = (string) self::sc_css( $r, 'background-color' );
+			if ( $bg === '' || stripos( $bg, 'transparent' ) !== false || preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bg ) ) { return false; }
+			$hex = self::color_to_hex( $bg );
+			return $hex !== '' && strcasecmp( $hex, (string) $footer_bg ) !== 0;
+		};
 		$strong = false;
 		foreach ( $rows as $r ) {
 			$c = ' ' . strtolower( self::cls( $r ) ) . ' ';
 			if ( strpos( $c, 'border-t' ) !== false || strpos( $c, 'border-b' ) !== false ) { $strong = true; break; }
 			if ( self::band_is_copyright( $r ) ) { $strong = true; break; }
+			if ( $is_filled_band( $r ) ) { $strong = true; break; }
 		}
 		if ( ! $strong ) { return array(); }
 		$doc  = $footer->ownerDocument;
@@ -5205,9 +5326,56 @@ class FW_Site_Converter_Stitch {
 				'html'         => '<footer class="' . esc_attr( $fcls ) . '">' . $inner . '</footer>',
 				'is_copyright' => self::band_is_copyright( $r ),
 				'ncols'        => self::band_column_count( $r ),
+				// The band's own custom-styling fields (opaque background + borders) so a coloured band (the red
+				// CTA) can carry its fill onto its Pre/Post bar. Prefix is fixed up per-bar by the router.
+				'el'           => $r,
 			);
 		}
 		return count( $out ) >= 2 ? $out : array();
+	}
+
+	/**
+	 * Split a leading FILLED CTA band out of the footer. A footer's first band-level child can be a coloured
+	 * call-to-action (an opaque fill different from the footer's own bg) holding a lead heading + a button —
+	 * the jukeboxburgers red "Craving a Juicy Burger? … BOOK A TABLE" pre-footer, which lives INSIDE `<footer>`
+	 * above the white link grid. Left in place it renders white-on-white in the main footer's brand column (its
+	 * heading/button are white, designed for the red band) and its subtitle leaks in as the brand tagline. This
+	 * lifts that band OUT so it becomes its own Pre-Footer bar (with its fill), and returns the REST of the page
+	 * html (CTA removed) for the normal footer detection. Returns null when there's no such band.
+	 *
+	 * @param string $html full page html
+	 * @return array|null { cta: synthetic-footer html of the band, bg: pre_footer custom fields, rest: page html w/o the band }
+	 */
+	private static function footer_split_cta( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return null; }
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( ! ( $footer instanceof DOMElement ) ) { return null; }
+		$node = $footer;
+		for ( $d = 0; $d < 4; $d++ ) {
+			$kids = self::el_children( $node );
+			if ( count( $kids ) >= 2 ) { break; }
+			if ( count( $kids ) === 1 ) { $node = $kids[0]; continue; }
+			return null;
+		}
+		$rows = self::el_children( $node );
+		if ( count( $rows ) < 2 ) { return null; }
+		$footer_bg = self::color_to_hex( (string) self::sc_css( $footer, 'background-color' ) );
+		$fcls      = self::cls( $footer );
+		foreach ( $rows as $r ) {
+			$bg = (string) self::sc_css( $r, 'background-color' );
+			if ( $bg === '' || stripos( $bg, 'transparent' ) !== false || preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bg ) ) { continue; }
+			$hex = self::color_to_hex( $bg );
+			if ( $hex === '' || strcasecmp( $hex, (string) $footer_bg ) === 0 ) { continue; }
+			// A filled band qualifies as a CTA only when it reads as a lead-heading lockup (heading + button) —
+			// not just any coloured strip (a solid copyright bar, a divider).
+			$syn = '<footer class="' . esc_attr( $fcls ) . '">' . $dom->saveHTML( $r ) . '</footer>';
+			if ( self::detect_footer_lead_heading( $syn ) === '' ) { continue; }
+			$bgfields = self::detect_band_custom_fields( $r, 'pre_footer' ); // read fill BEFORE detaching
+			if ( $r->parentNode ) { $r->parentNode->removeChild( $r ); }
+			return array( 'cta' => $syn, 'bg' => $bgfields, 'rest' => (string) $dom->saveHTML() );
+		}
+		return null;
 	}
 
 	/**
@@ -5258,6 +5426,10 @@ class FW_Site_Converter_Stitch {
 				$type = ( $lnk !== '' ) ? ( ( stripos( $lnk, 'tel:' ) === 0 ) ? 'phone' : ( ( stripos( $lnk, 'mailto:' ) === 0 ) ? 'email' : 'url' ) ) : 'none';
 				$els[] = $mk_item( $txt, $ico, $lnk, $type );
 			}
+			// The source's social row lives in THIS column (a "Get in Touch" contact column) — append the
+			// social_icons element here (it renders the site-wide social_profiles) so the icons sit where the
+			// source put them instead of duplicating into the brand column.
+			if ( ! empty( $group['append_social'] ) ) { $els[] = array( 'element_type' => array( 'element' => 'social_icons' ) ); }
 			return $els;
 		}
 
@@ -5378,6 +5550,52 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/**
+	 * The footer band's CTA LEAD heading element — an h1/h2 lockup, OR an h3 when the band is a CTA
+	 * (it holds a button-styled link, e.g. the jukeboxburgers "Craving a Juicy Burger? … BOOK A TABLE"
+	 * pre-footer). h3 is admitted ONLY in a CTA band because bare h3/h4 are normal footer COLUMN titles;
+	 * requiring a CTA button keeps a column heading from being mistaken for the lead. A logo/brand column
+	 * (heading beside an <img>) is skipped. Shared by detect_footer_lead_heading() + footer_lead_css() so
+	 * they never disagree on WHICH heading is the lead.
+	 */
+	private static function footer_lead_heading_el( $footer ) {
+		if ( ! ( $footer instanceof DOMElement ) ) { return null; }
+		$has_cta_btn = false;
+		foreach ( $footer->getElementsByTagName( 'a' ) as $a ) { if ( self::is_button( $a ) ) { $has_cta_btn = true; break; } }
+		foreach ( array( 'h1', 'h2', 'h3' ) as $tag ) {
+			if ( 'h3' === $tag && ! $has_cta_btn ) { continue; }
+			foreach ( $footer->getElementsByTagName( $tag ) as $cand ) {
+				$txt = trim( preg_replace( '/\s+/', ' ', self::text( $cand ) ) );
+				if ( $txt === '' || str_word_count( $txt ) < 2 ) { continue; }
+				$parent = $cand->parentNode;
+				if ( $parent instanceof DOMElement && $parent->getElementsByTagName( 'img' )->length > 0 ) { continue; }
+				return $cand;
+			}
+		}
+		return null;
+	}
+
+	/** The lead heading's immediately-following subtitle <p>/<span>/<div> (a CTA sentence, ≤ 14 words), or null. */
+	private static function footer_lead_subtitle_el( $h ) {
+		if ( ! ( $h instanceof DOMElement ) ) { return null; }
+		$n = $h->nextSibling;
+		while ( $n && $n->nodeType !== XML_ELEMENT_NODE ) { $n = $n->nextSibling; }
+		if ( $n instanceof DOMElement && in_array( strtolower( $n->nodeName ), array( 'p', 'span', 'div' ), true ) ) {
+			$st = trim( preg_replace( '/\s+/', ' ', self::text( $n ) ) );
+			if ( $st !== '' && str_word_count( $st ) <= 14 ) { return $n; }
+		}
+		return null;
+	}
+
+	/** The footer band's CTA button (a button-styled <a> with a text label), or null. */
+	private static function footer_lead_button_el( $footer ) {
+		if ( ! ( $footer instanceof DOMElement ) ) { return null; }
+		foreach ( $footer->getElementsByTagName( 'a' ) as $a ) {
+			if ( self::is_button( $a ) && trim( self::text( $a ) ) !== '' ) { return $a; }
+		}
+		return null;
+	}
+
+	/**
 	 * NEVER-DROP footer LEAD-HEADING typography → scoped `.footer-lead-title` / `.footer-lead-subtitle`
 	 * rules (or ''). The source's first footer column can be a display CTA lockup ("Tell us your story /
 	 * Get in touch") with a distinctive display font / size / colour / italic subtitle the footer builder
@@ -5390,32 +5608,35 @@ class FW_Site_Converter_Stitch {
 		if ( ! $dom ) { return ''; }
 		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
 		if ( ! ( $footer instanceof DOMElement ) ) { return ''; }
-		$h = null; $sub = null;
-		foreach ( array( 'h1', 'h2' ) as $tag ) {
-			foreach ( $footer->getElementsByTagName( $tag ) as $cand ) {
-				$txt = trim( preg_replace( '/\s+/', ' ', self::text( $cand ) ) );
-				if ( $txt === '' || str_word_count( $txt ) < 2 ) { continue; }
-				$parent = $cand->parentNode;
-				if ( $parent instanceof DOMElement && $parent->getElementsByTagName( 'img' )->length > 0 ) { continue; }
-				$h = $cand;
-				$n = $cand->nextSibling;
-				while ( $n && $n->nodeType !== XML_ELEMENT_NODE ) { $n = $n->nextSibling; }
-				if ( $n instanceof DOMElement && in_array( strtolower( $n->nodeName ), array( 'p', 'span', 'div' ), true ) ) {
-					$st = trim( preg_replace( '/\s+/', ' ', self::text( $n ) ) );
-					if ( $st !== '' && str_word_count( $st ) <= 8 ) { $sub = $n; }
-				}
-				break 2;
-			}
-		}
+		$h = self::footer_lead_heading_el( $footer );
 		if ( ! ( $h instanceof DOMElement ) ) { return ''; }
+		$sub = self::footer_lead_subtitle_el( $h );
+		$btn = self::footer_lead_button_el( $footer );
 		$css = '';
+		// Centre the whole lockup when the source band is centred (a CTA pre-footer is `text-center`), so the
+		// heading/subtitle/button stack sits centred like the source instead of flush-left in the footer column.
+		$centered = ( stripos( (string) $h->getAttribute( 'data-sc-cs' ), 'text-align:center' ) !== false );
+		if ( $centered ) { $css .= '.footer-lead{text-align:center;}'; }
 		// The complete text translator (max-width / margin / padding / line-height / letter-spacing / size /
 		// weight / align / colour), PLUS font-family (a wordmark concern the general helper leaves out).
 		$d = self::cs_decl_str( $h, array( 'font-family' ) ) . self::significant_text_decls( (string) $h->getAttribute( 'data-sc-cs' ), array(), true );
 		if ( $d !== '' ) { $css .= '.footer-lead-title{' . $d . '}'; }
 		if ( $sub instanceof DOMElement ) {
 			$d2 = self::significant_text_decls( (string) $sub->getAttribute( 'data-sc-cs' ), array(), true );
+			// A capped subtitle (`max-w-md mx-auto`) keeps only its max-width (the horizontal auto-margins are
+			// dropped by significant_text_decls), so it pins LEFT instead of centring under the heading. When the
+			// lockup is centred, re-assert the auto side-margins so the narrowed box sits centred like the source.
+			if ( $centered && stripos( $d2, 'max-width' ) !== false ) { $d2 .= 'margin-left:auto !important;margin-right:auto !important;'; }
 			if ( $d2 !== '' ) { $css .= '.footer-lead-subtitle{' . $d2 . '}'; }
+		}
+		// The CTA button's fill / ink / padding / radius / typography → a scoped `.footer-lead-btn` rule so the
+		// "BOOK A TABLE" pill reproduces the source (white fill, dark ink, uppercase) instead of a plain link.
+		if ( $btn instanceof DOMElement ) {
+			$bd = self::cs_decl_str( $btn, array( 'background-color', 'color', 'padding', 'border-radius', 'font-family', 'font-size', 'font-weight', 'text-transform', 'letter-spacing' ) );
+			// !important on each decl so the button's own fill/ink beats the generic footer-link colour rule
+			// (`.footer a{color:rgba(…,.7)}`) that otherwise tints the CTA button text translucent.
+			if ( '' !== $bd ) { $bd = str_replace( ';', ' !important;', $bd ) . ' !important'; }
+			$css .= '.footer-lead-btn{display:inline-flex !important;align-items:center;gap:8px;text-decoration:none !important;margin-top:4px;' . ( $bd !== '' ? $bd . ';' : '' ) . '}';
 		}
 		return $css;
 	}
@@ -5435,28 +5656,27 @@ class FW_Site_Converter_Stitch {
 		if ( ! $dom ) { return ''; }
 		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
 		if ( ! ( $footer instanceof DOMElement ) ) { return ''; }
-		foreach ( array( 'h1', 'h2' ) as $tag ) {
-			foreach ( $footer->getElementsByTagName( $tag ) as $h ) {
-				$txt = trim( preg_replace( '/\s+/', ' ', self::text( $h ) ) );
-				if ( $txt === '' || str_word_count( $txt ) < 2 ) { continue; } // a 1-word wordmark reads as a brand, not a CTA
-				$parent = $h->parentNode;
-				if ( $parent instanceof DOMElement && $parent->getElementsByTagName( 'img' )->length > 0 ) { continue; } // real logo column → keep the logo path
-				// Bake the source's computed look INLINE (display font / size / weight / colour / italic) — the
-				// scrubbed classes + the text element's kses would otherwise drop it, leaving plain default text.
-				// CLEAN semantic HTML only — the display look is carried as a scoped `.footer-lead-*` rule by
-				// footer_lead_css() (mirrors footer_heading_css), NOT inline styles. Inline-style soup in the
-				// Text element content is a hack; the native path is clean markup + a scoped misc_custom_css rule.
-				$out = '<h3 class="footer-lead-title">' . self::clean_inline_html( $h ) . '</h3>';
-				$n = $h->nextSibling;
-				while ( $n && $n->nodeType !== XML_ELEMENT_NODE ) { $n = $n->nextSibling; }
-				if ( $n instanceof DOMElement && in_array( strtolower( $n->nodeName ), array( 'p', 'span', 'div' ), true ) ) {
-					$st = trim( preg_replace( '/\s+/', ' ', self::text( $n ) ) );
-					if ( $st !== '' && str_word_count( $st ) <= 8 ) { $out .= '<p class="footer-lead-subtitle">' . self::clean_inline_html( $n ) . '</p>'; }
-				}
-				return $out;
+		$h = self::footer_lead_heading_el( $footer );
+		if ( ! ( $h instanceof DOMElement ) ) { return ''; }
+		// Bake the source's computed look via scoped `.footer-lead-*` rules (footer_lead_css), NOT inline
+		// styles — the Text element's kses would drop inline soup, and scoped rules are the documented pattern.
+		// CLEAN semantic HTML only, wrapped in `.footer-lead` so the whole CTA lockup can be centred as one.
+		$out = '<h3 class="footer-lead-title">' . self::clean_inline_html( $h ) . '</h3>';
+		$sub = self::footer_lead_subtitle_el( $h );
+		if ( $sub instanceof DOMElement ) { $out .= '<p class="footer-lead-subtitle">' . self::clean_inline_html( $sub ) . '</p>'; }
+		// The CTA button ("BOOK A TABLE") — carried as a real link with the `.footer-lead-btn` skin. Text label
+		// only (icons stripped): the footer Text element's kses drops <svg>, so a source arrow would leave a gap.
+		$btn = self::footer_lead_button_el( $footer );
+		if ( $btn instanceof DOMElement ) {
+			$href  = trim( (string) $btn->getAttribute( 'href' ) );
+			$label = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $btn ) ) );
+			if ( '' === $label ) { $label = trim( preg_replace( '/\s+/', ' ', self::text( $btn ) ) ); }
+			if ( '' !== $label ) {
+				$tgt = ( strtolower( (string) $btn->getAttribute( 'target' ) ) === '_blank' ) ? ' target="_blank" rel="noopener noreferrer"' : '';
+				$out .= '<a class="footer-lead-btn" href="' . esc_attr( '' !== $href ? $href : '#' ) . '"' . $tgt . '>' . esc_html( $label ) . '</a>';
 			}
 		}
-		return '';
+		return '<div class="footer-lead">' . $out . '</div>';
 	}
 
 	/**
@@ -5534,6 +5754,18 @@ class FW_Site_Converter_Stitch {
 						foreach ( self::el_children( $scope ) as $ch ) {
 							$tag = strtolower( $ch->nodeName );
 							if ( preg_match( '/^h[1-6]$/', $tag ) || ! in_array( $tag, array( 'div', 'p', 'a', 'address', 'span' ), true ) ) { continue; }
+							// Skip a SOCIAL row/link (a `flex gap-3` of platform icon links, or a bare social <a>) — it's
+							// rendered as the social_icons element, not as contact rows. Folding it in produced a garbled
+							// row (an Instagram icon + the TikTok "TT" text + the Instagram link mashed together).
+							$is_social_row = false;
+							if ( 'a' === $tag ) {
+								if ( self::social_lucide( (string) $ch->getAttribute( 'href' ) ) !== '' ) { $is_social_row = true; }
+							} else {
+								$na = 0; $ns = 0;
+								foreach ( $ch->getElementsByTagName( 'a' ) as $sa ) { $na++; if ( self::social_lucide( (string) $sa->getAttribute( 'href' ) ) !== '' ) { $ns++; } }
+								if ( $na > 0 && $ns === $na ) { $is_social_row = true; }
+							}
+							if ( $is_social_row ) { continue; }
 							$has_svg = $ch->getElementsByTagName( 'svg' )->length > 0;
 							$has_ct  = false;
 							foreach ( $ch->getElementsByTagName( 'a' ) as $a ) { $h = strtolower( (string) $a->getAttribute( 'href' ) ); if ( 0 === strpos( $h, 'tel:' ) || 0 === strpos( $h, 'mailto:' ) ) { $has_ct = true; break; } }
@@ -5555,7 +5787,13 @@ class FW_Site_Converter_Stitch {
 				if ( $ccolor !== '' ) { foreach ( $rows as &$r ) { if ( $r['icon'] !== '' && $r['color'] === '' ) { $r['color'] = $ccolor; } } unset( $r ); }
 				$kind = 'text';
 				$with_icon = 0; foreach ( $rows as $r ) { if ( $r['icon'] !== '' ) { $with_icon++; } }
+				// A single icon + tel:/mailto: row is still a CONTACT column (the "Get in Touch" column: a mail icon +
+				// email, with the social row rendered separately). Without this a 1-row contact column fell below the
+				// ≥2-rows bar and was dropped, taking its heading + email + social with it.
+				$contact_row_link = false;
+				foreach ( $rows as $r ) { $rl = strtolower( (string) ( $r['link'] ?? '' ) ); if ( 0 === strpos( $rl, 'tel:' ) || 0 === strpos( $rl, 'mailto:' ) ) { $contact_row_link = true; break; } }
 				if ( count( $rows ) >= 2 && $with_icon >= 2 && $with_icon >= (int) ceil( count( $rows ) / 2 ) ) { $kind = 'contact'; }
+				elseif ( $contact_row_link && $with_icon >= 1 ) { $kind = 'contact'; }
 				// A NEWSLETTER / signup column: a heading whose column carries an email/text `<input>` (an email
 				// capture) but NO link list / text list / contact rows — so the three checks above would drop it
 				// (the "Sprinkles Club" 4th column of a 4-col footer collapsing to 3). Recognize it as its own
@@ -5577,7 +5815,7 @@ class FW_Site_Converter_Stitch {
 						$news = array( 'tagline' => $tagline, 'placeholder' => $ph, 'button' => ( $btn !== '' ? $btn : 'Subscribe' ) );
 					}
 				}
-				if ( count( $links ) >= 2 || count( $items ) >= 2 || ( $kind === 'contact' && count( $rows ) >= 2 ) || $news !== null ) {
+				if ( count( $links ) >= 2 || count( $items ) >= 2 || ( $kind === 'contact' && count( $rows ) >= 1 ) || $news !== null ) {
 					$out[] = array( 'title' => $title, 'tag' => $htag, 'links' => $links, 'items' => $items, 'kind' => ( $news !== null ? 'newsletter' : $kind ), 'rows' => ( $kind === 'contact' ? $rows : array() ), 'newsletter' => $news, 'cls' => self::cls( $parent ) );
 					$seen[ $title ] = true;
 				}
@@ -5629,7 +5867,13 @@ class FW_Site_Converter_Stitch {
 		// escapes on render); `multiline` flags rows the Text-HTML fallback should keep.
 		$text_line = trim( preg_replace( '/\s*,\s*/', ', ', str_replace( "\n", ', ', $inner ) ) );
 		$link = '';
-		foreach ( $li->getElementsByTagName( 'a' ) as $a ) {
+		// The row's own href counts too: a contact row is often the `<a href="mailto:…">` ITSELF (the "Get in
+		// Touch" email), so getElementsByTagName('a') — which returns only DESCENDANTS — would miss it, dropping
+		// the mailto/tel link (the row then failed the contact-column test and the whole column was lost).
+		$anchors = array();
+		if ( 'a' === strtolower( $li->nodeName ) ) { $anchors[] = $li; }
+		foreach ( $li->getElementsByTagName( 'a' ) as $a ) { $anchors[] = $a; }
+		foreach ( $anchors as $a ) {
 			$href = trim( (string) $a->getAttribute( 'href' ) );
 			if ( $href === '' || $href === '#' ) { continue; }
 			if ( stripos( $href, 'tel:' ) === 0 || stripos( $href, 'mailto:' ) === 0 ) { $link = $href; break; }
@@ -6098,8 +6342,44 @@ class FW_Site_Converter_Stitch {
 		return trim( $html );
 	}
 
+	/**
+	 * A leading header bar that is an auto-scrolling ANNOUNCEMENT TICKER (a `<marquee>`, or a single text track
+	 * with a marquee/scroll animation) rather than left/center/right utility groups → its UNIQUE announcement
+	 * phrase. The source repeats the phrase to fill the track ("BOOK A TABLE · THE NEW MENU IS HERE · RESERVE
+	 * YOUR SPOT · BOOK A TABLE · …"); we dedupe back to one cycle so the topbar shows it once. '' when the bar
+	 * isn't a ticker.
+	 */
+	private static function topbar_ticker_text( $bar ) {
+		if ( ! ( $bar instanceof DOMElement ) ) { return ''; }
+		$is_ticker = $bar->getElementsByTagName( 'marquee' )->length > 0;
+		if ( ! $is_ticker ) {
+			$nodes = array( $bar );
+			foreach ( $bar->getElementsByTagName( '*' ) as $d ) { if ( $d instanceof DOMElement ) { $nodes[] = $d; } }
+			foreach ( $nodes as $d ) {
+				$sig = ' ' . strtolower( (string) $d->getAttribute( 'data-sc-cs' ) ) . ' ' . strtolower( self::cls( $d ) ) . ' ';
+				if ( preg_match( '/animation[^;"\']*(?:marquee|scroll|ticker)|animate-(?:marquee|scroll)|\b(?:marquee|ticker)\b/', $sig ) ) { $is_ticker = true; break; }
+			}
+		}
+		if ( ! $is_ticker ) { return ''; }
+		$t = trim( preg_replace( '/\s+/', ' ', (string) self::text( $bar ) ) );
+		if ( '' === $t ) { return ''; }
+		// Dedupe the repeated cycle: split on the separator (·/•/|/–/—) and keep segments until the first repeats.
+		$parts = preg_split( '/\s*[·•|–—]\s*/u', $t, -1, PREG_SPLIT_NO_EMPTY );
+		$parts = array_values( array_filter( array_map( 'trim', (array) $parts ) ) );
+		if ( count( $parts ) >= 2 ) {
+			$cycle = array();
+			foreach ( $parts as $i => $seg ) { if ( $i > 0 && 0 === strcasecmp( $seg, $parts[0] ) ) { break; } $cycle[] = $seg; }
+			$seen = array(); $uniq = array();
+			foreach ( $cycle as $seg ) { $k = mb_strtolower( $seg ); if ( ! isset( $seen[ $k ] ) ) { $seen[ $k ] = 1; $uniq[] = $seg; } }
+			$phrase = implode( ' · ', $uniq );
+		} else {
+			$phrase = $t;
+		}
+		return ( mb_strlen( $phrase ) > 240 ) ? '' : $phrase; // absurdly long → not a real announcement
+	}
+
 	private static function detect_topbar( $html ) {
-		$out = array( 'has' => false, 'left' => '', 'center' => '', 'right' => '', 'bg' => '', 'text' => '', 'mobile_hide' => false );
+		$out = array( 'has' => false, 'left' => '', 'center' => '', 'right' => '', 'bg' => '', 'text' => '', 'mobile_hide' => false, 'ticker' => '' );
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return $out; }
 		$header = self::header_root( $dom );
@@ -6128,6 +6408,32 @@ class FW_Site_Converter_Stitch {
 		if ( '' === $bg && strpos( $bcls, ' text-xs ' ) === false && strpos( $bcls, ' text-sm ' ) === false ) { return $out; }
 
 		$txt = self::sc_css( $bar, 'color' );
+
+		// SCROLLING ANNOUNCEMENT TICKER — the bar is a single auto-scrolling marquee (not left/center/right
+		// utility groups), so the group scan below would find no cells and drop the bar entirely. Capture its
+		// unique phrase and mark it a ticker; the header emit reproduces it as a scrolling strip in the topbar.
+		$ticker = self::topbar_ticker_text( $bar );
+		if ( '' !== $ticker ) {
+			// Ticker text COLOUR = the scrolling track's own colour (white on the red bar), not the bar
+			// wrapper's default dark ink — else the announcement is dark-on-red and unreadable. Read the first
+			// text-bearing descendant's computed colour; fall back to the bar colour, then white on a real bg.
+			$tk_color = '';
+			foreach ( $bar->getElementsByTagName( '*' ) as $d ) {
+				if ( ! ( $d instanceof DOMElement ) ) { continue; }
+				if ( '' === trim( (string) self::text( $d ) ) ) { continue; }
+				$c = self::sc_css( $d, 'color' );
+				if ( '' !== $c ) { $tk_color = $c; break; }
+			}
+			if ( '' === $tk_color ) { $tk_color = ( '' !== $txt ) ? $txt : ''; }
+			if ( '' === $tk_color && '' !== $bg ) { $tk_color = '#ffffff'; } // saturated bar, no readable ink → white
+			$out['has']         = true;
+			$out['ticker']      = $ticker;
+			$out['bg']          = $bg;
+			$out['text']        = $tk_color;
+			$out['mobile_hide'] = ( strpos( $bcls, ' hidden ' ) !== false && (bool) preg_match( '/\s(?:sm|md|lg|xl):(?:block|flex|grid)/', $bcls ) );
+			return $out;
+		}
+
 		// Content: bar → inner container → left / (center) / right groups (a flex justify-between row). Each
 		// group is turned into STYLED HTML (badge pill kept, ★ svgs → unicode in their amber colour) so the
 		// top bar's look survives — carried via a custom_html element, not a text element that scrubs styles.
@@ -6474,6 +6780,27 @@ class FW_Site_Converter_Stitch {
 			if ( isset( $scale[ $bk ] ) && empty( $out['glass_backdrop'] ) ) { $out['glass_backdrop'] = 'blur(' . $scale[ $bk ] . ')'; }
 		}
 		if ( empty( $out['border'] ) && ( preg_match( '/\sborder-b(?:-\d+)?\s/', $hcls ) || preg_match( '/\sborder-b(?:order)?\s/', $hcls ) ) ) { $out['border'] = true; }
+		// PROMINENT bottom border on the header's INNER bar — the class-less `<header>` pattern, where the
+		// visible nav bar is a `border-b-4 border-primary` child (jukebox). The header-level reads above miss it.
+		// Capture the WIDTH (`border-b-N` → Npx) + the COLOUR TOKEN so the converter reproduces the real thick
+		// accent rule instead of the theme's default 1px hairline. Only a THICK border (≥2px) qualifies — a bare
+		// `border-b` (1px) is already covered by the hairline toggle.
+		if ( empty( $out['border_width'] ) ) {
+			foreach ( $header->getElementsByTagName( '*' ) as $d ) {
+				if ( ! ( $d instanceof DOMElement ) ) { continue; }
+				$dc = ' ' . strtolower( self::cls( $d ) ) . ' ';
+				if ( ! preg_match( '/\bborder-b-([2-9]|1[0-9])\b/', $dc, $bm ) ) { continue; }
+				$col = '';
+				if ( preg_match( '/\bborder-(primary|secondary|accent)\b/', $dc, $cm ) ) { $col = $cm[1]; }
+				elseif ( preg_match( '/\bborder-\[(#[0-9a-f]{3,8})\]/i', $dc, $cm ) ) { $col = $cm[1]; }
+				elseif ( preg_match( '/(?<![\w-])border(?:-bottom)?-color:\s*(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', (string) $d->getAttribute( 'data-sc-cs' ), $cm ) ) { $col = trim( $cm[1] ); }
+				if ( '' === $col ) { continue; }
+				$out['border']       = true;
+				$out['border_width'] = (int) $bm[1];
+				$out['border_color'] = $col;
+				break;
+			}
+		}
 		// SCROLL-STATE (data-sc-scrolled, stamped by the capture service after scrolling the page): a fixed /
 		// transparent header that reveals a bg / backdrop-blur / border / shadow ONLY on scroll. The resting
 		// reads above can't see it (the effect is JS-applied on a scroll listener), so fold the scrolled state
@@ -7705,6 +8032,7 @@ class FW_Site_Converter_Stitch {
 			// from the DOM before block collection so it renders only once, as the header. (P1 follow-up.)
 			$mh = self::header_root( $dom );
 			$overlay_px = 0;
+			$inflow_hdr_clear = false; // source reserved first-section top padding to clear an OUT-OF-FLOW SOLID header we render IN-FLOW
 			if ( $mh instanceof DOMElement ) {
 				// OVERLAY HEADER: a fixed/absolute (usually transparent) masthead sits ON TOP of the hero, so the
 				// hero content must clear it — otherwise the heading renders UNDER the nav (the 'hero top spacing'
@@ -7714,6 +8042,18 @@ class FW_Site_Converter_Stitch {
 				if ( strpos( $hcls, ' fixed ' ) !== false || strpos( $hcls, ' absolute ' ) !== false || preg_match( '/position:\s*(?:fixed|absolute)/i', $hcs ) ) {
 					$hpx = preg_match( '/(?:^|;)\s*height:\s*([\d.]+)px/i', $hcs, $hm ) ? (float) $hm[1] : 0;
 					$overlay_px = $hpx > 0 ? (int) round( $hpx ) : 80;
+				}
+				// SOLID FIXED CHROME (the jukebox pattern): the semantic <header> is often class-less while its
+				// BARS (a `fixed top-0` ticker + a `fixed top-12` nav) are the position:fixed, TOP-pinned, OPAQUE
+				// elements. Being out of flow, the source reserves top padding on the FIRST section to clear them.
+				// We reproduce that chrome as an IN-FLOW static/sticky header (it occupies its own height), so the
+				// reserved clearance becomes a redundant white gap between header and hero. Detect a solid top-pinned
+				// fixed bar → flag the first section to DROP that clearance. A TRANSPARENT overlay nav is excluded:
+				// it is reproduced as an overlay header that genuinely needs the clearance (kept via heroTopPad).
+				$fx = self::fixed_top_chrome( $mh );
+				if ( ! empty( $fx['found'] ) && ! empty( $fx['solid'] ) ) {
+					$inflow_hdr_clear = true;
+					$overlay_px       = 0; // header is in-flow — do NOT also add an overlay hero offset
 				}
 				// The masthead nav is chrome — remove it from the body so it isn't ALSO a body band (dup nav).
 				if ( 'nav' === strtolower( $mh->nodeName ) && $mh->parentNode instanceof DOMElement ) {
@@ -7796,7 +8136,8 @@ class FW_Site_Converter_Stitch {
 					// header's position/height wasn't captured (a hand-authored source often omits them) — the
 					// hero's OWN top clearance (`.hero-top{padding-top:107px}`), which wrapper-flattening drops,
 					// leaving the hero riding under the nav. Carry whichever is larger so the hero clears the header.
-					'heroTopPad'   => ( 0 === $idx ) ? max( (int) $overlay_px, ( $mh instanceof DOMElement ? self::hero_top_clearance( $node ) : 0 ) ) : 0,
+					'heroTopPad'   => ( 0 === $idx && ! $inflow_hdr_clear ) ? max( (int) $overlay_px, ( $mh instanceof DOMElement ? self::hero_top_clearance( $node ) : 0 ) ) : 0,
+					'heroInFlowClear' => ( 0 === $idx && $inflow_hdr_clear ), // drop the first section's redundant fixed-header clearance (in-flow static header supplies that height)
 					'omit'         => false,
 					'verbatim'     => false,
 					'align'        => $align,
@@ -8003,6 +8344,44 @@ class FW_Site_Converter_Stitch {
 			if ( $src === '' || strpos( $src, 'data:image/svg' ) === 0 ) { continue; }
 			return $ret( $src );
 		}
+		// (3b) HERO ASPECT-BOX — an `<img w-full h-full object-cover>` FILLING a `relative aspect-[…]` container
+		// whose `absolute inset-0` overlay carries a HEADING (h1–h6). The Tailwind hero-banner pattern (jukebox:
+		// `<div class="relative aspect-[2/1]"><img object-cover><div class="absolute inset-0 …"><h2>…</h2><a>…`).
+		// The image isn't in a full-bleed inset-0 LAYER (paths above missed it), so the whole hero collapsed to a
+		// verbatim code_block. A HEADING in the overlay is the gate that distinguishes a hero from an image-tile
+		// GRID (whose tiles carry only a `<p>` caption, no heading) — so this NEVER fires on the food-grid tiles.
+		// The image → the section Background, so the overlaid heading/text/button decompose onto the band; the
+		// scrim rides as the overlay and the DESKTOP aspect ratio sets a hero min-height.
+		foreach ( $node->getElementsByTagName( 'img' ) as $img ) {
+			$icls = ' ' . strtolower( self::cls( $img ) ) . ' ';
+			if ( ( strpos( $icls, 'object-cover' ) === false && strpos( $icls, 'object-fill' ) === false )
+				|| strpos( $icls, 'w-full' ) === false || strpos( $icls, 'h-full' ) === false ) { continue; }
+			$box = ( $img->parentNode instanceof DOMElement ) ? $img->parentNode : null;
+			if ( ! ( $box instanceof DOMElement ) ) { continue; }
+			$bcls = ' ' . strtolower( self::cls( $box ) ) . ' ';
+			if ( ! preg_match( '/\baspect-(?:\[|video|square)/', $bcls )
+				&& ! preg_match( '/(?:^|;)\s*aspect-ratio:/', (string) $box->getAttribute( 'data-sc-cs' ) ) ) { continue; }
+			// The overlay content layer must carry a heading (a hero has one; a tile caption doesn't).
+			$has_head = false;
+			foreach ( $box->getElementsByTagName( '*' ) as $ov ) {
+				$ocls = ' ' . strtolower( self::cls( $ov ) ) . ' ';
+				if ( ( strpos( $ocls, ' absolute ' ) === false && strpos( $ocls, ' fixed ' ) === false ) || strpos( $ocls, 'inset-0' ) === false ) { continue; }
+				foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) { if ( $ov->getElementsByTagName( $h )->length > 0 ) { $has_head = true; break 2; } }
+			}
+			if ( ! $has_head ) { continue; }
+			$src = trim( (string) $img->getAttribute( 'src' ) );
+			if ( $src === '' ) { $src = trim( (string) $img->getAttribute( 'data-src' ) ); }
+			if ( $src === '' || strpos( $src, 'data:image/svg' ) === 0 ) { continue; }
+			// Min-height from the DESKTOP (widest) aspect ratio × a nominal 1440px content width (aspect-[2/1] →
+			// 720px). Falls back to the hero default (80vh) when only a named/computed aspect is present.
+			$ah = '';
+			if ( preg_match_all( '/(?:^|\s)(?:[a-z]{2}:)?aspect-\[([0-9.]+)\/([0-9.]+)\]/', $bcls, $am, PREG_SET_ORDER ) ) {
+				$best_r = 0.0;
+				foreach ( $am as $a ) { $w = (float) $a[1]; $h2 = (float) $a[2]; if ( $w > 0 && $h2 > 0 ) { $r = $w / $h2; if ( $r > $best_r ) { $best_r = $r; } } }
+				if ( $best_r > 0 ) { $ah = (int) round( 1440 / $best_r ) . 'px'; }
+			}
+			return array( 'src' => $src, 'hero' => true, 'valign' => $valign, 'hero_height' => $ah, 'overlay' => $overlay );
+		}
 		return array();
 	}
 
@@ -8022,6 +8401,13 @@ class FW_Site_Converter_Stitch {
 			$cs = (string) $el->getAttribute( 'data-sc-cs' );
 			if ( $cs === '' || ! preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/', $cs, $m ) ) { continue; }
 			$px = (float) $m[1];
+			// A max-width on a TEXT LEAF (paragraph, heading, span, link, list item) is a typographic READING-
+			// MEASURE cap (`max-w-xl`/`max-w-prose` on a `<p>` description), NOT the section's content band — the
+			// band WRAPS the blocks (heading + copy + button). jukeboxburgers' hero puts `max-w-xl` (576px) on its
+			// description `<p>` while its `<h2>` title is full-width; treating the `<p>`'s cap as the section
+			// container pinned the whole hero to 576px and wrapped the 2-line title to 4 lines. The leaf keeps its
+			// own measure via its block/subtitle CSS; the section container must not inherit it.
+			if ( in_array( strtolower( (string) $el->tagName ), array( 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 'li', 'blockquote', 'figcaption', 'label' ), true ) ) { continue; }
 			// The section's real CONTENT-BAND cap is the widest CENTERED content wrapper that is NARROWER than
 			// the page's outer container — a `max-w-5xl` card grid (1024), a `max-w-6xl` grid (1152), etc. The
 			// outer full-width container (~1400px, `max-w-[1400px]`/`max-w-7xl`) is NOT the content band — the
@@ -8292,12 +8678,20 @@ class FW_Site_Converter_Stitch {
 			function ( $el ) { return self::posts_grid_build( $el ); }
 		);
 		// An AUTO-SCROLL MARQUEE / horizontal reel strip (`animate-marquee`/`animate-scroll-left`, or an
-		// `overflow-x-auto` flex row of many fixed-width `flex-shrink-0` cards) → ONE verbatim code_block,
-		// so the horizontal scroll strip (video reels / logo ticker) survives instead of being split into
-		// stacked columns. Above card_grid/layout_row so it wins the split. JS twin: isMarqueeStrip().
+		// `overflow-x-auto` flex row of many fixed-width `flex-shrink-0` cards). Above card_grid/layout_row so it
+		// wins the split. Two outcomes (Animation Engine effects recognizer — marquee is the first effect wired):
+		//   • a REAL auto-scroll loop (an `animate-scroll/marquee` class or a computed `animation:… infinite`)
+		//     → the native Animation Engine **Marquee effect** (editable speed/direction/gap), via marquee_block.
+		//   • a plain `overflow-x` swipe strip (manual scroll, no auto-motion) → the verbatim `.sc-tw` code_block
+		//     it always was (adding motion the source never had would be wrong).
+		// JS twin: isMarqueeStrip().
 		self::register_recognizer( 'marquee_strip', 95,
 			function ( $el ) { return self::is_marquee_strip( $el ); },
 			function ( $el ) {
+				if ( self::marquee_is_animated( $el ) ) {
+					$blk = self::marquee_block( $el );
+					if ( is_array( $blk ) ) { return $blk; }
+				}
 				$doc = $el->ownerDocument;
 				if ( ! $doc ) { return null; }
 				$v = self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) );
@@ -8331,7 +8725,7 @@ class FW_Site_Converter_Stitch {
 			function ( $el, $tag ) { return (bool) preg_match( '/^h[1-6]$/', $tag ); },
 			function ( $el, $tag, $rules ) {
 				$level = (int) substr( $tag, 1 );
-				return array( 't' => 'heading', 'role' => self::rule_role( $rules, $el, $level <= 2 ? 'title' : 'heading' ), 'level' => $level, 'cls' => self::cls( $el ), 'cs' => (string) $el->getAttribute( 'data-sc-cs' ), 'text' => self::text( $el ), 'html' => self::clean_inline_html( $el ) );
+				return array( 't' => 'heading', 'role' => self::rule_role( $rules, $el, $level <= 2 ? 'title' : 'heading' ), 'level' => $level, 'cls' => self::cls( $el ), 'cs' => (string) $el->getAttribute( 'data-sc-cs' ), 'align' => self::heading_own_align( $el ), 'text' => self::text( $el ), 'html' => self::clean_inline_html( $el ) );
 			}
 		);
 		// A STAT number lockup — a `flex items-baseline`/`items-end` box holding a short digit-bearing value
@@ -8669,6 +9063,7 @@ class FW_Site_Converter_Stitch {
 			function ( $el ) { return self::tabs_block( $el ); }
 		);
 
+
 		// A LOTTIE embed — <lottie-player>/<dotlottie-player>, or a container with a `.json`/`.lottie` src /
 		// bodymovin init → the native `lottie` shortcode (carries the animation src).
 		self::register_recognizer( 'lottie', 94,
@@ -8777,6 +9172,16 @@ class FW_Site_Converter_Stitch {
 		// "Satisfaction"), NOT prose. Reject a long remainder so a paragraph that merely contains a number
 		// (e.g. an FAQ answer "…within 30 days…") never reads as a counter.
 		if ( mb_strlen( $label ) > 32 ) { return null; }
+		// A self-describing STAT carries a caption (label) OR a unit (prefix/suffix): "$12K", "94%", "500+",
+		// "7 Days". A bare, context-less number — a lone "4"/"11" split out of an hours block, a list index —
+		// is NOT a stat. Reject it so an address / opening-hours card's digits don't animate as counters.
+		if ( '' === $label && '' === $prefix && '' === $suffix ) { return null; }
+		// TIME / OPENING-HOURS — "11:30 AM", "10 PM", "9:00", "4h", "24 h". An opening-hours card decomposes
+		// into these, and the leftover (":30 AM", " PM", "h") is a non-empty label that would sneak past the
+		// guard above. None of these are stats (the Jukebox "14 phantom counters from the hours" bug).
+		if ( preg_match( '/\b\d{1,2}\s*:\s*\d{2}\b/', $txt )                     // 11:30 / 9:00
+			|| preg_match( '/\b\d{1,2}\s*(?:am|pm)\b/i', $txt )                  // 10 PM / 4 AM
+			|| preg_match( '/^\s*\d{1,3}\s*h\s*$/i', $txt ) ) { return null; }   // 4h / 24 h (hours)
 		$decimals = 0;
 		if ( strpos( $num_raw, '.' ) !== false ) { $decimals = strlen( substr( strrchr( $num_raw, '.' ), 1 ) ); }
 		$number = str_replace( ',', '', $num_raw );
@@ -10067,19 +10472,29 @@ class FW_Site_Converter_Stitch {
 		// Class-based (`.tabs`/`.nav-tabs` + [data-tab]/aria-controls labels + `.tab-pane`/[data-tab-content] panels).
 		$cls = self::cls( $el );
 		if ( preg_match( '/\b(tabs|nav-tabs|tab-group|tabbed|tabset)\b/', $cls ) ) {
-			$labels = 0;
+			$doc       = $el->ownerDocument;
+			$labels    = 0;
+			$resolved2 = 0; // labels whose aria-controls / data-tab points at a real panel element
 			foreach ( $el->getElementsByTagName( '*' ) as $c ) {
 				$ct = strtolower( $c->tagName );
 				if ( ! in_array( $ct, array( 'a', 'button', 'li', 'span' ), true ) ) { continue; }
 				$cc = strtolower( (string) $c->getAttribute( 'class' ) );
-				if ( $c->hasAttribute( 'data-tab' ) || $c->hasAttribute( 'aria-controls' ) || preg_match( '/\b(tab-link|nav-link|tab-title|tab-btn)\b/', $cc ) ) { $labels++; }
+				if ( $c->hasAttribute( 'data-tab' ) || $c->hasAttribute( 'aria-controls' ) || preg_match( '/\b(tab-link|nav-link|tab-title|tab-btn)\b/', $cc ) ) {
+					$labels++;
+					// A label whose aria-controls / data-tab id resolves to an element in the doc IS a working
+					// tab — this is how a BEM tabs component (`sc-tabs` → `sc-tabs__list` buttons + a
+					// `sc-tabs__panels` container of id'd panels, no `tab-pane` class) is recognized.
+					$tgt = trim( (string) $c->getAttribute( 'aria-controls' ) );
+					if ( '' === $tgt ) { $tgt = trim( (string) $c->getAttribute( 'data-tab' ) ); }
+					if ( '' !== $tgt && $doc && $doc->getElementById( $tgt ) ) { $resolved2++; }
+				}
 			}
 			$panels2 = 0;
 			foreach ( $el->getElementsByTagName( '*' ) as $c ) {
 				$cc = strtolower( (string) $c->getAttribute( 'class' ) );
 				if ( $c->hasAttribute( 'data-tab-content' ) || preg_match( '/\b(tab-pane|tab-panel|tab-content-item)\b/', $cc ) ) { $panels2++; }
 			}
-			if ( $labels >= 2 && $panels2 >= 2 ) { return true; }
+			if ( $labels >= 2 && ( $panels2 >= 2 || $resolved2 >= 2 ) ) { return true; }
 		}
 		return false;
 	}
@@ -10114,11 +10529,90 @@ class FW_Site_Converter_Stitch {
 				$panel = $p;
 			}
 			if ( ! $panel && isset( $panels[ $i ] ) ) { $panel = $panels[ $i ]; }
-			$content = $panel ? self::strip_cs( trim( self::inner_html( $panel ) ) ) : '';
+			// RAW (data-sc-cs kept) so the catalog decomposer can read the computed colours a class can't resolve
+			// (the `bg-primary` / `text-primary-foreground` red bands). The code-block fallback tolerates the inert
+			// data-sc-cs attributes.
+			$content = $panel ? trim( self::inner_html( $panel ) ) : '';
 			$active  = ( 'true' === strtolower( (string) $lab->getAttribute( 'aria-selected' ) ) || preg_match( '/\bactive\b/', strtolower( (string) $lab->getAttribute( 'class' ) ) ) ) ? 'yes' : 'no';
-			$items[] = array( 'title' => $title, 'content' => $content, 'active' => $active );
+			// A RICH panel (a big verbatim layout — the jukebox menu tab: a catalog of colour-banded category
+			// grids) is routed to a SNIPPET: the mapper creates a `snippet` CPT holding this HTML verbatim inside
+			// `.sc-tw` and sets the tab content to `[snippet id="…"]`. A page-builder tab panel (a wp-editor field)
+			// would otherwise mangle 30 KB of grid markup through wpautop/kses and drop the Tailwind classes. A
+			// SMALL panel (a short FAQ answer) stays inline. Signal: long content, or block structure (a grid / ≥2
+			// sub-headings) that reads as a full layout rather than a sentence.
+			$is_rich = ( strlen( $content ) > 600 )
+				|| ( preg_match_all( '/<h[1-6]\b/i', $content ) >= 2 )
+				|| ( false !== stripos( $content, 'grid-cols' ) );
+			$items[] = array( 'title' => $title, 'content' => $content, 'active' => $active, 'snippet' => (bool) $is_rich );
 		}
-		return count( $items ) >= 2 ? array( 't' => 'tabs', 'items' => $items, 'design' => self::detect_tabs_design( $el ) ) : null;
+		if ( count( $items ) < 2 ) { return null; }
+		// Hoist a SHARED SECTION HEADING repeated at the top of EVERY panel (jukebox's "OUR MENU" title + rule)
+		// OUT of the tabs, so it renders ONCE above them as the section heading — not duplicated inside each tab
+		// (and, since each panel is a snippet, not baked into every snippet).
+		$section_heading = self::extract_shared_tab_heading( $items );
+		$out = array( 't' => 'tabs', 'items' => $items, 'design' => self::detect_tabs_design( $el ) );
+		if ( is_array( $section_heading ) ) { $out['section_heading'] = $section_heading; }
+		return $out;
+	}
+
+	/**
+	 * If every tab panel begins with the SAME heading block (a `text-center` intro wrapping an h1–h3 + an
+	 * optional decorative rule — no grid/cards), that's the SECTION heading duplicated into each panel. Strip it
+	 * from each panel's content (mutating $items by reference) and return it as a heading block `{ level, text,
+	 * html, cs, align }` to render once above the tabs. Returns null when the panels don't share a lead heading.
+	 *
+	 * @param array $items tab items (each { title, content, … }), modified in place
+	 * @return array|null
+	 */
+	private static function extract_shared_tab_heading( array &$items ) {
+		$lead_of = function ( $html ) {
+			$doc = self::load_dom( '<div id="sc-w">' . (string) $html . '</div>' );
+			if ( ! $doc ) { return null; }
+			$w = $doc->getElementById( 'sc-w' );
+			if ( ! ( $w instanceof DOMElement ) ) { return null; }
+			$first = null;
+			foreach ( $w->childNodes as $n ) { if ( XML_ELEMENT_NODE === $n->nodeType ) { $first = $n; break; } }
+			if ( ! ( $first instanceof DOMElement ) ) { return null; }
+			// The lead block must be a HEADING intro: contains an h1–h3, and NO grid/card/list content.
+			$h = null;
+			foreach ( array( 'h1', 'h2', 'h3' ) as $ht ) { $x = $first->getElementsByTagName( $ht )->item( 0 ); if ( $x ) { $h = $x; break; } }
+			if ( $first->nodeName === 'h1' || $first->nodeName === 'h2' || $first->nodeName === 'h3' ) { $h = $first; }
+			if ( ! ( $h instanceof DOMElement ) ) { return null; }
+			if ( $first->getElementsByTagName( 'img' )->length || $first->getElementsByTagName( 'ul' )->length ) { return null; }
+			if ( false !== stripos( self::cls( $first ), 'grid' ) ) { return null; }
+			$txt = trim( preg_replace( '/\s+/', ' ', (string) $h->textContent ) );
+			if ( '' === $txt ) { return null; }
+			$doc2 = $first->ownerDocument;
+			return array( 'el' => $first, 'h' => $h, 'text' => $txt, 'html' => $doc2 ? (string) $doc2->saveHTML( $first ) : '' );
+		};
+		// Read each panel's lead heading; bail unless they all share the same heading text.
+		$leads = array(); $ref = null;
+		foreach ( $items as $it ) {
+			$L = $lead_of( (string) ( $it['content'] ?? '' ) );
+			if ( null === $L ) { return null; }
+			if ( null === $ref ) { $ref = $L['text']; }
+			elseif ( strcasecmp( $L['text'], (string) $ref ) !== 0 ) { return null; }
+			$leads[] = $L;
+		}
+		if ( empty( $leads ) ) { return null; }
+		// Strip the lead block from each panel's content (first occurrence of its serialized HTML).
+		foreach ( $items as $k => &$it ) {
+			$frag = (string) ( $leads[ $k ]['html'] ?? '' );
+			$c    = (string) ( $it['content'] ?? '' );
+			if ( '' !== $frag && false !== strpos( $c, $frag ) ) {
+				$it['content'] = trim( self::str_replace_first( $frag, '', $c ) );
+			}
+		}
+		unset( $it );
+		// Return the WHOLE intro block (heading + its decorative rule) verbatim, so the hoisted section heading
+		// keeps its exact look (the centred "OUR MENU" + red underline) above the tabs.
+		return array( 'html' => trim( (string) ( $leads[0]['html'] ?? '' ) ), 'text' => (string) $ref );
+	}
+
+	/** Replace only the FIRST occurrence of $needle in $haystack. */
+	private static function str_replace_first( $needle, $replace, $haystack ) {
+		$pos = strpos( $haystack, $needle );
+		return ( false === $pos ) ? $haystack : substr_replace( $haystack, $replace, $pos, strlen( $needle ) );
 	}
 
 	/**
@@ -10144,15 +10638,196 @@ class FW_Site_Converter_Stitch {
 			$tc = ' ' . strtolower( self::cls( $tablist ) ) . ' ';
 			if ( strpos( $tc, 'flex-col' ) !== false || preg_match( '/flex-direction:\s*column/', (string) $tablist->getAttribute( 'data-sc-cs' ) ) ) { $out['orientation'] = 'vertical'; }
 		}
-		// STYLE — from the nav-item treatment (highest-confidence signals only).
-		if ( preg_match( '/\brounded-full\b/', $hay ) && preg_match( '/\bbg-(?:gray|slate|zinc|neutral|muted|secondary)-?\d?\d?\b/', $hay ) && count( self::el_children( $tablist ?: $el ) ) <= 4 ) {
+		// STYLE — read the TAB NAV treatment ONLY (the tablist + its buttons), never the panels: scanning the
+		// whole subtree false-matched `boxed` off the PANEL content (the menu cards' `border rounded-lg`), so a
+		// segmented toggle rendered as folder tabs. The capture service also NORMALIZES a source's own tab
+		// component to generic `sc-tabs` markup with unstyled buttons — so when the nav carries no styling signal,
+		// fall back on structure: a compact 2–4-button switcher (Main Menu / Dessert Menu, Monthly / Yearly) is a
+		// SEGMENTED control; more items read as the editorial underline default.
+		$nav      = ( $tablist instanceof DOMElement ) ? $tablist : $el;
+		$nav_hay  = strtolower( (string) ( $doc ? $doc->saveHTML( $nav ) : '' ) );
+		$nav_hay  = preg_replace( '/<(?:div|section)\b[^>]*\brole="tabpanel".*$/is', '', $nav_hay ); // drop any panel that shares the scope
+		$btn_count = 0;
+		foreach ( $nav->getElementsByTagName( '*' ) as $c ) {
+			$ct = strtolower( $c->tagName );
+			if ( in_array( $ct, array( 'a', 'button' ), true ) || strtolower( (string) $c->getAttribute( 'role' ) ) === 'tab' ) { $btn_count++; }
+		}
+		// PREFER the captured COMPUTED styling (the enhanced capture service stamps the source tab-nav look as
+		// data-sc-cs on the normalized sc-tabs). This is faithful to the source, not a structural guess: a filled
+		// + rounded TRACK (the tablist has its own opaque bg + radius) = SEGMENTED; a very-round active tab =
+		// PILLS; a per-tab full border + radius = BOXED; a bottom-border-only active tab = UNDERLINE.
+		$decl = function ( $cs, $prop ) {
+			return preg_match( '/(?:^|;)\s*' . preg_quote( $prop, '/' ) . '\s*:\s*([^;]+)/i', (string) $cs, $m ) ? trim( $m[1] ) : '';
+		};
+		$opaque = function ( $c ) {
+			$c = trim( (string) $c );
+			if ( '' === $c || stripos( $c, 'transparent' ) !== false || preg_match( '/rgba?\([^)]*[,\/]\s*0(?:\.0+)?\s*\)/i', $c ) ) { return false; }
+			return (bool) preg_match( '/rgba?\(|#[0-9a-f]/i', $c );
+		};
+		$rpx = function ( $c ) { return preg_match( '/^([0-9.]+)px/', trim( (string) $c ), $m ) ? (float) $m[1] : 0.0; };
+		$list_cs   = ( $tablist instanceof DOMElement ) ? (string) $tablist->getAttribute( 'data-sc-cs' ) : '';
+		$active_cs = '';
+		foreach ( $nav->getElementsByTagName( 'button' ) as $btn ) {
+			if ( strtolower( (string) $btn->getAttribute( 'aria-selected' ) ) === 'true' ) { $active_cs = (string) $btn->getAttribute( 'data-sc-cs' ); break; }
+		}
+		if ( '' === $active_cs ) { $b0 = $nav->getElementsByTagName( 'button' )->item( 0 ); if ( $b0 ) { $active_cs = (string) $b0->getAttribute( 'data-sc-cs' ); } }
+		// ALIGNMENT + PILL SKIN — captured HERE (before the tab_style classification's early returns) so they ride
+		// out on $out regardless of which style branch returns. ALIGNMENT: the nav wrapper's horizontal placement
+		// (source `<div class="flex justify-center">` around the pill) → the native Tab Alignment option.
+		$align = 'start';
+		if ( preg_match( '/\bjustify-center\b/', $hay ) || false !== strpos( $hay, 'justify-content:center' ) ) { $align = 'center'; }
+		elseif ( preg_match( '/\bjustify-end\b/', $hay ) ) { $align = 'end'; }
+		if ( 'start' === $align && $tablist instanceof DOMElement && $tablist->parentNode instanceof DOMElement ) {
+			$tp = ' ' . strtolower( self::cls( $tablist->parentNode ) ) . ' ';
+			if ( false !== strpos( $tp, ' mx-auto ' ) || false !== strpos( $tp, ' justify-center ' ) ) { $align = 'center'; }
+		}
+		if ( 'start' !== $align ) { $out['alignment'] = $align; }
+		// PILL SKIN — a FILLED segmented control (an opaque track fill, an opaque active pill, or a large active
+		// radius = a brand pill toggle, not the editorial underline) → capture its exact look so the mapper repaints
+		// the tabs to match: the TRACK's fill / border / radius, the ACTIVE pill's fill + text + radius, and the
+		// button typography (uppercase, tracking). Raw computed values; the mapper hex-normalises + assembles.
+		if ( $opaque( $decl( $list_cs, 'background-color' ) ) || $opaque( $decl( $active_cs, 'background-color' ) ) || $rpx( $decl( $active_cs, 'border-radius' ) ) >= 8 ) {
+			$pill = array();
+			$set  = function ( &$arr, $k, $v ) { $v = trim( (string) $v ); if ( '' !== $v && 'none' !== strtolower( $v ) && '0px' !== $v ) { $arr[ $k ] = $v; } };
+			$set( $pill, 'track_bg',       $decl( $list_cs, 'background-color' ) );
+			$set( $pill, 'track_bw',       $decl( $list_cs, 'border-top-width' ) );
+			$set( $pill, 'track_bc',       $decl( $list_cs, 'border-top-color' ) );
+			$set( $pill, 'track_radius',   $decl( $list_cs, 'border-radius' ) );
+			$set( $pill, 'active_bg',      $decl( $active_cs, 'background-color' ) );
+			$set( $pill, 'active_color',   $decl( $active_cs, 'color' ) );
+			$set( $pill, 'active_radius',  $decl( $active_cs, 'border-radius' ) );
+			$set( $pill, 'text_transform', $decl( $active_cs, 'text-transform' ) );
+			$set( $pill, 'letter_spacing', $decl( $active_cs, 'letter-spacing' ) );
+			if ( $pill ) { $out['pill'] = $pill; }
+		}
+		// CONTENT FRAME — the source panel's box. Most Tailwind / React tab panels are FRAMELESS (the content
+		// brings its own cards / layout); the tabs shortcode otherwise draws a bordered, rounded, padded white box
+		// the source never had. Read the first tabpanel's computed style: a real border or an opaque fill = framed;
+		// neither = frameless. Only set it when a panel is actually found (else the shortcode's framed default stands).
+		$panel = null;
+		foreach ( $el->getElementsByTagName( '*' ) as $n ) {
+			$prole = strtolower( (string) $n->getAttribute( 'role' ) );
+			$pcls  = ' ' . strtolower( self::cls( $n ) ) . ' ';
+			if ( $prole === 'tabpanel' || strpos( $pcls, ' tab-pane ' ) !== false || strpos( $pcls, 'sc-tp' ) !== false ) { $panel = $n; break; }
+		}
+		if ( $panel instanceof DOMElement ) {
+			$pcs = (string) $panel->getAttribute( 'data-sc-cs' );
+			$pbw = $decl( $pcs, 'border-top-width' );
+			$has_frame = ( '' !== $pbw && '0px' !== $pbw ) || $opaque( $decl( $pcs, 'background-color' ) );
+			$out['content_frame'] = $has_frame ? 'framed' : 'frameless';
+		}
+		if ( '' !== $list_cs || '' !== $active_cs ) {
+			$list_r = $rpx( $decl( $list_cs, 'border-radius' ) );
+			$act_r  = $rpx( $decl( $active_cs, 'border-radius' ) );
+			$act_bw = $decl( $active_cs, 'border-top-width' );
+			$act_bb = $decl( $active_cs, 'border-bottom-width' );
+			if ( $opaque( $decl( $list_cs, 'background-color' ) ) && $list_r >= 4 ) { $out['tab_style'] = 'segmented'; return $out; }
+			if ( $act_r >= 20 ) { $out['tab_style'] = 'pills'; return $out; }
+			if ( '' !== $act_bw && '0px' !== $act_bw && $act_r >= 2 ) { $out['tab_style'] = 'boxed'; return $out; }
+			if ( '' !== $act_bb && '0px' !== $act_bb ) { $out['tab_style'] = 'underline'; return $out; }
+		}
+		if ( preg_match( '/\brounded-full\b/', $nav_hay ) && preg_match( '/\bbg-(?:gray|slate|zinc|neutral|muted|secondary|primary)-?\d?\d?\b/', $nav_hay ) && $btn_count <= 4 ) {
 			$out['tab_style'] = 'segmented';
-		} elseif ( preg_match( '/\brounded-full\b/', $hay ) ) {
+		} elseif ( preg_match( '/\brounded-full\b/', $nav_hay ) ) {
 			$out['tab_style'] = 'pills';
-		} elseif ( preg_match( '/\bborder\b(?!-b)/', $hay ) && preg_match( '/\brounded(?:-[a-z]+)?\b/', $hay ) ) {
+		} elseif ( preg_match( '/\bborder\b(?!-b)/', $nav_hay ) && preg_match( '/\brounded(?:-[a-z]+)?\b/', $nav_hay ) ) {
 			$out['tab_style'] = 'boxed';
+		} elseif ( $btn_count >= 2 && $btn_count <= 4 ) {
+			// No styling captured (normalized `sc-tabs`) — a compact toggle → segmented.
+			$out['tab_style'] = 'segmented';
 		}
 		return $out;
+	}
+
+	/**
+	 * Does this strip carry a REAL auto-scroll LOOP (as opposed to a plain `overflow-x` swipe strip)? Only an
+	 * animated loop should become the Animation Engine Marquee effect — adding motion to a manual-scroll
+	 * carousel would misrepresent the source. Signal: an `animate-scroll/marquee` class (on the element or its
+	 * lone child — the track often sits one level in), or a computed `animation:… infinite`.
+	 */
+	private static function marquee_is_animated( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$sig = function ( $node ) {
+			if ( ! ( $node instanceof DOMElement ) ) { return false; }
+			$c = ' ' . strtolower( self::cls( $node ) ) . ' ';
+			if ( preg_match( '/\b(animate-scroll(?:-left|-right)?|animate-marquee|marquee|ticker)\b/', $c ) ) { return true; }
+			$cs = (string) $node->getAttribute( 'data-sc-cs' );
+			return (bool) preg_match( '/animation[^;"\']*\binfinite\b/i', $cs );
+		};
+		if ( $sig( $el ) ) { return true; }
+		// The animated TRACK is often the single child of the detected wrapper.
+		foreach ( $el->childNodes as $k ) { if ( $k instanceof DOMElement && $sig( $k ) ) { return true; } }
+		return false;
+	}
+
+	/** The animated marquee TRACK element (the one carrying the scroll animation) — `$el` or its lone child. */
+	private static function marquee_track_el( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return $el; }
+		$sig = function ( $node ) {
+			if ( ! ( $node instanceof DOMElement ) ) { return false; }
+			$c = ' ' . strtolower( self::cls( $node ) ) . ' ';
+			return (bool) preg_match( '/\b(animate-scroll(?:-left|-right)?|animate-marquee|marquee|ticker)\b/', $c )
+				|| (bool) preg_match( '/animation[^;"\']*\binfinite\b/i', (string) $node->getAttribute( 'data-sc-cs' ) );
+		};
+		if ( $sig( $el ) ) { return $el; }
+		foreach ( $el->childNodes as $k ) { if ( $k instanceof DOMElement && $sig( $k ) ) { return $k; } }
+		return $el;
+	}
+
+	/**
+	 * Build a `{ t:'marquee', direction, gap, speed, pause, html }` block from a marquee track. Reads the
+	 * source direction, the flex gap, the loop duration (→ a speed preset) and pause-on-hover, and returns the
+	 * items as ONE deduplicated set (seamless marquees duplicate their items 2×; the Animation Engine's marquee
+	 * runtime re-duplicates for the loop, so a 2× source would otherwise scroll a 4× track). The mapper wraps
+	 * the set in a native container carrying the Marquee effect.
+	 */
+	private static function marquee_block( $el ) {
+		// Operate on the animated TRACK (the element carrying the scroll animation + the item children) — it's
+		// `$el` or its lone child.
+		$el  = self::marquee_track_el( $el );
+		$cls = self::cls( $el );
+		$dir = preg_match( '/animate-scroll-right/', $cls ) ? 'right' : 'left';
+		// gap: a Tailwind `gap-N` (N × 4px), else the computed column-gap, else the module default.
+		$gap = 0.0;
+		if ( preg_match( '/\bgap-(\d+(?:\.\d+)?)\b/', $cls, $gm ) ) { $gap = (float) $gm[1] * 4; }
+		if ( 0.0 === $gap ) { $cg = self::sc_css( $el, 'column-gap' ); if ( '' === $cg ) { $cg = self::sc_css( $el, 'gap' ); } if ( preg_match( '/^([0-9.]+)px/', (string) $cg, $cm ) ) { $gap = (float) $cm[1]; } }
+		if ( 0.0 === $gap ) { $gap = 40.0; }
+		// loop duration → speed preset (a longer loop reads slower). From the computed animation shorthand.
+		$cs  = (string) $el->getAttribute( 'data-sc-cs' );
+		$dur = 0.0;
+		if ( preg_match( '/animation[^;"\']*?([0-9.]+)s/i', $cs, $dm ) ) { $dur = (float) $dm[1]; }
+		$speed = $dur > 0 ? ( $dur >= 40 ? 'slow' : ( $dur >= 20 ? 'normal' : 'fast' ) ) : 'normal';
+		// pause on hover — default yes (the natural ticker feel; the source uses `hover:[…paused]`). Only a
+		// source that explicitly keeps running on hover would turn it off, which is rare.
+		$pause = 'yes';
+		// items — ONE deduplicated set.
+		$doc  = $el->ownerDocument;
+		$kids = array();
+		foreach ( $el->childNodes as $c ) { if ( XML_ELEMENT_NODE === $c->nodeType ) { $kids[] = $c; } }
+		$n = count( $kids );
+		if ( $n >= 2 && 0 === $n % 2 ) {
+			$sig = function ( $k ) {
+				$v = $k->getElementsByTagName( 'video' )->item( 0 );
+				if ( $v ) {
+					$s = $v->getElementsByTagName( 'source' )->item( 0 );
+					$src = $s ? $s->getAttribute( 'src' ) : $v->getAttribute( 'src' );
+					if ( '' !== trim( (string) $src ) ) { return basename( (string) $src ); }
+				}
+				$img = $k->getElementsByTagName( 'img' )->item( 0 );
+				if ( $img && '' !== trim( (string) $img->getAttribute( 'src' ) ) ) { return basename( (string) $img->getAttribute( 'src' ) ); }
+				return trim( preg_replace( '/\s+/', ' ', (string) $k->textContent ) );
+			};
+			$half = intdiv( $n, 2 ); $match = true;
+			for ( $i = 0; $i < $half; $i++ ) { if ( $sig( $kids[ $i ] ) !== $sig( $kids[ $i + $half ] ) ) { $match = false; break; } }
+			if ( $match ) { $kids = array_slice( $kids, 0, $half ); }
+		}
+		// Card HTMLs kept RAW (data-sc-cs intact) for the faithful DECOMPOSER; a strip_cs'd row html is the
+		// verbatim fallback the mapper uses if decomposition can't build native cards.
+		$cards = array();
+		foreach ( $kids as $k ) { $cards[] = $doc ? (string) $doc->saveHTML( $k ) : ''; }
+		$inner = self::strip_cs( trim( implode( '', $cards ) ) );
+		$html  = '<div style="display:flex;gap:' . rtrim( rtrim( number_format( $gap, 2, '.', '' ), '0' ), '.' ) . 'px;width:max-content;">' . $inner . '</div>';
+		return array( 't' => 'marquee', 'role' => 'marquee', 'direction' => $dir, 'gap' => $gap, 'speed' => $speed, 'duration' => $dur, 'pause' => $pause, 'html' => $html, 'cards' => $cards );
 	}
 
 	/**
@@ -10744,11 +11419,99 @@ class FW_Site_Converter_Stitch {
 		return false;
 	}
 
+	/**
+	 * A STYLED CONTENT CARD — a container whose computed style is an OPAQUE fill + rounding (≥8px) + a border
+	 * OR box-shadow, AND which wraps a heading (h1–h6). The signature of a content panel (the location card:
+	 * `rounded-2xl border border-border bg-background shadow` around a heading + address + button), as opposed
+	 * to a plain layout wrapper (no fill/panel) or an image tile (no opaque fill, no heading — just a caption).
+	 * The heading gate keeps it off the food-grid tiles; the opaque-fill gate keeps it off transparent wrappers.
+	 *
+	 * @param DOMNode $el
+	 * @return bool
+	 */
+	/**
+	 * In a verbatim (`.sc-tw`) content card, re-assert each heading's OWN computed colour as an inline
+	 * `color:… !important` (read from data-sc-cs, before it's stripped). A card heading typically carries a
+	 * custom colour class (`text-primary`) with no `!important`, which loses to the section's `!important`
+	 * white heading rule (set because the section band is coloured) — so on the white card it would render
+	 * white-on-white. Inline !important beats the stylesheet rule and keeps the heading its real colour.
+	 */
+	private static function inject_verbatim_heading_colors( $html ) {
+		return preg_replace_callback( '/<(h[1-6])\b([^>]*)>/i', function ( $m ) {
+			$attrs = $m[2];
+			// Match BOTH quote styles — saveHTML() serialises data-sc-cs with SINGLE quotes when its value holds a
+			// double quote (a font-family like "Neutraface Condensed Titling"), which a double-quote-only pattern skips.
+			if ( ! preg_match( '/data-sc-cs=(?:"[^"]*|\'[^\']*)(?<![\w-])color:\s*(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $attrs, $cm ) ) { return $m[0]; }
+			$c = trim( $cm[1] );
+			if ( preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $c ) ) { return $m[0]; } // fully transparent → skip
+			if ( preg_match( '/\bstyle="[^"]*"/i', $attrs ) ) {
+				$attrs = preg_replace_callback( '/\bstyle="([^"]*)"/i', function ( $sm ) use ( $c ) { $ex = rtrim( trim( $sm[1] ), ';' ); return 'style="' . ( '' !== $ex ? $ex . ';' : '' ) . 'color:' . $c . ' !important"'; }, $attrs, 1 );
+			} else {
+				$attrs .= ' style="color:' . $c . ' !important"';
+			}
+			return '<' . $m[1] . $attrs . '>';
+		}, (string) $html );
+	}
+
+	/**
+	 * A DECORATIVE RULE / bar — an EMPTY div (no text, no media, no element children) with a real background
+	 * fill AND a thin height (a heading underline `w-24 h-1 bg-*`, a divider). Reproduced verbatim so the exact
+	 * width / colour / centring survive, instead of being dropped as an empty element.
+	 *
+	 * @param DOMNode $el
+	 * @return bool
+	 */
+	private static function is_decorative_bar( $el ) {
+		if ( ! ( $el instanceof DOMElement ) || 'div' !== strtolower( $el->nodeName ) ) { return false; }
+		if ( '' !== trim( (string) self::text( $el ) ) ) { return false; }
+		foreach ( array( 'img', 'svg', 'video', 'iframe', 'a', 'button' ) as $t ) { if ( $el->getElementsByTagName( $t )->length ) { return false; } }
+		foreach ( $el->childNodes as $c ) { if ( XML_ELEMENT_NODE === $c->nodeType ) { return false; } }
+		$cls = ' ' . strtolower( self::cls( $el ) ) . ' ';
+		$cs  = (string) $el->getAttribute( 'data-sc-cs' );
+		$has_fill = preg_match( '/(?<![\w-])background-color:\s*(?:rgb\([^)]*\)|#[0-9a-f]{3,8}|rgba\([^)]*[,\/]\s*(?:0?\.[5-9]\d*|1)\s*\))/i', $cs )
+			|| preg_match( '/\bbg-(?!transparent|none)[a-z0-9\[]/', $cls )
+			|| '' !== trim( (string) $el->getAttribute( 'style' ) ) && preg_match( '/background/i', (string) $el->getAttribute( 'style' ) );
+		if ( ! $has_fill ) { return false; }
+		// A THIN bar: an h-0.5…h-3 / h-px / arbitrary small-h class, or a computed height ≤ 10px.
+		$thin = (bool) preg_match( '/\bh-(?:0\.5|1|1\.5|2|2\.5|3|px|\[[0-9](?:\.\d+)?(?:px)?\])(?:\s|$)/', $cls );
+		if ( ! $thin && preg_match( '/(?<![\w-])height:\s*([0-9.]+)px/', $cs, $hm ) && (float) $hm[1] > 0 && (float) $hm[1] <= 10 ) { $thin = true; }
+		return $thin;
+	}
+
+	private static function is_content_card( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( '' === $cs ) { return false; }
+		// OPAQUE fill (a real panel colour, alpha ≥ .8) — never transparent / low-alpha.
+		if ( ! preg_match( '/(?<![\w-])background-color:\s*(?:rgb\([^)]*\)|#[0-9a-f]{3,8}|rgba\([^)]*[,\/]\s*(?:0?\.[89]\d*|1)\s*\))/i', $cs ) ) { return false; }
+		if ( preg_match( '/(?<![\w-])background-color:\s*(?:transparent|rgba?\([^)]*[,\/]\s*(?:0|0?\.[0-7]\d*)\s*\))/i', $cs ) ) { return false; }
+		// ROUNDING ≥ 8px.
+		if ( ! preg_match( '/(?<![\w-])border-radius:\s*([0-9.]+)px/', $cs, $rm ) || (float) $rm[1] < 8 ) { return false; }
+		// BORDER or SHADOW.
+		$has_border = preg_match( '/(?<![\w-])border-top-width:\s*([1-9])/', $cs );
+		$has_shadow = preg_match( '/(?<![\w-])box-shadow:\s*(?!none)[^;"]+/', $cs );
+		if ( ! $has_border && ! $has_shadow ) { return false; }
+		// Contains a HEADING (a content card, not a bare decorative box / image tile).
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) { if ( $el->getElementsByTagName( $h )->length > 0 ) { return true; } }
+		return false;
+	}
+
 	private static function collect_blocks( $node, array &$blocks, array $rules ) {
 		$recognizers = self::recognizers();
 		foreach ( $node->childNodes as $child ) {
 			if ( XML_ELEMENT_NODE !== $child->nodeType ) { continue; }
 			$tag     = strtolower( $child->tagName );
+			// SKIP a RESPONSIVE-HIDDEN twin — a child that is `display:none` at the capture (desktop) viewport AND
+			// carries a Tailwind breakpoint-hide class (`sm:hidden` / `md:hidden` / `lg:hidden` …). It's the MOBILE
+			// version of a block whose DESKTOP twin lives elsewhere in the DOM (jukebox's stacked hours LIST vs the
+			// desktop hours GRID, a mobile reel vs the desktop marquee) — decomposing it DUPLICATES the content.
+			// JS-revealed panels (tabs/accordions) are un-hidden by the capture before this, so only genuine
+			// responsive duplicates are dropped.
+			if ( $child instanceof DOMElement ) {
+				$cc = ' ' . strtolower( self::cls( $child ) ) . ' ';
+				if ( preg_match( '/\b(?:sm|md|lg|xl|2xl|max-[a-z]+):hidden\b/', $cc )
+					&& 'none' === strtolower( (string) self::sc_css( $child, 'display' ) ) ) { continue; }
+			}
 			$claimed = false;
 			foreach ( $recognizers as $r ) {
 				if ( ! call_user_func( $r['match'], $child, $tag, $rules ) ) { continue; }
@@ -10769,6 +11532,46 @@ class FW_Site_Converter_Stitch {
 				// span is what gets rescued, not the svg's accessibility title.
 				self::salvage_dropped( $child, $tag, $blocks );
 				continue;
+			}
+			// STYLED CONTENT CARD — an opaque rounded panel (border/shadow) wrapping a heading + content (the
+			// jukebox location card `rounded-2xl border bg-background shadow`). Decomposing its children flat
+			// drops the white panel, so the content reads faintly on the section band. Emit it as a `code` block
+			// → the mapper's structural mirror rebuilds it as a NESTED FLEXBOX carrying the card's box skin (an
+			// editable panel). Tightly gated (opaque fill + rounding + border/shadow + a heading) so it fires
+			// only on a genuine card, never a plain layout wrapper or an image tile.
+			if ( ! $claimed && self::is_content_card( $child ) ) {
+				$doc  = $child->ownerDocument;
+				// If the card sits in a bare MAX-WIDTH cap wrapper (`max-w-3xl mx-auto`), emit THAT wrapper so the
+				// card keeps its measure + centering (else it fills the section band — the source card is capped
+				// narrower than the section). Only when the wrapper's sole element child is the card.
+				$target = $child;
+				$par    = $child->parentNode;
+				if ( $par instanceof DOMElement ) {
+					$pc = ' ' . strtolower( self::cls( $par ) ) . ' ';
+					if ( strpos( $pc, ' max-w-' ) !== false && strpos( $pc, ' mx-auto ' ) !== false ) {
+						$pec = 0; foreach ( $par->childNodes as $pn ) { if ( XML_ELEMENT_NODE === $pn->nodeType ) { $pec++; } }
+						if ( 1 === $pec ) { $target = $par; }
+					}
+				}
+				$chtml = $doc ? trim( (string) $doc->saveHTML( $target ) ) : '';
+				// Re-assert each heading's OWN computed colour inline (!important) BEFORE stripping data-sc-cs, so a
+				// `text-primary` red business name survives the section's white heading-colour rule once it sits on
+				// the white card (else it renders white-on-white and vanishes).
+				$chtml = self::inject_verbatim_heading_colors( $chtml );
+				$chtml = self::strip_cs( $chtml );
+				// Keep the card VERBATIM inside the `.sc-tw` Tailwind reproducer (like the food grid / reels), so
+				// ALL its classes survive — spacing, alignment, the pill button, max-widths, image aspect — instead
+				// of the structural mirror decomposing it and dropping most styling. `verbatim` tells the mapper's
+				// code builder to skip the nested-flexbox mirror and emit the faithful code block.
+				if ( '' !== $chtml ) { $blocks[] = array( 't' => 'code', 'role' => 'code', 'verbatim' => true, 'html' => '<div class="sc-tw">' . $chtml . '</div>' ); $claimed = true; }
+			}
+			// DECORATIVE RULE / UNDERLINE BAR — a small EMPTY div with a fill + a thin height (a heading's
+			// `w-24 h-1 bg-primary-foreground mx-auto` underline). collect_blocks drops empty elements, so the
+			// bar vanished. Emit it verbatim (`.sc-tw`) so the exact width/height/colour/centring survive.
+			if ( ! $claimed && self::is_decorative_bar( $child ) ) {
+				$doc   = $child->ownerDocument;
+				$bhtml = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $child ) ) ) : '';
+				if ( '' !== $bhtml ) { $blocks[] = array( 't' => 'code', 'role' => 'code', 'verbatim' => true, 'html' => '<div class="sc-tw">' . $bhtml . '</div>' ); $claimed = true; }
 			}
 			if ( ! $claimed ) {
 				$before = count( $blocks );
@@ -11102,6 +11905,49 @@ class FW_Site_Converter_Stitch {
 		}
 		$max = (int) round( $max );
 		return ( $max >= 60 && $max <= 200 ) ? $max : 0;
+	}
+
+	/**
+	 * A TOP-PINNED, OUT-OF-FLOW header chrome (a `position:fixed`/`absolute` bar pinned to the top of the
+	 * viewport), scanning the <header> AND its descendants — because the fixed bars are frequently inner
+	 * wrappers (a `fixed top-0` ticker, a `fixed top-12` nav) while the semantic <header> itself is a
+	 * class-less, zero-height flow box. Returns whether such a bar exists and whether it is SOLID (an opaque
+	 * background), which distinguishes a solid fixed masthead (reproduced as an in-flow static/sticky header —
+	 * its source clearance is then redundant) from a transparent overlay nav (reproduced as an overlay that
+	 * still needs the clearance). A `bottom-`/`bottom:0` pinned element (a floating FAB) is NOT header chrome.
+	 *
+	 * @param DOMElement $header the masthead root
+	 * @return array{found:bool,solid:bool}
+	 */
+	private static function fixed_top_chrome( $header ) {
+		$res = array( 'found' => false, 'solid' => false );
+		if ( ! ( $header instanceof DOMElement ) ) { return $res; }
+		$scan = array( $header );
+		foreach ( $header->getElementsByTagName( '*' ) as $d ) { $scan[] = $d; }
+		foreach ( $scan as $d ) {
+			if ( ! ( $d instanceof DOMElement ) ) { continue; }
+			$dc  = ' ' . self::cls( $d ) . ' ';
+			$dcs = (string) $d->getAttribute( 'data-sc-cs' );
+			$dst = strtolower( (string) $d->getAttribute( 'style' ) );
+			$is_fixed = ( false !== strpos( $dc, ' fixed ' ) || false !== strpos( $dc, ' absolute ' )
+				|| preg_match( '/position:\s*(?:fixed|absolute)/i', $dcs . ';' . $dst ) );
+			if ( ! $is_fixed ) { continue; }
+			// Must be pinned to the TOP (top-0 / top-N / top:0), not a floating bottom/side element.
+			$top_pinned = ( preg_match( '/\btop-(?:0|\[0|\d)/', $dc ) || preg_match( '/(?:^|;)\s*top:\s*0(?:px|%|rem|em)?/i', $dcs . ';' . $dst ) );
+			$bottom     = ( false !== strpos( $dc, ' bottom-' ) || preg_match( '/(?:^|;)\s*bottom:\s*0/i', $dcs . ';' . $dst ) );
+			if ( ! $top_pinned || $bottom ) { continue; }
+			$res['found'] = true;
+			// SOLID = an opaque background. Prefer the computed alpha; else an opaque Tailwind bg-* token.
+			if ( preg_match( '/background-color:\s*rgba?\(([^)]*)\)/i', $dcs, $bm ) ) {
+				$parts = array_map( 'trim', explode( ',', $bm[1] ) );
+				$alpha = isset( $parts[3] ) ? (float) $parts[3] : 1.0;
+				if ( $alpha >= 0.5 ) { $res['solid'] = true; }
+			} elseif ( preg_match( '/\bbg-(?!transparent|none)(?:primary|secondary|accent|white|black|background|foreground|dark|light|neutral|zinc|gray|grey|slate|stone|red|orange|amber|yellow|green|blue|\[#[0-9a-f]{3,8}\b)/i', $dc ) ) {
+				$res['solid'] = true;
+			}
+			if ( $res['solid'] ) { break; }
+		}
+		return $res;
 	}
 
 	/** The computed top padding (px) of an element from data-sc-cs — reads a `padding-top:` or the top value
@@ -11496,24 +12342,81 @@ class FW_Site_Converter_Stitch {
 		return count( $tiles ) >= max( 3, (int) ceil( $child_els * 0.7 ) );
 	}
 
+	/**
+	 * The gallery Image-Ratio slug ('1-1' | '4-3' | '3-2' | '16-9' | '3-4' | '') best matching a source tile's
+	 * crop. Reads an `aspect-[W/H]` / `aspect-square` / `aspect-video` utility (on the tile or its media
+	 * wrapper), else the <img>'s intrinsic width/height. Returns '' when nothing usable is found or the ratio
+	 * isn't close to a named choice (the gallery then keeps its 'original' default). Fixes tall (3:4) tiles
+	 * being squashed into the Landscape 4:3 default.
+	 */
+	private static function image_tile_ratio_slug( $tile, $img ) {
+		$rw = 0.0; $rh = 0.0;
+		foreach ( array( $tile, $img ) as $node ) {
+			if ( ! ( $node instanceof DOMElement ) ) { continue; }
+			$c = ' ' . strtolower( self::cls( $node ) ) . ' ';
+			if ( preg_match( '/\baspect-\[(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)\]/', $c, $m ) && (float) $m[2] > 0 ) { $rw = (float) $m[1]; $rh = (float) $m[2]; break; }
+			if ( strpos( $c, ' aspect-square ' ) !== false ) { $rw = 1; $rh = 1; break; }
+			if ( strpos( $c, ' aspect-video ' )  !== false ) { $rw = 16; $rh = 9; break; }
+		}
+		if ( $rw <= 0 || $rh <= 0 ) {
+			if ( $img instanceof DOMElement ) {
+				$w = (float) $img->getAttribute( 'width' ); $h = (float) $img->getAttribute( 'height' );
+				if ( $w > 0 && $h > 0 ) { $rw = $w; $rh = $h; }
+			}
+		}
+		if ( $rw <= 0 || $rh <= 0 ) { return ''; }
+		$r = $rw / $rh;
+		$choices = array( '1-1' => 1.0, '4-3' => 4 / 3, '3-2' => 3 / 2, '16-9' => 16 / 9, '3-4' => 3 / 4 );
+		$best = ''; $bestd = 1e9;
+		foreach ( $choices as $slug => $v ) { $d = abs( $r - $v ); if ( $d < $bestd ) { $bestd = $d; $best = $slug; } }
+		return ( $bestd <= 0.12 ) ? $best : ''; // only snap when genuinely close; else keep the gallery default
+	}
+
 	/** Build the gallery block from an image-tile grid: { images:[{url,alt,span}], html } (span = the
 	 *  tile's col-span so a `md:col-span-2` tile keeps a wider slot in the mapped grid). */
 	private static function image_grid_build( $el ) {
-		$out = array();
+		$out      = array();
+		$cap_mode = ''; // how the tile captions sat: 'overlay' (always-visible over a scrim) | 'hover' | '' (none)
 		foreach ( self::image_grid_tiles( $el ) as $t ) {
 			$span = 1;
 			$tc   = ' ' . self::cls( $t['el'] ) . ' ';
 			if ( preg_match( '/(?:^|\s)(?:[a-z]{2}:)?col-span-([2-6])(?:\s|$)/', $tc, $m ) ) { $span = (int) $m[1]; }
-			$out[] = array(
+			// PER-TILE CAPTION: an image tile's only text IS its caption (a title overlaid on the photo). Read
+			// the tile's text and note HOW it sat — a HOVER-revealed overlay (opacity-0 + group-hover) vs an
+			// ALWAYS-visible one (a bottom gradient caption). Fed to the gallery's overlay caption mode so the
+			// title renders over the photo instead of being dropped.
+			$cap = '';
+			if ( $t['el'] instanceof DOMElement ) {
+				$cap = trim( preg_replace( '/\s+/', ' ', (string) $t['el']->textContent ) );
+				if ( ( function_exists( 'mb_strlen' ) ? mb_strlen( $cap ) : strlen( $cap ) ) > 120 ) { $cap = ''; } // too long → not a tile caption
+			}
+			if ( '' !== $cap && '' === $cap_mode ) {
+				$hover = false;
+				foreach ( $t['el']->getElementsByTagName( '*' ) as $lay ) {
+					$lc = ' ' . strtolower( self::cls( $lay ) ) . ' ';
+					if ( ( strpos( $lc, ' absolute ' ) !== false || strpos( $lc, ' fixed ' ) !== false )
+						&& preg_match( '/opacity-0|group-hover:opacity/', $lc ) ) { $hover = true; break; }
+				}
+				$cap_mode = $hover ? 'hover' : 'overlay';
+			}
+			$row = array(
 				'url'  => $t['src'],
 				'alt'  => trim( (string) $t['img']->getAttribute( 'alt' ) ),
 				'span' => $span,
 			);
+			if ( '' !== $cap ) { $row['caption'] = $cap; }
+			$out[] = $row;
 		}
 		if ( count( $out ) < 3 ) { return null; } // let it fall through / be salvaged
+		// TILE ASPECT RATIO — the source crops each tile to a fixed ratio (`aspect-[3/4]` = tall portrait, the
+		// jukebox food grid). Read it so the gallery reproduces the crop instead of defaulting to Landscape 4:3
+		// (which squashed the tall photos). Sampled from the first tile (a uniform grid shares one ratio).
+		$ratio_slug = '';
+		$tiles0 = self::image_grid_tiles( $el );
+		if ( $tiles0 ) { $ratio_slug = self::image_tile_ratio_slug( $tiles0[0]['el'], $tiles0[0]['img'] ); }
 		$doc  = $el->ownerDocument;
 		$html = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) ) : '';
-		return array( 't' => 'gallery', 'role' => 'gallery', 'images' => $out, 'html' => $html, 'design' => self::detect_gallery_design( $el, count( $out ) ) );
+		return array( 't' => 'gallery', 'role' => 'gallery', 'images' => $out, 'html' => $html, 'captions' => $cap_mode, 'ratio' => $ratio_slug, 'design' => self::detect_gallery_design( $el, count( $out ) ) );
 	}
 
 	/**
@@ -14467,6 +15370,27 @@ class FW_Site_Converter_Stitch {
 		return trim( preg_replace( '/\s+/', ' ', (string) $el->textContent ) );
 	}
 
+	/**
+	 * A heading element's OWN horizontal alignment → 'center' | 'right' | '' (inherit/left).
+	 *
+	 * Reads the h-tag's own `text-center` / `text-right` class first, then falls back to the
+	 * computed `text-align` in its data-sc-cs. This carries a `<h3 class="… text-center">` (the
+	 * locations "HOURS" heading) onto the heading block's `align`, which n_heading honours — the
+	 * generic heading walk otherwise centers a heading only for a centered SECTION, so a heading's
+	 * own alignment inside a left-aligned wrapper was silently dropped.
+	 */
+	private static function heading_own_align( $el ) {
+		$c = ' ' . self::cls( $el ) . ' ';
+		if ( strpos( $c, ' text-center ' ) !== false ) { return 'center'; }
+		if ( strpos( $c, ' text-right ' ) !== false )  { return 'right'; }
+		if ( strpos( $c, ' text-left ' ) !== false )   { return ''; }
+		$cs = ( $el instanceof DOMElement ) ? (string) $el->getAttribute( 'data-sc-cs' ) : '';
+		if ( '' !== $cs && preg_match( '/(?<![\w-])text-align:\s*(center|right)/i', $cs, $m ) ) {
+			return strtolower( $m[1] );
+		}
+		return '';
+	}
+
 	/** Visible text with material-symbol icon glyphs removed (so a button label isn't "Go arrow_forward"). */
 	private static function text_no_icons( $el ) {
 		if ( ! $el->ownerDocument ) { return self::text( $el ); }
@@ -15208,10 +16132,17 @@ class FW_Site_Converter_Stitch {
 		// heading's muted `DARKNESS` span). map_accent_classes only resolves the palette tokens, so this class
 		// is dead on the body and the span would inherit the heading's ink. Capture its REAL computed colour
 		// from data-sc-cs NOW (before both are scrubbed) and re-express it as a concrete inline colour.
+		// Also an ARBITRARY colour-FUNCTION bracket class — `text-[hsl(var(--brand-red))]`, `text-[oklch(…)]`,
+		// `text-[rgb(…)]`, `text-[var(--x)]` — a two-tone heading's accent (jukebox's red "For Itself"). Dead in
+		// the builder (no Tailwind runtime; the source var isn't defined on the body), so it inherits the ink.
+		// A bare `text-[#hex]` is left for the Mapper's map_accent_classes(), which inlines that form.
+		$cls_attr   = (string) $node->getAttribute( 'class' );
+		$is_shadcn  = preg_match( '/(?:^|\s)(?:text|fill)-(?:muted-foreground|muted|accent|accent-foreground|destructive|destructive-foreground|card-foreground|popover-foreground|secondary-foreground|primary-foreground|ring|input|border)(?:\s|$)/', $cls_attr )
+			&& ! preg_match( '/(?:^|\s)(?:text|fill)-(?:primary|secondary|foreground|white|black)(?:\s|$)/', $cls_attr );
+		$is_arb_col = (bool) preg_match( '/(?:^|\s)(?:text|fill)-\[[^\]]*(?:hsl|hsla|oklch|oklab|rgb\(|rgba\(|var\()[^\]]*\]/i', $cls_attr );
 		$color_inline = '';
 		if ( $node->hasAttribute( 'class' )
-			&& preg_match( '/(?:^|\s)(?:text|fill)-(?:muted-foreground|muted|accent|accent-foreground|destructive|destructive-foreground|card-foreground|popover-foreground|secondary-foreground|primary-foreground|ring|input|border)(?:\s|$)/', (string) $node->getAttribute( 'class' ) )
-			&& ! preg_match( '/(?:^|\s)(?:text|fill)-(?:primary|secondary|foreground|white|black)(?:\s|$)/', (string) $node->getAttribute( 'class' ) )
+			&& ( $is_shadcn || $is_arb_col )
 			&& $node->hasAttribute( 'data-sc-cs' )
 			&& preg_match( '/(?<![\w-])color:\s*([^;]+)/i', (string) $node->getAttribute( 'data-sc-cs' ), $ccm ) ) {
 			$cv = trim( $ccm[1] );

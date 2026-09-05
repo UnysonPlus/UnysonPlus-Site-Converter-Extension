@@ -331,6 +331,21 @@ class FW_Site_Converter_Tailwind {
 		if ( preg_match( '/^space-x-(\d+(?:\.\d+)?)$/', $u, $m ) ) { $v = self::rem( $m[1] ); return "margin-right:0;margin-left:{$v}"; }
 		if ( preg_match( '/^space-y-(\d+(?:\.\d+)?)$/', $u, $m ) ) { $v = self::rem( $m[1] ); return "margin-top:{$v};margin-bottom:0"; }
 
+		// --- max-width NAMED scale (max-w-xs … max-w-7xl, prose, screen-*) ---
+		// Tailwind's container measures live on a NAMED scale, not the numeric spacing scale, so
+		// `max-w-3xl` (48rem) never matched the numeric rule below and a capped card (the locations
+		// "Visit Us" card, `max-w-3xl mx-auto`) rendered at the full content width. Reproduce the scale.
+		if ( preg_match( '/^max-w-(xs|sm|md|lg|xl|[2-7]xl|prose|screen-(?:sm|md|lg|xl|2xl))$/', $u, $m ) ) {
+			$scale = array(
+				'xs' => '20rem', 'sm' => '24rem', 'md' => '28rem', 'lg' => '32rem', 'xl' => '36rem',
+				'2xl' => '42rem', '3xl' => '48rem', '4xl' => '56rem', '5xl' => '64rem', '6xl' => '72rem',
+				'7xl' => '80rem', 'prose' => '65ch',
+				'screen-sm' => '640px', 'screen-md' => '768px', 'screen-lg' => '1024px',
+				'screen-xl' => '1280px', 'screen-2xl' => '1536px',
+			);
+			if ( isset( $scale[ $m[1] ] ) ) { return 'max-width:' . $scale[ $m[1] ]; }
+		}
+
 		// --- sizing: w / h / max-w / min-w / max-h ---
 		if ( preg_match( '/^(w|h|max-w|min-w|max-h|min-h)-(\[[^\]]+\]|\d+(?:\.\d+)?|full|screen|auto)$/', $u, $m ) ) {
 			$prop = array( 'w' => 'width', 'h' => 'height', 'max-w' => 'max-width', 'min-w' => 'min-width', 'max-h' => 'max-height', 'min-h' => 'min-height' )[ $m[1] ];

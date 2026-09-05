@@ -337,6 +337,28 @@ class FW_Site_Converter_Bundle {
 			if ( $activated ) { $out['activated_extensions'] = $activated; $out['sections'][] = 'extensions'; }
 		}
 
+		// --- Phase 5d: CATALOG MODE — a CATALOG / menu source (prices shown, but no cart / checkout / add-to-cart)
+		// is a browse-then-reserve/enquire site, not a shop. When the WooCommerce extension is in play and the
+		// source auto-detects as a catalog (is_catalog_source), OR the user explicitly ticked Catalog Mode, put
+		// the store into Catalog Mode — the bundled WooCommerce extension then hides add-to-cart + cart/checkout,
+		// so a restaurant menu / lookbook stays browse-only. A persistent WC ext setting; the extension does the
+		// rest. Auto-detect is gated on the user having opted into WooCommerce, so a non-store conversion never
+		// flips a WC setting; an explicit tick always wins. ---
+		if ( $do_pages && function_exists( 'fw_ext' ) && fw_ext( 'woocommerce' ) && function_exists( 'fw_set_db_ext_settings_option' ) ) {
+			$want_wc = isset( $_POST['opt_woocommerce'] ) && in_array( (string) $_POST['opt_woocommerce'], array( '1', 'true' ), true ); // phpcs:ignore WordPress.Security.NonceVerification
+			$forced  = isset( $_POST['opt_catalog'] ) && in_array( (string) $_POST['opt_catalog'], array( '1', 'true' ), true );          // phpcs:ignore WordPress.Security.NonceVerification
+			$auto    = false;
+			if ( ! $forced && $want_wc && class_exists( 'FW_Site_Converter_Sources' ) ) {
+				$rh = rtrim( $dir, '/\\' ) . '/rendered.html';
+				if ( is_file( $rh ) ) { $auto = FW_Site_Converter_Sources::is_catalog_source( (string) @file_get_contents( $rh ) ); }
+			}
+			if ( $forced || ( $want_wc && $auto ) ) {
+				fw_set_db_ext_settings_option( 'woocommerce', 'catalog_mode', 'yes' );
+				$out['catalog_mode'] = true;
+				$out['sections'][]   = 'catalog-mode';
+			}
+		}
+
 		if ( ! $out['sections'] ) {
 			$out['error'] = __( 'The bundle had no recognized sections (media.json, presets.json, theme-settings.json, pages.json, menus.json).', 'fw' );
 		}
@@ -441,6 +463,18 @@ class FW_Site_Converter_Bundle {
 				FW_Site_Converter_Mapper::merge_assets( $map );
 			}
 		}
+		// Ensure the Snippets extension is active + its CPT registered BEFORE the build — a rich tabs panel (a
+		// menu catalog) is emitted as a `snippet` CPT referenced by `[snippet id="…"]`, so the mapper needs the
+		// `snippet` post type to exist during build_from_html. This runs through the shared activate_bundled_exts
+		// allowlist (which now includes `snippets`); because activation hooks `init` — already fired this
+		// request — register the post type immediately after so it's usable in THIS request.
+		if ( function_exists( 'post_type_exists' ) && ! post_type_exists( 'snippet' ) ) {
+			self::activate_bundled_exts( array( 'snippets' ) );
+			$snip_ext = function_exists( 'fw_ext' ) ? fw_ext( 'snippets' ) : null;
+			if ( $snip_ext && method_exists( $snip_ext, '_action_register_post_type' ) && ! post_type_exists( 'snippet' ) ) {
+				$snip_ext->_action_register_post_type();
+			}
+		}
 		$res     = FW_Site_Converter_Sources::build_from_html( $html, $title, array( 'dynamic_chrome' => true, 'hifi_css' => true, 'source_url' => $src_url, 'entrance_anim' => $entrance, 'entrance_anim_ai' => $entrance_ai, 'entrance_anim_svc' => $entrance_svc ) );
 		$files = ( is_array( $res ) && isset( $res['files'] ) && is_array( $res['files'] ) ) ? $res['files'] : array();
 		if ( empty( $files['pages.json'] ) ) { return; } // build produced nothing usable → leave the bundle as-is.
@@ -479,7 +513,7 @@ class FW_Site_Converter_Bundle {
 	private static function activate_bundled_exts( array $slugs ) {
 		$done = array();
 		if ( ! function_exists( 'fw' ) || ! function_exists( 'fw_ext' ) ) { return $done; }
-		$allowed = array( 'animation-engine', 'woocommerce', 'newsletter-crm', 'breadcrumbs', 'chat', 'portfolio' );
+		$allowed = array( 'animation-engine', 'woocommerce', 'newsletter-crm', 'breadcrumbs', 'chat', 'portfolio', 'snippets' );
 		if ( ! fw()->extensions->manager->can_activate() ) { return $done; }
 		foreach ( array_values( array_unique( $slugs ) ) as $slug ) {
 			$slug = (string) $slug;

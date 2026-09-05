@@ -157,4 +157,27 @@ class FW_Site_Converter_Sources {
 		// One strong signal (2) or two+ corroborating weak ones qualify.
 		return $score >= 2;
 	}
+
+	/**
+	 * Does the source read as a CATALOG / MENU rather than a transactional shop? A restaurant menu, a
+	 * lookbook, a "call for pricing" showroom: it SHOWS prices but has NO cart, checkout or add-to-cart — you
+	 * browse and then reserve / enquire / phone. When mapping such a source to WooCommerce, the store should
+	 * run in CATALOG MODE (prices shown, no cart/checkout) rather than a live shop. Signal: prices present AND
+	 * no add-to-cart / cart / checkout machinery AND a menu / reservation / lookbook cue. Deliberately
+	 * conservative — a real store (any add-to-cart signal) is never a catalog.
+	 *
+	 * @param string $html
+	 * @return bool
+	 */
+	public static function is_catalog_source( $html ) {
+		$html = (string) $html;
+		if ( $html === '' ) { return false; }
+		// Must LIST PRICES — a catalog/menu shows prices ($12.95, 12,95 €, £8).
+		if ( ! preg_match( '/(?:[$€£]\s?\d{1,4}(?:[.,]\d{2})?|\d{1,4}(?:[.,]\d{2})\s?[€£])/u', $html ) ) { return false; }
+		// Any real SHOPPING machinery disqualifies it — this is a transactional store, not a catalog.
+		if ( preg_match( '/\b(?:ajax_)?add_to_cart_button\b|name="add-to-cart"|\?add-to-cart=|data-product_id\s*=|\bwoocommerce-Price-amount\b|\badd to (?:cart|bag|basket)\b|href="[^"]*\/(?:cart|checkout)(?:\/|"|\?)/i', $html ) ) { return false; }
+		// A menu / reservation / lookbook / enquiry cue confirms the browse-then-contact intent (bare "menu"
+		// is excluded — it's a nav word; require a specific phrase).
+		return (bool) preg_match( '/\b(?:our menu|view (?:the |our )?menu|full menu|dinner menu|dessert menu|book a table|reserve (?:a table|your table|now|your spot)|make a reservation|reservations?|order (?:by phone|online|for pickup)|call to order|lookbook|our collection|browse the (?:catalog|collection)|enquire|enquiry|request (?:a )?(?:quote|pricing))\b/i', $html );
+	}
 }
