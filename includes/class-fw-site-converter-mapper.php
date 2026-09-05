@@ -2058,6 +2058,22 @@ class FW_Site_Converter_Mapper {
 		foreach ( $cols as $col ) {
 			if ( ! is_array( $col ) || ( $col['type'] ?? '' ) !== 'column' ) { return false; }
 		}
+		// A run with 2+ standalone SECTION HEADINGS — a column whose content is just a heading (± its rule bar),
+		// no substantial body (no image / button / video / more than one text block) — is a VERTICAL heading stack
+		// (a locations section's "Our Location" then "Hours"), never a horizontal row. Rowing them side by side
+		// scrambles the section and squeezes the content BETWEEN them (the location card) into a narrow 1/N track.
+		// Keep the whole run stacked. A genuine multi-column band (each column = heading + real content) still rows.
+		$heading_cols = 0;
+		foreach ( $cols as $col ) {
+			$js = (string) ( function_exists( 'wp_json_encode' ) ? wp_json_encode( $col ) : json_encode( $col ) );
+			if ( false !== strpos( $js, '"special_heading"' )
+				&& false === strpos( $js, '"media_image"' ) && false === strpos( $js, '"media_video"' )
+				&& false === strpos( $js, '"button"' ) && false === strpos( $js, '"icon_box"' )
+				&& substr_count( $js, '"text_block"' ) <= 1 ) {
+				$heading_cols++;
+			}
+		}
+		if ( $heading_cols >= 2 ) { return false; }
 		// NOTE: `inner_class` (inner-wrapper box/max-width CSS) and `element_position` (positioned-ancestor
 		// floating card) USED to veto flexing here — they don't translate 1:1 to a SINGLE flex element. They
 		// no longer block: column_to_flexbox_cell() now emits a TWO-NODE cell (an outer width track wrapping an
@@ -2145,6 +2161,26 @@ class FW_Site_Converter_Mapper {
 
 		// --- SINGLE-NODE cell (no inner wrapper): content-layout maps onto the cell's OWN flex props. ---
 		$over = array_merge( $over, self::content_layout_over( $a ) );
+		// A CENTERED heading GROUP (a hero's centered special_heading + button, from the source's
+		// `flex flex-col items-center justify-center`) whose centring lives on the heading, not the column, so
+		// content_layout_over fell to display:block → promote it to a real centered flex COLUMN. Block stacks
+		// correctly on the front end, but the page-builder editor previews a block flexbox as a bare inline row;
+		// flex-column + align-items:center previews correctly in the editor AND matches the source.
+		if ( ( $over['display'] ?? '' ) === 'block' && count( $items ) >= 2 ) {
+			$centered = false;
+			foreach ( $items as $it ) {
+				if ( is_array( $it ) && 'special_heading' === ( $it['shortcode'] ?? '' ) && 'center' === ( $it['atts']['alignment'] ?? '' ) ) { $centered = true; break; }
+			}
+			if ( $centered ) {
+				$over['display']     = 'flex';
+				$over['direction']   = array( 'base' => 'column', 'md' => '', 'lg' => '' );
+				$over['wrap']        = array( 'base' => 'no', 'md' => '', 'lg' => '' );
+				// Cross-axis stays STRETCH (default) — no align_items:center. Each child keeps its full width and
+				// self-centres via its own text-align + max-width;margin:auto. align-items:center would shrink every
+				// child to content width and squeeze a self-capping wide child (a `max-w-3xl mx-auto` card, a grid)
+				// into a narrow track — the locations-card 480px bug.
+			}
+		}
 		if ( ! empty( $a['border_preset'] ) ) { $over['border_preset'] = (string) $a['border_preset']; }
 		if ( ! empty( $a['css_class'] ) ) { $over['css_class'] = (string) $a['css_class']; }
 		$ta  = (string) ( $a['text_align'] ?? '' );
@@ -2186,6 +2222,16 @@ class FW_Site_Converter_Mapper {
 			if ( $main !== '' )  { $over['justify_content'] = array( 'base' => $main, 'md' => '', 'lg' => '' ); }
 			if ( $cross !== '' ) { $over['align_items'] = array( 'base' => $cross, 'md' => '', 'lg' => '' ); }
 			if ( ( $a['content_order'] ?? '' ) === 'reverse' ) { $over['reverse'] = array( 'base' => 'yes', 'md' => '', 'lg' => '' ); }
+		} elseif ( 'center' === (string) ( $a['text_align'] ?? '' ) || 'center' === (string) ( $a['alignment'] ?? '' ) ) {
+			// A TEXT-CENTERED block stack (a locations section's `container mx-auto text-center` holding a heading,
+			// a `max-w-3xl mx-auto` card, another heading, a `max-w-4xl mx-auto` grid) → a flex COLUMN so the editor
+			// canvas previews a real vertical stack (a display:block flexbox previews as a bare inline row). CROSS-
+			// axis alignment stays STRETCH (children keep their FULL width and self-centre via their own
+			// `text-align:center` + `max-width;margin:auto`) — align-items:center would shrink each child to its
+			// content width and squeeze a self-capping card into a narrow track (the locations-card 480px bug).
+			$over['display']   = 'flex';
+			$over['direction'] = array( 'base' => 'column', 'md' => '', 'lg' => '' );
+			$over['wrap']      = array( 'base' => 'no', 'md' => '', 'lg' => '' );
 		} else {
 			$over['display'] = 'block'; // plain stack / single item → normal flow (keeps text_align etc. natural)
 		}
@@ -2270,7 +2316,17 @@ class FW_Site_Converter_Mapper {
 				// with no responsive change — see cells_uniform_grid), giving each cell flex-grow:1 distributes that
 				// one-gap remainder equally back into the cells: they fill the row, stay equal, and the strip is gone.
 				// (Scoped to uniform multi-cell grids only, so a lone/asymmetric cell never grows past its span.)
-				if ( self::cells_uniform_grid( $cells ) ) {
+				// EQUAL N-COLUMN GRID the 12-col span model CAN'T express (grid-cols-5 / 7 / … — N doesn't divide
+				// 12, so round(12/N) spans don't sum to 12 and the cells WRAP: jukebox's 7-day hours row rendered
+				// 6+1). Render a real CSS GRID with N equal tracks instead, dropping the (unrepresentable) span
+				// widths. N that DOES divide 12 stays the flex-grow path below.
+				$ncol = self::cells_equal_ncol( $cells );
+				if ( $ncol >= 3 ) {
+					$over['display']      = 'grid';
+					$over['grid_columns'] = (string) $ncol;
+					foreach ( $cells as &$gc ) { unset( $gc['atts']['width'] ); }
+					unset( $gc );
+				} elseif ( self::cells_uniform_grid( $cells ) ) {
 					foreach ( $cells as &$uc ) { $uc['atts']['flex_grow'] = array( 'base' => 'yes', 'md' => '', 'lg' => '' ); }
 					unset( $uc );
 				}
@@ -2306,6 +2362,40 @@ class FW_Site_Converter_Mapper {
 	 * @param array $cells column_to_flexbox_cell() outputs
 	 * @return bool
 	 */
+	/**
+	 * Count of an EQUAL-width column run that the 12-col span model CANNOT represent — every cell the SAME
+	 * base span, no per-device override, N between 3 and 12, but N does NOT divide 12 (5/7/8/9/10/11) so the
+	 * rounded spans don't sum to 12 (the cells wrap). Returns N (→ render as an N-track CSS grid); 0 otherwise
+	 * (a true 12-col grid is handled by cells_uniform_grid; an N that divides 12 already spans correctly).
+	 *
+	 * @param array $cells column_to_flexbox_cell() outputs
+	 * @return int N, or 0
+	 */
+	private static function cells_equal_ncol( array $cells ) {
+		$n = count( $cells );
+		if ( $n < 3 || $n > 12 ) { return 0; }
+		if ( 0 === 12 % $n ) { return 0; } // N divides 12 (2/3/4/6/12) → 12-col spans are exact
+		$base = null;
+		foreach ( $cells as $c ) {
+			if ( ! is_array( $c ) || ! empty( $c['atts']['element_position'] ) ) { return 0; }
+			$w = ( isset( $c['atts']['width'] ) && is_array( $c['atts']['width'] ) ) ? $c['atts']['width'] : null;
+			if ( ! $w ) { return 0; }
+			$b_base = (string) ( $w['base']['preset'] ?? '' );
+			$b_md   = (string) ( $w['md']['preset'] ?? '' );
+			$b_lg   = (string) ( $w['lg']['preset'] ?? '' );
+			// The DESKTOP span is on lg when set (full-width mobile → span on desktop, the `hidden md:grid`
+			// pattern), else base. Read whichever carries the real digit.
+			$span = ctype_digit( $b_lg ) ? $b_lg : $b_base;
+			if ( ! ctype_digit( $span ) ) { return 0; }
+			// A genuine per-device WIDTH change (base and lg both digits but different, or an md digit) → keep
+			// flex; only a single-width grid (identical across the devices that set one) becomes a track grid.
+			if ( ctype_digit( $b_base ) && ctype_digit( $b_lg ) && $b_base !== $b_lg ) { return 0; }
+			if ( ctype_digit( $b_md ) && $b_md !== $span ) { return 0; }
+			if ( null === $base ) { $base = $span; } elseif ( $span !== $base ) { return 0; } // all cells equal
+		}
+		return $n;
+	}
+
 	private static function cells_uniform_grid( array $cells ) {
 		if ( count( $cells ) < 2 ) { return false; }
 		$base = null;
@@ -2516,6 +2606,51 @@ class FW_Site_Converter_Mapper {
 			if ( '' === $src || preg_match( '#^(?:https?:)?//#i', $src ) || 0 === strpos( $src, 'data:' ) || preg_match( '/\.svg(?:$|\?)/i', $src ) ) { return $m[0]; }
 			return $m[1] . self::abs_asset( $src ) . $m[3];
 		}, $html );
+		// SELF-HOSTED VIDEO — `<video src>`, `<source src>` and the `poster` image inside a verbatim block
+		// (e.g. jukebox's reel strip: `<video src="/videos/reel-1.mp4">`). Localise to the MEDIA-LIBRARY copy
+		// when one was sideloaded (upload_val matches by basename → the reel plays from wp-content/uploads
+		// instead of 404-ing as a bare `/videos/…` path or hotlinking the source); else absolutise so it at
+		// least resolves against the source origin. Same treatment images already get, extended to media.
+		$loc_media = function ( $src ) {
+			$src = trim( (string) $src );
+			if ( '' === $src || 0 === strpos( $src, 'data:' ) ) { return $src; }
+			$uv = self::upload_val( $src );
+			if ( isset( $uv['url'] ) && '' !== $uv['url'] && preg_match( '#^https?://#i', (string) $uv['url'] ) ) { return (string) $uv['url']; }
+			return preg_match( '#^(?:https?:)?//#i', $src ) ? $src : self::abs_asset( $src );
+		};
+		$html = preg_replace_callback( '/(<(?:video|source)\b[^>]*\bsrc\s*=\s*")([^"]+)(")/i', function ( $m ) use ( $loc_media ) {
+			return $m[1] . $loc_media( $m[2] ) . $m[3];
+		}, $html );
+		$html = preg_replace_callback( '/(\bposter\s*=\s*")([^"]+)(")/i', function ( $m ) use ( $loc_media ) {
+			return $m[1] . $loc_media( $m[2] ) . $m[3];
+		}, $html );
+		// A source `<video autoplay>` WITHOUT `muted` never autoplays (browsers block UNMUTED autoplay), so the
+		// reel renders as a blank box (the source starts it muted via JS we don't carry). Add `muted` so it plays;
+		// ensure `playsinline` (autoplay on iOS needs it); and lift `preload="none"` → `metadata` so a first frame
+		// paints even before playback. Only touches a `<video>` that already opted into autoplay.
+		if ( stripos( $html, '<video' ) !== false ) {
+			$html = preg_replace_callback( '/<video\b([^>]*)>/i', function ( $m ) {
+				$attrs = $m[1];
+				if ( preg_match( '/\bautoplay\b/i', $attrs ) && ! preg_match( '/\bmuted\b/i', $attrs ) )       { $attrs .= ' muted'; }
+				if ( preg_match( '/\bautoplay\b/i', $attrs ) && ! preg_match( '/\bplaysinline\b/i', $attrs ) )  { $attrs .= ' playsinline'; }
+				if ( preg_match( '/\bpreload\s*=\s*"\s*none\s*"/i', $attrs ) ) { $attrs = preg_replace( '/\bpreload\s*=\s*"\s*none\s*"/i', 'preload="metadata"', $attrs ); }
+				return '<video' . $attrs . '>';
+			}, $html );
+		}
+		// A source horizontal MARQUEE (`animate-scroll-left` / `-right` on a flex row of DUPLICATED items — the
+		// reel strip) relies on custom keyframes the source's Tailwind config defined; they're absent from the
+		// sc-tw reproducer, so the row sits STATIC (offset, half the track empty). Inject the keyframes + rule so
+		// it scrolls seamlessly (the -50% translate assumes the 2× item duplication these marquees always use),
+		// pausing on hover like the source. Scoped to `.sc-tw` so it can't leak onto other content.
+		if ( preg_match( '/\banimate-scroll-(?:left|right)\b/', $html ) ) {
+			$html = '<style>'
+				. '@keyframes sc-scroll-left{from{transform:translateX(0)}to{transform:translateX(-50%)}}'
+				. '@keyframes sc-scroll-right{from{transform:translateX(-50%)}to{transform:translateX(0)}}'
+				. '.sc-tw .animate-scroll-left{animation:sc-scroll-left 40s linear infinite}'
+				. '.sc-tw .animate-scroll-right{animation:sc-scroll-right 40s linear infinite}'
+				. '.sc-tw .animate-scroll-left:hover,.sc-tw .animate-scroll-right:hover{animation-play-state:paused}'
+				. '</style>' . $html;
+		}
 		// Make Tailwind responsive show/hide (hidden / lg:block / lg:hidden …) actually work in verbatim HTML,
 		// so a desktop/mobile variant pair doesn't render duplicated (once-per-build CSS shim, scoped to .sc-tw).
 		$html = self::maybe_rwd_shim( $html );
@@ -2545,6 +2680,19 @@ class FW_Site_Converter_Mapper {
 	 * @param string $html raw HTML fragment (carries data-sc-cs computed styles)
 	 * @return array a builder node (flexbox, media_image, text_block, or code_block)
 	 */
+	/**
+	 * A verbatim CELL's HTML → native builder items (a styled card → flexbox + text) via the structural mirror,
+	 * instead of an opaque `.sc-tw` code block. Returns an EMPTY array for a content-less cell (a stray
+	 * responsive `<style>`/`<script>` — visibility is reproduced natively), so the caller skips it; otherwise a
+	 * one-element array with the mirrored node (which itself degrades to a code_block for a deep/irregular cell).
+	 */
+	private static function cell_html_items( $html ) {
+		$html = (string) $html;
+		if ( '' === trim( preg_replace( '/<(style|script)\b[^>]*>.*?<\/\1>|\s+/is', '', $html ) ) ) { return array(); }
+		$node = self::n_structural_mirror( $html );
+		return is_array( $node ) ? array( $node ) : array();
+	}
+
 	private static function n_structural_mirror( $html ) {
 		$html = trim( (string) $html );
 		if ( '' === $html || ! class_exists( 'DOMDocument' ) ) { return self::n_code( $html ); }
@@ -2579,8 +2727,36 @@ class FW_Site_Converter_Mapper {
 	 */
 	private static function mirror_el( DOMElement $el, $depth ) {
 		$tag  = strtolower( $el->nodeName );
-		if ( 'img' === $tag ) { return self::n_media_image( $el->ownerDocument->saveHTML( $el ) ); }
+		// A stray responsive-utility <style> (the source's `.hidden{display:none}` etc.) carries no content — the
+		// builder reproduces responsive visibility natively, so drop it rather than surface a code block.
+		if ( 'style' === $tag || 'script' === $tag ) { return null; }
+		// A decorative accent RULE BAR (`<div class="w-24 h-1 bg-primary mx-auto">`) → a native divider.
+		$bar = self::n_rule_bar( $el );
+		if ( is_array( $bar ) ) { return $bar; }
+		// A semantic <hr> → a native Divider (Standard solid line), not a dropped empty leaf.
+		if ( 'hr' === $tag ) { $hrn = self::n_hr_divider( $el ); if ( is_array( $hrn ) ) { return $hrn; } }
+		if ( 'img' === $tag ) {
+			// A `w-full` / `object-cover` source image FILLS its box (a card's full-bleed banner) — carry that so
+			// the mirrored media_image spans the panel instead of shrinking to its natural width (leaving the
+			// card half-empty). Passing skin_css also keeps it a NATIVE, editable media_image.
+			$icls = ' ' . strtolower( (string) $el->getAttribute( 'class' ) ) . ' ';
+			$full = ( strpos( $icls, ' w-full ' ) !== false || strpos( $icls, 'object-cover' ) !== false || strpos( $icls, 'object-fill' ) !== false );
+			return self::n_media_image( $el->ownerDocument->saveHTML( $el ), $full ? 'selector img{width:100%;display:block;height:auto}' : '' );
+		}
+		if ( 'video' === $tag ) {
+			// A source <video> (reel / clip) → a native flexbox card carrying a BACKGROUND video (the builder has
+			// no standalone video element; background.video is the editable, faithful carrier). Never dropped.
+			return self::mirror_video_card( $el, null );
+		}
 		$kids = self::mirror_child_els( $el );
+
+		// A MEDIA CARD wrapper — its only child is a <video> → ONE bg-video card carrying the wrapper's box
+		// (width / radius / overflow) merged with the video's aspect, instead of two nested levels.
+		if ( 1 === count( $kids ) && 'video' === strtolower( $kids[0]->nodeName ) ) {
+			$own0 = '';
+			foreach ( $el->childNodes as $c ) { if ( XML_TEXT_NODE === $c->nodeType ) { $own0 .= $c->nodeValue; } }
+			if ( '' === trim( preg_replace( '/\s+/', ' ', (string) $own0 ) ) ) { return self::mirror_video_card( $kids[0], $el ); }
+		}
 
 		// Own (direct) text, excluding descendant elements.
 		$own_text = '';
@@ -2593,33 +2769,47 @@ class FW_Site_Converter_Mapper {
 			$plain = trim( preg_replace( '/\s+/', ' ', strip_tags( $inner ) ) );
 			if ( '' === $plain && ! preg_match( '/<(?:img|svg|br|hr)\b/i', $inner ) ) { return null; }
 			$wrap = in_array( $tag, array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p' ), true ) ? $tag : 'p';
-			return self::n_text( '<' . $wrap . '>' . $inner . '</' . $wrap . '>' );
+			// Carry the element's computed COLOUR + text-alignment, so mirrored card content keeps the source's
+			// red heading / dark body / centered layout instead of washing out to the theme's default ink + left.
+			$tstyle = self::mirror_text_style( $el );
+			return self::n_text( '<' . $wrap . ( '' !== $tstyle ? ' style="' . $tstyle . '"' : '' ) . '>' . $inner . '</' . $wrap . '>' );
 		}
 
-		// Too deep → keep the exact subtree (fidelity over structure past a few levels).
-		if ( $depth >= 4 ) { return self::n_code( $el->ownerDocument->saveHTML( $el ) ); }
+		// Too deep → keep the exact subtree (fidelity over structure past a few levels). Raised for regular
+		// catalogs (band → grid → card → row → text-cell → heading is ~7 levels deep).
+		if ( $depth >= 8 ) { return self::n_code( $el->ownerDocument->saveHTML( $el ) ); }
 
-		// A pure single-element wrapper (no own text) → unwrap, no needless flexbox level.
-		if ( 1 === count( $kids ) && '' === $own_text ) { return self::mirror_el( $kids[0], $depth ); }
+		// A pure single-element wrapper (no own text) that has NO box styling of its own → unwrap (no needless
+		// flexbox level). A wrapper WITH a box (a coloured band, a card, a measure) is kept so its style survives.
+		if ( 1 === count( $kids ) && '' === $own_text && '' === self::mirror_box_css( $el ) ) { return self::mirror_el( $kids[0], $depth ); }
 
-		// CONTAINER → a flexbox mirroring the source's flex/grid layout (from data-sc-cs).
+		// CONTAINER → a flexbox mirroring the source's flex/grid layout — from the computed style, BACKFILLED
+		// from the Tailwind classes (the reproducer resolves `grid-cols-4`, `flex-col`, `gap-4`), so a decomposed
+		// grid keeps its column count even when the computed grid-template-columns wasn't captured.
 		$cs   = self::cs_decls( (string) $el->getAttribute( 'data-sc-cs' ), array( 'display', 'flex-direction', 'gap', 'grid-template-columns' ) );
+		$clp  = self::mirror_class_props( $el, array( 'display', 'flex-direction', 'gap', 'grid-template-columns' ) );
 		$over = array();
-		$disp = isset( $cs['display'] ) ? (string) $cs['display'] : '';
-		if ( false !== strpos( $disp, 'grid' ) ) {
+		$disp = isset( $cs['display'] ) && '' !== trim( (string) $cs['display'] ) ? (string) $cs['display'] : (string) ( $clp['display'] ?? '' );
+		$grid_tpl = trim( (string) ( $cs['grid-template-columns'] ?? '' ) );
+		if ( '' === $grid_tpl || 'none' === $grid_tpl ) { $grid_tpl = trim( (string) ( $clp['grid-template-columns'] ?? '' ) ); }
+		if ( false !== strpos( $disp, 'grid' ) || false !== stripos( $grid_tpl, 'repeat(' ) ) {
 			$over['display'] = 'grid';
-			$tracks = array_filter( preg_split( '/\s+/', trim( (string) ( $cs['grid-template-columns'] ?? '' ) ) ), function ( $t ) { return '' !== $t && 'none' !== $t; } );
-			$n = count( $tracks );
+			$n = 0;
+			if ( preg_match( '/repeat\(\s*(\d+)/', $grid_tpl, $rm ) ) { $n = (int) $rm[1]; }
+			else { $n = count( array_filter( preg_split( '/\s+/', $grid_tpl ), function ( $t ) { return '' !== $t && 'none' !== $t; } ) ); }
 			if ( $n >= 1 && $n <= 12 ) { $over['grid_columns'] = (string) $n; }
 		} elseif ( false !== strpos( $disp, 'flex' ) ) {
 			$over['display'] = 'flex';
-			$dir = ( false !== strpos( (string) ( $cs['flex-direction'] ?? '' ), 'column' ) ) ? 'column' : 'row';
+			$fdir = (string) ( ( '' !== trim( (string) ( $cs['flex-direction'] ?? '' ) ) ) ? $cs['flex-direction'] : ( $clp['flex-direction'] ?? '' ) );
+			$dir  = ( false !== strpos( $fdir, 'column' ) ) ? 'column' : 'row';
 			$over['direction'] = array( 'base' => $dir, 'md' => '', 'lg' => '' );
 			if ( 'column' === $dir ) { $over['wrap'] = array( 'base' => 'no', 'md' => '', 'lg' => '' ); }
+			else { $over['wrap'] = array( 'base' => 'no', 'md' => '', 'lg' => '' ); }
 		} else {
 			$over['display'] = 'block';
 		}
-		$gslug = self::gap_slug( isset( $cs['gap'] ) ? (string) $cs['gap'] : '' );
+		$gap_val = ( '' !== trim( (string) ( $cs['gap'] ?? '' ) ) ) ? (string) $cs['gap'] : (string) ( $clp['gap'] ?? '' );
+		$gslug   = self::gap_slug( $gap_val );
 		if ( '' !== $gslug ) { $over['gap'] = array( 'base' => $gslug, 'md' => '', 'lg' => '' ); }
 
 		$items = array();
@@ -2629,7 +2819,143 @@ class FW_Site_Converter_Mapper {
 			if ( is_array( $child ) ) { $items[] = $child; }
 		}
 		if ( empty( $items ) ) { return self::n_code( $el->ownerDocument->saveHTML( $el ) ); }
+		// CARD PANEL / PADDING — carry the container's own box skin (an opaque fill + rounding + border/shadow
+		// = a content CARD, e.g. the location card `rounded-2xl border bg-background shadow`) and its inner
+		// padding, so the mirrored flexbox renders as a real editable panel instead of flattening onto the
+		// section band. Scoped `selector{…}` custom_css (the flexbox view supports it).
+		$boxcss = self::mirror_box_css( $el );
+		// The container's OWN horizontal text-alignment (source `text-center` / `text-right` on the card wrapper —
+		// e.g. an hours day-card `text-center py-6 rounded-lg`). text-align INHERITS, so carrying it on the card
+		// centres its heading + body in one place, rather than relying on each leaf to re-derive it: a leaf's
+		// text-align lives only in `data-sc-cs`, which is stripped before the mirror sees the HTML, so the wrapper
+		// class is the reliable source. '' (text-left / none) carries nothing.
+		$balign = self::cls_text_align( (string) $el->getAttribute( 'class' ) );
+		if ( '' === $balign ) {
+			$bacs = self::cs_decls( (string) $el->getAttribute( 'data-sc-cs' ), array( 'text-align' ) );
+			$bav  = strtolower( trim( (string) ( $bacs['text-align'] ?? '' ) ) );
+			if ( in_array( $bav, array( 'center', 'right' ), true ) ) { $balign = $bav; }
+		}
+		if ( '' !== $balign ) { $boxcss = trim( $boxcss . ( '' !== $boxcss ? ';' : '' ) . 'text-align:' . $balign ); }
+		if ( '' !== $boxcss ) { $over['custom_css'] = trim( ( isset( $over['custom_css'] ) ? $over['custom_css'] . ' ' : '' ) . 'selector{' . $boxcss . '}' ); }
 		return self::n_flexbox( $items, $over );
+	}
+
+	/**
+	 * The box SKIN of a mirrored container as a CSS decl string: a CARD panel (an OPAQUE fill + rounding +
+	 * border/shadow) and/or significant inner PADDING, read from the element's data-sc-cs. '' when the
+	 * container is a plain layout box. Lets mirror_el reproduce a content card's white rounded panel + padding.
+	 */
+	/**
+	 * A mirrored text leaf's inline style — its computed COLOUR (skipping fully-transparent) + a center/right
+	 * text-align — from data-sc-cs. So a structural-mirror card keeps the source's coloured heading + centered
+	 * content instead of inheriting the section's default ink and left alignment. '' when neither is notable.
+	 */
+	private static function mirror_text_style( DOMElement $el ) {
+		// FAITHFUL text: colour / size / weight / align / transform / tracking, from the Tailwind CLASSES first
+		// (arbitrary `text-[hsl(…)]`, `text-xl`, `font-bold` resolved by the reproducer), computed style backing
+		// up a colour a class expresses as `var(--token)`. Keeps a decomposed catalog's coloured, sized, weighted
+		// text (a red heading, a $-price in bold-xl, a muted grey description) instead of default ink.
+		$cls = self::mirror_class_props( $el, array( 'color', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'text-align', 'text-transform' ) );
+		$cs  = self::cs_decls( (string) $el->getAttribute( 'data-sc-cs' ), array( 'color', 'font-size', 'font-weight', 'text-align', 'text-transform', 'letter-spacing', 'line-height' ) );
+		$pick = function ( $p ) use ( $cls, $cs ) {
+			if ( isset( $cls[ $p ] ) && '' !== trim( (string) $cls[ $p ] ) && stripos( (string) $cls[ $p ], 'var(' ) === false ) { return trim( (string) $cls[ $p ] ); }
+			if ( isset( $cs[ $p ] ) && '' !== trim( (string) $cs[ $p ] ) ) { return trim( (string) $cs[ $p ] ); }
+			return isset( $cls[ $p ] ) ? trim( (string) $cls[ $p ] ) : '';
+		};
+		$bits = array();
+		$c = $pick( 'color' );
+		// `!important` so a decomposed card's own colour beats a section-level heading-colour rule (white on a
+		// coloured band) that would otherwise bleed onto a card sitting on a light panel.
+		if ( '' !== $c && stripos( $c, 'var(' ) === false && 'inherit' !== $c && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $c ) ) { $bits[] = 'color:' . $c . ' !important'; }
+		$fs = $pick( 'font-size' );      if ( preg_match( '/^[0-9.]+(px|rem|em)$/', $fs ) ) { $bits[] = 'font-size:' . $fs; }
+		$fw = $pick( 'font-weight' );    if ( preg_match( '/^(?:[5-9]00|bold)$/', trim( $fw ) ) ) { $bits[] = 'font-weight:' . trim( $fw ); }
+		$ta = strtolower( $pick( 'text-align' ) );     if ( in_array( $ta, array( 'center', 'right' ), true ) ) { $bits[] = 'text-align:' . $ta; }
+		$tt = strtolower( $pick( 'text-transform' ) ); if ( in_array( $tt, array( 'uppercase', 'lowercase', 'capitalize' ), true ) ) { $bits[] = 'text-transform:' . $tt; }
+		$ls = $pick( 'letter-spacing' ); if ( '' !== $ls && 'normal' !== $ls && '0px' !== $ls && preg_match( '/^-?[0-9.]+(px|em|rem)$/', $ls ) ) { $bits[] = 'letter-spacing:' . $ls; }
+		return implode( ';', $bits );
+	}
+
+	private static function mirror_box_css( DOMElement $el ) {
+		// FAITHFUL box, read from the Tailwind CLASSES first (the reproducer resolves arbitrary values —
+		// `bg-[hsl(0,0%,8%)]`, `w-[280px]`, `rounded-lg`, `p-4`), with the COMPUTED style backfilling a colour a
+		// class expresses as an unresolvable `var(--token)` (the resolved rgb lives in data-sc-cs). This lets a
+		// decomposed catalog carry its colour bands, card fills/borders, padding and measures — not just a card
+		// panel. Returns '' for a plain transparent layout box.
+		$boxp = array( 'background-color', 'border-radius', 'border-top-width', 'border-top-style', 'border-top-color',
+			'box-shadow', 'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+			'width', 'max-width', 'min-height', 'aspect-ratio', 'overflow' );
+		$cls = self::mirror_class_props( $el, $boxp );
+		$cs  = self::cs_decls( (string) $el->getAttribute( 'data-sc-cs' ), array( 'background-color', 'border-radius', 'border-top-width', 'border-top-color', 'box-shadow' ) );
+		$get = function ( $p ) use ( $cls, $cs ) {
+			if ( isset( $cls[ $p ] ) && '' !== trim( (string) $cls[ $p ] ) && stripos( (string) $cls[ $p ], 'var(' ) === false ) { return trim( (string) $cls[ $p ] ); }
+			if ( isset( $cs[ $p ] ) && '' !== trim( (string) $cs[ $p ] ) ) { return trim( (string) $cs[ $p ] ); }
+			return isset( $cls[ $p ] ) ? trim( (string) $cls[ $p ] ) : '';
+		};
+		$decls = array();
+		// BACKGROUND — a real OPAQUE fill only (skip transparent + low-alpha tints); the arbitrary `bg-[hsl(…)]`
+		// bands and card fills resolve to a literal colour via the reproducer.
+		$bg = $get( 'background-color' );
+		if ( '' !== $bg && stripos( $bg, 'transparent' ) === false && stripos( $bg, 'var(' ) === false
+			&& ! preg_match( '/rgba?\([^)]*[,\/]\s*(?:0|0?\.[0-4]\d*)\s*\)/i', $bg ) ) { $decls[] = 'background-color:' . $bg; }
+		// RADIUS.
+		$r = $get( 'border-radius' );
+		if ( '' !== $r && ! in_array( $r, array( '0', '0px' ), true ) && stripos( $r, 'var(' ) === false ) { $decls[] = 'border-radius:' . $r; }
+		// BORDER.
+		$bw = $get( 'border-top-width' ); $bstyle = isset( $cls['border-top-style'] ) ? (string) $cls['border-top-style'] : 'solid';
+		if ( '' !== $bw && ! in_array( $bw, array( '0', '0px' ), true ) && 'none' !== $bstyle ) {
+			$bc = $get( 'border-top-color' ); if ( '' === $bc || stripos( $bc, 'var(' ) !== false ) { $bc = 'rgba(0,0,0,.1)'; }
+			$decls[] = 'border:' . $bw . ' ' . ( '' !== $bstyle ? $bstyle : 'solid' ) . ' ' . $bc;
+		}
+		// SHADOW.
+		$sh = $get( 'box-shadow' );
+		if ( '' !== $sh && 'none' !== $sh && stripos( $sh, 'var(' ) === false ) { $decls[] = 'box-shadow:' . $sh; }
+		// PADDING — the class shorthand (`p-4`, `px-4 py-10`) or per-side.
+		if ( isset( $cls['padding'] ) && '' !== trim( (string) $cls['padding'] ) ) { $decls[] = 'padding:' . trim( (string) $cls['padding'] ); }
+		else { foreach ( array( 'padding-top', 'padding-right', 'padding-bottom', 'padding-left' ) as $pp ) { if ( isset( $cls[ $pp ] ) && '' !== trim( (string) $cls[ $pp ] ) ) { $decls[] = $pp . ':' . trim( (string) $cls[ $pp ] ); } } }
+		// MEASURES — width / max-width / min-height / aspect (arbitrary values via the reproducer).
+		foreach ( array( 'width', 'max-width', 'min-height', 'aspect-ratio' ) as $pp ) {
+			$v = isset( $cls[ $pp ] ) ? trim( (string) $cls[ $pp ] ) : '';
+			if ( '' !== $v && 'auto' !== $v && 'none' !== $v && '0px' !== $v && stripos( $v, 'var(' ) === false ) { $decls[] = $pp . ':' . $v; }
+		}
+		// OVERFLOW.
+		if ( isset( $cls['overflow'] ) && 'visible' !== $cls['overflow'] && '' !== trim( (string) $cls['overflow'] ) ) { $decls[] = 'overflow:' . trim( (string) $cls['overflow'] ); }
+		return implode( ';', $decls );
+	}
+
+	/** Compile an element's Tailwind classes → the base CSS values for the requested props (faithful arbitrary
+	 *  values, `bg-[hsl(…)]` / `w-[280px]` / `aspect-[9/16]` included). The reproducer applied per-element. */
+	private static function mirror_class_props( $el, array $props ) {
+		$out = array();
+		if ( ! ( $el instanceof DOMElement ) || ! class_exists( 'FW_Site_Converter_Tailwind' ) ) { return $out; }
+		$c = FW_Site_Converter_Tailwind::compile_class_set( (string) $el->getAttribute( 'class' ) );
+		$base = ( isset( $c['base'] ) && is_array( $c['base'] ) ) ? $c['base'] : array();
+		foreach ( $props as $p ) { if ( isset( $base[ $p ] ) && '' !== trim( (string) $base[ $p ] ) ) { $out[ $p ] = trim( (string) $base[ $p ] ); } }
+		return $out;
+	}
+
+	/**
+	 * A source `<video>` → a native flexbox card carrying a BACKGROUND video (the faithful, editable carrier;
+	 * the builder has no standalone video element). Merges the card WRAPPER's box (width / radius / overflow)
+	 * with the video's aspect — compiled from the Tailwind classes so arbitrary values (`w-[280px]`,
+	 * `aspect-[9/16]`) survive. Sets background.video DIRECTLY (not apply_bg_video, which hero-frames it to 80vh).
+	 *
+	 * @param DOMElement      $video
+	 * @param DOMElement|null $wrapper the card wrapper whose box skin to carry (or null)
+	 * @return array flexbox node
+	 */
+	private static function mirror_video_card( $video, $wrapper = null ) {
+		// The card box (width / radius / overflow) from the wrapper's Tailwind classes; the video's own aspect
+		// drives the height, so the card doesn't need its own aspect-ratio.
+		$box = ( $wrapper instanceof DOMElement ) ? self::mirror_class_props( $wrapper, array( 'width', 'max-width', 'border-radius', 'overflow' ) ) : array();
+		if ( isset( $box['border-radius'] ) && ! isset( $box['overflow'] ) ) { $box['overflow'] = 'hidden'; }
+		$box['flex-shrink'] = '0'; // a ticker/reel card keeps its width in the row
+		$css = array(); foreach ( $box as $p => $vv ) { $css[] = $p . ':' . $vv; }
+		// FOREGROUND <video> (not a background layer — that breaks inside the marquee's transformed track). A raw
+		// `<video autoplay muted loop playsinline>` autoplays natively AND survives the marquee's clone. n_code
+		// localizes the source to the media library + hardens autoplay; it fills the card (its w-full/aspect
+		// classes render under `.sc-tw`).
+		$inner = self::n_code( (string) $video->ownerDocument->saveHTML( $video ) );
+		return self::n_flexbox( array( $inner ), array( 'display' => 'block', 'custom_css' => ( $css ? 'selector{' . implode( ';', $css ) . '}' : '' ) ) );
 	}
 
 	/** Slug of the first (default) Table Preset — the skin the converter applies to verbatim tables. */
@@ -2762,7 +3088,9 @@ class FW_Site_Converter_Mapper {
 		// Ratio from the source's own aspect (portrait `9x16` reel, `1x1`, …); default landscape 16:9.
 		$ratio = ( isset( $b['aspect'] ) && in_array( (string) $b['aspect'], array( '16x9', '4x3', '1x1', '21x9', '9x16', '3x4' ), true ) ) ? (string) $b['aspect'] : '16x9';
 		// Portrait clips shouldn't be forced to a 600px-wide landscape box — narrow the max width.
-		$vwidth = in_array( $ratio, array( '9x16', '3x4' ), true ) ? 320 : 600;
+		$vwidth = ( isset( $b['width'] ) && (int) $b['width'] > 0 )
+			? (int) $b['width']
+			: ( in_array( $ratio, array( '9x16', '3x4' ), true ) ? 320 : 600 );
 		// Carry the source's responsive visibility (`sm:hidden` mobile-only reel → hidden on desktop, etc.).
 		$rhide = ( isset( $b['rhideCls'] ) && '' !== trim( (string) $b['rhideCls'] ) ) ? self::responsive_hide_from_classes( (string) $b['rhideCls'] ) : array();
 
@@ -2773,7 +3101,66 @@ class FW_Site_Converter_Mapper {
 			'bg_color'    => self::empty_color(),
 			'spacing'     => self::def_spacing(),
 			'animation'   => self::def_animation(),
-			'unique_id'   => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => '', 'responsive_hide' => $rhide, 'custom_attrs' => array(),
+			'unique_id'   => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => isset( $b['card_css'] ) ? (string) $b['card_css'] : '', 'responsive_hide' => $rhide, 'custom_attrs' => array(),
+		) );
+	}
+
+	/**
+	 * A single marquee/reel VIDEO CARD (`<div class="w-[280px] rounded-lg overflow-hidden"><video …></div>`)
+	 * → a native `media_video` shortcode node (self-hosted, autoplay/muted/loop/playsinline, object-fit cover,
+	 * portrait ratio) carrying the source card's width + radius + overflow. Replaces the old mirror_video_card
+	 * path (a raw `<video>` in a code_block wrapped in extra flexbox divs) so a reel card is ONE editable video
+	 * shortcode, not an opaque code block inside a chain of nested wrappers. Returns null when the card has no
+	 * resolvable <video> src, so the caller falls back to the structural mirror (a non-video marquee item).
+	 */
+	private static function video_card_to_node( $html ) {
+		$html = trim( (string) $html );
+		if ( '' === $html || ! class_exists( 'DOMDocument' ) ) { return null; }
+		$doc  = new DOMDocument();
+		$prev = libxml_use_internal_errors( true );
+		$ok   = $doc->loadHTML( '<?xml encoding="utf-8"?><div id="scvcard">' . $html . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+		libxml_clear_errors();
+		libxml_use_internal_errors( $prev );
+		$root  = $ok ? $doc->getElementById( 'scvcard' ) : null;
+		$video = ( $root instanceof DOMElement ) ? $root->getElementsByTagName( 'video' )->item( 0 ) : null;
+		if ( ! ( $video instanceof DOMElement ) ) { return null; }
+		// src — the <video src> or its first <source src>.
+		$src = trim( (string) $video->getAttribute( 'src' ) );
+		if ( '' === $src ) { $s = $video->getElementsByTagName( 'source' )->item( 0 ); if ( $s instanceof DOMElement ) { $src = trim( (string) $s->getAttribute( 'src' ) ); } }
+		if ( '' === $src ) { return null; }
+		$vcls = ' ' . strtolower( (string) $video->getAttribute( 'class' ) ) . ' ';
+		// aspect-[9/16] → 9x16 (only the ratios media_video offers; else let n_video default).
+		$aspect = '';
+		if ( preg_match( '/aspect-\[(\d+)\s*\/\s*(\d+)\]/', $vcls, $am ) ) {
+			$cand = $am[1] . 'x' . $am[2];
+			if ( in_array( $cand, array( '16x9', '4x3', '1x1', '21x9', '9x16', '3x4' ), true ) ) { $aspect = $cand; }
+		}
+		$cover = ( strpos( $vcls, 'object-cover' ) !== false || strpos( $vcls, 'object-fill' ) !== false );
+		$flag  = function ( $a ) use ( $video ) { return $video->hasAttribute( $a ) ? 'yes' : 'no'; };
+		// The card box (width / radius / overflow) from the WRAPPER's classes — carried as the video's own
+		// Custom CSS + flex-shrink:0 so a reel card keeps its width in the scrolling row.
+		$wrap = ( $video->parentNode instanceof DOMElement && $video->parentNode !== $root ) ? $video->parentNode : $root;
+		$wcls = ' ' . strtolower( (string) $wrap->getAttribute( 'class' ) ) . ' ';
+		$width = 0;
+		if ( preg_match( '/\bw-\[(\d+)px\]/', $wcls, $wm ) ) { $width = (int) $wm[1]; }
+		$radmap = array( 'rounded-full' => 9999, 'rounded-3xl' => 24, 'rounded-2xl' => 16, 'rounded-xl' => 12, 'rounded-lg' => 8, 'rounded-md' => 6, 'rounded-sm' => 2 );
+		$radius = 0;
+		foreach ( $radmap as $cl => $px ) { if ( strpos( $wcls, ' ' . $cl . ' ' ) !== false ) { $radius = $px; break; } }
+		if ( 0 === $radius && strpos( $wcls, ' rounded ' ) !== false ) { $radius = 4; }
+		// PIN the card width with an explicit flex-basis (NOT just max-width) — in the marquee's `width:max-content`
+		// flex row a media_video that only caps max-width collapses to a sliver (~48px). flex:0 0 <w> fixes the
+		// track slot; the ratio box then drives the height. Fall back to flex-shrink:0 when no source width.
+		$decls = ( $width > 0 )
+			? array( 'flex:0 0 ' . $width . 'px', 'width:' . $width . 'px', 'max-width:' . $width . 'px' )
+			: array( 'flex-shrink:0' );
+		if ( $radius > 0 ) { $decls[] = 'border-radius:' . $radius . 'px'; $decls[] = 'overflow:hidden'; }
+		$card_css = 'selector{' . implode( ';', $decls ) . ';}';
+		return self::n_video( array(
+			'mode' => 'self_hosted', 'src' => $src, 'aspect' => $aspect, 'cover' => $cover,
+			'autoplay' => $flag( 'autoplay' ), 'loop' => $flag( 'loop' ),
+			'muted' => ( $video->hasAttribute( 'muted' ) || $video->hasAttribute( 'autoplay' ) ) ? 'yes' : 'no',
+			'playsinline' => $flag( 'playsinline' ), 'controls' => $video->hasAttribute( 'controls' ) ? 'yes' : 'no',
+			'width' => $width, 'card_css' => $card_css,
 		) );
 	}
 
@@ -3536,15 +3923,21 @@ class FW_Site_Converter_Mapper {
 		$src    = ( isset( $b['images'] ) && is_array( $b['images'] ) ) ? $b['images'] : array();
 		$images = array();
 		$spans  = array();
+		$any_caption = false;
 		foreach ( $src as $im ) {
 			$url = trim( (string) ( $im['url'] ?? '' ) );
 			if ( '' === $url ) { continue; }
-			$uv = self::upload_val( $url );
-			$images[] = array(
+			$uv  = self::upload_val( $url );
+			$cap = trim( (string) ( $im['caption'] ?? '' ) );
+			$row = array(
 				'attachment_id' => ( isset( $uv['attachment_id'] ) && $uv['attachment_id'] !== '' ) ? $uv['attachment_id'] : '',
 				'url'           => ( isset( $uv['url'] ) && $uv['url'] !== '' ) ? $uv['url'] : $url,
 			);
-			$spans[] = max( 1, (int) ( $im['span'] ?? 1 ) );
+			// Per-tile caption text (a source image-tile with a caption overlaid on the photo) → carried INLINE
+			// on the gallery value; the gallery view's normalizer prefers it over the attachment's own field.
+			if ( '' !== $cap ) { $row['caption'] = $cap; $any_caption = true; }
+			$images[] = $row;
+			$spans[]  = max( 1, (int) ( $im['span'] ?? 1 ) );
 		}
 		if ( count( $images ) < 3 ) { return self::n_code( (string) ( $b['html'] ?? '' ) ); }
 		$count = count( $images );
@@ -3566,6 +3959,16 @@ class FW_Site_Converter_Mapper {
 		$atts['click_action'] = 'lightbox';
 		$atts['rounded']      = 'rounded';
 		$atts['hover_zoom']   = 'yes';
+		// CAPTIONS — when the source tiles carry a caption overlaid on the photo (a permanent title over a
+		// gradient scrim, the classic image-tile look), reproduce it with the gallery's always-visible overlay
+		// caption mode, sourced from the inline per-image caption carried above. `$b['captions']` is the
+		// recognizer's read of HOW the caption sat on the tile ('overlay' = pinned over a scrim; 'below' = under
+		// the image); default to overlay when captions exist but the mode wasn't classified.
+		if ( $any_caption ) {
+			$cap_mode = ( isset( $b['captions'] ) && in_array( $b['captions'], array( 'overlay', 'hover', 'below' ), true ) ) ? $b['captions'] : 'overlay';
+			$atts['captions']       = $cap_mode;
+			$atts['caption_source'] = 'caption';
+		}
 		// DESIGN — mirror the source gallery's presentation (Grid / Masonry / Metro / Carousel / Marquee)
 		// when the converter classified it (detect_gallery_design); else the uniform Grid. Only the chosen
 		// design + its column/per-view count are set — every design's other defaults stay intact.
@@ -3576,6 +3979,12 @@ class FW_Site_Converter_Mapper {
 			// The default atts only materialize the 'grid' branch, so CREATE a design's branch when picking a
 			// non-grid design (the shortcode fills the rest from its own defaults — only `design` is required).
 			if ( ! isset( $atts['design_settings'][ $dkey ] ) || ! is_array( $atts['design_settings'][ $dkey ] ) ) { $atts['design_settings'][ $dkey ] = array(); }
+			// IMAGE RATIO — reproduce the source tile crop (e.g. `aspect-[3/4]` tall portrait) so the photos
+			// aren't squashed into the gallery's default Landscape 4:3. Applies to every design that crops tiles.
+			$ratio_slug = ( isset( $b['ratio'] ) && $b['ratio'] !== '' ) ? (string) $b['ratio'] : '';
+			if ( '' !== $ratio_slug && isset( $atts['design_settings'][ $dkey ] ) && is_array( $atts['design_settings'][ $dkey ] ) ) {
+				$atts['design_settings'][ $dkey ]['ratio'] = $ratio_slug;
+			}
 			if ( 'grid' === $dkey ) {
 				// Uniform grid — carry the source col-spans as the per-column ratio (a featured tile stays wider).
 				// The gallery view reads the desktop column COUNT from INSIDE `columns` ({ count:'N', 'N':{…} }) — a
@@ -3733,6 +4142,165 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/**
+	 * A DECORATIVE RULE BAR — a source `<div class="w-16 md:w-24 h-1 bg-primary mx-auto">` accent underline
+	 * (no text, small height, a fill) → a native, editable box (a display:block flexbox carrying the bar's
+	 * colour on the NATIVE background option — comma-safe, unlike custom_css — and its width/height/radius +
+	 * centring in comma-free custom_css). Returns null when $el isn't a rule bar, so callers fall through.
+	 */
+	/** Parse an HTML fragment and return the first real content element, descending past `.sc-tw` wrappers. */
+	private static function first_content_el( $html ) {
+		$html = trim( (string) $html );
+		if ( '' === $html || ! class_exists( 'DOMDocument' ) ) { return null; }
+		$doc  = new DOMDocument();
+		$prev = libxml_use_internal_errors( true );
+		$ok   = $doc->loadHTML( '<?xml encoding="utf-8"?><div id="scfce">' . $html . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+		libxml_clear_errors();
+		libxml_use_internal_errors( $prev );
+		$root = $ok ? $doc->getElementById( 'scfce' ) : null;
+		if ( ! ( $root instanceof DOMElement ) ) { return null; }
+		$first = function ( $p ) { foreach ( $p->childNodes as $c ) { if ( $c instanceof DOMElement ) { return $c; } } return null; };
+		$el = $first( $root );
+		while ( $el instanceof DOMElement && false !== strpos( ' ' . strtolower( (string) $el->getAttribute( 'class' ) ) . ' ', ' sc-tw ' ) ) {
+			$next = $first( $el );
+			if ( ! ( $next instanceof DOMElement ) ) { break; }
+			$el = $next;
+		}
+		return ( $el instanceof DOMElement ) ? $el : null;
+	}
+
+	private static function n_rule_bar( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return null; }
+		if ( '' !== trim( preg_replace( '/\s+/', ' ', (string) $el->textContent ) ) ) { return null; } // has text → not a rule
+		if ( $el->getElementsByTagName( 'img' )->length || $el->getElementsByTagName( 'svg' )->length ) { return null; }
+		$props = self::mirror_class_props( $el, array( 'width', 'height', 'border-radius' ) );
+		$h = isset( $props['height'] ) ? trim( (string) $props['height'] ) : '';
+		// The bar height is the rule THICKNESS. Accept px OR rem (Tailwind `h-1` resolves to `0.25rem`, not `4px`,
+		// so a px-only guard silently dropped every rem-valued accent bar — the "Our Menu" underline vanishing).
+		// px_of() normalises px/rem/unitless → px. A rule is thin (≤12px); 0/none disqualifies it.
+		$hpx = self::px_of( $h );
+		if ( $hpx <= 0 || $hpx > 12 ) { return null; }
+		$bg = self::catalog_el_bg( $el );
+		if ( '' === $bg || stripos( $bg, 'var(' ) !== false ) {
+			// A stripped verbatim bar carries no computed style, so a SEMANTIC fill (`bg-primary`,
+			// `bg-primary-foreground`, `bg-accent`) can't resolve from the class alone — look the token up in the
+			// captured design-token colour map so the accent bar keeps its real colour.
+			if ( preg_match( '/\bbg-([a-z][a-z0-9-]*)\b/', strtolower( (string) $el->getAttribute( 'class' ) ), $tm ) ) {
+				$cmap = ( isset( self::$style_cfg['colors'] ) && is_array( self::$style_cfg['colors'] ) ) ? self::$style_cfg['colors'] : array();
+				foreach ( array( $tm[1], str_replace( '-', '', $tm[1] ), str_replace( '-', '_', $tm[1] ) ) as $k ) {
+					if ( isset( $cmap[ $k ] ) && '' !== trim( (string) $cmap[ $k ] ) ) { $bg = trim( (string) $cmap[ $k ] ); break; }
+				}
+			}
+		}
+		if ( '' === $bg || stripos( $bg, 'var(' ) !== false || stripos( $bg, 'transparent' ) !== false ) { return null; }
+		$w = isset( $props['width'] ) ? trim( (string) $props['width'] ) : '';
+		// A decorative accent bar → a NATIVE Divider (Standard solid line), not an opaque styled box: its Line
+		// Thickness = the bar height (normalised to px above), its Width = the bar length, centered, and coloured
+		// via Line Color. This keeps it a real, editable Divider element (the framework HAS a divider shortcode)
+		// instead of a bare flexbox box — the divider now carries a Line Thickness + a pixel Width unit, the two
+		// options it previously lacked to express this common motif.
+		$atts = array(
+			'style' => array(
+				'ruler_type' => 'line',
+				// line_thickness lives under the multi-picker's line branch (it applies to the std design).
+				'line'       => array( 'line_design' => 'std', 'content_type' => 'none', 'alignment' => 'center', 'line_thickness' => (string) round( $hpx ) ),
+			),
+			'line_color' => array( 'predefined' => '', 'custom' => $bg ),
+		);
+		// Width: a `%` stays a percentage; a px/rem length becomes a fixed pixel Width (rem → px). A bare `100%`
+		// full-bleed rule needs no explicit width (the divider defaults to 100%).
+		if ( preg_match( '/^([0-9.]+)%$/', $w, $wm ) ) {
+			if ( (float) $wm[1] < 100 ) { $atts['width'] = $wm[1]; $atts['width_unit'] = '%'; }
+		} elseif ( '' !== $w ) {
+			$wpx = self::px_of( $w );
+			if ( $wpx > 0 ) { $atts['width'] = (string) round( $wpx ); $atts['width_unit'] = 'px'; }
+		}
+		return array( 'type' => 'simple', 'shortcode' => 'divider', '_items' => array(), 'atts' => $atts );
+	}
+
+	/**
+	 * A semantic `<hr>` → a native Divider (Standard solid line, full width). Carries a resolved Line Color and,
+	 * when the rule is thicker than a hairline, a Line Thickness — from the border-top / height / background in the
+	 * element's classes or computed style. Colourless rules inherit the theme's currentColor. Returns a divider node.
+	 */
+	private static function n_hr_divider( DOMElement $el ) {
+		$atts = array(
+			'style' => array( 'ruler_type' => 'line', 'line' => array( 'line_design' => 'std', 'content_type' => 'none', 'alignment' => 'center' ) ),
+		);
+		// Colour: an explicit fill (`bg-*`) or the border/text colour from data-sc-cs. Skip transparent / var().
+		$lc  = self::catalog_el_bg( $el );
+		$cs  = self::cs_decls( (string) $el->getAttribute( 'data-sc-cs' ), array( 'border-top-color', 'color', 'border-top-width', 'height' ) );
+		if ( '' === $lc || stripos( $lc, 'var(' ) !== false || stripos( $lc, 'transparent' ) !== false ) {
+			$lc = '';
+			foreach ( array( 'border-top-color', 'color' ) as $ck ) {
+				$cv = isset( $cs[ $ck ] ) ? trim( (string) $cs[ $ck ] ) : '';
+				if ( '' !== $cv && stripos( $cv, 'var(' ) === false && stripos( $cv, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $cv ) ) { $lc = $cv; break; }
+			}
+		}
+		if ( '' !== $lc ) { $atts['line_color'] = array( 'predefined' => '', 'custom' => $lc ); }
+		// Thickness: a border-top-width / height above a hairline (source `border-t-2`, `h-1`) → Line Thickness.
+		$cls = self::mirror_class_props( $el, array( 'border-top-width', 'height' ) );
+		$tpx = self::px_of( isset( $cls['border-top-width'] ) ? $cls['border-top-width'] : ( isset( $cs['border-top-width'] ) ? $cs['border-top-width'] : '' ) );
+		if ( $tpx <= 0 ) { $tpx = self::px_of( isset( $cls['height'] ) ? $cls['height'] : ( isset( $cs['height'] ) ? $cs['height'] : '' ) ); }
+		if ( $tpx > 1 && $tpx <= 12 ) { $atts['style']['line']['line_thickness'] = (string) round( $tpx ); }
+		return array( 'type' => 'simple', 'shortcode' => 'divider', '_items' => array(), 'atts' => $atts );
+	}
+
+	/**
+	 * A SECTION-HEADING INTRO block (`<div class="text-center"><h2>Our Menu</h2><div class="… h-1 bg-primary
+	 * mx-auto"></div></div>`) → a native special_heading (title, level, centre, uppercase, colour) plus the
+	 * decorative rule bar as a native box, stacked in a centred column — instead of an opaque `.sc-tw` code
+	 * block. Used by the tabs/menu section heading + the catalog band heading. Returns null (caller keeps the
+	 * verbatim block) when there's no resolvable heading.
+	 */
+	private static function n_intro_heading( $html ) {
+		$html = trim( (string) $html );
+		if ( '' === $html || ! class_exists( 'DOMDocument' ) ) { return null; }
+		$doc  = new DOMDocument();
+		$prev = libxml_use_internal_errors( true );
+		$ok   = $doc->loadHTML( '<?xml encoding="utf-8"?><div id="scih">' . $html . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+		libxml_clear_errors();
+		libxml_use_internal_errors( $prev );
+		$root = $ok ? $doc->getElementById( 'scih' ) : null;
+		if ( ! ( $root instanceof DOMElement ) ) { return null; }
+		$h = null;
+		foreach ( array( 'h1', 'h2', 'h3', 'h4' ) as $ht ) { $x = $root->getElementsByTagName( $ht )->item( 0 ); if ( $x instanceof DOMElement ) { $h = $x; break; } }
+		if ( ! ( $h instanceof DOMElement ) ) { return null; }
+		$text = trim( preg_replace( '/\s+/', ' ', (string) $h->textContent ) );
+		if ( '' === $text ) { return null; }
+		$hcls = ' ' . strtolower( (string) $h->getAttribute( 'class' ) ) . ' ';
+		$hcs  = (string) $h->getAttribute( 'data-sc-cs' );
+		// Reproduce the RENDERED casing: a text-transform:uppercase title (`uppercase` class or computed) shows
+		// all-caps, so bake it into the title text (simplest, exact, and survives class-stripping).
+		if ( strpos( $hcls, ' uppercase ' ) !== false || preg_match( '/text-transform\s*:\s*uppercase/i', $hcs ) ) {
+			$text = function_exists( 'mb_strtoupper' ) ? mb_strtoupper( $text, 'UTF-8' ) : strtoupper( $text );
+		}
+		$level = (int) substr( strtolower( $h->nodeName ), 1 );
+		if ( $level < 1 || $level > 6 ) { $level = 2; }
+		$align = ( false !== stripos( $html, 'text-center' ) || preg_match( '/text-align\s*:\s*center/i', $hcs ) ) ? 'center' : '';
+		$hc    = self::cs_decls( $hcs, array( 'color' ) );
+		$heading = self::n_heading( array(
+			'title' => $text, 'level' => $level, 'align' => $align,
+			'title_class' => (string) $h->getAttribute( 'class' ), 'title_cs' => $hcs,
+			'title_color_src' => isset( $hc['color'] ) ? trim( (string) $hc['color'] ) : '',
+		) );
+		if ( ! is_array( $heading ) ) { return null; }
+		$items = array( $heading );
+		// Optional decorative rule bar below the title.
+		foreach ( $root->getElementsByTagName( 'div' ) as $d ) {
+			$bar = self::n_rule_bar( $d );
+			if ( is_array( $bar ) ) { $items[] = $bar; break; }
+		}
+		if ( count( $items ) === 1 ) { return $heading; }
+		return self::n_flexbox( $items, array(
+			'display'     => 'flex',
+			'direction'   => array( 'base' => 'column', 'md' => '', 'lg' => '' ),
+			'align_items' => array( 'base' => 'center', 'md' => '', 'lg' => '' ),
+			'wrap'        => array( 'base' => 'no', 'md' => '', 'lg' => '' ),
+			'gap'         => array( 'base' => self::gap_slug( '8px' ), 'md' => '', 'lg' => '' ),
+		) );
+	}
+
+	/**
 	 * A native `tabs` shortcode node from a captured tab widget (recognizer block `{ items:[{title,content,active}] }`).
 	 * Each item → one `tabs` entry `{ tab_title, tab_content, is_active }` (Content layout). See tabs.md.
 	 */
@@ -3745,9 +4313,20 @@ class FW_Site_Converter_Mapper {
 			if ( '' === $title ) { continue; }
 			$active = ( ! $have_active && 'yes' === ( $it['active'] ?? 'no' ) ) ? 'yes' : 'no';
 			if ( 'yes' === $active ) { $have_active = true; }
+			// A RICH panel → a SNIPPET: the panel HTML becomes a `snippet` CPT (a Code Block wrapped in `.sc-tw`
+			// so the offline Tailwind reproducer paints it), and the tab content is the `[snippet id="…"]`
+			// reference. Keeps a 30 KB catalog out of the wp-editor tab field (which would wpautop/kses-mangle it
+			// and drop the Tailwind classes). Falls back to inline content when the snippet couldn't be created
+			// (no WP / Snippets extension inactive) — the same verbatim `.sc-tw` block, just placed inline.
+			$content = (string) ( $it['content'] ?? '' );
+			if ( ! empty( $it['snippet'] ) && '' !== trim( $content ) ) {
+				$sid = self::ensure_snippet( $title, $content );
+				if ( $sid > 0 ) { $content = '[snippet id="' . $sid . '"]'; }
+				else            { $content = '<div class="sc-tw">' . $content . '</div>'; }
+			}
 			$tabs[] = array(
 				'tab_title'   => $title,
-				'tab_content' => (string) ( $it['content'] ?? '' ),
+				'tab_content' => $content,
 				'tab_image'   => '',
 				'badge'       => '',
 				'icon'        => self::icon_none(),
@@ -3763,7 +4342,538 @@ class FW_Site_Converter_Mapper {
 		$overlay = array( 'tabs' => $tabs );
 		if ( ! empty( $d['orientation'] ) ) { $overlay['orientation'] = (string) $d['orientation']; }
 		if ( ! empty( $d['tab_style'] ) )   { $overlay['design'] = (string) $d['tab_style']; }
-		return self::finalize_widget( 'tabs', $overlay );
+		// Nav placement — the source's centered pill toggle (`flex justify-center`) → the native Tab Alignment
+		// option (start/center/end), so the nav isn't pinned left.
+		if ( ! empty( $d['alignment'] ) ) { $overlay['alignment'] = (string) $d['alignment']; }
+		// Content panel box — a frameless source panel (no border/fill of its own) → drop the shortcode's default
+		// bordered/padded white box, so the content (a card grid, etc.) sits flush instead of inside a framed panel.
+		if ( ! empty( $d['content_frame'] ) ) { $overlay['content_frame'] = (string) $d['content_frame']; }
+		// Brand-pill SKIN — reproduce the source segmented control's exact look (muted track + primary border +
+		// full radius; a primary-filled active pill; uppercase tracking) as scoped custom_css on the tabs, since
+		// the design's default segmented style is a generic white pill. Colours are hex (comma-free custom_css).
+		if ( ! empty( $d['pill'] ) && is_array( $d['pill'] ) ) {
+			$pc = self::tabs_pill_css( $d['pill'] );
+			if ( '' !== $pc ) { $overlay['custom_css'] = $pc; }
+		}
+		$tabs_node = self::finalize_widget( 'tabs', $overlay );
+		// A SHARED section heading hoisted out of the panels (the "OUR MENU" title) → render it ONCE above the
+		// tabs. Emit heading + tabs stacked in a block container so the pair lands in the section's column.
+		if ( ! empty( $b['section_heading']['html'] ) ) {
+			// Native special_heading (+ rule bar) instead of an opaque code block; verbatim only if it can't parse.
+			$heading = self::n_intro_heading( (string) $b['section_heading']['html'] );
+			if ( ! is_array( $heading ) ) { $heading = self::n_code( '<div class="sc-tw" style="text-align:center">' . (string) $b['section_heading']['html'] . '</div>' ); }
+			return self::n_flexbox( array( $heading, $tabs_node ), array(
+				'display'   => 'flex',
+				'direction' => array( 'base' => 'column', 'md' => '', 'lg' => '' ),
+				'wrap'      => array( 'base' => 'no', 'md' => '', 'lg' => '' ),
+			) );
+		}
+		return $tabs_node;
+	}
+
+	/**
+	 * The captured segmented-pill tokens ({ track_bg, track_bw, track_bc, track_radius, active_bg, active_color,
+	 * active_radius, text_transform, letter_spacing }) → scoped `selector …{…}` custom_css that repaints the tabs
+	 * nav to match the source brand-pill toggle. Colours are hex (a comma-bearing rgb()/hsl() silently voids the
+	 * custom_css pipeline); the visual overrides carry `!important` to beat the design's equal-specificity defaults.
+	 */
+	private static function tabs_pill_css( array $p ) {
+		$hex = function ( $c ) { $h = self::rgb_to_hex( (string) $c ); return '' !== $h ? $h : ''; };
+		$track = array(); $link = array(); $active = array();
+		$tbg = isset( $p['track_bg'] ) ? $hex( $p['track_bg'] ) : '';
+		if ( '' !== $tbg ) { $track[] = 'background:' . $tbg . ' !important'; }
+		if ( ! empty( $p['track_bw'] ) && ! empty( $p['track_bc'] ) ) {
+			$bc = $hex( $p['track_bc'] );
+			if ( '' !== $bc ) { $track[] = 'border:' . $p['track_bw'] . ' solid ' . $bc . ' !important'; }
+		}
+		if ( ! empty( $p['track_radius'] ) ) { $track[] = 'border-radius:' . $p['track_radius'] . ' !important'; }
+		$link_radius = ! empty( $p['active_radius'] ) ? $p['active_radius'] : ( ! empty( $p['track_radius'] ) ? $p['track_radius'] : '' );
+		if ( '' !== $link_radius ) { $link[] = 'border-radius:' . $link_radius . ' !important'; }
+		if ( ! empty( $p['text_transform'] ) && 'none' !== strtolower( $p['text_transform'] ) ) { $link[] = 'text-transform:' . $p['text_transform']; }
+		if ( ! empty( $p['letter_spacing'] ) && 'normal' !== strtolower( $p['letter_spacing'] ) ) { $link[] = 'letter-spacing:' . $p['letter_spacing']; }
+		$link[] = 'opacity:1 !important'; // the source doesn't dim inactive tabs (the default segmented does)
+		$abg = isset( $p['active_bg'] ) ? $hex( $p['active_bg'] ) : '';
+		if ( '' !== $abg ) { $active[] = 'background:' . $abg . ' !important'; }
+		$afg = isset( $p['active_color'] ) ? $hex( $p['active_color'] ) : '';
+		if ( '' !== $afg ) { $active[] = 'color:' . $afg . ' !important'; }
+		if ( '' !== $link_radius ) { $active[] = 'border-radius:' . $link_radius . ' !important'; }
+		$css = '';
+		if ( $track )  { $css .= 'selector .nav{' . implode( ';', $track ) . '}'; }
+		if ( $link )   { $css .= 'selector .nav .nav-link{' . implode( ';', $link ) . '}'; }
+		if ( $active ) { $css .= 'selector .nav .nav-link.active{' . implode( ';', $active ) . '}'; }
+		return $css;
+	}
+
+	/**
+	 * A native MARQUEE from a detected auto-scroll ticker block `{ direction, gap, speed, pause, html }`. The
+	 * strip's items (one deduplicated set) ride inside a Code Block wrapped in `.sc-tw`, and the wrapping
+	 * container carries the Animation Engine **Marquee effect** (`marquee` att → `sc-marquee` + `data-mq-*` via
+	 * sc_build_wrapper_attr). This replaces the old verbatim code-block + CSS-keyframes shim: the motion is the
+	 * real, editable engine effect, and the container is a first-class builder element. The marquee runtime uses
+	 * the container's innerHTML as its repeating unit and re-duplicates it for the seamless loop.
+	 */
+	private static function n_marquee( array $b ) {
+		$html = (string) ( $b['html'] ?? '' );
+		if ( '' === trim( $html ) ) { return self::n_code( '' ); }
+		$dir   = ( ( $b['direction'] ?? 'left' ) === 'right' ) ? 'right' : 'left';
+		$gap   = (float) ( $b['gap'] ?? 40 );
+		$speed = in_array( ( $b['speed'] ?? 'normal' ), array( 'slow', 'normal', 'fast' ), true ) ? (string) $b['speed'] : 'normal';
+		$pause = ( ( $b['pause'] ?? 'yes' ) === 'no' ) ? 'no' : 'yes';
+		// DECOMPOSE the strip into native flexbox cards (faithful — each card keeps its width/aspect/radius and a
+		// background video), so the marquee is real builder elements, not a verbatim code block. Fall back to the
+		// verbatim `.sc-tw` block only if decomposition yields nothing usable.
+		$content = null;
+		$cards   = ( isset( $b['cards'] ) && is_array( $b['cards'] ) ) ? $b['cards'] : array();
+		if ( ! empty( $cards ) ) {
+			$card_nodes = array();
+			foreach ( $cards as $ch ) {
+				// A reel/video card → a native media_video shortcode placed DIRECTLY in the track (no per-card
+				// mirror wrappers, no code block). Non-video cards (logo strips, text) fall back to the structural
+				// mirror. This is what keeps section-3 flat — track → [media_video …] — instead of the old
+				// track → card-flexbox → code-block chain the user saw as "a lot of nested divs".
+				$node = self::video_card_to_node( (string) $ch );
+				if ( ! is_array( $node ) ) { $node = self::n_structural_mirror( (string) $ch ); }
+				if ( is_array( $node ) && 'code' !== ( $node['shortcode'] ?? '' ) ) { $card_nodes[] = $node; }
+			}
+			if ( count( $card_nodes ) >= 2 ) {
+				// One horizontal row = the marquee's repeating unit (kept as ONE child so the runtime loops it).
+				$content = self::n_flexbox( $card_nodes, array(
+					'display'    => 'flex',
+					'direction'  => array( 'base' => 'row', 'md' => '', 'lg' => '' ),
+					'wrap'       => array( 'base' => 'no', 'md' => '', 'lg' => '' ),
+					'custom_css' => 'selector{gap:' . rtrim( rtrim( number_format( $gap, 2, '.', '' ), '0' ), '.' ) . 'px;width:max-content;}',
+				) );
+			}
+		}
+		if ( null === $content ) { $content = self::n_code( '<div class="sc-tw">' . $html . '</div>' ); }
+		$mode_opts = array(
+			'speed'          => $speed,
+			'gap'            => $gap,
+			'separator'      => '',
+			'pause_on_hover' => $pause,
+			'edge_fade'      => 'no',
+		);
+		// FULL-BLEED — a ticker spans the viewport edge-to-edge (the source reel strip sits OUTSIDE the section's
+		// content container). Break the marquee out of the section's max-width wrapper with symmetric negative
+		// margins (kept in normal flow so it can't push the page wider — the `left:50%`+`-50vw` variant did).
+		// `.sc-marquee` overflow:hidden clips the off-screen track.
+		$fullbleed = 'selector{width:100vw;max-width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);}';
+		return self::n_flexbox( array( $content ), array(
+			'display'    => 'block',
+			'wrap'       => array( 'base' => 'no', 'md' => '', 'lg' => '' ),
+			'marquee'    => array( 'mode' => $dir, $dir => $mode_opts ),
+			'custom_css' => $fullbleed,
+		) );
+	}
+
+	/**
+	 * Create (or reuse) a `snippet` CPT holding a verbatim block, and return its post id — the deterministic
+	 * path's use of the Snippets extension. A rich tab panel (the jukebox menu catalog) becomes ONE snippet
+	 * whose page-builder tree is a single Code Block; the tab then references it with `[snippet id="…"]`. The
+	 * snippet CPT is non-public (SEO-safe) and renders through the real shortcode pipeline, so the `.sc-tw`
+	 * Tailwind reproducer paints it.
+	 *
+	 * IDEMPOTENT: keyed by `_sc_snippet_key` (from the tab title) so a re-convert UPDATES the same snippet
+	 * instead of spawning a duplicate. Returns 0 when snippets can't be created (no WP / extension inactive),
+	 * so the caller falls back to inline content.
+	 *
+	 * @param string $title tab title (→ snippet title + dedupe key)
+	 * @param string $html  verbatim HTML (already wrapped in `.sc-tw`)
+	 * @return int snippet post id, or 0
+	 */
+	private static function ensure_snippet( $title, $html ) {
+		if ( ! function_exists( 'wp_insert_post' ) || ! function_exists( 'fw_set_db_post_option' )
+			|| ! function_exists( 'post_type_exists' ) || ! post_type_exists( 'snippet' ) ) {
+			return 0;
+		}
+		$title = trim( (string) $title );
+		if ( '' === $title ) { $title = 'Snippet'; }
+		$key = 'sc-snippet-' . sanitize_title( $title );
+		// The snippet's builder tree: DECOMPOSE the panel into native, editable builder elements (colour bands →
+		// flexbox+bg, card grids → flexbox grids, item cards → flexbox, name/desc/price → heading+text). Fall
+		// back to a verbatim `.sc-tw` Code Block only when decomposition yields nothing better than a code block.
+		// A CATALOG (colour-banded category grids of item cards — the jukebox menu) → a SHALLOW native tree: one
+		// SECTION per band (carrying the band fill + padding) → a grid flexbox of card flexboxes (name+desc / price
+		// as text leaves). Deliberately shallow (2 flexbox levels inside a column) because the page-builder's
+		// structure corrector flattens deeper nesting. Falls back to a verbatim `.sc-tw` Code Block when the
+		// content isn't a recognizable catalog.
+		$catalog = self::decompose_catalog( (string) $html );
+		$tree    = ( is_array( $catalog ) && ! empty( $catalog ) ) ? $catalog : array( self::n_code( '<div class="sc-tw">' . (string) $html . '</div>' ) );
+		$json = function_exists( 'wp_json_encode' ) ? wp_json_encode( $tree ) : json_encode( $tree );
+		// Reuse the snippet a prior conversion made for this key (update it) — never duplicate on re-convert.
+		$existing = get_posts( array(
+			'post_type'   => 'snippet',
+			'post_status' => 'any',
+			'numberposts' => 1,
+			'fields'      => 'ids',
+			'meta_key'    => '_sc_snippet_key',
+			'meta_value'  => $key,
+			'suppress_filters' => true,
+		) );
+		$pid = ( is_array( $existing ) && ! empty( $existing ) ) ? (int) $existing[0] : 0;
+		if ( $pid > 0 ) {
+			wp_update_post( array( 'ID' => $pid, 'post_title' => $title, 'post_status' => 'publish' ) );
+		} else {
+			$pid = wp_insert_post( array(
+				'post_type'   => 'snippet',
+				'post_status' => 'publish',
+				'post_title'  => $title,
+			), true );
+			if ( is_wp_error( $pid ) || ! $pid ) { return 0; }
+			update_post_meta( (int) $pid, '_sc_snippet_key', $key );
+		}
+		fw_set_db_post_option( (int) $pid, 'page-builder', array( 'builder_active' => true, 'json' => $json ) );
+		update_post_meta( (int) $pid, '_fw_global_kind', 'section' );
+		return (int) $pid;
+	}
+
+	/**
+	 * SHALLOW catalog decomposer — a colour-banded list of category grids of item cards (a restaurant menu:
+	 * APPETIZERS band → a grid of {name, description, price} cards → CLASSIC BURGERS band → …). Returns a tree of
+	 * SECTIONS (one per band, carrying the band fill + padding), each holding a heading + a GRID flexbox of CARD
+	 * flexboxes (name+desc / price as text leaves) — deliberately only 2 flexbox levels deep so the page-builder
+	 * can serialise it. Returns null when the content isn't a recognizable catalog (caller keeps it verbatim).
+	 *
+	 * @param string $html panel HTML (data-sc-cs kept)
+	 * @return array|null
+	 */
+	private static function decompose_catalog( $html ) {
+		if ( '' === trim( (string) $html ) || ! class_exists( 'DOMDocument' ) ) { return null; }
+		$doc  = new DOMDocument();
+		$prev = libxml_use_internal_errors( true );
+		$ok   = $doc->loadHTML( '<?xml encoding="utf-8"?><div id="sccat">' . $html . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+		libxml_clear_errors();
+		libxml_use_internal_errors( $prev );
+		$root = $ok ? $doc->getElementById( 'sccat' ) : null;
+		if ( ! ( $root instanceof DOMElement ) ) { return null; }
+		// A band = the parent of a `grid-cols-*` grid that also holds a heading (h2/h3). Dedupe + keep order.
+		$bands = array();
+		foreach ( $root->getElementsByTagName( 'div' ) as $g ) {
+			if ( false === stripos( (string) $g->getAttribute( 'class' ), 'grid-cols' ) ) { continue; }
+			$band = $g->parentNode;
+			if ( ! ( $band instanceof DOMElement ) ) { continue; }
+			if ( ! $band->getElementsByTagName( 'h3' )->length && ! $band->getElementsByTagName( 'h2' )->length ) { continue; }
+			$seen = false; foreach ( $bands as $bb ) { if ( $bb['band'] === $band ) { $seen = true; break; } }
+			if ( ! $seen ) { $bands[] = array( 'band' => $band, 'grid' => $g ); }
+		}
+		if ( count( $bands ) < 2 ) { return null; }
+		$sections = array();
+		foreach ( $bands as $b ) {
+			$sec = self::catalog_band_to_section( $b['band'], $b['grid'] );
+			if ( is_array( $sec ) ) { $sections[] = $sec; }
+		}
+		return count( $sections ) >= 2 ? $sections : null;
+	}
+
+	/** One catalog band → a Section (band fill + vertical padding) holding a heading + a grid of card flexboxes. */
+	private static function catalog_band_to_section( DOMElement $band, DOMElement $grid ) {
+		// Band FILL — the arbitrary `bg-[hsl(…)]` resolves from the class; `bg-primary` only from the computed style.
+		$bgp = self::mirror_class_props( $band, array( 'background-color' ) );
+		$bg  = isset( $bgp['background-color'] ) ? trim( (string) $bgp['background-color'] ) : '';
+		if ( '' === $bg || stripos( $bg, 'var(' ) !== false ) {
+			$cbg = self::cs_decls( (string) $band->getAttribute( 'data-sc-cs' ), array( 'background-color' ) );
+			if ( isset( $cbg['background-color'] ) ) { $bg = trim( (string) $cbg['background-color'] ); }
+		}
+		// HEADING (h3 + its description <p>).
+		$h = $band->getElementsByTagName( 'h3' )->item( 0 );
+		if ( ! $h ) { $h = $band->getElementsByTagName( 'h2' )->item( 0 ); }
+		$heading_html = '';
+		if ( $h instanceof DOMElement ) {
+			$hs = self::mirror_text_style( $h );
+			$heading_html = '<h3' . ( '' !== $hs ? ' style="' . esc_attr( $hs ) . '"' : '' ) . '>' . esc_html( trim( preg_replace( '/\s+/', ' ', $h->textContent ) ) ) . '</h3>';
+			$hw = $h->parentNode;
+			if ( $hw instanceof DOMElement ) {
+				$dp = $hw->getElementsByTagName( 'p' )->item( 0 );
+				if ( $dp instanceof DOMElement ) {
+					$ds = self::mirror_text_style( $dp );
+					$heading_html .= '<p' . ( '' !== $ds ? ' style="' . esc_attr( $ds ) . '"' : '' ) . '>' . esc_html( trim( preg_replace( '/\s+/', ' ', $dp->textContent ) ) ) . '</p>';
+				}
+			}
+		}
+		// GRID of CARDS.
+		$card_nodes = array();
+		foreach ( self::mirror_child_els( $grid ) as $card ) { $n = self::catalog_card_node( $card ); if ( is_array( $n ) ) { $card_nodes[] = $n; } }
+		if ( empty( $card_nodes ) ) { return null; }
+		$cols = self::catalog_grid_cols( $grid );
+		// DESKTOP grid gutter — the `md:gap-5` (20px) that applies in the 4-col layout, not the mobile base
+		// `gap-3` (12px); fall back to the grid's computed gap, then 16px.
+		$gcls = ' ' . strtolower( (string) $grid->getAttribute( 'class' ) ) . ' ';
+		$dgap = '';
+		foreach ( array( 'xl', 'lg', 'md' ) as $bp ) { if ( preg_match( '/\b' . $bp . ':gap-(\d+(?:\.\d+)?)\b/', $gcls, $gm ) ) { $dgap = self::tw_len( $gm[1] ); break; } }
+		if ( '' === $dgap ) { $g = self::cs_decls( (string) $grid->getAttribute( 'data-sc-cs' ), array( 'gap' ) ); $dgap = isset( $g['gap'] ) ? (string) $g['gap'] : '16px'; }
+		$gapslug = self::gap_slug( $dgap );
+		$cols    = (int) $cols;
+		if ( $cols >= 2 && $cols <= 12 && 0 === 12 % $cols ) {
+			// FLEX-WRAP with per-card SPAN widths (1/N), NOT display:grid. Rationale: a display:grid flexbox
+			// renders correctly on the front end but the page-builder editor canvas can't preview a CSS grid — it
+			// lays the cards out in one bare inline row. A flex row of span-width cards previews as real columns in
+			// BOTH the editor AND the front end. Responsive: 1 col phone → 2 col tablet → N col desktop (the editor
+			// previews at desktop, so it shows the full N-column grid). The width preset's calc() accounts for the
+			// gutter, and fixed-width flex cards also stop a long name from squeezing the price off the card edge.
+			$span = self::flex_width_preset( (int) ( 12 / $cols ) );
+			foreach ( $card_nodes as &$cn ) {
+				if ( is_array( $cn ) ) {
+					$cn['atts']['width'] = array(
+						'base' => array( 'preset' => '12' ),   // phone: full width (1 col)
+						'md'   => array( 'preset' => '6' ),     // tablet: half (2 cols)
+						'lg'   => array( 'preset' => $span ),   // desktop: 1/N (N cols) — what the editor previews
+					);
+				}
+			}
+			unset( $cn );
+			$grid_node = self::n_flexbox( $card_nodes, array(
+				'display'   => 'flex',
+				'direction' => array( 'base' => 'row', 'md' => '', 'lg' => '' ),
+				'wrap'      => array( 'base' => 'yes', 'md' => '', 'lg' => '' ),
+				// STRETCH (not start) so every card in a flex line grows to the tallest one's height — the source's
+				// equal-height card grid (a grid cell defaults to stretch). The card is a flex item, so it fills the
+				// line height; its own inner row stays top-aligned (price pinned to the top). A ragged, content-height
+				// row (align:start) was the "boxes not full height" miss.
+				'align_items' => array( 'base' => 'stretch', 'md' => '', 'lg' => '' ),
+				'gap'       => array( 'base' => $gapslug, 'md' => '', 'lg' => '' ),
+			) );
+		} else {
+			// N that doesn't divide 12 (5, 7, …) can't be a 12-col span grid → keep a real CSS grid.
+			$grid_node = self::n_flexbox( $card_nodes, array(
+				'display'      => 'grid',
+				'grid_columns' => (string) $cols,
+				'gap'          => array( 'base' => $gapslug, 'md' => '', 'lg' => '' ),
+			) );
+		}
+		// Vertical band padding (px-4 py-10 / md:py-16). Prefer the DESKTOP `py` (md:py-16 = 64px) over the mobile
+		// base so the bands breathe like the source; keep the base horizontal px.
+		$pad = self::mirror_class_props( $band, array( 'padding-top', 'padding-left' ) );
+		$bcls = ' ' . strtolower( (string) $band->getAttribute( 'class' ) ) . ' ';
+		$dpy = ''; $dpx = '';
+		foreach ( array( 'xl', 'lg', 'md' ) as $bp ) {
+			if ( '' === $dpy && preg_match( '/\b' . $bp . ':py-(\d+(?:\.\d+)?)\b/', $bcls, $ym ) ) { $dpy = self::tw_len( $ym[1] ); }
+			if ( '' === $dpy && preg_match( '/\b' . $bp . ':p-(\d+(?:\.\d+)?)\b/', $bcls, $pm2 ) ) { $dpy = self::tw_len( $pm2[1] ); }
+			if ( '' === $dpx && preg_match( '/\b' . $bp . ':px-(\d+(?:\.\d+)?)\b/', $bcls, $xm ) ) { $dpx = self::tw_len( $xm[1] ); }
+			if ( '' === $dpx && preg_match( '/\b' . $bp . ':p-(\d+(?:\.\d+)?)\b/', $bcls, $pm3 ) ) { $dpx = self::tw_len( $pm3[1] ); }
+		}
+		$pt  = '' !== $dpy ? $dpy : ( isset( $pad['padding-top'] ) ? $pad['padding-top'] : '40px' );
+		$px  = '' !== $dpx ? $dpx : ( isset( $pad['padding-left'] ) ? $pad['padding-left'] : '16px' );
+
+		// The band's CENTERED content container (source `max-w-6xl mx-auto`) — the max-w on a wrapper between the
+		// grid and the band, so the heading + card grid sit in a centered measure instead of spanning full width.
+		// The centered content cap lives on a wrapper AROUND the band (source `max-w-6xl mx-auto`, or a
+		// `md:container md:mx-auto`) — NOT between the grid and its own parent (the band IS the grid's parent), so
+		// walk the band and its ANCESTORS. A `max-w-*` or `container` class wins; a bare computed max-width is NOT
+		// used (a page often nests a wide theme wrapper — e.g. a 1600px shell — that is not the content cap).
+		$content_maxw = '';
+		$depth = 0;
+		for ( $w = $band; $w instanceof DOMElement && $depth < 8; $w = ( $w->parentNode instanceof DOMElement ? $w->parentNode : null ), $depth++ ) {
+			if ( 'sccat' === (string) $w->getAttribute( 'id' ) || 'section' === strtolower( $w->nodeName ) ) { break; }
+			$wc = ' ' . strtolower( (string) $w->getAttribute( 'class' ) ) . ' ';
+			if ( preg_match( '/\bmax-w-(sm|md|lg|xl|[2-7]xl|\[[^\]]+\])\b/', $wc, $mw ) ) {
+				$twmax = array( 'sm' => '24rem', 'md' => '28rem', 'lg' => '32rem', 'xl' => '36rem', '2xl' => '42rem', '3xl' => '48rem', '4xl' => '56rem', '5xl' => '64rem', '6xl' => '72rem', '7xl' => '80rem' );
+				$content_maxw = isset( $twmax[ $mw[1] ] ) ? $twmax[ $mw[1] ] : ( preg_match( '/\[(.+)\]/', $mw[1], $am ) ? $am[1] : '' );
+				break;
+			}
+			// Tailwind `container` (source `md:container md:mx-auto`) — a centered fixed-max-width band. It has no
+			// `max-w-*`, so read the capture-computed cap from its data-sc-cs (jukebox's container = 1400px); else
+			// the standard xl container (1280px).
+			if ( preg_match( '/(?:^|\s|:)container(?=\s|$)/', $wc ) ) {
+				$cmw = self::cs_decls( (string) $w->getAttribute( 'data-sc-cs' ), array( 'max-width' ) );
+				$mv  = isset( $cmw['max-width'] ) ? trim( (string) $cmw['max-width'] ) : '';
+				$content_maxw = ( '' !== $mv && 'none' !== $mv && preg_match( '/^[0-9.]+(px|rem)$/', $mv ) ) ? $mv : '1280px';
+				break;
+			}
+		}
+
+		// ALL-FLEXBOX band (no classic section/column). Inner = a centred, max-width content container holding the
+		// heading + card grid; outer = a full-width block flexbox carrying the band fill + vertical padding.
+		$col_items = array();
+		if ( '' !== $heading_html ) { $col_items[] = self::n_text( '<div class="sc-menu-band-head">' . $heading_html . '</div>' ); }
+		$col_items[] = $grid_node;
+		// The container-width measure. When a source cap was found on a band ancestor (`max-w-6xl` / `md:container`),
+		// use it. Otherwise — a TABBED catalog decomposes a tab-panel fragment whose `md:container` sits ABOVE the
+		// tabs, out of view — fall back to the SITE container width var (`--container-max-desktop`, set by the
+		// converted theme from the source's own container). `var(...)` is comma-free, so it survives custom_css.
+		$maxw_css = ( '' !== $content_maxw ) ? $content_maxw : 'var(--container-max-desktop, 1280px)';
+		$inner    = self::n_flexbox( $col_items, array( 'display' => 'block' ) );
+
+		// The band OUTER carries the fill + padding AND the container-width cap, centered — so a COLOURED band (the
+		// dark "Classic Burgers" panel) is ITSELF the container width like the source, its cards sitting just inside
+		// its `px-*` padding. Capping only the INNER instead left the fill full-bleed and inset the cards by an extra
+		// centring gap ON TOP of the padding (the "larger left/right padding" miss). A transparent band centres its
+		// content the same way. box-sizing:border-box (the framework reset) folds the padding into the max-width.
+		$band_node = self::n_flexbox( array( $inner ), array(
+			'display'    => 'block',
+			'custom_css' => 'selector{max-width:' . $maxw_css . ';margin-left:auto;margin-right:auto;padding:' . $pt . ' ' . $px . ';}',
+		) );
+		if ( '' !== $bg && stripos( $bg, 'transparent' ) === false && stripos( $bg, 'var(' ) === false ) {
+			$band_node['atts']['background']['color']['value']['custom'] = $bg;
+		}
+		return $band_node;
+	}
+
+	/** One item card → a card flexbox: name+description text on the left, price on the right (justify-between). */
+	/** Tailwind spacing scale N → px string (N × 4px; supports the `.5` step). */
+	private static function tw_len( $n ) { return rtrim( rtrim( number_format( (float) $n * 4, 2, '.', '' ), '0' ), '.' ) . 'px'; }
+
+	/**
+	 * The DESKTOP padding of a catalog band/card — the `md:`/`lg:`/`xl:` `p-*` / `py-* px-*` that actually applies
+	 * in the desktop multi-column grid, NOT the tighter mobile BASE (`p-4`). The source menu cards are `p-4 md:p-5`
+	 * (16→20px) and the grid `gap-3 md:gap-5` — reading only the base left every card + gutter too tight. Returns a
+	 * CSS padding value (uniform, or "py px") or '' when the element declares no responsive padding.
+	 */
+	private static function catalog_desktop_pad( DOMElement $el ) {
+		$cls = ' ' . strtolower( (string) $el->getAttribute( 'class' ) ) . ' ';
+		foreach ( array( 'xl', 'lg', 'md' ) as $bp ) {
+			if ( preg_match( '/\b' . $bp . ':p-(\d+(?:\.\d+)?)\b/', $cls, $m ) ) { return self::tw_len( $m[1] ); }
+			$py = preg_match( '/\b' . $bp . ':py-(\d+(?:\.\d+)?)\b/', $cls, $ym ) ? self::tw_len( $ym[1] ) : '';
+			$px = preg_match( '/\b' . $bp . ':px-(\d+(?:\.\d+)?)\b/', $cls, $xm ) ? self::tw_len( $xm[1] ) : '';
+			if ( '' !== $py || '' !== $px ) { return trim( ( '' !== $py ? $py : '0' ) . ' ' . ( '' !== $px ? $px : '0' ) ); }
+		}
+		return '';
+	}
+
+	private static function catalog_card_node( DOMElement $card ) {
+		// FILL via the NATIVE background option (custom_css with an hsl() colour — commas and all — doesn't survive
+		// the snippet render, but the native background-pro option does). Radius / padding (comma-free) → custom_css.
+		$bg = self::catalog_el_bg( $card );
+		$rp = self::mirror_class_props( $card, array( 'border-radius', 'padding', 'border-width', 'border-color' ) );
+		$radius = ( isset( $rp['border-radius'] ) && stripos( $rp['border-radius'], 'var(' ) === false ) ? trim( $rp['border-radius'] ) : '';
+		// Prefer the DESKTOP padding (md:p-5 = 20px) over the mobile base (p-4 = 16px) — the card renders in the
+		// desktop grid, so the tighter base left it cramped.
+		$dpad = self::catalog_desktop_pad( $card );
+		$pad  = ( '' !== $dpad ) ? $dpad
+			: ( ( isset( $rp['padding'] ) && stripos( $rp['padding'], 'var(' ) === false ) ? trim( $rp['padding'] ) : '16px' );
+		// A hairline card border (Tailwind `border` → border-width, `border-[hsl(…)]` → border-color). hsl() is
+		// converted to rgb — a bare hsl() with commas doesn't survive the custom_css pipeline.
+		$border = '';
+		$bwd = isset( $rp['border-width'] ) ? trim( $rp['border-width'] ) : '';
+		$bcl = isset( $rp['border-color'] ) ? self::catalog_hsl_to_rgb( trim( $rp['border-color'] ) ) : '';
+		if ( '' !== $bwd && ! in_array( $bwd, array( '0', '0px' ), true ) && '' !== $bcl && stripos( $bcl, 'var(' ) === false ) {
+			$border = 'border:' . $bwd . ' solid ' . $bcl;
+		}
+		// inner row (flex justify-between), else the card itself.
+		$row = null;
+		foreach ( $card->getElementsByTagName( 'div' ) as $d ) { if ( false !== strpos( ' ' . strtolower( (string) $d->getAttribute( 'class' ) ) . ' ', 'justify-between' ) ) { $row = $d; break; } }
+		if ( ! ( $row instanceof DOMElement ) ) { $row = $card; }
+		$namedesc = null; $price = null;
+		foreach ( self::mirror_child_els( $row ) as $ch ) {
+			if ( $ch->getElementsByTagName( 'h4' )->length || false !== strpos( ' ' . strtolower( (string) $ch->getAttribute( 'class' ) ) . ' ', 'flex-1' ) ) { $namedesc = $ch; }
+			elseif ( 'p' === strtolower( $ch->nodeName ) && null === $price ) { $price = $ch; }
+		}
+		// Inner ROW gap (source `gap-3` = 12px between the name column and the price).
+		$rgap = '';
+		if ( $row instanceof DOMElement ) { $rg = self::mirror_class_props( $row, array( 'gap' ) ); if ( isset( $rg['gap'] ) && preg_match( '/^[0-9]/', $rg['gap'] ) ) { $rgap = trim( $rg['gap'] ); } }
+
+		// TITLE (h4/h3) + DESCRIPTION (p, KEEPING its line-clamp), and the PRICE (p, nowrap).
+		$title_html = ''; $desc_html = '';
+		if ( $namedesc instanceof DOMElement ) {
+			$h4 = $namedesc->getElementsByTagName( 'h4' )->item( 0 );
+			if ( ! $h4 ) { $h4 = $namedesc->getElementsByTagName( 'h3' )->item( 0 ); }
+			if ( $h4 instanceof DOMElement ) {
+				$s   = self::mirror_text_style( $h4 );
+				$mb  = self::mirror_class_props( $h4, array( 'margin-bottom' ) ); // source `mb-2` = the title→desc gap
+				if ( isset( $mb['margin-bottom'] ) && preg_match( '/^[0-9]/', $mb['margin-bottom'] ) ) { $s = trim( $s . ( '' !== $s ? ';' : '' ) . 'margin-bottom:' . trim( $mb['margin-bottom'] ) ); }
+				$tg  = strtolower( $h4->nodeName );
+				$title_html = '<' . $tg . ( '' !== $s ? ' style="' . esc_attr( $s ) . '"' : '' ) . '>' . esc_html( trim( preg_replace( '/\s+/', ' ', $h4->textContent ) ) ) . '</' . $tg . '>';
+			}
+			$dp = $namedesc->getElementsByTagName( 'p' )->item( 0 );
+			if ( $dp instanceof DOMElement ) {
+				$s     = self::mirror_text_style( $dp );
+				$clamp = self::line_clamp_css( $dp ); // source `line-clamp-3` — truncate long descriptions to N lines
+				if ( '' !== $clamp ) { $s = trim( $s . ( '' !== $s ? ';' : '' ) . $clamp ); }
+				$desc_html = '<p' . ( '' !== $s ? ' style="' . esc_attr( $s ) . '"' : '' ) . '>' . esc_html( trim( preg_replace( '/\s+/', ' ', $dp->textContent ) ) ) . '</p>';
+			}
+		}
+		$price_html = '';
+		// The price is `whitespace-nowrap` and must NEVER shrink: `flex-shrink:0` keeps its full width so a tight
+		// row squeezes the flexible NAME column instead of collapsing the price to a clipped stub (the source
+		// `$19.95` cut to `$19.` under the card's `overflow:hidden`). A flex text_block otherwise defaults to
+		// `flex:0 1 auto` (shrink 1) and gives up its width first.
+		if ( $price instanceof DOMElement ) { $s = self::mirror_text_style( $price ); $price_html = '<p style="' . esc_attr( ( '' !== $s ? $s . ';' : '' ) . 'white-space:nowrap;flex:0 0 auto' ) . '">' . esc_html( trim( preg_replace( '/\s+/', ' ', $price->textContent ) ) ) . '</p>'; }
+
+		// Build the card as a REAL flexbox row: a flex-grow NAME COLUMN (the source `flex-1` — a genuine flex
+		// child, not an inert inner div) + the price. min-width:0 lets a long name/description shrink instead of
+		// squeezing the price off the card edge.
+		$col_children = array();
+		if ( '' !== $title_html ) { $col_children[] = self::n_text( $title_html ); }
+		if ( '' !== $desc_html )  { $col_children[] = self::n_text( $desc_html ); }
+		$items = array();
+		if ( $col_children ) {
+			// `flex-basis:0` (the source `flex-1` = `flex:1 1 0%`) — WITHOUT it the frontend `fw-grow-1` class sets
+			// only `flex-grow:1`, leaving `flex-basis:auto`, so the name column's base size is its huge max-content
+			// (the full unclamped description). That overflows the row and forces BOTH the name column and the nowrap
+			// price to shrink — collapsing the price to a clipped stub. With basis 0 the column takes only leftover
+			// space and the price keeps its natural width. `min-width:0` still lets the clamped text shrink freely.
+			$items[] = self::n_flexbox( $col_children, array(
+				'display'    => 'block',
+				'flex_grow'  => array( 'base' => 'yes', 'md' => '', 'lg' => '' ),
+				'custom_css' => 'selector{min-width:0;flex-basis:0}',
+			) );
+		}
+		if ( '' !== $price_html ) { $items[] = self::n_text( $price_html ); }
+		if ( empty( $items ) ) { return null; }
+		$cover = array(
+			'display'         => 'flex',
+			'direction'       => array( 'base' => 'row', 'md' => '', 'lg' => '' ),
+			'wrap'            => array( 'base' => 'no', 'md' => '', 'lg' => '' ),
+			'justify_content' => array( 'base' => 'between', 'md' => '', 'lg' => '' ),
+			'align_items'     => array( 'base' => 'start', 'md' => '', 'lg' => '' ),
+			'custom_css'      => 'selector{padding:' . $pad . ( '' !== $radius ? ';border-radius:' . $radius . ';overflow:hidden' : '' ) . ( '' !== $border ? ';' . $border : '' ) . '}',
+		);
+		if ( '' !== $rgap ) { $cover['gap'] = array( 'base' => self::gap_slug( $rgap ), 'md' => '', 'lg' => '' ); }
+		$node = self::n_flexbox( $items, $cover );
+		if ( '' !== $bg ) { $node['atts']['background']['color']['value']['custom'] = $bg; }
+		return $node;
+	}
+
+	/** Preserve an element's Tailwind `line-clamp-N` (or computed `-webkit-line-clamp`) as the webkit line-clamp
+	 *  box CSS, so a long description truncates with an ellipsis at N lines (uniform card heights). '' when none. */
+	private static function line_clamp_css( DOMElement $el ) {
+		$n = 0;
+		if ( preg_match( '/\bline-clamp-(\d+)\b/', strtolower( (string) $el->getAttribute( 'class' ) ), $m ) ) { $n = (int) $m[1]; }
+		if ( ! $n ) { $cs = self::cs_decls( (string) $el->getAttribute( 'data-sc-cs' ), array( '-webkit-line-clamp' ) ); if ( isset( $cs['-webkit-line-clamp'] ) && ctype_digit( trim( $cs['-webkit-line-clamp'] ) ) ) { $n = (int) $cs['-webkit-line-clamp']; } }
+		if ( $n < 1 ) { return ''; }
+		// `!important` on display: a theme/text-block rule forces `display:flow-root !important` on paragraphs,
+		// which would beat a plain inline `display:-webkit-box` and silently disable the clamp. Inline !important wins.
+		return 'display:-webkit-box !important;-webkit-line-clamp:' . $n . ';-webkit-box-orient:vertical;overflow:hidden';
+	}
+
+	/** An `hsl(H, S%, L%)` colour → `#rrggbb` (COMMA-FREE, so it survives custom_css — an `rgb()`/`hsl()` with
+	 *  commas silently voids the whole rule); a `#hex` passes through; anything else → '' (unusable in custom_css). */
+	private static function catalog_hsl_to_rgb( $c ) {
+		$c = trim( (string) $c );
+		if ( preg_match( '/^#[0-9a-f]{3,8}$/i', $c ) ) { return $c; }
+		if ( ! preg_match( '/hsla?\(\s*([0-9.]+)\s*[, ]\s*([0-9.]+)\s*%\s*[, ]\s*([0-9.]+)\s*%/i', $c, $m ) ) { return ''; }
+		$h = ( (float) $m[1] ) / 360; $s = ( (float) $m[2] ) / 100; $l = ( (float) $m[3] ) / 100;
+		if ( 0.0 === $s ) { $r = $g = $b = $l; } else {
+			$q   = $l < 0.5 ? $l * ( 1 + $s ) : $l + $s - $l * $s;
+			$p   = 2 * $l - $q;
+			$hue = function ( $p, $q, $t ) { if ( $t < 0 ) { $t += 1; } if ( $t > 1 ) { $t -= 1; } if ( $t < 1 / 6 ) { return $p + ( $q - $p ) * 6 * $t; } if ( $t < 1 / 2 ) { return $q; } if ( $t < 2 / 3 ) { return $p + ( $q - $p ) * ( 2 / 3 - $t ) * 6; } return $p; };
+			$r   = $hue( $p, $q, $h + 1 / 3 ); $g = $hue( $p, $q, $h ); $b = $hue( $p, $q, $h - 1 / 3 );
+		}
+		return sprintf( '#%02x%02x%02x', (int) round( $r * 255 ), (int) round( $g * 255 ), (int) round( $b * 255 ) );
+	}
+
+	/** An element's OPAQUE background colour (arbitrary `bg-[hsl(…)]` from the class; `bg-primary` from the
+	 *  computed style), normalised — or '' when transparent / none. */
+	private static function catalog_el_bg( DOMElement $el ) {
+		$bgp = self::mirror_class_props( $el, array( 'background-color' ) );
+		$bg  = isset( $bgp['background-color'] ) ? trim( (string) $bgp['background-color'] ) : '';
+		if ( '' === $bg || stripos( $bg, 'var(' ) !== false ) {
+			$c = self::cs_decls( (string) $el->getAttribute( 'data-sc-cs' ), array( 'background-color' ) );
+			if ( isset( $c['background-color'] ) ) { $bg = trim( (string) $c['background-color'] ); }
+		}
+		if ( '' === $bg || stripos( $bg, 'transparent' ) !== false || stripos( $bg, 'var(' ) !== false
+			|| preg_match( '/rgba?\([^)]*[,\/]\s*(?:0|0?\.[0-4]\d*)\s*\)/i', $bg ) ) { return ''; }
+		return $bg;
+	}
+
+	/** Column count of a responsive `grid-cols-*` grid at desktop (the highest breakpoint's grid-cols-N). */
+	private static function catalog_grid_cols( DOMElement $grid ) {
+		$cls  = (string) $grid->getAttribute( 'class' );
+		$best = 1; $best_order = -1;
+		$order = array( '' => 0, 'sm' => 1, 'md' => 2, 'lg' => 3, 'xl' => 4, '2xl' => 5 );
+		if ( preg_match_all( '/(?:^|\s)(?:(sm|md|lg|xl|2xl):)?grid-cols-(\d+)/', $cls, $m, PREG_SET_ORDER ) ) {
+			foreach ( $m as $mm ) { $bp = isset( $mm[1] ) ? $mm[1] : ''; $o = isset( $order[ $bp ] ) ? $order[ $bp ] : 0; if ( $o >= $best_order ) { $best_order = $o; $best = (int) $mm[2]; } }
+		}
+		return max( 1, min( 12, $best ) );
 	}
 
 	/**
@@ -5116,9 +6226,15 @@ class FW_Site_Converter_Mapper {
 		$html = (string) $html;
 		if ( $html === '' || false === stripos( $html, 'data-sc-cs' ) || stripos( $html, 'class' ) === false ) { return $html; }
 		$tok = '/(?:^|\s)(?:text|fill)-(?:muted-foreground|muted|accent|accent-foreground|destructive|destructive-foreground|card-foreground|popover-foreground|ring|input|border|secondary-foreground|primary-foreground)(?:\s|$)/';
-		return preg_replace_callback( '/<[a-zA-Z][a-zA-Z0-9]*\b[^>]*\bclass="[^"]*"[^>]*>/', function ( $tag ) use ( $tok ) {
+		// ALSO an ARBITRARY colour-FUNCTION bracket class — `text-[hsl(var(--brand-red))]`, `text-[oklch(…)]`,
+		// `text-[rgb(…)]`, `text-[var(--x)]` — a two-tone heading's accent span (jukebox's red "For Itself").
+		// These are DEAD in the builder (no Tailwind runtime, and the source `--brand-red` var isn't defined on
+		// the body), so the span inherits the heading's ink (white). Inject its captured computed colour instead.
+		// A bare `text-[#hex]` is NOT matched here — map_accent_classes() already inlines that one.
+		$arb = '/(?:^|\s)(?:text|fill)-\[[^\]]*(?:hsl|hsla|oklch|oklab|rgb\(|rgba\(|var\()[^\]]*\]/i';
+		return preg_replace_callback( '/<[a-zA-Z][a-zA-Z0-9]*\b[^>]*\bclass="[^"]*"[^>]*>/', function ( $tag ) use ( $tok, $arb ) {
 			$whole = $tag[0];
-			if ( ! preg_match( '/\bclass="([^"]*)"/', $whole, $cm ) || ! preg_match( $tok, ' ' . $cm[1] . ' ' ) ) { return $whole; }
+			if ( ! preg_match( '/\bclass="([^"]*)"/', $whole, $cm ) || ! ( preg_match( $tok, ' ' . $cm[1] . ' ' ) || preg_match( $arb, ' ' . $cm[1] . ' ' ) ) ) { return $whole; }
 			if ( ! preg_match( '/\bdata-sc-cs="[^"]*(?<![\w-])color:\s*([^;"]+)/i', $whole, $ccm ) ) { return $whole; }
 			$cv = trim( $ccm[1] );
 			if ( $cv === '' || stripos( $cv, 'transparent' ) !== false || preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $cv ) ) { return $whole; }
@@ -5672,13 +6788,45 @@ class FW_Site_Converter_Mapper {
 					if ( ! empty( $cc['card'] ) && is_array( $cc['card'] ) ) { $ci = array( self::n_icon_box( $cc['card'] ) ); }
 					elseif ( ! empty( $cc['buttons'] ) && is_array( $cc['buttons'] ) ) { $ci = array(); foreach ( $cc['buttons'] as $bt2 ) { $ci[] = self::n_button( (string) ( $bt2['label'] ?? 'Button' ), (string) ( $bt2['href'] ?? '#' ), (string) ( $bt2['cls'] ?? '' ), (string) ( $bt2['icon'] ?? '' ), 'after', (string) ( $bt2['cs'] ?? '' ) ); } }
 					elseif ( isset( $cc['text'] ) ) { $ci = array( self::n_text( is_array( $cc['text'] ) ? self::text_cell_to_html( $cc['text'] ) : (string) $cc['text'] ) ); }
-					elseif ( '' !== trim( (string) ( $cc['html'] ?? '' ) ) ) { $ci = array( self::n_code( (string) $cc['html'] ) ); }
+					elseif ( '' !== trim( (string) ( $cc['html'] ?? '' ) ) ) { // DECOMPOSE a styled cell (a locations/hours card: coloured box + text lines) into
+						// NATIVE elements via the structural mirror, instead of an opaque `.sc-tw` code block. A cell
+						// that is only a stray responsive `<style>` (no real content) is skipped — visibility is
+						// native; a genuinely deep/irregular cell still degrades to a code_block inside the mirror.
+						$chtml = (string) $cc['html'];
+						if ( '' === trim( preg_replace( '/<(style|script)\b[^>]*>.*?<\/\1>|\s+/is', '', $chtml ) ) ) { continue; }
+						$node = self::n_structural_mirror( $chtml );
+						if ( ! is_array( $node ) ) { continue; }
+						$ci = array( $node ); }
 					else { continue; }
 					$lay = self::col_layout( (string) ( $cc['cls'] ?? '' ) ); if ( null === $lay ) { $lay = self::geom_layout( isset( $cc['wResp'] ) ? $cc['wResp'] : null ); }
 					$w   = ( null !== $lay ) ? $lay['width'] : self::frac12( (int) round( 12 / max( 1, count( $b['cols'] ) ) ) );
 					$gcols[] = self::n_column( $w, $ci );
 				}
-				if ( $gcols ) { foreach ( $gcols as $nc ) { $items[] = $nc; } continue; }
+				if ( $gcols ) {
+					// EQUAL grid-cols-N whose N does NOT divide 12 (5/7/… — jukebox's 7-day hours row): the 12-col
+					// span model can't express 1/N, so spread-then-flexify wraps them (6+1). Wrap in a native
+					// N-track CSS grid so they sit in ONE row. Every other case spreads bare (flexify rows them up).
+					$ncol  = count( $gcols );
+					$equal = true; $dspan = null;
+					foreach ( $b['cols'] as $cc ) { if ( ! is_array( $cc ) ) { continue; } $d = (int) ( $cc['wResp']['desktop'] ?? 0 ); if ( null === $dspan ) { $dspan = $d; } elseif ( $d !== $dspan ) { $equal = false; break; } }
+					if ( $equal && $ncol >= 3 && $ncol <= 12 && 0 !== 12 % $ncol ) {
+						$gcells = array();
+						foreach ( $gcols as $nc ) { $gc = self::column_to_flexbox_cell( $nc ); unset( $gc['atts']['width'] ); $gcells[] = $gc; }
+						$grow = array( 'display' => 'grid', 'grid_columns' => (string) $ncol, 'direction' => array( 'base' => 'row', 'md' => '', 'lg' => '' ) );
+						$rgap = self::gap_slug( isset( $b['gap'] ) ? $b['gap'] : '' );
+						if ( '' !== $rgap ) { $grow['gap'] = array( 'base' => $rgap, 'md' => '', 'lg' => '' ); }
+						$gband = self::n_flexbox( $gcells, $grow );
+						$g_mt  = isset( $b['mt'] ) ? (float) $b['mt'] : 0.0; $g_mb = isset( $b['mb'] ) ? (float) $b['mb'] : 0.0;
+						if ( ( $g_mt > 0 || $g_mb > 0 ) && isset( $gband['atts']['spacing']['margin'] ) ) {
+							if ( $g_mt > 0 ) { $gband['atts']['spacing']['margin']['top']    = self::spacing_token( 'mt', $g_mt ); }
+							if ( $g_mb > 0 ) { $gband['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', $g_mb ); }
+						}
+						$items[] = $gband;
+						continue;
+					}
+					foreach ( $gcols as $nc ) { $items[] = $nc; }
+					continue;
+				}
 			}
 			$cell_native = array( 'table' => 'n_table', 'accordion' => 'n_accordion', 'tabs' => 'n_tabs', 'steps' => 'n_steps', 'timeline' => 'n_timeline', 'progress' => 'n_progress', 'pricing' => 'n_pricing', 'gallery' => 'n_gallery' );
 			if ( isset( $cell_native[ $bt ] ) && method_exists( __CLASS__, $cell_native[ $bt ] ) ) {
@@ -6992,7 +8140,15 @@ class FW_Site_Converter_Mapper {
 				$out[] = "/* ---- " . $label . " ---- */\n" . self::tidy_css( $flat );
 			}
 		}
-		return implode( "\n\n", $out );
+		$css = implode( "\n\n", $out );
+		// Translate any carried licensed DISPLAY face in a per-section rule (e.g. `#section-1 h2{font-family:
+		// "Neutraface Condensed Titling","Alfa Slab One",cursive}`) to its free Google lookalike (→ Oswald),
+		// mirroring the global --font-heading translation. An id-scoped section rule out-ranks the global
+		// `:is(h1…)` stack, so without this the hero heading still collapses to the coarse web-safe fallback.
+		if ( class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
+			$css = FW_Site_Converter_Theme_Generator::augment_carried_font_stacks( $css );
+		}
+		return $css;
 	}
 
 	/**
@@ -7275,6 +8431,20 @@ class FW_Site_Converter_Mapper {
 		} );
 		self::register_builder( 'code', function ( $b ) {
 			$html = (string) ( $b['html'] ?? '' );
+			// A CONTENT-LESS block — a stray responsive `<style>`/`<script>` the source uses for visibility
+			// toggles — carries nothing to render; drop it rather than surface an opaque code block (responsive
+			// visibility is reproduced natively). Returning null makes the caller skip the block.
+			if ( '' === trim( preg_replace( '/<(style|script)\b[^>]*>.*?<\/\1>|<[^>]+>|\s+/is', '', $html ) )
+				&& ! preg_match( '/<(img|svg|video|iframe|hr|input)\b/i', $html ) ) { return null; }
+			// A decorative accent RULE BAR kept verbatim (`<div class="sc-tw"><div class="w-24 h-1 bg-primary
+			// mx-auto"></div></div>`) → a native box, not a code block.
+			$bar_el = self::first_content_el( $html );
+			if ( $bar_el instanceof DOMElement ) { $bar = self::n_rule_bar( $bar_el ); if ( is_array( $bar ) ) { return $bar; } }
+			// A block flagged `verbatim` (a complex styled CARD kept whole inside `.sc-tw` — e.g. the location
+			// info card with icon SVGs, contact rows + hover effects) must NOT be structurally mirrored — the
+			// mirror decomposes it and drops most of its precise styling. Emit it faithfully (a deliberate
+			// fidelity trade-off; see the "styled content card: verbatim vs mirror" decision).
+			if ( ! empty( $b['verbatim'] ) ) { return self::n_code( $html ); }
 			// TIER-3: try a structural (nested-flexbox) mirror of an un-decomposable region — an EDITABLE
 			// clone. Prefer it ONLY when it yields a real multi-child container (a genuine layout to
 			// reproduce); a trivial region keeps its verbatim code_block (safest fidelity, no regression).
@@ -7869,6 +9039,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 				'instagram' => 'n_instagram', // detected Instagram feed → the [instagram] Library shortcode
 				'gallery'   => 'n_gallery',   // detected image-tile grid → the native gallery shortcode
 				'posts'     => 'n_posts',     // detected blog listing → the dynamic posts query shortcode
+				'marquee'   => 'n_marquee',   // detected auto-scroll ticker → a container + Animation Engine Marquee effect
 			);
 			$bt_native = $b['t'] ?? '';
 			if ( isset( $native_own[ $bt_native ] ) ) {
@@ -8195,9 +9366,12 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 						// A DECOMPOSED layout-row cell (a hero's text+CTA column) → build its blocks into the
 						// normal stacked shortcodes (special_heading + button… + …), NOT one opaque code_block.
 						$inner_items = self::build_cell_items( $c['blocks'] );
-						if ( ! $inner_items ) { $inner_items = array( self::n_code( (string) ( $c['html'] ?? '' ) ) ); }
+						if ( ! $inner_items ) { $inner_items = self::cell_html_items( (string) ( $c['html'] ?? '' ) ); if ( ! $inner_items ) { continue; } }
 					} else {
-						$inner_items = array( self::n_code( (string) ( $c['html'] ?? '' ) ) );
+						// DECOMPOSE a styled/verbatim cell (a locations/hours card) into NATIVE elements via the
+						// structural mirror, not an opaque `.sc-tw` code block; a content-less cell (stray <style>) skipped.
+						$inner_items = self::cell_html_items( (string) ( $c['html'] ?? '' ) );
+						if ( ! $inner_items ) { continue; }
 					}
 					// Column widths → the column's responsive width controls (outer grid, no nested div):
 					// Bootstrap col-* first; else framework-agnostic measured widths (Tailwind/custom);
@@ -8338,6 +9512,19 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 					if ( $row_valign !== '' ) { $row_atts['align_items'] = array( 'base' => $row_valign, 'md' => '', 'lg' => '' ); }
 					$rgap = self::gap_slug( isset( $b['gap'] ) ? $b['gap'] : '' );
 					if ( $rgap !== '' ) { $row_atts['gap'] = array( 'base' => $rgap, 'md' => '', 'lg' => '' ); }
+					// EQUAL grid-cols-N whose N does NOT divide 12 (5/7/… — jukebox's 7-day hours row): the 12-col
+					// span model can't express 1/N, so a flex row WRAPS them (6+1). Render a native N-track CSS grid
+					// so all N sit in one row. N that divides 12 keeps the flex-grow fill (uniform grid) path.
+					$ncol_eq = self::cells_equal_ncol( $cells );
+					if ( $ncol_eq >= 3 ) {
+						$row_atts['display']      = 'grid';
+						$row_atts['grid_columns'] = (string) $ncol_eq;
+						foreach ( $cells as &$gce ) { unset( $gce['atts']['width'] ); }
+						unset( $gce );
+					} elseif ( self::cells_uniform_grid( $cells ) ) {
+						foreach ( $cells as &$uge ) { $uge['atts']['flex_grow'] = array( 'base' => 'yes', 'md' => '', 'lg' => '' ); }
+						unset( $uge );
+					}
 					$band = self::n_flexbox( $cells, $row_atts );
 					// The source grid's OWN vertical margin (e.g. `mb-8` = 32px below the grid, spacing it from the
 					// next block/CTA) → the band's native Spacing margin, so that rhythm isn't dropped.
@@ -8491,7 +9678,14 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 		$cont = array();
 		$secd = array();
 		foreach ( $base as $p => $v ) {
-			if ( in_array( $p, $bg_props, true ) )                                       { $secd[ $p ] = $v; }
+			if ( in_array( $p, $bg_props, true ) ) {
+				// A var()-based background from an arbitrary class (`bg-[hsl(var(--dark))]`) is UNRESOLVABLE in the
+				// converted theme — and if kept it blocks the section's REAL computed fill (data-sc-cs, resolved to
+				// rgb) from filling in below, so the band gets no preset/variant and leaks dead CSS (a dark section
+				// renders transparent). Skip it; the computed-background pass reads the true colour.
+				if ( in_array( $p, array( 'background-color', 'background-image' ), true ) && false !== stripos( (string) $v, 'var(' ) ) { continue; }
+				$secd[ $p ] = $v;
+			}
 			elseif ( in_array( $p, $box_props, true ) || 0 === strpos( (string) $p, '--' ) ) { $cont[ $p ] = $v; }
 			elseif ( 'margin-top' === $p || 'margin-bottom' === $p )                      { $secd[ $p ] = $v; }
 		}
@@ -8681,6 +9875,24 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 					$sec_node['atts']['gap'] = array( 'base' => $gslug, 'md' => $g_md, 'lg' => $g_lg );
 				}
 			}
+		}
+		// IN-FLOW HEADER CLEARANCE DROP: the source reserved top padding on the FIRST section to clear an
+		// OUT-OF-FLOW (position:fixed/absolute) SOLID header chrome (e.g. jukebox's `fixed top-0` ticker +
+		// `fixed top-12` nav, cleared by a `pt-44` = 176px section padding). We reproduce that chrome as an
+		// IN-FLOW static/sticky header that ALREADY occupies its own height, so the reserved clearance is a
+		// redundant white gap between the header and the hero. Drop the first section's native top padding —
+		// the hero's own inner margins still supply the small residual gap the source shows. Gated (in stitch)
+		// on a SOLID fixed chrome, so a TRANSPARENT overlay nav — reproduced as an overlay header that DOES
+		// need the clearance — keeps its heroTopPad instead.
+		if ( ! empty( $sec['heroInFlowClear'] ) ) {
+			// Set an EXPLICIT zero, not unset — unsetting lets the section fall back to the THEME's default
+			// section top padding (~96px), so the gap only shrinks instead of closing. The arbitrary `pt-[0px]`
+			// token renders a real `padding-top:0` (the standard pt-0 utility isn't shipped), and a
+			// `selector[class]` !important override beats the theme default + any `.sc-mirror` reset. The hero's
+			// own inner top margin still supplies the small residual gap the source shows.
+			$sec_node['atts']['padding_top'] = array( 'base' => 'pt-[0px]', 'md' => '', 'lg' => '' );
+			$hcur = (string) ( $sec_node['atts']['custom_css'] ?? '' );
+			$sec_node['atts']['custom_css'] = trim( $hcur . ' selector[class]{padding-top:0 !important;}' );
 		}
 		// OVERLAY-HEADER OFFSET (applied AFTER Pass #5 so the native padding_top is finalized): a fixed/absolute
 		// transparent masthead overlays the hero, so the hero needs top padding >= the header height, or its
