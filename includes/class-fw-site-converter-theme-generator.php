@@ -1172,6 +1172,15 @@ class FW_Site_Converter_Theme_Generator {
 			return $default;
 		}
 		$v = trim( $map[ $key ] );
+		// A BARE shadcn/Tailwind HSL triplet — `67 100% 50%` — is how a CSS-variable design system
+		// stores its palette (`:root{--primary:67 100% 50%}`, consumed as `hsl(var(--primary))`). It
+		// matches none of the patterns below, so it used to fall through to $default and the site's
+		// real brand colour was silently replaced with the generic blue: measured on
+		// my-website-h3eknqdj, whose accent hsl(67 100% 50%) = rgb(225,255,0) became #2563eb. 61% of
+		// a 120-site Wegic corpus uses this token-themed flavour. Normalise it to real CSS.
+		if ( preg_match( '/^(\d{1,3}(?:\.\d+)?)\s+(\d{1,3}(?:\.\d+)?)%\s+(\d{1,3}(?:\.\d+)?)%$/', $v, $hm ) ) {
+			return 'hsl(' . $hm[1] . ', ' . $hm[2] . '%, ' . $hm[3] . '%)';
+		}
 		// Allow hex, rgb()/rgba(), hsl()/hsla(), oklch(), and bare CSS keywords.
 		if ( preg_match( '/^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i', $v )
 			|| preg_match( '/^(rgb|rgba|hsl|hsla|oklch|oklab|color)\([^;{}<>]+\)$/i', $v )
@@ -1970,8 +1979,13 @@ JS;
 	 * the theme's rules don't cover.
 	 */
 	private static function admin_bar_css() {
-		return "\n/* Keep the raw-chrome MIRROR header below the logged-in admin bar (the builder #masthead header is offset by the theme's --admin-bar-offset when pinned, and needs NO offset when static). `!important` beats the carried `.sc-tw .top-0` utility. */\n"
-			. ".admin-bar .sc-tw header{top:32px !important;}\n"
+		// NOTE: emit NO prose comment into the output CSS here. A long `/* … */` comment written into
+		// generated CSS is fragile — the asset-optimizer's combine/minify step corrupted this one (dropped
+		// its closing `*/`), turning it into an UNCLOSED comment that swallowed the following `}` and left an
+		// earlier `{` open, which cascaded into the theme's `:root{ --site-bg-color … }` tokens being ignored
+		// (a converted dark site's background silently rendered white). The rationale lives in the docblock
+		// above; the output stays comment-free so it can't poison the stylesheet. Keep generated CSS terse.
+		return "\n.admin-bar .sc-tw header{top:32px !important;}\n"
 			. "@media screen and (max-width:782px){.admin-bar .sc-tw header{top:46px !important;}}\n";
 	}
 

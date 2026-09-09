@@ -95,6 +95,91 @@ class FW_Site_Converter_Bundle {
 	 *   sections: string[], deferred: string[], error: string
 	 * }
 	 */
+	/**
+	 * Purge the PREVIOUS conversion's artifacts so re-running the converter never accumulates. Keyed on the
+	 * generated child-theme slug (read from theme-design.json): if this import is for a DIFFERENT site than the
+	 * one recorded last time, delete the prior conversion's sideloaded MEDIA (every converter attachment carries
+	 * `FW_Site_Converter_Media::SOURCE_META`) and its child theme's `theme_mods_<slug>` option + theme files
+	 * (only when that theme is no longer active — never the running/parent theme). A reconvert of the SAME site
+	 * is a no-op here (media de-dups; the page is updated in place). Records the new slug for next time. Safe:
+	 * it only ever removes attachments the converter created and the ONE tracked prior converter theme.
+	 *
+	 * @param string $dir bundle dir
+	 */
+	private static function cleanup_previous_conversion( $dir ) {
+		if ( ! function_exists( 'wp_delete_attachment' ) ) { return; }
+		global $wpdb;
+		// REVISIONS — the worst accumulator (this bit hard: ~9,200 revisions of the ONE converted page piled up
+		// from repeated reconverts, and opening its editor then OOM'd at a 1 GB limit). Every reconvert calls
+		// wp_update_post → a fresh revision, and a same-site reconvert skips the site-change purge below, so this
+		// MUST run on EVERY import. A converter-regenerated page has no meaningful edit history worth keeping;
+		// drop all of the target page's revisions. Keyed off the front page (the converter's reused target).
+		$target = (int) get_option( 'page_on_front' );
+		if ( $target > 0 && function_exists( 'wp_delete_post_revision' ) ) {
+			$revs = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE post_type = 'revision' AND post_parent = %d", $target ) );
+			foreach ( (array) $revs as $rid ) { wp_delete_post_revision( (int) $rid ); }
+		}
+		$td = self::read_json( $dir, array( 'theme-design.json' ) );
+		$new_slug = '';
+		if ( is_array( $td ) && isset( $td['theme'] ) && is_array( $td['theme'] ) ) {
+			$raw = ( isset( $td['theme']['slug'] ) && '' !== $td['theme']['slug'] ) ? $td['theme']['slug'] : ( isset( $td['theme']['name'] ) ? $td['theme']['name'] : '' );
+			$new_slug = sanitize_title( (string) $raw );
+		}
+		$prev = (string) get_option( 'fw_sc_last_conversion_theme', '' );
+		// First-ever conversion, or a reconvert of the SAME site → nothing to purge (just record the slug).
+		if ( '' === $prev || ( '' !== $new_slug && $prev === $new_slug ) ) {
+			if ( '' !== $new_slug ) { update_option( 'fw_sc_last_conversion_theme', $new_slug, false ); }
+			return;
+		}
+		global $wpdb;
+		// The previous conversion's sideloaded media (the bulk of the bloat — attachment meta). Every converter
+		// attachment carries SOURCE_META; a different site is starting, so none of these are needed any more.
+		$meta_key = class_exists( 'FW_Site_Converter_Media' ) ? FW_Site_Converter_Media::SOURCE_META : '_unysonplus_source_url';
+		$ids = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s", $meta_key ) );
+		foreach ( (array) $ids as $aid ) { wp_delete_attachment( (int) $aid, true ); }
+		// NAV MENUS — a different source site is starting. Every conversion builds a "<Title> Header" menu
+		// (tagged FW_Site_Converter_Menus::MENU_META) and assigns it to `primary`; leaving the previous site's
+		// menus behind piles them up (a shared install had 46) and the stale one keeps or steals the location,
+		// so the front page renders the WRONG site's nav (e.g. the-line rendering Sushima's doubled menu). Purge
+		// every converter-created menu now — at import start, BEFORE this site's menus are built, and only on a
+		// DIFFERENT-site conversion (same-site returned above) — so the current import recreates just its own.
+		// wp_delete_nav_menu() also clears any nav_menu_locations theme_mod pointing at the deleted term.
+		if ( function_exists( 'wp_delete_nav_menu' ) && function_exists( 'wp_get_nav_menu_object' ) ) {
+			$menu_meta = class_exists( 'FW_Site_Converter_Menus' ) ? FW_Site_Converter_Menus::MENU_META : '_fw_sc_menu';
+			$menu_ids  = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT term_id FROM {$wpdb->termmeta} WHERE meta_key = %s", $menu_meta ) );
+			foreach ( (array) $menu_ids as $mid ) {
+				$obj = wp_get_nav_menu_object( (int) $mid );
+				if ( $obj ) { wp_delete_nav_menu( (int) $mid ); }
+			}
+		}
+		// The previous child theme is still ACTIVE right now, so its `theme_mods_<slug>` + files can't be removed
+		// here (it would delete the running theme mid-import). Defer it: purge_prev_theme() runs AFTER the new
+		// theme is switched in (see import_dir, post-switch), when the old one is safely inactive.
+		self::$prev_theme_to_purge = $prev;
+		if ( '' !== $new_slug ) { update_option( 'fw_sc_last_conversion_theme', $new_slug, false ); }
+	}
+
+	/** The prior converter child-theme slug pending removal once the new theme is active (set by
+	 *  cleanup_previous_conversion, consumed by purge_prev_theme after switch_theme). */
+	private static $prev_theme_to_purge = '';
+
+	/** Delete the recorded previous converter child theme (its `theme_mods_<slug>` option + theme files) once it
+	 *  is no longer the active/parent theme. Called AFTER the new theme is switched in. One-shot. */
+	private static function purge_prev_theme() {
+		$prev = self::$prev_theme_to_purge;
+		self::$prev_theme_to_purge = '';
+		if ( '' === $prev || $prev === get_stylesheet() || $prev === get_template() ) { return; }
+		delete_option( 'theme_mods_' . $prev );
+		if ( function_exists( 'wp_get_theme' ) && wp_get_theme( $prev )->exists() ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+			if ( WP_Filesystem() ) {
+				global $wp_filesystem;
+				$tdir = trailingslashit( get_theme_root() ) . $prev;
+				if ( $wp_filesystem && $wp_filesystem->is_dir( $tdir ) ) { $wp_filesystem->delete( $tdir, true ); }
+			}
+		}
+	}
+
 	public static function import_dir( $dir, $phase = '', $opts = array() ) {
 		$out = self::blank_result();
 
@@ -104,6 +189,15 @@ class FW_Site_Converter_Bundle {
 		}
 
 		$dir = self::locate_root( $dir );
+
+		// CLEAN UP THE PREVIOUS CONVERSION — a conversion must not leave the last one's artifacts behind. Each
+		// conversion sideloads its media and generates a child theme; without cleanup those pile up forever (a
+		// heavily-reconverted install had grown to ~11k posts / ~888 MB of attachment meta, which then OOM'd the
+		// page editor at a 1 GB limit). When THIS import is for a DIFFERENT site than the last, purge the prior
+		// conversion's sideloaded media (every converter attachment carries SOURCE_META) and its generated child
+		// theme's settings. A RECONVERT of the SAME site is left alone — media de-dups and the page updates in
+		// place, so it never re-downloads. Best-effort + guarded; never touches non-converter content.
+		self::cleanup_previous_conversion( $dir );
 
 		// BLOCK-THEME target — a `block-bundle.json` (written by `capture.mjs --target=block-theme`) means the
 		// user chose portable FSE block-theme output for this capture. Install that instead of the classic
@@ -184,7 +278,9 @@ class FW_Site_Converter_Bundle {
 		// --- Phase 3: theme settings (design file → fw_theme_settings_options) ---
 		$theme = self::read_json( $dir, self::FILE_THEME_SETTINGS );
 		if ( $do_design && ! $scoped && $theme !== null && class_exists( 'FW_Site_Converter_Theme_Settings' ) ) {
-			$out['theme_settings'] = FW_Site_Converter_Theme_Settings::import( $theme );
+			// A full (non-scoped) design import OWNS the chrome — pass replace_chrome so stale header/
+			// footer columns from a previous conversion cannot survive into this one.
+			$out['theme_settings'] = FW_Site_Converter_Theme_Settings::import( $theme, true );
 			$out['sections'][]     = 'theme-settings';
 		}
 
@@ -253,6 +349,39 @@ class FW_Site_Converter_Bundle {
 					$out['theme']['activated'] = true;
 				}
 			}
+			// The new theme is now active → the previous converter child theme is safely inactive, so its
+			// theme_mods option + files can be purged (deferred from cleanup_previous_conversion at import start,
+			// where it was still the running theme). No-op unless a DIFFERENT site was just imported.
+			self::purge_prev_theme();
+
+			// SITE IDENTITY. The converter set the theme, palette, menus and pages but never the site
+			// TITLE, so every converted site kept the target install's own blogname — measured across a
+			// 13-site render pass, 13 of 13 still read "UnysonPlus Grid Lab". The block-theme path already
+			// does this (class-fw-site-converter-blocks.php, core/site-title renders blogname); the classic
+			// path did not. Brand comes from the design config; the tagline is the source <title>'s suffix
+			// after a separator ("Maritime Arts Gallery | Contemporary Ocean & Sailing"), which is not
+			// carried in theme-design.json and so is read from the bundle's rendered.html.
+			$brand = isset( $theme_design['theme']['name'] ) ? trim( (string) $theme_design['theme']['name'] ) : '';
+			if ( '' !== $brand && function_exists( 'update_option' ) ) {
+				update_option( 'blogname', $brand );
+				$out['theme']['blogname'] = $brand;
+				$rendered = $dir . '/rendered.html';
+				if ( is_file( $rendered ) ) {
+					$head = (string) @file_get_contents( $rendered, false, null, 0, 65536 );
+					if ( preg_match( '#<title[^>]*>(.*?)</title>#is', $head, $tm ) ) {
+						$full = trim( html_entity_decode( wp_strip_all_tags( $tm[1] ), ENT_QUOTES, 'UTF-8' ) );
+						// Split on the usual title separators and drop the part that repeats the brand.
+						$parts = preg_split( '/\s*[|\x{2013}\x{2014}\x{00B7}\-]\s+/u', $full, 2 );
+						if ( is_array( $parts ) && count( $parts ) === 2 ) {
+							$tag = trim( $parts[1] );
+							if ( '' !== $tag && 0 !== strcasecmp( $tag, $brand ) && strlen( $tag ) <= 160 ) {
+								update_option( 'blogdescription', $tag );
+								$out['theme']['blogdescription'] = $tag;
+							}
+						}
+					}
+				}
+			}
 		}
 
 		// --- Phase 3c: Style Guide page (review artifact from the captured design tokens) ---
@@ -296,6 +425,41 @@ class FW_Site_Converter_Bundle {
 
 		// --- Phase 5: menus ---
 		$menus = self::read_json( $dir, self::FILE_MENUS );
+		// FALLBACK — the capture bundle carried NO menu (its nav extractor couldn't read the source header —
+		// resend.com's bare-<a> links spread across three <header>s with no <nav>/<ul>). Extract the masthead
+		// nav from rendered.html with the PHP extractor so the converted header shows the SOURCE's real nav
+		// ("Pricing") instead of nothing / a stale prior conversion's menu. PRIMARY only: the footer is
+		// reproduced by the generated theme's footer_html, and the flat footer-link scan is unreliable (it
+		// grabs a GitHub badge etc.), so we don't import an extracted footer menu.
+		if ( $do_pages && $scope_chrome && ( null === $menus || ( is_array( $menus ) && empty( $menus ) ) )
+			&& class_exists( 'FW_Site_Converter_Menus' ) && method_exists( 'FW_Site_Converter_Menus', 'extract_menus' ) ) {
+			$rh_file = rtrim( $dir, '/\\' ) . '/rendered.html';
+			if ( is_file( $rh_file ) ) {
+				$rh_html = (string) @file_get_contents( $rh_file );
+				if ( '' !== $rh_html ) {
+					$src_base = ( is_array( $theme_design ) && isset( $theme_design['source_url'] ) ) ? (string) $theme_design['source_url'] : '';
+					$ex_menus = FW_Site_Converter_Menus::extract_menus( $rh_html, $src_base );
+					$prim = array();
+					foreach ( (array) $ex_menus as $emm ) {
+						if ( ! is_array( $emm ) || ( $emm['location'] ?? '' ) !== 'primary' || empty( $emm['items'] ) ) { continue; }
+						// QUALITY GATE — a real nav has LABELLED items. A `//header` parse of a site whose "header"
+						// is actually a HERO (getty/the-art-of-living: a min-h-screen hero <header>) yields bogus
+						// items with empty titles; importing those would show a garbage nav. Require EVERY item to
+						// carry a non-empty, short (≤ 40 char) label; drop the menu otherwise (→ the stale-guard
+						// then clears the location, so the header falls back to no nav rather than garbage).
+						$items = $emm['items'];
+						$ok = ! empty( $items );
+						foreach ( $items as $it ) {
+							$lbl = trim( (string) ( ( is_array( $it ) ? ( $it['title'] ?? ( $it['label'] ?? '' ) ) : '' ) ) );
+							if ( '' === $lbl || mb_strlen( $lbl ) > 40 ) { $ok = false; break; }
+						}
+						if ( $ok ) { $prim[] = $emm; }
+						break;
+					}
+					if ( ! empty( $prim ) ) { $menus = $prim; $out['menus_fallback'] = true; }
+				}
+			}
+		}
 		if ( $do_pages && $menus !== null && class_exists( 'FW_Site_Converter_Menus' ) ) {
 			$out['menus']      = FW_Site_Converter_Menus::import( $menus );
 			$out['sections'][] = 'menus';
@@ -323,6 +487,23 @@ class FW_Site_Converter_Bundle {
 			if ( function_exists( 'fw_ext_mega_menu_update_meta' ) ) {
 				$out['mega']       = FW_Site_Converter_Menus::import_mega( $mega );
 				$out['sections'][] = 'mega-menus';
+			}
+		}
+
+		// --- Phase 5-guard: STALE-MENU CONTAMINATION. A conversion whose header nav the extractor couldn't read
+		// (a bare-<a> header with no <nav>/<ul>, spread across several <header>s — resend.com) produces NO
+		// 'primary' menu, so on a REUSED install the primary location keeps pointing at the PREVIOUS conversion's
+		// menu (Studio Denim's "Collection/Optics/Archive" leaking onto resend). Never inherit another site's
+		// nav: when this import assigned no primary-located menu, clear the stale primary location so the theme
+		// falls back to no/default nav instead of a wrong one. Only touches chrome conversions. ---
+		if ( $do_pages && $scope_chrome ) {
+			$has_primary = false;
+			if ( is_array( $menus ) ) {
+				foreach ( $menus as $mm ) { if ( is_array( $mm ) && isset( $mm['location'] ) && 'primary' === $mm['location'] && ! empty( $mm['items'] ) ) { $has_primary = true; break; } }
+			}
+			if ( ! $has_primary ) {
+				$locs = get_theme_mod( 'nav_menu_locations', array() );
+				if ( is_array( $locs ) && ! empty( $locs['primary'] ) ) { unset( $locs['primary'] ); set_theme_mod( 'nav_menu_locations', $locs ); }
 			}
 		}
 
@@ -474,6 +655,24 @@ class FW_Site_Converter_Bundle {
 			if ( $snip_ext && method_exists( $snip_ext, '_action_register_post_type' ) && ! post_type_exists( 'snippet' ) ) {
 				$snip_ext->_action_register_post_type();
 			}
+		}
+		// AI-STRUCTURE ASSIST (prototype, opt-in). When `ai-structure.json` (from the classify-structure
+		// classifier) is present AND the assist is enabled (constant/filter/env), load its verdicts so the PHP
+		// converter can correct the two ambiguous recognizer calls (pricing-vs-stats, video bg-vs-content).
+		// ADVISORY: heuristics remain the fallback, so leaving it off changes nothing.
+		$ai_on = ( defined( 'FW_SC_AI_STRUCTURE' ) && FW_SC_AI_STRUCTURE )
+			|| ( function_exists( 'apply_filters' ) && apply_filters( 'fw_sc_ai_structure', false ) )
+			|| '' !== (string) getenv( 'FW_SC_AI_STRUCTURE' );
+		if ( $ai_on && method_exists( 'FW_Site_Converter_Stitch', 'set_ai_structure' ) ) {
+			$ai_file = $dir . '/ai-structure.json';
+			if ( is_file( $ai_file ) ) {
+				$ai = json_decode( (string) @file_get_contents( $ai_file ), true );
+				if ( is_array( $ai ) && isset( $ai['sections'] ) && is_array( $ai['sections'] ) ) {
+					FW_Site_Converter_Stitch::set_ai_structure( $ai['sections'] );
+				}
+			}
+		} elseif ( method_exists( 'FW_Site_Converter_Stitch', 'set_ai_structure' ) ) {
+			FW_Site_Converter_Stitch::set_ai_structure( array() ); // ensure a stale verdict set can't leak across imports
 		}
 		$res     = FW_Site_Converter_Sources::build_from_html( $html, $title, array( 'dynamic_chrome' => true, 'hifi_css' => true, 'source_url' => $src_url, 'entrance_anim' => $entrance, 'entrance_anim_ai' => $entrance_ai, 'entrance_anim_svc' => $entrance_svc ) );
 		$files = ( is_array( $res ) && isset( $res['files'] ) && is_array( $res['files'] ) ) ? $res['files'] : array();

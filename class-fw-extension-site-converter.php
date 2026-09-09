@@ -2982,6 +2982,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						<?php if ( $upw_pb_active ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme is a standalone, plugin-free output — deactivate the Page Builder extension (Unyson+ → Extensions) to use it.', 'fw' ); ?></p><?php elseif ( $upw_block_disabled ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme needs the block editor — it is disabled while the Classic Editor is enforced.', 'fw' ); ?></p><?php endif; ?>
 					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
+						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Destination', 'fw' ); ?></legend>
+						<label style="display:block;margin:.2em 0;color:#b32d2e" title="<?php echo esc_attr__( 'Wipe the PREVIOUS conversion first, then convert. Resets all Theme Settings (chrome / header / footer / colours / presets) back to defaults and clears the converter CSS caches, so nothing from an earlier converted site lingers. Use when converting a DIFFERENT site over this one. Leaves your pages, media library, and generated child themes in place. Off by default.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-replace"> <?php esc_html_e( 'Replace existing site', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'reset design first', 'fw' ); ?>)</span></label>
+						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Make the converted page your homepage. Auto-ON for a root URL; auto-OFF for an inner page (e.g. /services), which becomes a NEW page under its own slug and leaves your homepage untouched.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-homepage" checked> <?php esc_html_e( 'Set as homepage', 'fw' ); ?></label>
+					</fieldset>
+					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Capture', 'fw' ); ?></legend>
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-theme" checked> <?php esc_html_e( 'Create child theme', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'off = grab content only', 'fw' ); ?>)</span></label>
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-header" checked> <?php esc_html_e( 'Capture header', 'fw' ); ?></label>
@@ -2990,11 +2995,6 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						<?php $upw_wc_active = class_exists( 'WooCommerce' ); ?>
 						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr( __( 'For a store source: activates the UnysonPlus WooCommerce extension and maps product grids to a live [wc_products] feed. If the WooCommerce plugin is not installed yet, the extension is still activated and a dashboard notice guides you to install it (grids stay as static cards until then). Auto-ticked when the source is detected as a store.', 'fw' ) ); ?>"><input type="checkbox" id="fw-sc-opt-woocommerce"> <?php esc_html_e( 'Map to WooCommerce', 'fw' ); ?><?php if ( ! $upw_wc_active ) : ?> <span style="color:#646970">(<?php esc_html_e( 'not installed', 'fw' ); ?>)</span><?php endif; ?></label>
 						<label style="display:block;margin:.2em 0 .2em 1.6em" title="<?php echo esc_attr__( 'Run the store as a browsable CATALOG — prices are shown, but add-to-cart, cart and checkout are hidden. Ideal for a restaurant menu, a lookbook, or a "call for pricing" showroom. AUTO-ENABLED when the source is detected as a catalog / menu (prices, but no cart); tick to force it. Only applies when Map to WooCommerce is on.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-catalog"> <?php esc_html_e( 'Catalog Mode', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'browse-only, no cart · auto for menus', 'fw' ); ?>)</span></label>
-					</fieldset>
-					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
-						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Destination', 'fw' ); ?></legend>
-						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Make the converted page your homepage. Auto-ON for a root URL; auto-OFF for an inner page (e.g. /services), which becomes a NEW page under its own slug and leaves your homepage untouched.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-homepage" checked> <?php esc_html_e( 'Set as homepage', 'fw' ); ?></label>
-						<label style="display:block;margin:.2em 0;color:#b32d2e" title="<?php echo esc_attr__( 'Wipe the PREVIOUS conversion first, then convert. Resets all Theme Settings (chrome / header / footer / colours / presets) back to defaults and clears the converter CSS caches, so nothing from an earlier converted site lingers. Use when converting a DIFFERENT site over this one. Leaves your pages, media library, and generated child themes in place. Off by default.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-replace"> <?php esc_html_e( 'Replace existing site', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'reset design first', 'fw' ); ?>)</span></label>
 					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Enhancements', 'fw' ); ?></legend>
@@ -3043,6 +3043,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							if ( ! base || ! ai ) { return; }
 							function sync() { ai.disabled = ! base.checked; if ( ! base.checked ) { ai.checked = false; } if ( wrap ) { wrap.style.opacity = base.checked ? '1' : '.55'; } }
 							base.addEventListener( 'change', sync ); sync();
+						} )();
+						/* "Catalog Mode" is a sub-option of "Map to WooCommerce" (a browse-only store), so ticking it
+						   auto-ticks its parent; and turning WooCommerce OFF turns Catalog Mode off too (it only applies
+						   when WooCommerce mapping is on). */
+						( function () {
+							var woo = document.getElementById( 'fw-sc-opt-woocommerce' );
+							var cat = document.getElementById( 'fw-sc-opt-catalog' );
+							if ( ! woo || ! cat ) { return; }
+							cat.addEventListener( 'change', function () { if ( cat.checked ) { woo.checked = true; } } );
+							woo.addEventListener( 'change', function () { if ( ! woo.checked ) { cat.checked = false; } } );
 						} )();
 						</script>
 				<p style="margin:.2em 0 1.1em">

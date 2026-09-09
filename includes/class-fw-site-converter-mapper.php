@@ -320,6 +320,22 @@ class FW_Site_Converter_Mapper {
 			$h = $m[1]; if ( strlen( $h ) === 3 ) { $h = $h[0] . $h[0] . $h[1] . $h[1] . $h[2] . $h[2]; }
 			return 'rgb(' . hexdec( substr( $h, 0, 2 ) ) . ', ' . hexdec( substr( $h, 2, 2 ) ) . ', ' . hexdec( substr( $h, 4, 2 ) ) . ')';
 		}
+		// oklch()/oklab()/hsl() — modern colour spaces used for card fills (the-line's `.pillar-card` /
+		// `.metric-orb`). Without this the fill dropped to '' → the captured Box Preset had NO fill (rendered
+		// WHITE on a dark site) AND box_slug() hashed a blank fill (so the preset the mapper referenced and the
+		// one build_box_presets() emitted diverged). Reuse Stitch::color_to_hex (handles oklch/oklab/hsl) and
+		// carry any alpha — MUST match build_box_presets()'s $norm exactly so the two agree on the slug.
+		if ( preg_match( '/^(?:oklch|oklab|hsla?|color)\(/', $c ) ) {
+			$a = 1.0;
+			if ( preg_match( '#/\s*([0-9.]+)(%?)\s*\)#', $c, $am ) ) { $a = ( '' !== $am[2] ) ? (float) $am[1] / 100 : (float) $am[1]; }
+			elseif ( preg_match( '/hsla\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*([0-9.]+)/', $c, $am ) ) { $a = (float) $am[1]; }
+			if ( $a <= 0.0 ) { return ''; }
+			$hex = class_exists( 'FW_Site_Converter_Stitch' ) ? FW_Site_Converter_Stitch::color_to_hex( $c ) : '';
+			if ( '' === $hex ) { return ''; }
+			$hh = ltrim( $hex, '#' );
+			$r = hexdec( substr( $hh, 0, 2 ) ); $g = hexdec( substr( $hh, 2, 2 ) ); $b = hexdec( substr( $hh, 4, 2 ) );
+			return ( $a < 1 ) ? "rgba($r, $g, $b, $a)" : "rgb($r, $g, $b)";
+		}
 		return '';
 	}
 	/** The `.boxp-<slug>` preset matching a captured cardBox skin, or '' when none matches. Lets a box column
@@ -372,6 +388,21 @@ class FW_Site_Converter_Mapper {
 			$h = $m[1];
 			if ( strlen( $h ) === 3 ) { $h = $h[0] . $h[0] . $h[1] . $h[1] . $h[2] . $h[2]; }
 			return array( hexdec( substr( $h, 0, 2 ) ), hexdec( substr( $h, 2, 2 ) ), hexdec( substr( $h, 4, 2 ) ) );
+		}
+		// oklch()/oklab()/hsl() — the palettes AI builders (openhero, v0, …) emit. rgb_triplet historically
+		// returned null for these, so a section whose computed `background-color` is `oklch(0.12 …)` (a dark
+		// hero band) was dropped → the band fell back to the theme's light default and its white text went
+		// invisible. Reuse Stitch's full colour converter (hex/rgb/hsl/oklch/oklab) → hex → triplet.
+		if ( class_exists( 'FW_Site_Converter_Stitch' ) && preg_match( '/^(?:oklch|oklab|hsla?)\(/', $c ) ) {
+			// Keep rgb_triplet's "solid fill only" contract: skip a clearly semi-transparent tint (a modern
+			// `oklch(… / .3)` slash-alpha scrim) so it isn't painted as an opaque band. color_to_hex drops alpha.
+			$transparent = preg_match( '#/\s*([0-9]*\.?[0-9]+)\s*\)\s*$#', $c, $am ) && (float) $am[1] < 0.85;
+			if ( ! $transparent ) {
+				$hex = FW_Site_Converter_Stitch::color_to_hex( $c );
+				if ( preg_match( '/^#([0-9a-f]{6})$/', $hex, $hm ) ) {
+					return array( hexdec( substr( $hm[1], 0, 2 ) ), hexdec( substr( $hm[1], 2, 2 ) ), hexdec( substr( $hm[1], 4, 2 ) ) );
+				}
+			}
 		}
 		return null;
 	}
@@ -475,6 +506,17 @@ class FW_Site_Converter_Mapper {
 	 * paragraph maps to `lead`, never to a 20px `display-*`.
 	 * ---------------------------------------------------------------------- */
 	private static $text_presets = array(); // [{ class, size:float }] — body size presets only
+
+	// The site's global content width (px) — the same value Stitch writes to general_layout →
+	// layout_container_width → --container-max-desktop. Used as the FALLBACK content cap for a contained
+	// body section whose own container width couldn't be detected (a full-width flex band with only px
+	// gutters, no max-w-* wrapper — e.g. apple-card). Without it those sections rendered edge-to-edge.
+	private static $site_container_px = 0;
+
+	/** Give the mapper the site's resolved global content width (px), for the contained-band fallback cap. */
+	public static function set_site_container_width( $px ) {
+		self::$site_container_px = ( is_numeric( $px ) && $px > 0 ) ? (int) $px : 0;
+	}
 
 	/**
 	 * Give the mapper the built Text Style presets for THIS conversion. Keeps only the BODY size roles
@@ -735,10 +777,43 @@ class FW_Site_Converter_Mapper {
 		return ! empty( $d );
 	}
 
+	/**
+	 * Split a CSS declaration string on `;` — but NEVER inside a quoted string or a parenthesised value
+	 * (`url(...)`, `matrix(...)`, `calc(...)`). A computed `background-image` is a data-URI like
+	 * `url("data:image/svg+xml;base64,…")` whose value CONTAINS its own `;`; a naive `explode(';')`
+	 * truncated it there, dropped the rest of the url, and mashed the following `transform`/`transition`
+	 * declarations into an UNTERMINATED `url("…` — malformed CSS that (once combined) left a dangling `(`
+	 * and swallowed later rules (the converted-dark-site white-background bug). This keeps each declaration
+	 * whole. Returns the raw `prop:val` segments (untrimmed; the caller trims).
+	 */
+	private static function cs_split( $cs ) {
+		$out = array();
+		$buf = '';
+		$len = strlen( $cs );
+		$q     = '';   // current quote char, '' when outside a string
+		$depth = 0;    // paren nesting depth (outside strings)
+		for ( $i = 0; $i < $len; $i++ ) {
+			$ch = $cs[ $i ];
+			if ( '' !== $q ) {                       // inside a "…" / '…' string — copy verbatim
+				$buf .= $ch;
+				if ( '\\' === $ch && $i + 1 < $len ) { $buf .= $cs[ ++$i ]; continue; }
+				if ( $ch === $q ) { $q = ''; }
+				continue;
+			}
+			if ( '"' === $ch || "'" === $ch ) { $q = $ch; $buf .= $ch; continue; }
+			if ( '(' === $ch ) { $depth++; $buf .= $ch; continue; }
+			if ( ')' === $ch ) { if ( $depth > 0 ) { $depth--; } $buf .= $ch; continue; }
+			if ( ';' === $ch && 0 === $depth ) { $out[] = $buf; $buf = ''; continue; }
+			$buf .= $ch;
+		}
+		if ( '' !== trim( $buf ) ) { $out[] = $buf; }
+		return $out;
+	}
+
 	/** Parse a `data-sc-cs` value (prop:val;…) → assoc, synthesizing a `border` shorthand, filtered to $allow. */
 	private static function cs_decls( $cs, $allow ) {
 		$raw = array();
-		foreach ( explode( ';', (string) $cs ) as $d ) {
+		foreach ( self::cs_split( (string) $cs ) as $d ) {
 			$d = trim( $d );
 			if ( '' === $d ) { continue; }
 			$cp = strpos( $d, ':' );
@@ -1219,46 +1294,35 @@ class FW_Site_Converter_Mapper {
 	 *  classification button_style_class() uses, exposed so the button node can route a text LINK to the
 	 *  native `btn-link` style instead of the compiled `sc-btn-link` transplant. */
 	private static function button_kind( $cls, $cs = '' ) {
-		$inline = '' !== (string) $cs ? self::cs_decls( $cs, self::$cs_btn ) : array();
-		if ( $inline ) {
-			if ( isset( $inline['background-color'] ) ) { return 'primary'; }
-			if ( isset( $inline['border'] ) )           { return 'outline'; }
-			return 'link';
-		}
 		$c          = ' ' . strtolower( (string) $cls ) . ' ';
-		$has_bg     = (bool) preg_match( '/\sbg-(?!transparent)/', $c );
-		$has_border = ( strpos( $c, ' border' ) !== false );
+		$inline     = '' !== (string) $cs ? self::cs_decls( $cs, self::$cs_btn ) : array();
+		$has_fill   = isset( $inline['background-color'] ) || (bool) preg_match( '/\sbg-(?!transparent)/', $c );
+		$has_border = isset( $inline['border'] ) || ( strpos( $c, ' border' ) !== false );
+		// A PILL radius or a FROSTED backdrop marks a BUTTON surface even when a very-translucent fill was
+		// never captured as a computed background-color — so such an element is NEVER a bare text link. The
+		// openhero `bg-white/8 rounded-full backdrop-blur-3xl` CTA computed NO background-color/border → it fell
+		// through to 'link' → the underlined native `.btn-link`, though the source has no underline (a frosted
+		// pill identical to the primary CTA). Only classify 'link' for a TRULY bare text CTA.
+		$surface    = ( strpos( $c, ' rounded-full ' ) !== false ) || (bool) preg_match( '/\srounded-(?:2xl|3xl)\s/', $c )
+			|| (bool) preg_match( '/border-radius:\s*(?:9999|[3-9]\d)/', (string) $cs )
+			|| ( strpos( $c, ' backdrop-blur' ) !== false ) || (bool) preg_match( '/backdrop-filter:\s*[^;]*blur/i', (string) $cs );
+		$white      = ( strpos( $c, ' bg-white' ) !== false || strpos( $c, ' bg-surface' ) !== false );
 		if ( strpos( $c, ' bg-primary' ) !== false || strpos( $c, ' bg-accent' ) !== false || strpos( $c, ' bg-brand' ) !== false ) { return 'primary'; }
-		if ( strpos( $c, ' bg-white' ) !== false || strpos( $c, ' bg-surface' ) !== false ) { return 'light'; }
-		if ( $has_border && ! $has_bg ) { return 'outline'; }
-		if ( ! $has_bg ) { return 'link'; }
-		return 'fill';
+		if ( $white )                                { return 'light'; }
+		if ( isset( $inline['background-color'] ) )  { return 'primary'; }
+		if ( $has_border && ! $has_fill )            { return 'outline'; }
+		if ( $has_fill )                             { return 'fill'; }
+		if ( $surface )                              { return 'outline'; } // pill/frosted ghost, no captured fill → a button, not a link
+		return 'link';                                                     // truly bare text CTA → native underlined .btn-link
 	}
 
 	private static function button_style_class( $cls, $cs = '' ) {
 		$inline = '' !== (string) $cs ? self::cs_decls( $cs, self::$cs_btn ) : array();
-		if ( $inline ) {
-			// Kind from the RESOLVED computed style (works for ANY site): an opaque fill → primary; a
-			// transparent fill with a border → outline; neither → a bare text link.
-			if ( isset( $inline['background-color'] ) ) { $kind = 'primary'; }
-			elseif ( isset( $inline['border'] ) )       { $kind = 'outline'; }
-			else                                        { $kind = 'link'; }
-		} else {
-			$c          = ' ' . strtolower( (string) $cls ) . ' ';
-			$has_bg     = (bool) preg_match( '/\sbg-(?!transparent)/', $c ); // a real (opaque) fill
-			$has_border = ( strpos( $c, ' border' ) !== false );
-			if ( strpos( $c, ' bg-primary' ) !== false || strpos( $c, ' bg-accent' ) !== false || strpos( $c, ' bg-brand' ) !== false ) {
-				$kind = 'primary';
-			} elseif ( strpos( $c, ' bg-white' ) !== false || strpos( $c, ' bg-surface' ) !== false ) {
-				$kind = 'light';
-			} elseif ( $has_border && ! $has_bg ) {
-				$kind = 'outline';
-			} elseif ( ! $has_bg ) {
-				$kind = 'link'; // no fill, no border → a text link, not a button
-			} else {
-				$kind = 'fill';
-			}
-		}
+		// Single source of truth: button_kind() classifies the surface (opaque fill → primary; white/surface →
+		// light; bordered ghost → outline; translucent/other fill → fill; pill/frosted ghost → outline; truly
+		// bare text CTA → link). Reusing it keeps this in sync and applies the pill/frosted-surface rule that
+		// stops a frosted `bg-white/8 rounded-full` CTA from becoming an underlined .btn-link.
+		$kind = self::button_kind( $cls, $cs );
 		return self::register_style( $cls, 'sc-btn-' . $kind, false, $kind, $inline );
 	}
 
@@ -1691,6 +1755,35 @@ class FW_Site_Converter_Mapper {
 		$post = self::upload_val( isset( $b['poster'] ) ? (string) $b['poster'] : '' );
 		if ( empty( $mp4['url'] ) && empty( $webm['url'] ) ) { return; }
 		if ( ! isset( $node['atts']['background'] ) || ! is_array( $node['atts']['background'] ) ) { return; }
+		// EFFECT-WRAPPED bg video → REPLICATE the source structure with a `media_video` in Section-Background
+		// mode instead of a flat Background-Pro video, so a wrapper effect Background-Pro can't do (mask /
+		// filter / mix-blend-mode / clip-path — openhero's `.kinetic-breach` vignette) survives as vanilla CSS
+		// on the <video>. The media_video's own `sc-bg-fill` runtime lifts it to the section backdrop; the
+		// section's content columns are automatically raised above it.
+		$eff = trim( (string) ( $b['effectCss'] ?? '' ) );
+		if ( '' !== $eff ) {
+			$vid = self::n_video( array(
+				'mode' => 'self_hosted', 'src' => (string) ( $b['src'] ?? '' ), 'webm' => (string) ( $b['webm'] ?? '' ),
+				'poster' => (string) ( $b['poster'] ?? '' ), 'cover' => true,
+				'autoplay' => 'yes', 'loop' => 'yes', 'muted' => 'yes', 'playsinline' => 'yes', 'controls' => 'no',
+			) );
+			$vid['atts']['as_background'] = 'yes';
+			// Carry the source wrapper's effect onto the rendered <video> as vanilla CSS (Tailwind + the custom
+			// `.kinetic-breach` rule → plain mask-image / filter / … here).
+			$vcur = (string) ( $vid['atts']['custom_css'] ?? '' );
+			$vid['atts']['custom_css'] = trim( $vcur . ( '' !== $vcur ? "\n" : '' ) . 'selector .video-el{' . $eff . '}' );
+			if ( ! isset( $node['_items'] ) || ! is_array( $node['_items'] ) ) { $node['_items'] = array(); }
+			array_unshift( $node['_items'], self::n_column( '1_1', array( $vid ) ) ); // FIRST child → the section backdrop
+			self::apply_hero_frame( $node, (string) ( $b['valign'] ?? 'middle' ), (string) ( $b['hero_height'] ?? '' ) );
+			$box_mw = trim( (string) ( $b['boxMaxW'] ?? '' ) );
+			if ( '' !== $box_mw && preg_match( '/^[0-9]+$/', $box_mw ) ) {
+				$cur = (string) ( $node['atts']['custom_css'] ?? '' );
+				if ( false === strpos( $cur, 'max-width:' . $box_mw . 'px' ) ) {
+					$node['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . 'selector{max-width:' . $box_mw . 'px;margin-left:auto;margin-right:auto;}' );
+				}
+			}
+			return; // effect-wrapped path handled — skip Background-Pro
+		}
 		$node['atts']['background']['video'] = array(
 			'enabled'      => 'yes',
 			'external_url' => '',
@@ -1716,6 +1809,18 @@ class FW_Site_Converter_Mapper {
 		// Without this a video-bg hero collapsed to zero vertical spacing (its source height came from
 		// min-h-screen + flex-centering, which apply_bg_video didn't reproduce).
 		self::apply_hero_frame( $node, (string) ( $b['valign'] ?? 'middle' ), (string) ( $b['hero_height'] ?? '' ) );
+		// SECTION BOX CAP — the source section was a `max-w-* mx-auto` centered box (its background video capped
+		// to it), so cap the SECTION element + centre it, or the full-bleed video spans the viewport. The
+		// section's `container_width` option only constrains inner CONTENT; the box + its background need this
+		// scoped rule (the editable-native-option-first, residual-to-a-scoped-class principle).
+		$box_mw = trim( (string) ( $b['boxMaxW'] ?? '' ) );
+		if ( '' !== $box_mw && preg_match( '/^[0-9]+$/', $box_mw ) ) {
+			$cur = (string) ( $node['atts']['custom_css'] ?? '' );
+			$rule = 'selector{max-width:' . $box_mw . 'px;margin-left:auto;margin-right:auto;}';
+			if ( false === strpos( $cur, 'max-width:' . $box_mw . 'px' ) ) {
+				$node['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . $rule );
+			}
+		}
 	}
 
 	/**
@@ -1732,12 +1837,29 @@ class FW_Site_Converter_Mapper {
 		// The min-height mirrors the SOURCE hero height (`h-screen` → 100vh, `h-[80vh]` → 80vh, a computed vh
 		// height → itself); fall back to 80vh only when the source gave a bare boolean signal. A vh value maps
 		// to the preset; anything else (a px height) goes to the custom field.
-		$h        = trim( (string) $height );
-		$is_preset = ( '' !== $h && preg_match( '/^[0-9.]+vh$/', $h ) );
-		$node['atts']['min_height']     = array(
-			'preset' => $is_preset ? $h : ( '' === $h ? '80vh' : 'custom' ),
-			'custom' => array( 'custom_height' => array( 'value' => ( ! $is_preset && '' !== $h ) ? preg_replace( '/[^0-9.].*$/', '', $h ) : '', 'unit' => 'px' ) ),
-		);
+		// The section's `min_height` preset accepts ONLY auto|40vh|60vh|80vh|100vh|custom. Treating every
+		// `Nvh` as a preset emitted out-of-range values the theme silently ignores, so the band collapsed
+		// to its content height: a source `h-[200vh]` band measured 1,800px and rendered 284px. Measured on
+		// a 120-site Wegic corpus, 21% of sections (88 of 119 sites) carry an explicit height class, and the
+		// off-scale ones — `min-h-[90vh]` x15, `h-[90vh]` x8, `[85vh]`, `[92vh]`, `[120vh]`, `[200vh]` —
+		// all produced invalid presets. Anything not on the scale now goes to `custom`, and the custom UNIT
+		// follows the source instead of being hardcoded to px (custom_height accepts px|%|vh|vw|rem|em).
+		$h            = trim( (string) $height );
+		$vh_presets   = array( '40vh', '60vh', '80vh', '100vh' );
+		$empty_custom = array( 'custom_height' => array( 'value' => '', 'unit' => 'px' ) );
+		if ( '' === $h ) {
+			// Bare boolean signal from the caller — no measured height; keep the historical default.
+			$node['atts']['min_height'] = array( 'preset' => '80vh', 'custom' => $empty_custom );
+		} elseif ( in_array( $h, $vh_presets, true ) ) {
+			$node['atts']['min_height'] = array( 'preset' => $h, 'custom' => $empty_custom );
+		} else {
+			$unit = preg_match( '/^[0-9.]+\s*(px|%|vh|vw|rem|em)$/i', $h, $um ) ? strtolower( $um[1] ) : 'px';
+			$val  = preg_replace( '/[^0-9.].*$/', '', $h );
+			$node['atts']['min_height'] = array(
+				'preset' => 'custom',
+				'custom' => array( 'custom_height' => array( 'value' => $val, 'unit' => $unit ) ),
+			);
+		}
 		// The SECTION shortcode's vertical-align att is `column_valign` (values stretch/top/center/bottom), and
 		// it DEFAULTS to 'stretch' — which OVERRIDES the legacy `content_valign` fallback the view also reads.
 		// So set column_valign DIRECTLY, mapping the hero's 'middle' → the section's 'center'. (Without this the
@@ -1786,7 +1908,14 @@ class FW_Site_Converter_Mapper {
 		// when the source hero had NO explicit overlay layer.
 		$ov = trim( (string) ( $bg['overlay'] ?? '' ) );
 		if ( $ov !== '' && stripos( $ov, 'gradient' ) !== false && ( $grad = self::parse_linear_gradient( $ov ) ) ) {
-			$node['atts']['background']['overlay'] = array( 'color' => '', 'gradient' => $grad );
+			// A captured hero scrim is often a BOTTOM fade (`rgba(..,.9) 0% -> transparent 50%`) that darkens only
+			// the lower band. When the hero's content isn't bottom-aligned (a centered/top heading), that leaves
+			// the (usually white) heading over the bright, un-scrimmed upper area — invisible once a video/photo
+			// reveals to full brightness. So for a HERO, lay a light BASELINE uniform tint UNDER the gradient
+			// (rendered as overlay.color) so the text stays legible everywhere, while the gradient still deepens
+			// its end. Non-hero bands keep just the captured gradient.
+			$base = ( ! empty( $bg['hero'] ) && 'bottom' !== (string) ( $bg['valign'] ?? '' ) ) ? 'rgba(0, 0, 0, 0.3)' : '';
+			$node['atts']['background']['overlay'] = array( 'color' => $base, 'gradient' => $grad );
 		} elseif ( $ov !== '' && preg_match( '/^rgba?\(|^#|^hsla?\(/i', $ov ) ) {
 			$node['atts']['background']['overlay'] = array( 'color' => $ov, 'gradient' => array( 'type' => 'linear', 'angle' => 90, 'stops' => array() ) );
 		} else {
@@ -2741,6 +2870,10 @@ class FW_Site_Converter_Mapper {
 			// card half-empty). Passing skin_css also keeps it a NATIVE, editable media_image.
 			$icls = ' ' . strtolower( (string) $el->getAttribute( 'class' ) ) . ' ';
 			$full = ( strpos( $icls, ' w-full ' ) !== false || strpos( $icls, 'object-cover' ) !== false || strpos( $icls, 'object-fill' ) !== false );
+			// Prefer the RECOVERED crop box (the wrapper's aspect-*/h-* frame) over the generic
+			// full-width skin — without it the image renders at natural size and blows the section out.
+			$boxcss = self::media_box_css_el( $el );
+			if ( '' !== $boxcss ) { return self::n_media_image( $el->ownerDocument->saveHTML( $el ), $boxcss ); }
 			return self::n_media_image( $el->ownerDocument->saveHTML( $el ), $full ? 'selector img{width:100%;display:block;height:auto}' : '' );
 		}
 		if ( 'video' === $tag ) {
@@ -2974,9 +3107,110 @@ class FW_Site_Converter_Mapper {
 	 * images — and NOT a code_block). Pulls the src/alt out of the img markup; the importer sideloads
 	 * the URL. Falls back to a code_block only when there's no resolvable src.
 	 */
+	/**
+	 * Recover a source image's CROP BOX from its wrapper's utility classes.
+	 *
+	 * A Tailwind/React source constrains a photo on the WRAPPER, not the <img>:
+	 * `<div class="relative w-full aspect-[2/3] overflow-hidden"><img class="w-full h-full object-cover">`.
+	 * The `<img>`'s own captured computed style carries only `border-radius` — no height, no
+	 * object-fit, no aspect-ratio — so the emitted `media_image` had nothing to size it and the photo
+	 * rendered at its NATURAL aspect: measured 1280x1920 in a hero that should be 713px tall
+	 * (elena-vance, page ratio 1.76) and 11 oversized images on construction (1.74).
+	 *
+	 * The constraint is, however, right there in the wrapper's class list. Measured across the corpus:
+	 * 931 `object-cover` images with a <div> parent — 40% carry `aspect-*`, 24% carry `h-*`, so **64%
+	 * are recoverable here with no capture-side change**. Vocabulary is small: aspect 4/3, 3/4, square,
+	 * 4/5; h-64 / h-48 / h-56 / h-[400px] / h-full.
+	 *
+	 * Returns a `selector{…}` skin-CSS string, or '' when nothing is recoverable (caller keeps its
+	 * existing behaviour).
+	 *
+	 * @param string $html wrapper + <img> markup
+	 * @return string
+	 */
+	/**
+	 * Translate a wrapper element's utility classes into the box declaration that CONSTRAINED the
+	 * image inside it (`aspect-[2/3]`, `aspect-square`, `aspect-video`, `h-64`, `h-[400px]`).
+	 * Returns '' when the classes carry no box.
+	 *
+	 * @param string $classes raw class attribute
+	 * @return string CSS declarations, or ''
+	 */
+	private static function box_decl_from_classes( $classes ) {
+		$cls = ' ' . preg_replace( '/\s+/', ' ', (string) $classes ) . ' ';
+		// Widest breakpoint first ('' = the un-prefixed base): the capture is a DESKTOP render, so
+		// `md:h-80` must beat a base `h-64`. Twin of Stitch::box_decl_from_classes.
+		foreach ( array( '2xl:', 'xl:', 'lg:', 'md:', 'sm:', '' ) as $bp ) {
+			$b = preg_quote( $bp, '/' );
+			if ( preg_match( '/\s' . $b . 'aspect-\[([0-9.]+)\s*\/\s*([0-9.]+)\]/', $cls, $am ) ) {
+				return 'aspect-ratio:' . $am[1] . ' / ' . $am[2] . ';';
+			}
+			if ( preg_match( '/\s' . $b . 'aspect-square\s/', $cls ) ) { return 'aspect-ratio:1 / 1;'; }
+			if ( preg_match( '/\s' . $b . 'aspect-video\s/', $cls ) )  { return 'aspect-ratio:16 / 9;'; }
+			if ( preg_match( '/\s' . $b . 'h-\[([0-9.]+)(px|rem|vh|vw|em|%)\]/', $cls, $hm ) ) { return 'height:' . $hm[1] . $hm[2] . ';'; }
+			if ( preg_match( '/\s' . $b . 'h-(\d{1,3})\s/', $cls, $hm ) ) {
+				return 'height:' . ( (float) $hm[1] * 0.25 ) . 'rem;';   // Tailwind spacing scale: 1 = 0.25rem
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * DOM variant of {@see media_box_css()} — used where the ANCESTORS are still reachable.
+	 *
+	 * A Wegic image is almost never sized by its own attributes: the `<img>` carries
+	 * `w-full h-full object-cover` and the box that actually crops it lives on a WRAPPER
+	 * (`<div class="relative w-full aspect-[2/3] overflow-hidden">`). Serialising the <img> alone
+	 * therefore loses the frame and the photo renders at its natural size — a 1280x1950 portrait
+	 * blowing a 713px hero out to 2,675px. Walk up to three ancestors for that box.
+	 *
+	 * @param DOMElement $img the source <img>
+	 * @return string a `selector{…}` skin-CSS string, or ''
+	 */
+	private static function media_box_css_el( DOMElement $img ) {
+		// Only a CROPPING image has a recoverable frame — `object-cover` is the source's own signal
+		// that it deliberately cropped into a fixed box (a contained image is already sized by its
+		// natural ratio and must not be forced).
+		$icls = ' ' . preg_replace( '/\s+/', ' ', strtolower( (string) $img->getAttribute( 'class' ) ) ) . ' ';
+		if ( strpos( $icls, 'object-cover' ) === false ) { return ''; }
+
+		$box = '';
+		$p   = $img->parentNode;
+		for ( $i = 0; $i < 3 && $p instanceof DOMElement; $i++ ) {
+			$box = self::box_decl_from_classes( (string) $p->getAttribute( 'class' ) );
+			if ( '' !== $box ) { break; }
+			$p = $p->parentNode;
+		}
+		if ( '' === $box ) { return ''; }
+
+		return 'selector{' . $box . 'overflow:hidden;}'
+			. 'selector img{width:100%;height:100%;object-fit:cover;display:block;}';
+	}
+
+	private static function media_box_css( $html ) {
+		$html = (string) $html;
+		// Only a cropping image has a box to recover — `object-cover` is the signal the source
+		// deliberately cropped into a fixed frame.
+		if ( ! preg_match( '/<img\b[^>]*\bclass\s*=\s*["\'][^"\']*object-cover/i', $html ) ) { return ''; }
+		// Only the FIRST wrapper is examined on purpose. Scanning every wrapper was tried and REVERTED
+		// (08-render-audit.md 8.31): it finds boxes on paths whose COLUMN width is itself wrong, and a
+		// correct aspect on a wrong-width column renders worse than an unconstrained image.
+		if ( ! preg_match( '/<(?:div|figure|a|picture|span)\b[^>]*\bclass\s*=\s*["\']([^"\']*)["\']/i', $html, $wm ) ) { return ''; }
+		$box = self::box_decl_from_classes( $wm[1] );
+		if ( '' === $box ) { return ''; }
+
+		// The wrapper gets the box; the <img> fills and crops it exactly as `w-full h-full object-cover` did.
+		return 'selector{' . $box . 'overflow:hidden;}'
+			. 'selector img{width:100%;height:100%;object-fit:cover;display:block;}';
+	}
+
 	private static function n_media_image( $html, $skin_css = '' ) {
 		$html     = (string) $html;
 		$skin_css = (string) $skin_css;
+		// No caller-supplied skin: try to recover the source's crop box from the wrapper's classes.
+		// This both SIZES the image correctly and keeps it a NATIVE media_image — without it a wrapped
+		// image falls through to the verbatim code_block branch below.
+		if ( '' === $skin_css ) { $skin_css = self::media_box_css( $html ); }
 		$src      = '';
 		$alt      = '';
 		if ( preg_match( '/<img\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']/i', $html, $m ) ) { $src = trim( $m[1] ); }
@@ -3678,7 +3912,9 @@ class FW_Site_Converter_Mapper {
 			if ( '' === $title ) { continue; }
 			$open = ! empty( $it['open'] );
 			if ( $open ) { $opens++; }
-			$tabs[] = array( 'tab_title' => $title, 'tab_content' => (string) ( $it['content'] ?? '' ), 'is_open' => $open ? 'yes' : 'no' );
+			// Same scope problem as n_tabs: an accordion PANEL's verbatim markup sits outside every
+			// `.sc-tw` wrapper, so the carried utility rules never reach it. See sc_tw_wrap().
+			$tabs[] = array( 'tab_title' => $title, 'tab_content' => self::sc_tw_wrap( (string) ( $it['content'] ?? '' ) ), 'is_open' => $open ? 'yes' : 'no' );
 		}
 		if ( ! $tabs ) { return self::n_code( '' ); }
 		$atts = self::shortcode_default_atts( 'accordion' );
@@ -4301,6 +4537,37 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/**
+	 * Wrap verbatim source markup in the converter's `.sc-tw` scope.
+	 *
+	 * The carried Tailwind utility rules are emitted SCOPED to `.sc-tw` (see hidden_utils_css() and the
+	 * snippet branch in n_tabs) so they cannot leak onto the rest of the site. Verbatim markup placed
+	 * INSIDE a native shortcode — a tabs pane, an accordion panel — sits outside every `.sc-tw`
+	 * wrapper, so those rules never reach it and the markup renders unstyled.
+	 *
+	 * Measured on seesea.wegic.top: a panel's `grid md:grid-cols-2 lg:grid-cols-3` computed
+	 * `display:block` and matched exactly ONE rule on the page (`*{box-sizing}`), its images fell back
+	 * to `img{height:auto}` and rendered 1358x1358, and the section came out 9,980px against a 1,472px
+	 * source — the whole page 1.89x too tall. The same page had six `.sc-tw` wrappers elsewhere, and a
+	 * site whose grid DID sit inside one (codecraft-ai) rendered correctly with 7 matching rules.
+	 * See 08-render-audit.md 8.9 / 8.13.
+	 *
+	 * No-ops for plain text, an already-wrapped block, and a `[snippet]` reference (the snippet CPT
+	 * carries its own `.sc-tw` wrapper).
+	 *
+	 * @param string $html
+	 * @return string
+	 */
+	private static function sc_tw_wrap( $html ) {
+		$html = (string) $html;
+		$t    = trim( $html );
+		if ( '' === $t ) { return $html; }
+		if ( false === strpos( $t, '<' ) ) { return $html; }              // plain text needs no utilities
+		if ( 0 === strpos( $t, '[snippet' ) ) { return $html; }           // snippet CPT is wrapped already
+		if ( false !== strpos( $t, 'class="sc-tw"' ) ) { return $html; }  // already scoped
+		return '<div class="sc-tw">' . $html . '</div>';
+	}
+
+	/**
 	 * A native `tabs` shortcode node from a captured tab widget (recognizer block `{ items:[{title,content,active}] }`).
 	 * Each item → one `tabs` entry `{ tab_title, tab_content, is_active }` (Content layout). See tabs.md.
 	 */
@@ -4324,6 +4591,7 @@ class FW_Site_Converter_Mapper {
 				if ( $sid > 0 ) { $content = '[snippet id="' . $sid . '"]'; }
 				else            { $content = '<div class="sc-tw">' . $content . '</div>'; }
 			}
+			$content = self::sc_tw_wrap( $content );
 			$tabs[] = array(
 				'tab_title'   => $title,
 				'tab_content' => $content,
@@ -4962,7 +5230,16 @@ class FW_Site_Converter_Mapper {
 		}
 		if ( count( $items ) < 2 ) { return self::n_code( '' ); }
 		$d = ( isset( $b['design'] ) && is_array( $b['design'] ) && ! empty( $b['design']['design'] ) ) ? array( 'design' => (string) $b['design']['design'] ) : array();
-		return self::finalize_widget( 'timeline', array( 'items' => $items ) + $d );
+		// CARD COLOURS — carried from the source entry card when it is DARK (see detect_timeline_design): a dark
+		// card fill + light title/text so the converted card matches the source and the title isn't rendered
+		// white-on-white against the shortcode's default light card. Compact-colour shape { predefined, custom }.
+		$dz = ( isset( $b['design'] ) && is_array( $b['design'] ) ) ? $b['design'] : array();
+		$cc = array();
+		$compact = function ( $hex ) { return array( 'predefined' => '', 'custom' => (string) $hex ); };
+		if ( ! empty( $dz['card_bg'] ) )     { $cc['card_bg']     = $compact( $dz['card_bg'] ); }
+		if ( ! empty( $dz['title_color'] ) ) { $cc['title_color'] = $compact( $dz['title_color'] ); }
+		if ( ! empty( $dz['text_color'] ) )  { $cc['text_color']  = $compact( $dz['text_color'] ); }
+		return self::finalize_widget( 'timeline', array( 'items' => $items ) + $d + $cc );
 	}
 
 	/**
@@ -5940,6 +6217,37 @@ class FW_Site_Converter_Mapper {
 			$title_css = 'selector .icon-box__title{' . implode( ';', $title_decls ) . ';}';
 			$node['atts']['custom_css'] = trim( ( isset( $node['atts']['custom_css'] ) ? (string) $node['atts']['custom_css'] : '' ) . ' ' . $title_css );
 		}
+		// SOURCE CARD INSET → the icon_box's own spacing. When the source card's padding lives on an INNER content
+		// wrapper (`contentPad` from card_from_cell — e.g. master-built's `.inner{padding:18px}` inside an
+		// unpadded `.tile` cell) it was dropped and the content sat flush against the card edge. Apply it as the
+		// icon_box padding, but ONLY when the CELL carries no box skin (a rounded fill/border card's padding rides
+		// its Box Preset column instead, so setting it here too would double-inset). A minimal gap-spaced card has
+		// no contentPad and is correctly left alone. The capture stamps the `padding` SHORTHAND → expand to sides.
+		$cpad = trim( (string) ( $card['contentPad'] ?? '' ) );
+		$ccs  = (string) ( $card['cs'] ?? '' );
+		// `contentPad` is set ONLY when the source card's padding rides an INNER content wrapper — card_from_cell
+		// stops AT the cell boundary, so it never captures cell-ROOT padding (the case a Box Preset column would
+		// carry). That inner inset is dropped with the wrapper whether or not the card is box-skinned: a rounded
+		// fill/border card keeps its skin but NOT the inner wrapper's padding, so its text ran flush to the
+		// rounded edge (regenerative-landscapes: `article.band` rounded 38px with `.copyzone{padding:36px}`
+		// inside). An earlier `!box_skinned` gate wrongly dropped exactly the cards that most need the inset;
+		// apply it unconditionally — the per-side `empty($pad[...])` guards still never overwrite a real value.
+		if ( $cpad !== '' && isset( $node['atts']['spacing']['padding'] ) && is_array( $node['atts']['spacing']['padding'] ) ) {
+			$pp = preg_split( '/\s+/', $cpad );
+			$t = $pp[0] ?? '0'; $r = $pp[1] ?? $t; $b = $pp[2] ?? $t; $l = $pp[3] ?? $r;
+			$sl = function ( $v ) { $px = self::px_of( $v ); if ( $px < 6 ) { return null; } $s = self::spacing_px_to_slug( $px ); return ( '0' === $s ) ? null : $s; };
+			$sT = $sl( $t ); $sR = $sl( $r ); $sB = $sl( $b ); $sL = $sl( $l );
+			$pad = &$node['atts']['spacing']['padding'];
+			if ( $sT !== null && $sT === $sR && $sR === $sB && $sB === $sL ) {
+				if ( empty( $pad['all'] ) ) { $pad['all'] = 'p-' . $sT; }
+			} else {
+				if ( $sT && empty( $pad['top'] ) )    { $pad['top']    = 'pt-' . $sT; }
+				if ( $sR && empty( $pad['right'] ) )  { $pad['right']  = 'pr-' . $sR; }
+				if ( $sB && empty( $pad['bottom'] ) ) { $pad['bottom'] = 'pb-' . $sB; }
+				if ( $sL && empty( $pad['left'] ) )   { $pad['left']   = 'pl-' . $sL; }
+			}
+			unset( $pad );
+		}
 		return $node;
 	}
 
@@ -6291,6 +6599,24 @@ class FW_Site_Converter_Mapper {
 	 * there is no gradient span, or when a SINGLE heading mixes DISTINCT gradients — then the values stay inline
 	 * (one scoped rule can't carry two different gradients), so nothing regresses.
 	 */
+	/**
+	 * Gradient text applied to the HEADING ELEMENT ITSELF (not an inner span) — e.g. swiss-luxury's
+	 * `<h1 class="bg-clip-text text-transparent bg-gradient-to-r from-white via-gray to-[oklch]">Orange
+	 * Sapphire.<br><span style=color:#fff>Absolute Fusion.</span></h1>`. Those Tailwind classes are DEAD on the
+	 * body (no runtime + reproduced only under `.sc-tw`), so the direct text renders TRANSPARENT = invisible.
+	 * Read the source heading's COMPUTED gradient (title_cs) and emit a scoped `.heading-title` gradient-text
+	 * rule so the direct text shows its gradient; any inline-coloured child span keeps its OWN colour (its fill
+	 * is re-asserted to currentColor so the heading gradient doesn't swallow it). '' when no clip:text gradient.
+	 */
+	private static function heading_self_gradtext_css( $h ) {
+		$cs = (string) ( $h['title_cs'] ?? '' );
+		if ( $cs === '' || ! preg_match( '/background-clip:\s*text/i', $cs ) ) { return ''; }
+		if ( ! preg_match( '/background-image:\s*((?:linear|radial|conic)-gradient\([^;"]+\))/i', $cs, $gm ) ) { return ''; }
+		$grad = trim( $gm[1] );
+		return 'selector .heading-title{background-image:' . $grad . ';-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}'
+			. 'selector .heading-title [style*="color"],selector .heading-title span[class]{-webkit-text-fill-color:currentColor}';
+	}
+
 	private static function extract_gradtext_css( &$html ) {
 		$html = (string) $html;
 		if ( '' === $html || false === stripos( $html, 'sc-gradtext' ) ) { return ''; }
@@ -6703,6 +7029,19 @@ class FW_Site_Converter_Mapper {
 			// so the icon_box must NOT add its own default `.icon-box__wrapper{padding:1.5rem 0}` — it would
 			// double the top/bottom inset. Zero it via scoped CSS.
 			if ( $bt === 'card' && ! empty( $b['card'] ) && is_array( $b['card'] ) ) {
+				// A card carrying a real content PHOTO is an IMAGE tile, and n_icon_box has no image surface --
+				// it renders the icon/title/text and the photo is simply gone. Route it the same way the column
+				// `card` branch does: a TITLED tile → one cohesive image_box; an untitled one → the decomposed
+				// media_image + heading + text. (urban_living_ams's property cards lost all 3 photos here.)
+				if ( ! empty( $b['card']['image']['src'] ) ) {
+					$titled = '' !== trim( wp_strip_all_tags( (string) ( $b['card']['title'] ?? '' ) ) );
+					$ibx    = $titled ? self::n_image_box( $b['card'] ) : array();
+					if ( ! empty( $ibx ) ) {
+						self::apply_block_anim( $ibx, $b ); $items[] = $ibx; continue;
+					}
+					foreach ( self::n_image_card( $b['card'] ) as $icn ) { $items[] = $icn; }
+					continue;
+				}
 				$node = self::n_icon_box( $b['card'] );
 				// Strip the icon_box's OWN native padding (a `p-4` !important utility apply_native_padding set from
 				// the source card) AND its default wrapper padding — the COLUMN's box preset owns the card padding.
@@ -7440,6 +7779,7 @@ class FW_Site_Converter_Mapper {
 				// hN.heading-title tag rule when no heading-weight token is set) — parity with JS to-pages.
 				'custom_css' => self::heading_weight_css( $h )
 				. $gradtext_css // gradient-text value → scoped `.sc-gradtext` rule (keeps the Title markup clean)
+				. self::heading_self_gradtext_css( $h ) // heading's OWN gradient text (clip:text on the h1 itself, not a span)
 				. $overline_type_css // NEVER-DROP: overline font-size + letter-spacing (no native option)
 				. self::overline_pill_skin_css( $h ) // NEVER-DROP: pill glass skin (translucent fill + border + backdrop-blur + radius)
 			. self::heading_filter_css( $h ) // NEVER-DROP: a title CSS filter (e.g. a hero drop-shadow glow) - no native option
@@ -7919,7 +8259,7 @@ class FW_Site_Converter_Mapper {
 			// "Add entrance animations" (Convert panel opt-in): give each section's content a tasteful,
 			// sequential reveal-on-scroll — deterministically, from each element's role.
 			if ( self::$entrance_anim ) { self::apply_entrance_animations( $builder ); }
-			if ( ! empty( $page['mainClass'] ) ) { self::main_style( (string) $page['mainClass'] ); } // carry the source <main>'s vertical padding
+			if ( ! empty( $page['mainClass'] ) || ! empty( $page['mainCs'] ) ) { self::main_style( (string) ( $page['mainClass'] ?? '' ), (string) ( $page['mainCs'] ?? '' ) ); } // carry the source <main>'s padding + container width
 			$slug = isset( $page['slug'] ) ? sanitize_title( (string) $page['slug'] ) : '';
 			$out[] = array(
 				'title'      => isset( $page['title'] ) && $page['title'] !== '' ? (string) $page['title'] : ( $slug !== '' ? ucwords( str_replace( '-', ' ', $slug ) ) : 'Home' ),
@@ -8491,6 +8831,58 @@ class FW_Site_Converter_Mapper {
 			}
 			return $node;
 		} );
+		// A free-form ABSOLUTE-POSITIONED COLLAGE (stitch's `absolute_collage` recognizer) → a relative STAGE
+		// flexbox with the source min-height, holding one absolutely-placed glass card per source card. Each
+		// card is a flexbox carrying its native content (build_cell_items — editable headings/text/stats) and a
+		// single scoped `selector{}` block that reproduces the source: position:absolute + the card's top/left/
+		// right/bottom offsets + its glass skin (blob radius, backdrop-filter, soft shadow, translucent fill,
+		// padding, max-width). This preserves the source DOM STRUCTURE (a scattered collage) instead of
+		// flattening it into a flow row. full_width so the stage gets its own 1_1 column in the section.
+		self::register_builder( 'stage', function ( $b ) {
+			$cards = ( isset( $b['cards'] ) && is_array( $b['cards'] ) ) ? $b['cards'] : array();
+			if ( ! $cards ) { return null; }
+			$items = array();
+			$z = 2;
+			foreach ( $cards as $card ) {
+				if ( ! is_array( $card ) ) { continue; }
+				$inner = self::build_cell_items( ( isset( $card['blocks'] ) && is_array( $card['blocks'] ) ) ? $card['blocks'] : array() );
+				if ( ! $inner ) { continue; }
+				$decl = array( 'position:absolute' );
+				$pos  = ( isset( $card['pos'] ) && is_array( $card['pos'] ) ) ? $card['pos'] : array();
+				foreach ( array( 'top', 'right', 'bottom', 'left' ) as $side ) {
+					if ( isset( $pos[ $side ] ) && '' !== $pos[ $side ] ) { $decl[] = $side . ':' . $pos[ $side ]; }
+				}
+				$decl[] = 'z-index:' . $z; $z++;
+				$sk = ( isset( $card['skin'] ) && is_array( $card['skin'] ) ) ? $card['skin'] : array();
+				if ( ! empty( $sk['bg'] ) )       { $decl[] = 'background:' . $sk['bg']; }
+				if ( ! empty( $sk['radius'] ) )   { $decl[] = 'border-radius:' . $sk['radius']; }
+				if ( ! empty( $sk['borderW'] ) && ! empty( $sk['borderColor'] ) ) { $decl[] = 'border:' . $sk['borderW'] . ' solid ' . $sk['borderColor']; }
+				if ( ! empty( $sk['shadow'] ) )   { $decl[] = 'box-shadow:' . $sk['shadow']; }
+				if ( ! empty( $sk['backdrop'] ) ) { $decl[] = '-webkit-backdrop-filter:' . $sk['backdrop']; $decl[] = 'backdrop-filter:' . $sk['backdrop']; }
+				if ( ! empty( $sk['padding'] ) )  { $decl[] = 'padding:' . $sk['padding']; }
+				if ( ! empty( $card['width'] ) )  { $decl[] = 'max-width:' . $card['width']; }
+				$decl[] = 'box-sizing:border-box';
+				$items[] = self::n_flexbox( $inner, array(
+					'direction'  => array( 'base' => 'column', 'md' => '', 'lg' => '' ),
+					'wrap'       => array( 'base' => 'no', 'md' => '', 'lg' => '' ),
+					'custom_css' => 'selector{' . implode( ';', $decl ) . ';}',
+				) );
+			}
+			if ( ! $items ) { return null; }
+			$stage = self::n_flexbox( $items, array(
+				'display'    => 'block', // absolute children need no flex; a plain positioned box is the stage
+				'custom_css' => 'selector{position:relative;}',
+			) );
+			$minh = isset( $b['minH'] ) ? (float) $b['minH'] : 0.0;
+			if ( $minh > 0 ) {
+				$stage['atts']['min_height'] = array(
+					'base' => array( 'value' => (string) (int) round( $minh ), 'unit' => 'px' ),
+					'md'   => array( 'value' => '', 'unit' => 'px' ),
+					'lg'   => array( 'value' => '', 'unit' => 'px' ),
+				);
+			}
+			return $stage;
+		}, true );
 	}
 
 	/** A Tailwind spacing token → pixels: `[150px]`/`[5rem]` (arbitrary) or a scale step (12 → 48px). */
@@ -8507,14 +8899,38 @@ class FW_Site_Converter_Mapper {
 
 	/** Sum a section's vertical rhythm utilities (pt/pb/py + mt/mb/my) → top/bottom pixels, so the builder
 	 *  section can reproduce the source's spacing (decompose sections otherwise have zero vertical spacing). */
-	/** Carry the source <main>'s vertical padding (pt-32 pb-32 …) onto the theme's #main wrapper via a
-	 *  scoped rule, the same container-styling mechanism as sections. Clean DOM (no class on <main>). */
-	private static function main_style( $cls ) {
+	/** Carry the source <main>'s vertical padding (pt-32 pb-32 …) AND — when the source <main> is a real
+	 *  CONTAINER (a `container`/`max-w-*` cap, e.g. `container mx-auto px-6`) — its max-width + horizontal
+	 *  padding onto the theme's #main wrapper via a scoped rule, so the whole page's content column matches
+	 *  the source instead of running full-width. Clean DOM (no class on <main>).
+	 *
+	 *  The max-width is only carried from a genuine computed `max-width` (400–1600px) — the source main then
+	 *  itself capped ALL its sections at that width, so centring #main reproduces that without clipping any
+	 *  intended full-bleed (a full-bleed source has NO max-width on <main>, so nothing is added). */
+	private static function main_style( $cls, $cs = '' ) {
 		if ( ! self::$style_on ) { return; }
 		$vs = self::section_vspace( (string) $cls );
-		$d = array();
+		$d  = array();
 		if ( $vs['pt'] > 0 ) { $d['padding-top']    = round( $vs['pt'] ) . 'px'; }
 		if ( $vs['pb'] > 0 ) { $d['padding-bottom'] = round( $vs['pb'] ) . 'px'; }
+		// CONTAINER — a real max-width on the source <main> → centre #main at that width with the source's
+		// horizontal padding, reproducing the content column. Read the computed values (a `container` utility
+		// resolves to a breakpoint max-width, e.g. 1280px, only in the computed style, not the class).
+		$cs = (string) $cs;
+		if ( '' !== $cs && preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/i', $cs, $mw ) ) {
+			$w = (float) $mw[1];
+			if ( $w >= 400 && $w <= 1600 ) {
+				$d['max-width']    = round( $w ) . 'px';
+				$d['margin-left']  = 'auto';
+				$d['margin-right'] = 'auto';
+				// Horizontal padding: the computed `padding` shorthand's 2nd value (top RIGHT bottom left), else
+				// a `px-N` utility (N×4px), so the source gutter (px-6 = 24px) survives.
+				$px = '';
+				if ( preg_match( '/(?:^|;)\s*padding:\s*[0-9.]+px\s+([0-9.]+px)/i', $cs, $pm ) ) { $px = $pm[1]; }
+				elseif ( preg_match( '/(?:^|\s)px-(\d{1,2})(?:\s|$)/', ' ' . (string) $cls . ' ', $pc ) ) { $px = ( (int) $pc[1] * 4 ) . 'px'; }
+				if ( '' !== $px ) { $d['padding-left'] = $px; $d['padding-right'] = $px; }
+			}
+		}
 		if ( ! $d ) { return; }
 		$body = '';
 		foreach ( $d as $pr => $v ) { $body .= $pr . ':' . $v . ' !important;'; }
@@ -8802,6 +9218,12 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 		};
 		$find_bgv( $blocks );
 		$blocks = array_values( array_filter( $blocks ) );
+		// PAGE-LEVEL fixed backdrop video: stitch hoisted a body-level `position:fixed` <video> (a sibling of
+		// the content, behind the hero) onto this section as `sectionBgVideo`. Use it only when the section
+		// carries no in-flow bg video of its own, so the hero's own backdrop always wins.
+		if ( $bg_video === null && isset( $sec['sectionBgVideo'] ) && is_array( $sec['sectionBgVideo'] ) && ( ! empty( $sec['sectionBgVideo']['src'] ) || ! empty( $sec['sectionBgVideo']['webm'] ) ) ) {
+			$bg_video = $sec['sectionBgVideo'];
+		}
 
 		// HERO full-bleed BACKGROUND image → the section Background (below), NOT a tiny inline media_image.
 		// Drop the duplicate content image block whose src matches the detected background photo.
@@ -9430,7 +9852,12 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 						// WIDER + edge-to-edge. Gutter now stays OUTSIDE the box (parity with the grid-cell path).
 						if ( ! empty( $c['cardBox'] ) && is_array( $c['cardBox'] ) && ! $box_via_class ) {
 							$cb    = $c['cardBox'];
-							$bpref = self::register_box_preset( $cb ); // register + assign a REAL Box Preset (inner wrapper)
+							// A FROSTED / organic-blob card (a backdrop-filter, or an arbitrary %-based radius like
+							// `42% 58% 61% 39%`) cannot round-trip through a standard Box Preset — force the scoped-class
+							// path so the exact glass (blur + tint + shadow + blob radius) survives verbatim instead of
+							// being normalised away by the preset's option schema.
+							$cb_glass = ! empty( $cb['backdrop'] ) || ( ! empty( $cb['radius'] ) && false !== strpos( (string) $cb['radius'], '%' ) );
+							$bpref = $cb_glass ? '' : self::register_box_preset( $cb ); // register + assign a REAL Box Preset (inner wrapper)
 							if ( '' !== $bpref ) {
 								$col['atts']['border_preset'] = $bpref;
 							} else {
@@ -9438,6 +9865,8 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 								if ( ! empty( $cb['bg'] ) )     { $bdecl[] = 'background:' . $cb['bg']; }
 								if ( ! empty( $cb['radius'] ) ) { $bdecl[] = 'border-radius:' . $cb['radius']; }
 								if ( ! empty( $cb['borderW'] ) && ! empty( $cb['borderColor'] ) ) { $bdecl[] = 'border:' . $cb['borderW'] . ' solid ' . $cb['borderColor']; }
+								if ( ! empty( $cb['shadow'] ) )   { $bdecl[] = 'box-shadow:' . $cb['shadow']; }
+								if ( ! empty( $cb['backdrop'] ) ) { $bdecl[] = '-webkit-backdrop-filter:' . $cb['backdrop']; $bdecl[] = 'backdrop-filter:' . $cb['backdrop']; }
 								if ( ! empty( $cb['padding'] ) ) { $bdecl[] = 'padding:' . $cb['padding']; }
 								if ( $bdecl ) {
 									$bxcls = 'sc-cb-' . substr( md5( implode( ';', $bdecl ) ), 0, 8 );
@@ -9595,6 +10024,15 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 		// is INHERITED, so this centers the whole band's heading + paragraph + buttons together (the
 		// per-heading special_heading `alignment` stays on Inherit and cascades from here). '' otherwise.
 		if ( $center && isset( $sec_node['atts'] ) ) { $sec_node['atts']['text_align'] = 'center'; }
+		// GLASS BAND: a source section whose COMPUTED style carries `backdrop-filter: blur()` → the native
+		// Backdrop Blur option (a frosted band, e.g. a sticky/overlapping translucent section over media). Only
+		// fires when the property is present, so non-glass sections are untouched (additive, no regression). Glass
+		// CARDS still come through their box preset; this is the section-band case.
+		$sec_cs = (string) ( $sec['sectionCs'] ?? '' );
+		if ( $sec_cs !== '' && isset( $sec_node['atts'] )
+			&& preg_match( '/backdrop-filter:[^;]*blur\(\s*([0-9.]+)(px|rem)\s*\)/i', $sec_cs, $bfm ) ) {
+			$sec_node['atts']['backdrop_blur'] = array( 'value' => $bfm[1], 'unit' => strtolower( $bfm[2] ) );
+		}
 		if ( $bg_video !== null ) { self::apply_bg_video( $sec_node, $bg_video ); } // full-screen <video> → section background
 		if ( $bg_image !== null ) { self::apply_bg_image( $sec_node, $bg_image ); } // hero full-bleed <img> → section background image + dark scrim
 		// NOTE: the OVERLAY-HEADER OFFSET (heroTopPad) is applied LATER — AFTER Pass #5 sets the native
@@ -9603,16 +10041,20 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 		// clobbering the correct 112px with the 80px nav height (the "hero top padding stuck at 80" bug).
 		// Container Width — the source's content-band cap (e.g. `container-narrow` = 64rem) → a shared named
 		// Container Width preset (Components → Section Styles → Container Widths), so the whole site reuses it.
-		if ( ! $hero_fullbleed && isset( $sec['sectionContainerW'] ) && is_array( $sec['sectionContainerW'] ) && isset( $sec_node['atts'] ) ) {
-			$sec_node['atts']['container_width'] = $sec['sectionContainerW'];
+		if ( ! $hero_fullbleed && isset( $sec_node['atts'] ) ) {
+			if ( isset( $sec['sectionContainerW'] ) && is_array( $sec['sectionContainerW'] ) ) {
+				$sec_node['atts']['container_width'] = $sec['sectionContainerW'];
+			}
 			// A direct FLEXBOX child makes the section render it FULL-WIDTH (the items-corrector skips the
 			// section's own .fw-container for a self-managed flex band), so the section's container_width can't
 			// constrain it — the grid escapes to edge-to-edge. Push a content cap onto each such flexbox's own
 			// `content_width`. Prefer the section's INNER GRID cap (a `max-w-5xl` card grid = 1024) so the band
-			// stays narrower than the container; fall back to the OUTER container (~1400) for a section with no
-			// narrower band — the hero (text + card, capped only by the outer container) — so it isn't full-width.
+			// stays narrower than the container; then the OUTER container (~1400); and FINALLY the SITE content
+			// width (--container-max-desktop) so a contained band with NO detected max-w wrapper (a full-width
+			// flex + px gutters, e.g. apple-card) still caps at the site width instead of rendering edge-to-edge.
 			$cwpx = self::container_width_px( $sec['sectionBandW'] ?? null );
-			if ( $cwpx <= 0 ) { $cwpx = self::container_width_px( $sec['sectionContainerW'] ); }
+			if ( $cwpx <= 0 ) { $cwpx = self::container_width_px( $sec['sectionContainerW'] ?? null ); }
+			if ( $cwpx <= 0 ) { $cwpx = self::$site_container_px; }
 			if ( $cwpx > 0 && isset( $sec_node['_items'] ) && is_array( $sec_node['_items'] ) ) {
 				$cw_val = self::content_width_value( $cwpx );
 				foreach ( $sec_node['_items'] as &$child ) {

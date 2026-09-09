@@ -35,6 +35,15 @@
 class FW_Site_Converter_Menus {
 
 	/**
+	 * Term-meta flag stamped on every menu this converter creates/rebuilds, so a later reconversion of a
+	 * DIFFERENT source site can identify and purge the previous conversion's menus (see
+	 * FW_Site_Converter_Bundle::cleanup_previous_conversion). Each source site makes its own "<Title> Header"
+	 * menu and claims the `primary` location; without a purge they pile up (a shared test install had grown to
+	 * 46) and the newest one keeps/steals the location, so the front page renders the WRONG site's nav.
+	 */
+	const MENU_META = '_fw_sc_menu';
+
+	/**
 	 * Import one or more menus.
 	 *
 	 * @param array $data `{ menus: [ … ] }`, a bare `[ … ]` list of menu specs, or
@@ -481,6 +490,12 @@ class FW_Site_Converter_Menus {
 			}
 			$menu_id        = (int) $menu_id;
 			$row['created'] = true;
+		}
+
+		// Tag as converter-created so reconversion cleanup can purge stale menus from PREVIOUS conversions
+		// (see self::MENU_META). Stamped on both create and reuse so pre-tag menus get backfilled on re-run.
+		if ( function_exists( 'update_term_meta' ) && $menu_id > 0 ) {
+			update_term_meta( $menu_id, self::MENU_META, 1 );
 		}
 
 		$row['items'] = self::add_items( $menu_id, is_array( $items ) ? $items : array(), 0 );

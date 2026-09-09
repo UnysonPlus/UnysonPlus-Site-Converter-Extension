@@ -45,8 +45,28 @@ class FW_Site_Converter_Theme_Settings {
 	 *                    map. Keys starting with `_` are treated as metadata.
 	 * @return array{imported: string[], skipped: string[], cross_theme: bool, error: string}
 	 */
-	public static function import( $data ) {
-		$out = array( 'imported' => array(), 'skipped' => array(), 'cross_theme' => false, 'error' => '' );
+	/**
+	 * Chrome containers a full-design conversion OWNS. On a non-scoped import these are REPLACED, not
+	 * merged: a conversion that emits no footer columns (a flat link row, or a footer with no links —
+	 * ~14% of a 172-footer corpus) previously left the PREVIOUS conversion's columns standing, so the
+	 * new site rendered another site's footer. Same failure class the menus already guard against
+	 * ("Phase 5-guard: STALE-MENU CONTAMINATION" in the bundle) — footer/header columns had no guard.
+	 */
+	const CHROME_KEYS = array(
+		'header_main', 'header_topbar', 'header_bottombar',
+		'pre_footer_columns', 'main_footer_columns', 'post_footer_columns',
+		// The list is the FULL set of chrome containers the theme stores, derived by comparing against
+		// the option files — not just the one that was reported broken. A footer-only fix would have
+		// left the identical bug in the copyright bar and the mega-menu panels: a conversion that emits
+		// neither keeps the PREVIOUS site's copyright line and mega menus. Same class, same guard.
+		'copyright_settings', 'mega_menu',
+		// The logo too: if a source has no detectable mark, the previous conversion's logo image is the
+		// most visible thing that could survive into the new site.
+		'header_logo',
+	);
+
+	public static function import( $data, $replace_chrome = false ) {
+		$out = array( 'imported' => array(), 'skipped' => array(), 'cleared' => array(), 'cross_theme' => false, 'error' => '' );
 
 		if ( ! is_array( $data ) ) {
 			$out['error'] = __( 'Invalid theme-settings payload — expected a JSON object.', 'fw' );
@@ -98,6 +118,20 @@ class FW_Site_Converter_Theme_Settings {
 		// via fw_set_db_settings_option(null, …) would re-run every registered
 		// option's storage_save() on its already-stored value — which expects fresh
 		// form input, not the stored shape, and corrupts unrelated settings.
+		// REPLACE (not merge) the chrome this conversion owns: any chrome container the payload does
+		// NOT carry is cleared first, so nothing from a previous conversion survives into this one.
+		// Scoped/partial imports skip this — they are deliberately additive.
+		if ( $replace_chrome ) {
+			foreach ( self::CHROME_KEYS as $ck ) {
+				if ( ! array_key_exists( $ck, $incoming ) ) {
+					$existing = fw_get_db_settings_option( $ck, null );
+					if ( ! empty( $existing ) ) {
+						fw_set_db_settings_option( $ck, array() );
+						$out['cleared'][] = $ck;
+					}
+				}
+			}
+		}
 		foreach ( $incoming as $k => $v ) {
 			fw_set_db_settings_option( $k, $v );
 			$out['imported'][] = $k;
@@ -108,6 +142,18 @@ class FW_Site_Converter_Theme_Settings {
 		// side effect — re-running storage_save on stored values — which is what
 		// corrupted Theme Settings before. The design keys are stored; saving the
 		// Theme Settings page once will regenerate any derived assets if needed.
+		//
+		// BUT the theme's cached front-end CSS (`unysonplus-generated.css`, the `:root`
+		// token block that carries `--site-bg-color`, fonts, etc.) IS normally rebuilt by
+		// `fw_settings_form_saved` — which we just skipped. Without a rebuild the cache
+		// keeps the OLD defaults, so a converted dark site stores its `#010102` site
+		// background but the body still renders white (the exact "dark background dropped"
+		// bug). Rebuild the cache DIRECTLY: `unysonplus_hf_regenerate_css()` only recompiles
+		// the CSS file from the current stored option values — it does NOT re-run any
+		// option's storage_save(), so it's safe here (unlike firing the settings-saved hook).
+		if ( ! empty( $out['imported'] ) && function_exists( 'unysonplus_hf_regenerate_css' ) ) {
+			unysonplus_hf_regenerate_css();
+		}
 
 		// Warn if the design file came from a different theme.
 		if ( isset( $data['_fw_settings_export']['theme_id'] ) && function_exists( 'fw' ) && fw()->theme && fw()->theme->manifest ) {
