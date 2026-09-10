@@ -9249,7 +9249,10 @@ class FW_Site_Converter_Stitch {
 					// grid cap) → the section's own container_width; and the GRID band cap (a max-w-5xl/6xl card
 					// grid = 1024/1152) → pushed onto that band's flexbox content_width so it stays narrower than
 					// the container. The mapper falls back to the container when a section has no narrower band.
-					'sectionContainerW' => self::map_container_width( self::section_content_max_width( $node, 1600.0 ) ), // OUTER container (hero + all)
+					'sectionContainerW' => self::section_container_width_pref( $node ), // OUTER container (full-bleed hero → 100%; else mapped cap)
+					'sectionFullBleed' => self::is_fullbleed_split_hero( $node ), // full-viewport multicol hero → is_fullwidth (span the viewport, not the global container)
+					'sectionHeroHeight' => self::fullbleed_hero_height( $node ), // min-h-screen/100vh → section min_height (else the tall hero collapses to content height)
+					'sectionValign'     => self::fullbleed_hero_valign( $node ), // column `justify-center` (flex-col) → column_valign:center (else content top-aligns)
 					'sectionBandW'      => self::map_container_width( self::section_content_max_width( $node, 1300.0 ) ), // inner GRID band cap
 
 					'css_id'       => self::section_id( $node, $idx ),
@@ -10187,6 +10190,72 @@ class FW_Site_Converter_Stitch {
 		// width; the inner text caps a heading keeps via block_max_width. (map_container_width turns a
 		// non-standard width like 1400 into a shared "Content 1400" preset via build_container_width_presets.)
 		return $best;
+	}
+
+	/**
+	 * The section's Container Width preference — normally the mapped content cap, BUT a full-bleed SPLIT HERO
+	 * gets a FULL-WIDTH (100%) content band instead of Inherit.
+	 *
+	 * A full-VIEWPORT section (`min-h-screen`/`h-screen`/`min-height:100vh`) laid out as a MULTI-COLUMN grid with
+	 * NO inner content cap is meant to span the viewport — its columns are true viewport fractions (a 2-column
+	 * hero = ~50vw text + ~50vw media). Left on Inherit it falls back to the theme's global container (~1280),
+	 * which shrinks each column so a large fluid heading overflows its column into the media column (the hero
+	 * title-overlaps-image bug). Gated on min-h-screen + multicol + no inner cap so a normal `w-full` content
+	 * section (almost every Tailwind section is `w-full`) or a single-column centred hero is NOT widened.
+	 */
+	private static function section_container_width_pref( $node ) {
+		if ( self::is_fullbleed_split_hero( $node ) ) {
+			return array( 'preset' => 'custom', 'custom' => array( 'custom_width' => array( 'value' => '100', 'unit' => '%' ) ) );
+		}
+		return self::map_container_width( self::section_content_max_width( $node, 1600.0 ) );
+	}
+
+	/**
+	 * A FULL-BLEED SPLIT HERO: a full-VIEWPORT section (`min-h-screen`/`h-screen`/`min-height:100vh`) laid out as
+	 * a MULTI-COLUMN grid with NO inner content cap. The source made it span the viewport (`w-full grid-cols-2`),
+	 * so its columns are true viewport fractions (~50vw text + ~50vw media). It must NOT be boxed to the theme's
+	 * global container — that shrinks each column, so a large fluid heading overflows into the media column (the
+	 * hero title-overlaps-image bug). The mapper turns this into `is_fullwidth=true` + a 100% content band.
+	 * Gated on min-h-screen + multicol + no inner cap so a normal `w-full` content section (nearly every Tailwind
+	 * section is `w-full`) or a single-column centred hero is left alone.
+	 */
+	private static function is_fullbleed_split_hero( $node ) {
+		if ( ! ( $node instanceof DOMElement ) ) { return false; }
+		$cls = ' ' . strtolower( self::cls( $node ) ) . ' ';
+		$scs = (string) $node->getAttribute( 'data-sc-cs' );
+		$full_vh = ( strpos( $cls, ' min-h-screen ' ) !== false || strpos( $cls, ' h-screen ' ) !== false
+			|| preg_match( '/\bmin-h-\[100(?:v|d|s)h\]/', $cls )
+			|| preg_match( '/(?:^|;)\s*min-height:\s*100(?:vh|dvh|svh)/', $scs ) );
+		return $full_vh && self::section_is_multicol_grid( $node ) && self::section_content_max_width( $node, 1600.0 ) < 480;
+	}
+
+	/** The full-viewport hero's height for the section min_height — `min-h-screen`/`h-screen`/`min-height:100vh`
+	 *  → '100vh'; `min-h-[NNvh]`/`h-[NNvh]`/computed `min-height:NNvh` → 'NNvh'. '' when none. */
+	private static function fullbleed_hero_height( $node ) {
+		if ( ! ( $node instanceof DOMElement ) ) { return ''; }
+		$cls = ' ' . strtolower( self::cls( $node ) ) . ' ';
+		$scs = (string) $node->getAttribute( 'data-sc-cs' );
+		if ( strpos( $cls, ' min-h-screen ' ) !== false || strpos( $cls, ' h-screen ' ) !== false ) { return '100vh'; }
+		if ( preg_match( '/\b(?:min-)?h-\[([0-9.]+)(?:d|s)?vh\]/', $cls, $m ) ) { return $m[1] . 'vh'; }
+		if ( preg_match( '/(?:^|;)\s*min-height:\s*([0-9.]+)(?:vh|dvh|svh)/', $scs, $m ) ) { return $m[1] . 'vh'; }
+		return '';
+	}
+
+	/** The full-viewport hero's vertical alignment from its column's main-axis justification — a `flex-col`
+	 *  column with `justify-center` centres its content vertically (the openhero split-hero pattern). Maps to the
+	 *  section's column_valign. Defaults to 'middle' (a full-viewport split hero is centred by convention). */
+	private static function fullbleed_hero_valign( $node ) {
+		if ( ! ( $node instanceof DOMElement ) ) { return 'middle'; }
+		foreach ( $node->getElementsByTagName( '*' ) as $el ) {
+			if ( ! ( $el instanceof DOMElement ) ) { continue; }
+			$c = ' ' . strtolower( self::cls( $el ) ) . ' ';
+			$col = ( strpos( $c, ' flex-col ' ) !== false ) || preg_match( '/flex-direction:\s*column/', (string) $el->getAttribute( 'data-sc-cs' ) );
+			if ( ! $col ) { continue; }
+			if ( strpos( $c, ' justify-start ' ) !== false || strpos( $c, ' justify-top ' ) !== false ) { return 'top'; }
+			if ( strpos( $c, ' justify-end ' ) !== false ) { return 'bottom'; }
+			if ( strpos( $c, ' justify-center ' ) !== false ) { return 'middle'; }
+		}
+		return 'middle';
 	}
 
 	private static function section_layers( $node ) {
@@ -13728,6 +13797,11 @@ class FW_Site_Converter_Stitch {
 				|| $cell->getElementsByTagName( 'video' )->length || $cell->getElementsByTagName( 'iframe' )->length;
 			if ( '' === self::text( $cell ) && ! $has_media ) { continue; }
 
+			// The cell's OWN padding (`px-8 md:px-16 lg:px-24 pt-32 pb-20`) — carried onto the decomposed
+			// column so the gutter that positions the hero text / media inside its track survives. Was dropped
+			// entirely, rendering the column flush to the section edge (title colliding with the neighbour image).
+			$cell_pad = self::el_padding( $cell );
+
 			// `col-span-N` is N of the parent's OWN declared `grid-cols-M` tracks, NOT N/12 — rescale it
 			// (see grid_cols() for the full note). Only a REAL declared track count is trusted; for a flex
 			// row $grid_n is just the child count, which says nothing about a span, so N passes through.
@@ -13758,6 +13832,7 @@ class FW_Site_Converter_Stitch {
 				$cblocks = array_values( array_filter( $cblocks ) );
 				if ( $cblocks ) {
 					$col = array( 'cls' => '', 'wResp' => $wResp, 'maxw' => $cell_maxw, 'blocks' => $cblocks );
+					if ( $cell_pad ) { $col['pad'] = $cell_pad; }
 					// A decomposed cell that is itself a styled CARD (a glass panel: fill + border + rounded +
 					// padding, e.g. modfii's hero stats card) → carry its box skin so the COLUMN renders as a
 					// card, not a bare stack of blocks. The mapper paints it onto the column.
@@ -13776,7 +13851,9 @@ class FW_Site_Converter_Stitch {
 			if ( self::is_decomposable_image_composite( $cell ) ) {
 				$cb = self::image_composite_decompose( $cell );
 				if ( $cb ) {
-					$out[] = array( 'cls' => '', 'wResp' => $wResp, 'blocks' => $cb );
+					$cbcol = array( 'cls' => '', 'wResp' => $wResp, 'blocks' => $cb );
+					if ( $cell_pad ) { $cbcol['pad'] = $cell_pad; }
+					$out[] = $cbcol;
 					continue;
 				}
 			}
@@ -13798,7 +13875,9 @@ class FW_Site_Converter_Stitch {
 					$vd    = $cell->getElementsByTagName( 'video' )->item( 0 );
 					$shape = self::media_shape_css( $cell, $vd );
 					if ( '' !== $shape ) { $vidblk['card_css'] = $shape; }
-					$out[] = array( 'cls' => '', 'wResp' => $wResp, 'maxw' => $cell_maxw, 'blocks' => array( $vidblk ) );
+					$vcol = array( 'cls' => '', 'wResp' => $wResp, 'maxw' => $cell_maxw, 'blocks' => array( $vidblk ) );
+					if ( $cell_pad ) { $vcol['pad'] = $cell_pad; }
+					$out[] = $vcol;
 					continue;
 				}
 			}
@@ -13853,9 +13932,15 @@ class FW_Site_Converter_Stitch {
 		if ( ! preg_match( '/^[0-9.]+px$/', (string) $pad ) ) { $ps = $get( 'padding' ); if ( preg_match( '/^([0-9.]+px)/', (string) $ps, $pm ) ) { $pad = $pm[1]; } }
 		if ( ! preg_match( '/^[0-9.]+px$/', (string) $pad ) && preg_match( '/(?:^|\s)p-(\d{1,2})(?:\s|$)/', $cls, $pc ) ) { $pad = ( (int) $pc[1] * 4 ) . 'px'; }
 		$has_fill   = $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*,\s*0\s*\)/', $bg );
+		// GRADIENT FILL — an AI card is frequently filled with a `linear/radial-gradient()` (a debossed/glass panel:
+		// `background-image:linear-gradient(145deg, oklch(…), oklch(…))`), NOT a flat background-color. Read that as
+		// the card's fill too, else a gradient card qualified only via its border and rendered with NO fill (the
+		// dominant visual — the soft tint — was dropped). A `url()` background is a photo, not a card tint → skip it.
+		$bgi  = $get( 'background-image' );
+		$grad = ( '' !== $bgi && false !== stripos( $bgi, 'gradient' ) && false === stripos( $bgi, 'url(' ) ) ? trim( $bgi ) : '';
 		$has_border = $bw !== '' && ! in_array( $bw, array( '0', '0px' ), true ) && $bc !== '' && ! preg_match( '/rgba?\([^)]*,\s*0\s*\)/', $bc );
 		$rounded    = ( $radius !== '' && $radius !== '0px' ) || (bool) preg_match( '/\brounded(?:-[a-z0-9]+)?\b/', $cls );
-		if ( ! $rounded || ( ! $has_fill && ! $has_border ) ) { return null; }
+		if ( ! $rounded || ( ! $has_fill && '' === $grad && ! $has_border ) ) { return null; }
 		// HOVER state — the card's `hover:bg-*` / `hover:border-*` / `hover:shadow-*` (e.g. a glass card's
 		// `hover:bg-slate-800/80`) compiled via the Tailwind engine, so the source's card hover survives onto
 		// the Box Preset's hover state (the register path previously dropped it). Mirrors build_box_presets().
@@ -13893,6 +13978,7 @@ class FW_Site_Converter_Stitch {
 		$shadow = ( '' !== $sh && 'none' !== strtolower( trim( $sh ) ) && preg_match( '/[1-9]/', $sh ) && ! preg_match( '/^\s*rgba?\([^)]*,\s*0\s*\)\s+0px\s+0px/', $sh ) ) ? trim( $sh ) : '';
 		return array(
 			'bg'          => $has_fill ? $bg : '',
+			'gradient'    => $grad, // gradient FILL (background-image) — a card tint the solid-color box preset can't hold; forces the scoped-CSS path
 			'radius'      => $radius,
 			'borderW'     => $has_border ? $bw : '',
 			'borderColor' => $has_border ? $bc : '',
@@ -14065,6 +14151,52 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 		return $r;
+	}
+
+	/**
+	 * A grid CELL's own PADDING, per responsive tier — the gutter a hero/split column carries on its inner
+	 * div (`px-8 md:px-16 lg:px-24 pt-32 pb-20 lg:py-0`). Without capturing it, layout_cols dropped the
+	 * source column div's padding entirely and the converted column rendered flush to its track edge (text
+	 * kissing the section border, the title colliding with the neighbouring image). GENERAL: every AI grid
+	 * column carries a `px`/`py` inset; this is the universal signal, not a per-site quirk. Reads the
+	 * Tailwind padding utilities (`p-`, `px-/py-`, `pt-/pr-/pb-/pl-`, arbitrary `p-[Npx]`) at the base,
+	 * `md:` and `lg:` tiers (the builder's three breakpoints) — later classes override earlier ones, and a
+	 * tier value falls back to the base tier where unset (Tailwind's min-width cascade). Returns
+	 * `array( 'base'=>[t,r,b,l], 'md'=>…, 'lg'=>… )` (px floats, null = unset) or null when there is no padding.
+	 *
+	 * @param DOMElement $el
+	 * @return array|null
+	 */
+	private static function el_padding( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return null; }
+		$cls = self::cls( $el );
+		$tiers = array( 'base' => array( 'top' => null, 'right' => null, 'bottom' => null, 'left' => null ),
+			'md' => array( 'top' => null, 'right' => null, 'bottom' => null, 'left' => null ),
+			'lg' => array( 'top' => null, 'right' => null, 'bottom' => null, 'left' => null ) );
+		$found = false;
+		if ( preg_match_all( '/(?:^|\s)(?:(md|lg):)?p([xytrbl]?)-(\[[^\]]+\]|\d+(?:\.\d+)?)/', ' ' . $cls . ' ', $ms, PREG_SET_ORDER ) ) {
+			foreach ( $ms as $m ) {
+				$tier = ( '' === $m[1] ) ? 'base' : $m[1];
+				$side = $m[2];
+				$tok  = $m[3];
+				$v    = ( '[' === $tok[0] ) ? self::px_num( trim( $tok, '[]' ) ) : ( (float) $tok * 4 );
+				if ( '' === $side ) { $sides = array( 'top', 'right', 'bottom', 'left' ); }
+				elseif ( 'x' === $side ) { $sides = array( 'left', 'right' ); }
+				elseif ( 'y' === $side ) { $sides = array( 'top', 'bottom' ); }
+				else { $map = array( 't' => 'top', 'r' => 'right', 'b' => 'bottom', 'l' => 'left' ); $sides = array( $map[ $side ] ); }
+				foreach ( $sides as $s ) { $tiers[ $tier ][ $s ] = $v; }
+				$found = true;
+			}
+		}
+		if ( ! $found ) { return null; }
+		// Cascade: an unset md/lg side inherits the base tier (Tailwind's min-width model), so a column that
+		// only overrides one axis at lg still carries the base padding on the others.
+		foreach ( array( 'md', 'lg' ) as $bp ) {
+			foreach ( array( 'top', 'right', 'bottom', 'left' ) as $s ) {
+				if ( null === $tiers[ $bp ][ $s ] ) { $tiers[ $bp ][ $s ] = $tiers['base'][ $s ]; }
+			}
+		}
+		return $tiers;
 	}
 
 	/**

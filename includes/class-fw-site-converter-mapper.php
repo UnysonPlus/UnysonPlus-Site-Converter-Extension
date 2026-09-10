@@ -170,6 +170,10 @@ class FW_Site_Converter_Mapper {
 	/** Register a captured box skin as a Box Preset and return its `boxp-<slug>` (for a border_preset / box_style
 	 *  option), or '' when the skin is trivial. Records the NORMALIZED skin so build_box_presets can emit it. */
 	public static function register_box_preset( $cb ) {
+		// A GRADIENT-filled card can't round-trip a Box Preset (its background is a solid-color option), so decline
+		// to register one — the caller then paints the card via the scoped-CSS path (apply_card_box / the inline
+		// $bdecl block), which emits the gradient verbatim. Same reasoning as the frosted-glass / blob-radius decline.
+		if ( is_array( $cb ) && '' !== trim( (string) ( $cb['gradient'] ?? '' ) ) ) { return ''; }
 		$slug = self::box_slug( $cb );
 		if ( '' === $slug ) { return ''; }
 		$bw = trim( (string) ( $cb['bw'] ?? $cb['borderW'] ?? '' ) );
@@ -1832,7 +1836,7 @@ class FW_Site_Converter_Mapper {
 	 * @param array  $node   Section node (by ref).
 	 * @param string $valign top|middle|bottom (default middle).
 	 */
-	private static function apply_hero_frame( array &$node, $valign = 'middle', $height = '' ) {
+	private static function apply_hero_frame( array &$node, $valign = 'middle', $height = '', $flush = true ) {
 		if ( ! isset( $node['atts'] ) || ! is_array( $node['atts'] ) ) { return; }
 		// The min-height mirrors the SOURCE hero height (`h-screen` → 100vh, `h-[80vh]` → 80vh, a computed vh
 		// height → itself); fall back to 80vh only when the source gave a bare boolean signal. A vh value maps
@@ -1864,11 +1868,19 @@ class FW_Site_Converter_Mapper {
 		// it DEFAULTS to 'stretch' — which OVERRIDES the legacy `content_valign` fallback the view also reads.
 		// So set column_valign DIRECTLY, mapping the hero's 'middle' → the section's 'center'. (Without this the
 		// hero rendered stretched/top-aligned and its heading overlapped an overlay header.)
-		$vmap = array( 'top' => 'top', 'middle' => 'center', 'bottom' => 'bottom' );
-		$node['atts']['column_valign'] = isset( $vmap[ (string) $valign ] ) ? $vmap[ (string) $valign ] : 'center';
-		// NEVER-DROP hero horizontal alignment: a LEFT-aligned viewport-tall hero should sit LEFT-FLUSH like
-		// the source, not in the theme's auto-centered max-width container. Skipped for a CENTERED band.
-		if ( 'center' !== (string) ( isset( $node['atts']['text_align'] ) ? $node['atts']['text_align'] : '' ) ) {
+		// An empty $valign means "set the height only, leave vertical alignment alone" — a full-width split hero
+		// can't use column_valign:center (it makes the section a flex-column with align-items:center, which
+		// SHRINKS the full-width flexbox row back to content width and re-overlaps the media column).
+		if ( '' !== (string) $valign ) {
+			$vmap = array( 'top' => 'top', 'middle' => 'center', 'bottom' => 'bottom' );
+			$node['atts']['column_valign'] = isset( $vmap[ (string) $valign ] ) ? $vmap[ (string) $valign ] : 'center';
+		}
+		// NEVER-DROP hero horizontal alignment: a LEFT-aligned viewport-tall SINGLE-COLUMN hero should sit
+		// LEFT-FLUSH like the source, not in the theme's auto-centered max-width container. Skipped for a CENTERED
+		// band, AND for a multi-column split hero ($flush=false) — there the flexbox row already spans full width
+		// and this `.fw-container` margin override fights the columns (shrinks + right-shifts them, re-overlapping
+		// the media column).
+		if ( $flush && 'center' !== (string) ( isset( $node['atts']['text_align'] ) ? $node['atts']['text_align'] : '' ) ) {
 			$cur = (string) ( isset( $node['atts']['custom_css'] ) ? $node['atts']['custom_css'] : '' );
 			if ( false === strpos( $cur, 'margin-left:0 !important' ) ) {
 				$node['atts']['custom_css'] = trim( $cur . ' selector .fw-container{margin-left:0 !important;margin-right:auto !important;}' );
@@ -1981,8 +1993,10 @@ class FW_Site_Converter_Mapper {
 		if ( ! is_array( $cb ) ) { return $col; }
 		$decl = array();
 		if ( ! empty( $cb['bg'] ) )     { $decl[] = 'background:' . $cb['bg']; }
+		if ( ! empty( $cb['gradient'] ) ) { $decl[] = 'background-image:' . $cb['gradient']; } // gradient card fill
 		if ( ! empty( $cb['radius'] ) ) { $decl[] = 'border-radius:' . $cb['radius']; }
 		if ( ! empty( $cb['borderW'] ) && ! empty( $cb['borderColor'] ) ) { $decl[] = 'border:' . $cb['borderW'] . ' solid ' . $cb['borderColor']; }
+		if ( ! empty( $cb['shadow'] ) ) { $decl[] = 'box-shadow:' . $cb['shadow']; }
 		if ( ! empty( $cb['padding'] ) ) { $decl[] = 'padding:' . $cb['padding']; }
 		if ( ! $decl ) { return $col; }
 		$cur = isset( $col['atts']['custom_css'] ) ? (string) $col['atts']['custom_css'] : '';
@@ -2002,8 +2016,10 @@ class FW_Site_Converter_Mapper {
 		if ( ! is_array( $cb ) ) { return $col; }
 		$decl = array();
 		if ( ! empty( $cb['bg'] ) )     { $decl[] = 'background:' . $cb['bg']; }
+		if ( ! empty( $cb['gradient'] ) ) { $decl[] = 'background-image:' . $cb['gradient']; } // gradient card fill
 		if ( ! empty( $cb['radius'] ) ) { $decl[] = 'border-radius:' . $cb['radius']; }
 		if ( ! empty( $cb['borderW'] ) && ! empty( $cb['borderColor'] ) ) { $decl[] = 'border:' . $cb['borderW'] . ' solid ' . $cb['borderColor']; }
+		if ( ! empty( $cb['shadow'] ) ) { $decl[] = 'box-shadow:' . $cb['shadow']; }
 		if ( ! empty( $cb['padding'] ) ) { $decl[] = 'padding:' . $cb['padding']; }
 		if ( ! $decl ) { return $col; }
 		$cls = 'sc-cb-' . substr( md5( implode( ';', $decl ) ), 0, 8 );
@@ -5723,6 +5739,24 @@ class FW_Site_Converter_Mapper {
 			$atts['icon']          = self::icon_value( $icon );
 			$atts['icon_position'] = in_array( $icon_pos, array( 'before', 'after' ), true ) ? $icon_pos : 'after';
 		}
+		// NEVER-DROP button TYPE for a FILLED / preset button (the btn-link path re-asserts its own type above).
+		// The native `.btn` base imposes the theme button font/weight/tracking, so a source CTA in a secondary
+		// font (or a heavier weight / wider tracking than the theme base) lost it. Re-assert font-family +
+		// font-weight + letter-spacing from the button's OWN computed style — the same never-drop mechanism as
+		// heading_family_css (fonts are enqueued, so the family renders). Font-SIZE / line-height are left to the
+		// size preset (which owns the button's height/padding), so this never fights it. Skips a purely generic family.
+		if ( 'btn-link' !== (string) $atts['style'] && '' !== (string) $cs ) {
+			$bt = self::cs_decls( (string) $cs, array( 'font-family', 'font-weight', 'letter-spacing' ) );
+			$bd = array();
+			if ( ! empty( $bt['font-family'] ) ) {
+				$prim = strtolower( trim( preg_replace( '/^["\']|["\']$/', '', trim( explode( ',', (string) $bt['font-family'] )[0] ) ) ) );
+				$gen  = array( 'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-sans-serif', 'ui-serif', 'ui-monospace', 'inherit', '-apple-system', 'blinkmacsystemfont' );
+				if ( '' !== $prim && ! in_array( $prim, $gen, true ) ) { $bd[] = 'font-family:' . trim( $bt['font-family'] ) . ' !important'; }
+			}
+			if ( ! empty( $bt['font-weight'] ) && preg_match( '/^\d{3}$/', trim( $bt['font-weight'] ) ) && '400' !== trim( $bt['font-weight'] ) ) { $bd[] = 'font-weight:' . trim( $bt['font-weight'] ) . ' !important'; }
+			if ( ! empty( $bt['letter-spacing'] ) && preg_match( '/^-?[0-9.]+px$/', trim( $bt['letter-spacing'] ) ) && abs( (float) $bt['letter-spacing'] ) >= 0.3 ) { $bd[] = 'letter-spacing:' . trim( $bt['letter-spacing'] ) . ' !important'; }
+			if ( $bd ) { $atts['custom_css'] = trim( (string) $atts['custom_css'] . "\nselector{" . implode( ';', $bd ) . ';}' ); }
+		}
 		$item = array( 'type' => 'simple', 'shortcode' => 'button', 'atts' => $atts, '_items' => array() );
 		if ( '' !== (string) $group_cls || '' !== (string) $group_cs ) { $item['_group'] = array( 'cls' => (string) $group_cls, 'cs' => (string) $group_cs ); } // the source button container's flex styling
 		return $item;
@@ -7452,6 +7486,36 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/**
+	 * NEVER-DROP per-heading FONT-FAMILY. The converter sets ONE global heading font (`:is(h1..h6){font-family}`)
+	 * from the source's dominant display font, but AI sites routinely pair a display font for the big h1/h2 with a
+	 * DIFFERENT secondary font on smaller sub-headings (e.g. a grotesk h3 under an Oswald h1). That secondary
+	 * family was dropped — the sub-heading inherited the global heading font. GENERAL pattern, not per-site.
+	 * Re-assert each rendering part's OWN captured family (`*_cs` data-sc-cs) as a scoped `.heading-<part>`
+	 * rule — the same never-drop mechanism as heading_weight_css, and (0,2,0) beats the theme's `:is(hN)` global
+	 * (0,0,1). The family is SAFE to assert because the converter enqueues every font it detected on the source
+	 * (both the display AND the body/secondary family are already loaded), and the captured stack keeps the
+	 * source's own fallbacks, so an undetected tertiary face still degrades to a sensible generic. A part whose
+	 * family is purely generic (sans-serif/serif/…) or matches nothing real is skipped. Mirror in JS to-pages.
+	 */
+	private static function heading_family_css( $h ) {
+		$parts = array( 'title' => '.heading-title', 'subtitle' => '.heading-subtitle' );
+		$generic = array( 'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-sans-serif', 'ui-serif', 'ui-monospace', 'inherit', 'initial', 'unset', '-apple-system', 'blinkmacsystemfont' );
+		$css = '';
+		foreach ( $parts as $part => $sel ) {
+			if ( '' === trim( (string) ( $h[ $part ] ?? '' ) ) ) { continue; } // part must render
+			$cs = (string) ( $h[ $part . '_cs' ] ?? '' );
+			if ( '' === $cs || ! preg_match( '/(?:^|;)\s*font-family\s*:\s*([^;]+)/i', $cs, $fm ) ) { continue; }
+			$stack = trim( $fm[1] );
+			if ( '' === $stack ) { continue; }
+			// The primary family must be a REAL face (not a bare generic), else there is nothing to re-assert.
+			$primary = strtolower( trim( preg_replace( '/^["\']|["\']$/', '', trim( explode( ',', $stack )[0] ) ) ) );
+			if ( '' === $primary || in_array( $primary, $generic, true ) ) { continue; }
+			$css .= 'selector ' . $sel . '{font-family:' . $stack . ' !important;}';
+		}
+		return $css;
+	}
+
+	/**
 	 * NEVER-DROP overline typography. The Special Heading overline has native options for casing
 	 * (overline_uppercase), colour (overline_color) and alignment, plus its WEIGHT is re-asserted by
 	 * heading_weight_css() — but NO native option carries the overline's FONT-SIZE or LETTER-SPACING.
@@ -7778,6 +7842,7 @@ class FW_Site_Converter_Mapper {
 				// Re-assert each part's SOURCE font-weight on its own element (wins over the theme's
 				// hN.heading-title tag rule when no heading-weight token is set) — parity with JS to-pages.
 				'custom_css' => self::heading_weight_css( $h )
+				. self::heading_family_css( $h ) // NEVER-DROP: a sub-heading's own secondary font (differs from the global heading font)
 				. $gradtext_css // gradient-text value → scoped `.sc-gradtext` rule (keeps the Title markup clean)
 				. self::heading_self_gradtext_css( $h ) // heading's OWN gradient text (clip:text on the h1 itself, not a span)
 				. $overline_type_css // NEVER-DROP: overline font-size + letter-spacing (no native option)
@@ -8393,7 +8458,7 @@ class FW_Site_Converter_Mapper {
 		}
 		// {preset, custom} shape (min_height / max_width) → the preset unless custom carries a value.
 		if ( array_key_exists( 'preset', $v ) ) {
-			$p = isset( $v['preset'] ) ? (string) $v['preset'] : '';
+			$p = ( isset( $v['preset'] ) && ! is_array( $v['preset'] ) ) ? (string) $v['preset'] : ''; // guard: a nested-array preset must not be cast to string (PHP warning)
 			if ( $p !== '' && $p !== 'auto' && $p !== 'custom' ) { return $p; }
 			if ( isset( $v['custom'] ) && is_array( $v['custom'] ) ) {
 				$c = self::condense_val( reset( $v['custom'] ) );
@@ -8728,7 +8793,11 @@ class FW_Site_Converter_Mapper {
 			// below, so the base CSS skips it) yet never actually set it — a real non-default title colour
 			// (e.g. a WHITE heading on a dark glass card) then collapsed to the theme's default black ink.
 			// mk_color in n_heading keeps plain default ink as inherit, so only a real tone is pinned.
-			$node = self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'title_weight' => isset( $cw['font-weight'] ) ? $cw['font-weight'] : '', 'title_color_src' => isset( $cw['color'] ) ? (string) $cw['color'] : '', 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
+			$node = self::n_heading( array( 'title' => (string) ( $b['html'] ?? $b['text'] ?? '' ), 'level' => (int) ( $b['level'] ?? 3 ), 'align' => $b['align'] ?? '', 'title_class' => (string) ( $b['cls'] ?? '' ), 'title_weight' => isset( $cw['font-weight'] ) ? $cw['font-weight'] : '', 'title_color_src' => isset( $cw['color'] ) ? (string) $cw['color'] : '',
+				// Carry the full computed style so n_heading's never-drop helpers (font-FAMILY re-assert for a
+				// secondary sub-heading font, gradient-text, weight fallback) can read it — a cell heading only
+				// passed weight/color before, so a `font-data`-style secondary font on a card h3 was dropped.
+				'title_cs' => (string) ( $b['cs'] ?? '' ), 'css_class' => (string) ( $b['wrapCls'] ?? '' ) ) );
 			$cs = (string) ( $b['cs'] ?? '' );
 			// Pass-1: source vertical margin → the special_heading's NATIVE spacing option (fill only sides
 			// the class mapping left empty). Pass-2: the typography/color the unified styler already re-asserts
@@ -9824,6 +9893,33 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 						}
 					}
 					$col   = self::n_column( $width, $inner_items, '', $col_resp );
+					// Source cell PADDING (`px-8 md:px-16 lg:px-24 pt-32 pb-20 lg:py-0`) -> a scoped, responsive
+					// padding rule in the column's Custom CSS (the same channel the max-width cap below uses), NOT
+					// the native spacing option: the spacing option's slots hold Bootstrap-scale slugs and can't
+					// express arbitrary px (px-8 = 32px is off the scale) or a per-side responsive override without
+					// the media-scoped infix, so its classes collapsed to the base tier at every width. Explicit
+					// media queries at the builder's own md/lg breakpoints (768/992 — where fw-span-lg also switches)
+					// reproduce every tier exactly. Was dropped entirely, rendering the column flush to its track
+					// edge (the hero title collided with the neighbouring image).
+					if ( ! empty( $c['pad'] ) && is_array( $c['pad'] ) ) {
+						$pad_decl = function ( $tier ) use ( $c ) {
+							if ( empty( $c['pad'][ $tier ] ) || ! is_array( $c['pad'][ $tier ] ) ) { return ''; }
+							$t = $c['pad'][ $tier ]; $parts = array();
+							foreach ( array( 'top', 'right', 'bottom', 'left' ) as $s ) {
+								if ( isset( $t[ $s ] ) && null !== $t[ $s ] ) { $parts[] = 'padding-' . $s . ':' . (float) $t[ $s ] . 'px'; }
+							}
+							return implode( ';', $parts );
+						};
+						$p_base = $pad_decl( 'base' ); $p_md = $pad_decl( 'md' ); $p_lg = $pad_decl( 'lg' );
+						$pcss = '';
+						if ( '' !== $p_base ) { $pcss .= 'selector{' . $p_base . ';}'; }
+						if ( '' !== $p_md )   { $pcss .= ( '' !== $pcss ? "\n" : '' ) . '@media (min-width:768px){selector{' . $p_md . ';}}'; }
+						if ( '' !== $p_lg )   { $pcss .= ( '' !== $pcss ? "\n" : '' ) . '@media (min-width:992px){selector{' . $p_lg . ';}}'; }
+						if ( '' !== $pcss ) {
+							$pcur = (string) ( $col['atts']['custom_css'] ?? '' );
+							$col['atts']['custom_css'] = trim( $pcur . ( '' !== $pcur ? "\n" : '' ) . $pcss );
+						}
+					}
 					// Responsive VISIBILITY: a source column with Tailwind show/hide utilities (`hidden lg:block`
 					// = desktop-only, `lg:hidden` = hide desktop) → the column's native Hide-on-Device option, so
 					// the desktop/mobile variant pair each hides on the right breakpoints instead of both showing.
@@ -9863,6 +9959,7 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 							} else {
 								$bdecl = array();
 								if ( ! empty( $cb['bg'] ) )     { $bdecl[] = 'background:' . $cb['bg']; }
+								if ( ! empty( $cb['gradient'] ) ) { $bdecl[] = 'background-image:' . $cb['gradient']; } // gradient card fill (no solid bg)
 								if ( ! empty( $cb['radius'] ) ) { $bdecl[] = 'border-radius:' . $cb['radius']; }
 								if ( ! empty( $cb['borderW'] ) && ! empty( $cb['borderColor'] ) ) { $bdecl[] = 'border:' . $cb['borderW'] . ' solid ' . $cb['borderColor']; }
 								if ( ! empty( $cb['shadow'] ) )   { $bdecl[] = 'box-shadow:' . $cb['shadow']; }
@@ -10018,7 +10115,21 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 		// container_width → flexbox content_width push below then keeps the new band constrained.
 		$items = self::flexify_items( $items );
 		self::fix_iconbox_full_height( $items ); // icon_box + sibling (e.g. feature_list) → icon_box not full-height (else it clips the sibling)
-		$sec_node = self::n_section( $src_cls_str, $css_id, $css, $items, $hero_fullbleed );
+		// is_fullwidth = the single-code-block image hero ($hero_fullbleed) OR a full-viewport MULTI-COLUMN split
+		// hero (sectionFullBleed, from Stitch): both must span the viewport, not the global container. The split
+		// hero ALSO keeps its 100% container_width (applied below, since $hero_fullbleed stays false for it), so
+		// its two columns become true ~50vw each instead of being squeezed into the ~1280 container (the fix for
+		// a large fluid hero title overflowing its column into the media column).
+		$section_fullwidth = $hero_fullbleed || ! empty( $sec['sectionFullBleed'] );
+		$sec_node = self::n_section( $src_cls_str, $css_id, $css, $items, $section_fullwidth );
+		// FULL-BLEED SPLIT HERO — full-viewport HEIGHT (`min-h-screen`) + vertical CENTERING (`flex-col
+		// justify-center`) are NOT applied here on purpose. The section's `min_height` option renders the section
+		// `display:flex`, and that flex container SHRINKS a full-width flexbox child back to content width (which
+		// re-overlaps the media column) — min_height on the SECTION is incompatible with a full-width flexbox row.
+		// The right home for these is a FLEXBOX-level `min_height` (100vh on the row itself, so its columns stretch
+		// full-height and centre their own content) — a shortcode option we don't have yet. Detected + carried in
+		// $sec['sectionHeroHeight']/['sectionValign'] so it's ready to wire once that option exists. See the doc's
+		// "known limitations". For now the split hero renders full-WIDTH + correct (no overlap), content-height.
 		// A CENTERED source band (flex items-center / text-center, detected by Stitch::section_center
 		// and carried here as $sec['align']) → the section's native `text_align='center'`. text-align
 		// is INHERITED, so this centers the whole band's heading + paragraph + buttons together (the
@@ -10052,6 +10163,21 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 			// stays narrower than the container; then the OUTER container (~1400); and FINALLY the SITE content
 			// width (--container-max-desktop) so a contained band with NO detected max-w wrapper (a full-width
 			// flex + px gutters, e.g. apple-card) still caps at the site width instead of rendering edge-to-edge.
+			// FULL-BLEED SPLIT HERO: the flexbox must span the VIEWPORT (100%), not the site container — else the
+			// default push below caps it at --container-max-desktop (~1248), squeezing the columns and overflowing
+			// the fluid title. `container_width_px()` can't turn the section's custom `100%` into px, so it would
+			// fall through to the site width; push an explicit 100% content_width onto each flexbox child instead.
+			if ( ! empty( $sec['sectionFullBleed'] ) ) {
+				if ( isset( $sec_node['_items'] ) && is_array( $sec_node['_items'] ) ) {
+					$full_cw = array( 'preset' => 'custom', 'custom' => array( 'custom_width' => array( 'value' => '100', 'unit' => '%' ) ) );
+					foreach ( $sec_node['_items'] as &$child ) {
+						if ( is_array( $child ) && ( $child['type'] ?? '' ) === 'flexbox' && isset( $child['atts'] ) ) {
+							$child['atts']['content_width'] = $full_cw;
+						}
+					}
+					unset( $child );
+				}
+			} else {
 			$cwpx = self::container_width_px( $sec['sectionBandW'] ?? null );
 			if ( $cwpx <= 0 ) { $cwpx = self::container_width_px( $sec['sectionContainerW'] ?? null ); }
 			if ( $cwpx <= 0 ) { $cwpx = self::$site_container_px; }
@@ -10067,6 +10193,7 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 					$child['atts']['content_width'] = $cw_val;
 				}
 				unset( $child );
+			}
 			}
 		}
 		// Reproduce the source section's FULL container styling — not just vertical rhythm. Its Tailwind
