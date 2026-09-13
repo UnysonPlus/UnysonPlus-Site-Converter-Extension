@@ -1626,7 +1626,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'source_url'        => $sc_src,
 			// The source markup — needed in step 2 to re-enable the styling mapper (sc-btn / .box) when the
 			// corrected pages are rebuilt; without it the build step produces unstyled buttons/cards.
-			'html'              => isset( $bundle['html'] ) ? (string) $bundle['html'] : '',
+			'html'              => isset( $bundle['html_full'] ) ? (string) $bundle['html_full'] : ( isset( $bundle['html'] ) ? (string) $bundle['html'] : '' ), // UNCAPPED (file-backed stash) — the rebuild primes the mapper from it
 		) );
 
 		wp_send_json_success( array(
@@ -1697,25 +1697,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		// UNSTYLED (gray) buttons + no boxes even though prepare's draft was styled — this was the "converted
 		// site shows no improvement" bug: the admin build path skipped the styling context that build_bundle
 		// sets up. (data-sc-cs on the blocks also styles non-Tailwind sites, which needs the mapper enabled.)
-		$cfg = ( class_exists( 'FW_Site_Converter_Tailwind' ) && ! empty( $stash['html'] ) )
-			? FW_Site_Converter_Tailwind::parse_config( (string) $stash['html'] )
-			: array();
-		// Recover the source's custom SEMANTIC colours (primary / secondary / muted-foreground / accent / …)
-		// from the captured computed styles — the SAME enrichment build_from_html() does. WITHOUT this the
-		// admin rebuild's config carries no `muted-foreground`, so a card icon's `text-muted-foreground`
-		// resolves to nothing and the icon falls to the shortcode's DEFAULT (green) instead of the source's
-		// grey — the "icon boxes wrong colour" bug (parity with the import path).
-		if ( ! empty( $stash['html'] ) && method_exists( 'FW_Site_Converter_Tailwind', 'extract_semantic_colors' ) ) {
-			$sem = FW_Site_Converter_Tailwind::extract_semantic_colors( (string) $stash['html'] );
-			if ( $sem ) { $cfg['colors'] = ( isset( $cfg['colors'] ) && is_array( $cfg['colors'] ) ? $cfg['colors'] : array() ) + $sem; }
-		}
-		FW_Site_Converter_Mapper::set_style_config( $cfg );
-
-		// Re-enable the hi-fi faithful base for the REBUILD (the mapper's hifi flag is OFF between requests;
-		// build_bundle set it during prepare, but build_pages runs standalone here). Hi-fi is ALWAYS on now
-		// (the "High-fidelity CSS" checkbox was removed) — every conversion is high-fidelity.
-		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_hifi_css' ) ) {
-			FW_Site_Converter_Mapper::set_hifi_css( true );
+		// ONE shared mapper setup with the bundle path (Stitch::prime_mapper): style config + semantic colours, hi-fi,
+		// Section Style / Box / Text presets and the SITE CONTAINER WIDTH. This build step used to re-create only part of
+		// it, so every flexbox band rebuilt here had NO content cap (site width 0) and stretched edge-to-edge while the
+		// same source imported through import_dir capped at the source container. Hi-fi is ALWAYS on now.
+		if ( class_exists( 'FW_Site_Converter_Stitch' ) && method_exists( 'FW_Site_Converter_Stitch', 'prime_mapper' ) ) {
+			FW_Site_Converter_Stitch::prime_mapper( (string) ( $stash['html'] ?? '' ), true );
+		} else {
+			$cfg = ( class_exists( 'FW_Site_Converter_Tailwind' ) && ! empty( $stash['html'] ) ) ? FW_Site_Converter_Tailwind::parse_config( (string) $stash['html'] ) : array();
+			FW_Site_Converter_Mapper::set_style_config( $cfg );
+			if ( method_exists( 'FW_Site_Converter_Mapper', 'set_hifi_css' ) ) { FW_Site_Converter_Mapper::set_hifi_css( true ); }
 		}
 
 		$__am = get_transient( $this->assets_key() );
@@ -2705,8 +2696,17 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$menus_prefill = ( $stage === 'menus_scanned' && isset( $data['prefill'] ) ) ? (string) $data['prefill'] : '';
 		?>
 		<div class="wrap fw-ext-site-converter">
-			<h1 class="wp-heading-inline"><?php esc_html_e( 'Convert — AI Site Importer', 'fw' ); ?></h1>
+			<h1 class="wp-heading-inline">
+				<?php esc_html_e( 'Convert — AI Site Importer', 'fw' ); ?>
+				<span class="fw-sc-beta"
+				      style="display:inline-block;vertical-align:middle;margin-left:.5em;padding:.15em .55em;border-radius:3px;background:#f0b849;color:#1d2327;font-size:12px;font-weight:600;line-height:1.6;letter-spacing:.02em;text-transform:uppercase;"
+				      title="<?php esc_attr_e( 'This extension is new and still being refined — expect the occasional rough edge, and check the result before publishing.', 'fw' ); ?>">
+					<?php esc_html_e( 'Beta', 'fw' ); ?>
+				</span>
+			</h1>
 			<p class="description">
+				<strong><?php esc_html_e( 'The Site Converter is in beta', 'fw' ); ?></strong> — <?php esc_html_e( 'it works, but expect the occasional rough edge, so review the converted result before publishing.', 'fw' ); ?>
+				<br>
 				<?php esc_html_e( 'Bring an AI-generated site into WordPress. The Site Converter tab converts a whole site two ways — upload an export file (the builder is auto-detected) or point it at a live URL. Manual Tools holds the piece-by-piece importers (bundle .zip, header/footer theme, images, styling presets, theme settings, pages, menus) for running a single phase by hand. Diagnostics has the capture-service health check and the Theme Settings doctor.', 'fw' ); ?>
 			</p>
 
@@ -2947,8 +2947,29 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<p class="description" style="margin:0 0 .6em"><?php esc_html_e( 'Point it at a live site and it is rendered + converted in one step — best for AI builders that render in the browser (Lovable, v0, Bolt, React / Vite apps). The capture service must be running — start it with the AI Dev Kit launcher (see “Start the capture service” above).', 'fw' ); ?></p>
 					<div class="fw-sc-analyze" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>">
 						<input type="url" id="fw-sc-an-url" class="regular-text" style="width:30em;max-width:100%" placeholder="https://your-site.lovable.app/" onkeydown="if(event.key==='Enter'){event.preventDefault();var g=document.getElementById('fw-sc-an-go');if(g){g.click();}}">
-						<span id="fw-sc-an-svc" class="description" style="margin-left:.6em"></span>
+						<span id="fw-sc-an-svc" class="fw-sc-signal fw-sc-signal--wait" role="status" aria-live="polite"></span>
 					</div>
+					<style>
+						/* Capture-service TRAFFIC LIGHT — a pill that reads at a glance: red = stop (nothing will convert),
+						   green = go, amber = checking. Inline so the Convert tab never depends on a stylesheet load. */
+						.fw-sc-analyze{display:flex;flex-wrap:wrap;align-items:center;gap:.6em}
+						.fw-sc-signal{display:inline-flex;align-items:center;gap:.5em;margin:0;padding:.35em .9em .35em .7em;border-radius:999px;font-size:13px;font-weight:600;line-height:1.3;border:1px solid transparent;vertical-align:middle;max-width:100%}
+						.fw-sc-signal:empty{display:none}
+						.fw-sc-signal .fw-sc-signal__dot{width:.7em;height:.7em;border-radius:50%;flex:none;box-shadow:0 0 0 3px rgba(0,0,0,.06)}
+						.fw-sc-signal .fw-sc-signal__hint{font-weight:400;opacity:.85}
+						.fw-sc-signal code{font-size:12px;padding:.05em .4em;border-radius:4px;background:rgba(0,0,0,.08)}
+						.fw-sc-signal--wait{background:#fff8e5;border-color:#f0c36d;color:#7a4b00}
+						.fw-sc-signal--wait .fw-sc-signal__dot{background:#f0b429;animation:fw-sc-blink 1s ease-in-out infinite}
+						.fw-sc-signal--go{background:#e6f6ea;border-color:#8fd19e;color:#0f5e2a}
+						.fw-sc-signal--go .fw-sc-signal__dot{background:#1a7f37;box-shadow:0 0 0 3px rgba(26,127,55,.18)}
+						.fw-sc-signal--stop{background:#b32d2e;border-color:#8f1f20;color:#fff;box-shadow:0 2px 8px rgba(179,45,46,.35);animation:fw-sc-shake .5s ease-out 1}
+						.fw-sc-signal--stop .fw-sc-signal__dot{background:#fff;box-shadow:0 0 0 3px rgba(255,255,255,.25);animation:fw-sc-blink 1.2s ease-in-out infinite}
+						.fw-sc-signal--stop code{background:rgba(255,255,255,.2)}
+						.fw-sc-analyze--stop #fw-sc-an-url{border-color:#b32d2e;box-shadow:0 0 0 1px #b32d2e}
+						@keyframes fw-sc-blink{50%{opacity:.35}}
+						@keyframes fw-sc-shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-3px)}40%,80%{transform:translateX(3px)}}
+						@media (prefers-reduced-motion:reduce){.fw-sc-signal,.fw-sc-signal .fw-sc-signal__dot{animation:none}}
+					</style>
 				</div><!-- /#fw-sc-src-url -->
 				<div id="fw-sc-src-paste" style="display:none">
 					<p class="description" style="margin:0 0 .6em"><?php esc_html_e( 'Paste the RENDERED HTML — in browser DevTools, right-click the <html> node → Copy → “Copy outerHTML”. Best for JS / SPA sources (React, Next, Vue) with no capture service: your browser already rendered it, so it converts offline as a faithful mirror. Tip: paste the whole <html> so <head> / fonts come along, and attach the real hero video / images below — they are wired into the markup by filename.', 'fw' ); ?></p>
@@ -2972,13 +2993,37 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				?>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Output', 'fw' ); ?></legend>
-						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'A child theme of the UnysonPlus parent theme, with the body as editable page-builder sections and the full framework — Theme Settings, presets, shortcodes.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="page-builder" checked onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display='none';}"> <?php esc_html_e( 'Page Builder', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'Unyson+ child theme', 'fw' ); ?>)</span></label>
+						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'A child theme of the UnysonPlus parent theme, with the body as editable page-builder sections and the full framework — Theme Settings, presets, shortcodes.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="page-builder" checked onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display='none';}"> <?php esc_html_e( 'Unyson+ Page Builder', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'child theme', 'fw' ); ?>)</span></label>
 						<label style="display:block;margin:.2em 0<?php echo $upw_block_disabled ? ';opacity:.5' : ''; ?>" title="<?php echo esc_attr__( 'Generate a standalone WordPress block theme (FSE): theme.json, editable header/footer parts, templates and section patterns, in core blocks — it renders with no plugin dependency. Requires the local capture service, and converts from a URL.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="block-theme" id="fw-sc-target-block"<?php disabled( $upw_block_disabled ); ?> onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display=this.checked?'block':'none';}"> <?php esc_html_e( 'Block Theme', 'fw' ); ?> <span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#8a6d00;background:#fcf3cd;border:1px solid #f0e3a8;border-radius:3px;padding:0 .35em;vertical-align:middle"><?php esc_html_e( 'Experimental', 'fw' ); ?></span> <span style="color:#646970">(<?php esc_html_e( 'standalone FSE, no plugin', 'fw' ); ?>)</span></label>
 						<div id="fw-sc-vocab-wrap" style="display:none;margin:.15em 0 0 1.4em">
 							<span style="color:#646970;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em"><?php esc_html_e( 'Blocks', 'fw' ); ?></span>
 							<label style="display:block;margin:.1em 0" title="<?php echo esc_attr__( 'Portable: WordPress core blocks only. The theme runs with no plugin dependency — the broadest-reach option.', 'fw' ); ?>"><input type="radio" name="fw_sc_vocab" value="core" checked> <?php esc_html_e( 'Core blocks', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'portable', 'fw' ); ?>)</span></label>
 							<label style="display:block;margin:.1em 0" title="<?php echo esc_attr__( 'Richer: emit UnysonPlus blocks where they map (button / heading / text / section). The output then depends on the UnysonPlus plugin being active.', 'fw' ); ?>"><input type="radio" name="fw_sc_vocab" value="enriched"> <?php esc_html_e( 'UnysonPlus blocks', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'needs the plugin', 'fw' ); ?>)</span></label>
 						</div>
+						<?php
+						// ROADMAP targets — other page builders the converter will emit to. Listed (disabled) so the
+						// output picker shows where the converter is heading; each flips to "Pre-Alpha build" when its
+						// emitter starts, and to a live option once it passes the same checks as the Unyson+ output.
+						// (Mirrors the docs-site Site Converter roadmap page — keep the two lists in step.)
+						$upw_roadmap_targets = array(
+							'elementor'      => __( 'Elementor', 'fw' ),
+							'divi'           => __( 'Divi', 'fw' ),
+							'bricks'         => __( 'Bricks', 'fw' ),
+							'beaver-builder' => __( 'Beaver Builder', 'fw' ),
+							'wpbakery'       => __( 'WPBakery', 'fw' ),
+							'oxygen'         => __( 'Oxygen', 'fw' ),
+							'breakdance'     => __( 'Breakdance', 'fw' ),
+							'kadence-blocks' => __( 'Kadence Blocks', 'fw' ),
+							'generateblocks' => __( 'GenerateBlocks', 'fw' ),
+							'spectra'        => __( 'Spectra', 'fw' ),
+						);
+						// SHOWCASE mode — define( 'FW_SITE_CONVERTER_ALL', true ) in wp-config.php (a recording / demo install) lists the
+						// roadmap targets as ordinary enabled options without the badge. Presentation only: the emitters don't exist,
+						// so a Convert with such a target still runs the Page Builder output. Never set on a public release.
+						$upw_show_all = defined( 'FW_SITE_CONVERTER_ALL' ) && FW_SITE_CONVERTER_ALL;
+						foreach ( $upw_roadmap_targets as $upw_rt_slug => $upw_rt_label ) : ?>
+						<label style="display:block;margin:.2em 0<?php echo $upw_show_all ? '' : ';opacity:.5;cursor:default'; ?>" title="<?php echo $upw_show_all ? '' : esc_attr( sprintf( __( '%s output is on the roadmap — not available yet.', 'fw' ), $upw_rt_label ) ); ?>"><input type="radio" name="fw_sc_target" value="<?php echo esc_attr( $upw_rt_slug ); ?>"<?php echo $upw_show_all ? '' : ' disabled'; ?>> <?php echo esc_html( $upw_rt_label ); ?> <?php if ( ! $upw_show_all ) : ?><span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#646970;background:#f0f0f1;border:1px solid #dcdcde;border-radius:3px;padding:0 .35em;vertical-align:middle"><?php esc_html_e( 'Coming soon', 'fw' ); ?></span><?php endif; ?></label>
+						<?php endforeach; ?>
 						<?php if ( $upw_pb_active ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme is a standalone, plugin-free output — deactivate the Page Builder extension (Unyson+ → Extensions) to use it.', 'fw' ); ?></p><?php elseif ( $upw_block_disabled ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme needs the block editor — it is disabled while the Classic Editor is enforced.', 'fw' ); ?></p><?php endif; ?>
 					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
@@ -3776,18 +3821,28 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					}, 150 );
 				}
 
+				// Traffic light: 'wait' (amber, checking) · 'go' (green, running) · 'stop' (red, nothing will convert until it runs).
+				function signal( state, text, hint ) {
+					$svc.className = 'fw-sc-signal fw-sc-signal--' + state;
+					$svc.innerHTML = '<span class="fw-sc-signal__dot" aria-hidden="true"></span><span>' + text + '</span>' + ( hint ? '<span class="fw-sc-signal__hint">' + hint + '</span>' : '' );
+					var wrap = $svc.closest ? $svc.closest( '.fw-sc-analyze' ) : null;
+					if ( wrap ) { wrap.classList.toggle( 'fw-sc-analyze--stop', 'stop' === state ); }
+				}
+				var SVC_STOP = '<?php echo esc_js( __( 'STOP — capture service not running', 'fw' ) ); ?>';
+				var SVC_HINT = '<?php echo esc_js( __( 'start it with the AI Dev Kit launcher or', 'fw' ) ); ?> <code>node serve.mjs</code>';
 				function ping() {
-					$svc.textContent = '<?php echo esc_js( __( 'checking service…', 'fw' ) ); ?>';
+					signal( 'wait', '<?php echo esc_js( __( 'Checking the capture service…', 'fw' ) ); ?>' );
 					fetch( svc() + '/health', { mode: 'cors' } ).then( function ( r ) { return r.json(); } )
 						.then( function ( d ) {
-								$svc.innerHTML = d && d.ok ? '<span style="color:#1a7f37">&#10003; <?php echo esc_js( __( 'capture service detected', 'fw' ) ); ?></span>' : '<span style="color:#b32d2e"><?php echo esc_js( __( 'service not detected', 'fw' ) ); ?></span>';
+								if ( d && d.ok ) { signal( 'go', '<?php echo esc_js( __( 'GO — capture service running', 'fw' ) ); ?>', ( d.version ? 'v' + String( d.version ).replace( /[^0-9.]/g, '' ) : '' ) ); }
+								else { signal( 'stop', SVC_STOP, SVC_HINT ); }
 								if ( $aiStatus ) {
 									if ( d && d.ok && d.aiReady ) { var be = d.aiBackend === 'claude-code' ? ' <?php echo esc_js( __( '(Claude Code subscription)', 'fw' ) ); ?>' : ( d.aiBackend === 'api' ? ' <?php echo esc_js( __( '(API key)', 'fw' ) ); ?>' : '' ); $aiStatus.innerHTML = '<span style="color:#1a7f37">● <?php echo esc_js( __( 'AI ready', 'fw' ) ); ?>' + be + '</span>'; }
 									else if ( d && d.ok ) { $aiStatus.innerHTML = '<span style="color:#b26200">● <?php echo esc_js( __( 'no AI backend — set a key or sign in to Claude Code (see Enable AI above)', 'fw' ) ); ?></span>'; }
 									else { $aiStatus.textContent = ''; }
 								}
 							} )
-						.catch( function () { $svc.innerHTML = '<span style="color:#b32d2e"><?php echo esc_js( __( 'service not detected — start node serve.mjs', 'fw' ) ); ?></span>'; if ( $aiStatus ) { $aiStatus.textContent = ''; } } );
+						.catch( function () { signal( 'stop', SVC_STOP, SVC_HINT ); if ( $aiStatus ) { $aiStatus.textContent = ''; } } );
 				}
 				$svcUrl.addEventListener( 'change', function () { if ( window.localStorage ) { localStorage.setItem( LS, svc() ); } ping(); } );
 				ping();

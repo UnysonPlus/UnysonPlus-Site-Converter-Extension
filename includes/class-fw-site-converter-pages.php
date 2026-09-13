@@ -188,6 +188,20 @@ class FW_Site_Converter_Pages {
 			if ( $added > 0 ) { $row['spacing_presets_added'] = $added; }
 		}
 
+		// Per-page layout options the build asked for (e.g. hide_site_footer = 'yes' when the source has no footer) — the
+		// theme's own page switches, so the editor shows them and the user can flip them back.
+		$popts = isset( $spec['page_options'] ) && is_array( $spec['page_options'] ) ? $spec['page_options'] : array();
+		foreach ( $popts as $pk => $pv ) {
+			if ( preg_match( '/^[a-z0-9_]+$/', (string) $pk ) && is_scalar( $pv ) ) { fw_set_db_post_option( $post_id, (string) $pk, $pv ); }
+		}
+		if ( $popts ) { $row['page_options'] = array_keys( $popts ); }
+		// …and the chrome Hide switches this build did NOT ask for are reset: a re-imported page (same slug → the post is
+		// updated, not recreated) otherwise keeps a previous conversion's `hide_site_footer = yes` — a source WITH a footer
+		// rendered none because an earlier footer-less source had flipped the switch on this very post.
+		foreach ( array( 'hide_site_footer', 'hide_site_header' ) as $hk ) {
+			if ( ! array_key_exists( $hk, $popts ) && 'yes' === (string) fw_get_db_post_option( $post_id, $hk, '' ) ) { fw_set_db_post_option( $post_id, $hk, 'no' ); }
+		}
+
 		// Optional: set as the site's front page.
 		if ( $front ) {
 			update_option( 'show_on_front', 'page' );

@@ -1321,11 +1321,21 @@ class FW_Site_Converter_Theme_Generator {
 		$out .= "\t\treturn preg_match( '#^(https?:|mailto:|tel:)#i', \$url ) ? \$url : home_url( \$url === '' ? '/' : \$url );\n";
 		$out .= "\t};\n";
 		$out .= "\t\$menu = wp_get_nav_menu_object( '" . self::esc_php( $menu_name ) . "' );\n";
+		$out .= "\t\$build = false;\n";
 		$out .= "\tif ( \$menu ) {\n";
 		$out .= "\t\t\$menu_id = (int) \$menu->term_id;\n";
+		// An EXISTING menu is rebuilt only when it is empty or carries DUPLICATE top-level labels (two runs appended the same
+		// links — a reconvert on a reused install); a menu the user edited (distinct labels) is left alone.
+		$out .= "\t\t\$cur_items = wp_get_nav_menu_items( \$menu_id, array( 'post_status' => 'any' ) );\n";
+		$out .= "\t\t\$tops = array(); \$dupe = false;\n";
+		$out .= "\t\tforeach ( (array) \$cur_items as \$ci ) { if ( (int) \$ci->menu_item_parent ) { continue; } \$k = strtolower( trim( (string) \$ci->title ) ); if ( isset( \$tops[ \$k ] ) ) { \$dupe = true; } \$tops[ \$k ] = 1; }\n";
+		$out .= "\t\tif ( \$dupe || empty( \$cur_items ) ) { foreach ( (array) \$cur_items as \$ci ) { wp_delete_post( \$ci->ID, true ); } \$build = true; }\n";
 		$out .= "\t} else {\n";
 		$out .= "\t\t\$menu_id = wp_create_nav_menu( '" . self::esc_php( $menu_name ) . "' );\n";
 		$out .= "\t\tif ( is_wp_error( \$menu_id ) ) { return; }\n";
+		$out .= "\t\t\$build = true;\n";
+		$out .= "\t}\n";
+		$out .= "\tif ( \$build ) {\n";
 		$out .= "\t\tforeach ( \$items as \$it ) {\n";
 		$out .= "\t\t\t\$parent = wp_update_nav_menu_item( \$menu_id, 0, array(\n";
 		$out .= "\t\t\t\t'menu-item-title'  => \$it['label'],\n";
@@ -1350,7 +1360,12 @@ class FW_Site_Converter_Theme_Generator {
 		// pre-existing / demo assignment from the parent theme — then never touch it again, so
 		// the user's later menu choice sticks. (The old 'only when empty' check left a demo menu
 		// stuck on Primary, so the converted menu never showed.)
-		$out .= "\tif ( ! get_option( '{$fn}_{$suffix}_assigned' ) ) {\n";
+		// …but an EMPTY / DANGLING location is re-assigned even after the flag: a reconvert on a reused install
+		// purges the previous site's menus (clearing the location) while this theme's flag from an EARLIER run
+		// of the same site still exists, so the rebuilt menu was never assigned and the header rendered with no
+		// nav. A location pointing at ANOTHER existing menu is the user's choice and stays.
+		$out .= "\t\$cur = isset( \$locations['" . self::esc_php( $location ) . "'] ) ? (int) \$locations['" . self::esc_php( $location ) . "'] : 0;\n";
+		$out .= "\tif ( ! get_option( '{$fn}_{$suffix}_assigned' ) || \$cur <= 0 || ! wp_get_nav_menu_object( \$cur ) ) {\n";
 		$out .= "\t\t\$locations['" . self::esc_php( $location ) . "'] = \$menu_id;\n";
 		$out .= "\t\tset_theme_mod( 'nav_menu_locations', \$locations );\n";
 		$out .= "\t\tupdate_option( '{$fn}_{$suffix}_assigned', 1 );\n";

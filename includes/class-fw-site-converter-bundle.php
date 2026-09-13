@@ -156,6 +156,9 @@ class FW_Site_Converter_Bundle {
 		// here (it would delete the running theme mid-import). Defer it: purge_prev_theme() runs AFTER the new
 		// theme is switched in (see import_dir, post-switch), when the old one is safely inactive.
 		self::$prev_theme_to_purge = $prev;
+		// The generated themes' one-shot menu-assignment flags (`<fn>_header_menu_assigned` / `_footer_menu_assigned` / `_mega`)
+		// outlive the menus purged above; a site converted again later would rebuild its menu but never assign it.
+		$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '%\\_menu\\_assigned' OR option_name LIKE '%\\_header\\_menu\\_mega'" );
 		if ( '' !== $new_slug ) { update_option( 'fw_sc_last_conversion_theme', $new_slug, false ); }
 	}
 
@@ -365,11 +368,16 @@ class FW_Site_Converter_Bundle {
 			if ( '' !== $brand && function_exists( 'update_option' ) ) {
 				update_option( 'blogname', $brand );
 				$out['theme']['blogname'] = $brand;
+				// The source <title>: theme-design.json's site_title (every path, incl. the admin build's JSON-only temp dir),
+				// else the bundle's rendered.html.
+				$full = isset( $theme_design['site_title'] ) ? trim( (string) $theme_design['site_title'] ) : '';
 				$rendered = $dir . '/rendered.html';
-				if ( is_file( $rendered ) ) {
+				if ( '' === $full && is_file( $rendered ) ) {
 					$head = (string) @file_get_contents( $rendered, false, null, 0, 65536 );
-					if ( preg_match( '#<title[^>]*>(.*?)</title>#is', $head, $tm ) ) {
-						$full = trim( html_entity_decode( wp_strip_all_tags( $tm[1] ), ENT_QUOTES, 'UTF-8' ) );
+					if ( preg_match( '#<title[^>]*>(.*?)</title>#is', $head, $tm ) ) { $full = trim( html_entity_decode( wp_strip_all_tags( $tm[1] ), ENT_QUOTES, 'UTF-8' ) ); }
+				}
+				if ( '' !== $full ) {
+					{
 						// Split on the usual title separators and drop the part that repeats the brand.
 						$parts = preg_split( '/\s*[|\x{2013}\x{2014}\x{00B7}\-]\s+/u', $full, 2 );
 						if ( is_array( $parts ) && count( $parts ) === 2 ) {

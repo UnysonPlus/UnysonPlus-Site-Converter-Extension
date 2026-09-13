@@ -30,6 +30,7 @@ class FW_Site_Converter_Presets {
 		'button_colors',
 		'button_sizes',
 		'button_animations',
+		'hover_animations',
 		'border_presets',
 		'icon_badge_presets',
 		'table_presets',

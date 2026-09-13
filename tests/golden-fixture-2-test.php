@@ -62,7 +62,7 @@ g2_eq( 'section count', 6, count( $sections ) );
 
 $expect = array(
 	array( 'section-1', 'special_heading,button,button,special_heading,text_block,special_heading,text_block,special_heading,media_image' ),
-	array( 'builder',   'special_heading,code_block,code_block' ),
+	array( 'builder',   'special_heading,newsletter' ), // the signup form is the native Newsletter element (was two verbatim code blocks)
 	array( 'flavors',   'special_heading,testimonials' ),
 	array( 'story',     'media_image,special_heading,text_block,icon_box,icon_box' ),
 	array( 'reviews',   'special_heading,testimonials' ),

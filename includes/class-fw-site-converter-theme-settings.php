@@ -65,6 +65,33 @@ class FW_Site_Converter_Theme_Settings {
 		'header_logo',
 	);
 
+	/**
+	 * Every design key the deterministic engines CAN emit (the union of Stitch build_theme_settings and the capture service's
+	 * to-theme-settings). On a full conversion each one the payload does NOT carry is reset to the theme's DECLARED default —
+	 * a key the new source has no signal for (a drawer colour, a mobile bar fill, a scroll-progress accent, a footer border)
+	 * otherwise kept the PREVIOUS conversion's value, so successive conversions drifted toward "the last site". The element
+	 * containers in CHROME_KEYS keep their clear-to-empty behaviour; everything else resets to the option's default.
+	 */
+	const OWNED_KEYS = array(
+		'header_layout', 'header_menu', 'header_logo', 'header_main', 'header_topbar', 'header_bottombar', 'mega_menu',
+		'drawer_bg', 'drawer_link_color', 'drawer_link_active_color', 'mobile_bar_bg', 'mobile_breakpoint', 'mobile_hide_topbar',
+		'copyright_settings', 'copyright_custom_styling', 'pre_footer_columns', 'pre_footer_custom_styling', 'main_footer_columns', 'post_footer_columns', 'post_footer_custom_styling',
+		'footer_background', 'footer_border_sides', 'footer_border_top', 'footer_border_top_extent', 'footer_col_gap', 'footer_columns', 'footer_link_color', 'footer_link_hover_color',
+		'footer_mobile_columns', 'footer_padding_bottom', 'footer_padding_bottom_custom', 'footer_padding_top', 'footer_padding_top_custom', 'footer_text_color',
+		'general_layout', 'general_typography', 'typography', 'font_sizes', 'spacing_scale', 'gap_scale', 'social_profiles', 'social_style',
+		'animation_cursor', 'animation_preloader', 'animation_scrollprog', 'preloader_style', 'scrollprog', 'nav_scrollspy', 'misc_custom_css',
+	);
+
+	/** The theme's DECLARED default for a settings option id (the option's own `value`, nested containers included); null when unknown. */
+	private static function declared_default( $id ) {
+		if ( ! function_exists( 'fw' ) || ! fw()->theme || ! function_exists( 'fw_extract_only_options' ) || ! function_exists( 'fw_get_options_values_from_input' ) ) { return null; }
+		static $flat = null;
+		if ( null === $flat ) { try { $flat = fw_extract_only_options( (array) fw()->theme->get_settings_options() ); } catch ( Throwable $e ) { $flat = array(); } }
+		if ( ! isset( $flat[ $id ] ) || ! is_array( $flat[ $id ] ) ) { return null; }
+		try { $v = fw_get_options_values_from_input( array( $id => $flat[ $id ] ), array() ); } catch ( Throwable $e ) { return null; }
+		return array_key_exists( $id, $v ) ? $v[ $id ] : null;
+	}
+
 	public static function import( $data, $replace_chrome = false ) {
 		$out = array( 'imported' => array(), 'skipped' => array(), 'cleared' => array(), 'cross_theme' => false, 'error' => '' );
 
@@ -130,6 +157,18 @@ class FW_Site_Converter_Theme_Settings {
 						$out['cleared'][] = $ck;
 					}
 				}
+			}
+			// …and every other key the engines own but this payload does not carry → the theme's declared default, so a
+			// site with no signal for it never inherits the previous conversion's value ("the last header wins").
+			foreach ( self::OWNED_KEYS as $ok ) {
+				if ( array_key_exists( $ok, $incoming ) || in_array( $ok, self::CHROME_KEYS, true ) || in_array( $ok, $exclude, true ) ) { continue; }
+				$existing = fw_get_db_settings_option( $ok, null );
+				if ( null === $existing ) { continue; }
+				$def = self::declared_default( $ok );
+				if ( null === $def ) { continue; }
+				if ( wp_json_encode( $existing ) === wp_json_encode( $def ) ) { continue; }
+				fw_set_db_settings_option( $ok, $def );
+				$out['cleared'][] = $ok;
 			}
 		}
 		foreach ( $incoming as $k => $v ) {
