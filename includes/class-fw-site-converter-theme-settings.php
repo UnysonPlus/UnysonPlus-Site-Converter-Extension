@@ -78,6 +78,9 @@ class FW_Site_Converter_Theme_Settings {
 		'copyright_settings', 'copyright_custom_styling', 'pre_footer_columns', 'pre_footer_custom_styling', 'main_footer_columns', 'post_footer_columns', 'post_footer_custom_styling',
 		'footer_background', 'footer_border_sides', 'footer_border_top', 'footer_border_top_extent', 'footer_col_gap', 'footer_columns', 'footer_link_color', 'footer_link_hover_color',
 		'footer_mobile_columns', 'footer_padding_bottom', 'footer_padding_bottom_custom', 'footer_padding_top', 'footer_padding_top_custom', 'footer_text_color',
+		// the BOXED-footer group: a previous conversion's boxed footer (`footer_body_box` + its skin) survived into a site whose
+		// bundle carries no such key and rendered its footer as a box (a finding from the feed) — reset with the rest
+		'footer_body_box', 'footer_box_background', 'footer_box_copyright_inside', 'footer_box_gutter', 'footer_box_max_width', 'footer_box_padding_x', 'footer_box_padding_y', 'footer_box_radius', 'footer_box_shadow', 'footer_border_top_extent_width', 'footer_overlay_last_section', 'footer_css_class',
 		'general_layout', 'general_typography', 'typography', 'font_sizes', 'spacing_scale', 'gap_scale', 'social_profiles', 'social_style',
 		'animation_cursor', 'animation_preloader', 'animation_scrollprog', 'preloader_style', 'scrollprog', 'nav_scrollspy', 'misc_custom_css',
 	);

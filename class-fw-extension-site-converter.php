@@ -674,6 +674,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 * leftover "Fresh WordPress" or a previous conversion's title. Filterable; return '' to skip.
 	 */
 	private function apply_converted_site_title( array $result ) {
+		// The bundle importer already set the identity from the MEASURED header lockup (blogname ⇄ the header's
+		// site_title, blogdescription ⇄ its eyebrow / tagline — the parent theme keeps the pairs identical). Re-setting
+		// blogname from the theme name here pulled that name back over the wordmark; the theme name is only the fallback.
+		if ( ! empty( $result['theme']['blogname'] ) ) { return; }
 		$name = isset( $result['theme']['name'] ) ? (string) $result['theme']['name'] : '';
 		$name = wp_strip_all_tags( html_entity_decode( $name, ENT_QUOTES, 'UTF-8' ) ); // "&amp;" → "&", drop any markup
 		$name = trim( preg_replace( '/\s*\((?:child|copy)\)\s*$/i', '', $name ) );

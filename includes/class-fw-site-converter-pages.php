@@ -194,6 +194,10 @@ class FW_Site_Converter_Pages {
 		foreach ( $popts as $pk => $pv ) {
 			if ( preg_match( '/^[a-z0-9_]+$/', (string) $pk ) && is_scalar( $pv ) ) { fw_set_db_post_option( $post_id, (string) $pk, $pv ); }
 		}
+		// The theme's header visibility is the per-page `page_header` select (Global / Transparent / Hidden = 'd-none'); its
+		// `hide_site_header` switch is legacy and no longer read. A header-less source must hide the header through the select, else
+		// the theme paints its default masthead over a page the source drew without one.
+		if ( 'yes' === (string) ( $popts['hide_site_header'] ?? '' ) ) { fw_set_db_post_option( $post_id, 'page_header', 'd-none' ); }
 		if ( $popts ) { $row['page_options'] = array_keys( $popts ); }
 		// …and the chrome Hide switches this build did NOT ask for are reset: a re-imported page (same slug → the post is
 		// updated, not recreated) otherwise keeps a previous conversion's `hide_site_footer = yes` — a source WITH a footer
@@ -201,6 +205,7 @@ class FW_Site_Converter_Pages {
 		foreach ( array( 'hide_site_footer', 'hide_site_header' ) as $hk ) {
 			if ( ! array_key_exists( $hk, $popts ) && 'yes' === (string) fw_get_db_post_option( $post_id, $hk, '' ) ) { fw_set_db_post_option( $post_id, $hk, 'no' ); }
 		}
+		if ( ! array_key_exists( 'hide_site_header', $popts ) && 'd-none' === (string) fw_get_db_post_option( $post_id, 'page_header', '' ) ) { fw_set_db_post_option( $post_id, 'page_header', '' ); } // …and the select
 
 		// Optional: set as the site's front page.
 		if ( $front ) {

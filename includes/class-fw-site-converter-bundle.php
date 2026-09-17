@@ -125,6 +125,20 @@ class FW_Site_Converter_Bundle {
 			$raw = ( isset( $td['theme']['slug'] ) && '' !== $td['theme']['slug'] ) ? $td['theme']['slug'] : ( isset( $td['theme']['name'] ) ? $td['theme']['name'] : '' );
 			$new_slug = sanitize_title( (string) $raw );
 		}
+		// The identity of a conversion is its SOURCE URL (host + path + query), not the brand word: two different sources that
+		// happen to share a brand word collided as "the same site", so the earlier conversion's menus were never purged and
+		// the new header showed the previous site's menu (a reported finding). The slug is only the fallback for a bundle
+		// that carries no source URL.
+		if ( is_array( $td ) && ! empty( $td['source_url'] ) && preg_match( '#^https?://#i', (string) $td['source_url'] ) ) {
+			$new_slug = sanitize_title( preg_replace( '#^https?://(www\.)?#i', '', (string) $td['source_url'] ) );
+		}
+		// …and the manifest's `source` is the FULL page URL (path + query) where theme-design.json's `source_url` is only the
+		// ORIGIN: every page of a preview host (`/api/preview?slug=…`) shares the origin, so they collided as "the same site"
+		// and the previous page's menu stayed on the primary location (16 sightings in the feed). The full URL is the identity.
+		$mf = self::read_json( $dir, self::FILE_MANIFEST );
+		if ( is_array( $mf ) && ! empty( $mf['source'] ) && preg_match( '#^https?://#i', (string) $mf['source'] ) ) {
+			$new_slug = sanitize_title( preg_replace( '#^https?://(www\.)?#i', '', (string) $mf['source'] ) );
+		}
 		$prev = (string) get_option( 'fw_sc_last_conversion_theme', '' );
 		// First-ever conversion, or a reconvert of the SAME site → nothing to purge (just record the slug).
 		if ( '' === $prev || ( '' !== $new_slug && $prev === $new_slug ) ) {
@@ -365,9 +379,47 @@ class FW_Site_Converter_Bundle {
 			// after a separator ("Maritime Arts Gallery | Contemporary Ocean & Sailing"), which is not
 			// carried in theme-design.json and so is read from the bundle's rendered.html.
 			$brand = isset( $theme_design['theme']['name'] ) ? trim( (string) $theme_design['theme']['name'] ) : '';
+			// The MEASURED header lockup wins over the design name: the parent theme keeps blogname ⇄ header site_title
+			// and blogdescription ⇄ tagline_text identical (identity-sync pulls a diverging core value INTO the header
+			// field), so a brand/tagline set from the design name + <title> suffix after the theme-settings import
+			// silently overwrote the converted wordmark ("UNESCO" pulled over an eyebrow-titled "World Heritage" lockup,
+			// the <title> suffix over its eyebrow). Read the custom wordmark the theme settings just imported and let it
+			// own both core options; the <title> suffix is only the fallback when the header carried no tagline.
+			$hl_text = array( 'title' => '', 'tagline' => '' );
+			if ( is_array( $theme ) ) {
+				$hlc = $theme['values']['header_logo']['logo_type']['custom'] ?? ( $theme['header_logo']['logo_type']['custom'] ?? array() );
+				if ( is_array( $hlc ) && 'custom' === (string) ( $theme['values']['header_logo']['logo_type']['logo_type'] ?? ( $theme['header_logo']['logo_type']['logo_type'] ?? 'custom' ) ) ) {
+					$hl_text['title']   = trim( wp_strip_all_tags( (string) ( $hlc['site_title'] ?? '' ) ) );
+					$hl_text['tagline'] = trim( wp_strip_all_tags( (string) ( $hlc['tagline_text'] ?? '' ) ) );
+				}
+			}
+			if ( '' !== $hl_text['title'] && strlen( $hl_text['title'] ) <= 120 ) { $brand = $hl_text['title']; }
+			// The document <title> ORDERS the identity (RECURRING findings: a two-line lockup mapped brand ⇄ tagline in reverse; a
+			// logo GLYPH's text became the blogname while the <title> carried the brand). When the <title> splits into
+			// "A | B": the segment that matches a lockup line is that line's role — the FIRST segment is the blogname, the
+			// second the tagline; a lockup title with no letters / ≤ 2 chars (a glyph) yields to the first segment outright.
+			$full0 = isset( $theme_design['site_title'] ) ? trim( (string) $theme_design['site_title'] ) : '';
+			if ( '' === $full0 && is_file( $dir . '/rendered.html' ) ) { $h0 = (string) @file_get_contents( $dir . '/rendered.html', false, null, 0, 65536 ); if ( preg_match( '#<title[^>]*>(.*?)</title>#is', $h0, $t0 ) ) { $full0 = trim( html_entity_decode( wp_strip_all_tags( $t0[1] ), ENT_QUOTES, 'UTF-8' ) ); } }
+			if ( '' !== $full0 ) {
+				$segs = preg_split( '/\s*[|\x{2013}\x{2014}\x{00B7}\-]\s+/u', $full0, 2 );
+				$segs = is_array( $segs ) ? array_values( array_filter( array_map( 'trim', $segs ) ) ) : array();
+				$norm = function ( $v ) { return strtolower( trim( preg_replace( '/\s+/', ' ', (string) $v ) ) ); };
+				$glyph = ( '' === $brand || ! preg_match( '/\p{L}{2,}/u', $brand ) || mb_strlen( $brand ) <= 2 );
+				if ( count( $segs ) === 2 ) {
+					$lt = $norm( $hl_text['title'] ); $lg = $norm( $hl_text['tagline'] );
+					if ( '' !== $lt && '' !== $lg && $lt === $norm( $segs[1] ) && $lg === $norm( $segs[0] ) ) { // the lockup's lines are the <title>'s, reversed
+						$hl_text = array( 'title' => $segs[0], 'tagline' => $segs[1] ); $brand = $segs[0];
+					} elseif ( $glyph && strlen( $segs[0] ) <= 120 ) { $brand = $segs[0]; if ( '' === $hl_text['tagline'] ) { $hl_text['tagline'] = $segs[1]; } }
+				} elseif ( $glyph && count( $segs ) === 1 && strlen( $segs[0] ) <= 120 ) { $brand = $segs[0]; }
+			}
 			if ( '' !== $brand && function_exists( 'update_option' ) ) {
+				update_option( 'blogdescription', '' ); // a stale tagline from a PREVIOUS conversion never survives (the <title> then read new brand + old tagline)
 				update_option( 'blogname', $brand );
 				$out['theme']['blogname'] = $brand;
+				if ( '' !== $hl_text['tagline'] && strlen( $hl_text['tagline'] ) <= 160 ) {
+					update_option( 'blogdescription', $hl_text['tagline'] );
+					$out['theme']['blogdescription'] = $hl_text['tagline'];
+				}
 				// The source <title>: theme-design.json's site_title (every path, incl. the admin build's JSON-only temp dir),
 				// else the bundle's rendered.html.
 				$full = isset( $theme_design['site_title'] ) ? trim( (string) $theme_design['site_title'] ) : '';
@@ -376,7 +428,7 @@ class FW_Site_Converter_Bundle {
 					$head = (string) @file_get_contents( $rendered, false, null, 0, 65536 );
 					if ( preg_match( '#<title[^>]*>(.*?)</title>#is', $head, $tm ) ) { $full = trim( html_entity_decode( wp_strip_all_tags( $tm[1] ), ENT_QUOTES, 'UTF-8' ) ); }
 				}
-				if ( '' !== $full ) {
+				if ( '' !== $full && '' === $hl_text['tagline'] ) {
 					{
 						// Split on the usual title separators and drop the part that repeats the brand.
 						$parts = preg_split( '/\s*[|\x{2013}\x{2014}\x{00B7}\-]\s+/u', $full, 2 );
@@ -577,6 +629,32 @@ class FW_Site_Converter_Bundle {
 			}
 		}
 
+		// THE EXECUTED SUMMARY beside the capture (`import-summary.json`): what THIS import did — media as imported +
+		// reused + failed (a reconvert REUSES the library copies, so "imported 0" alone read as a loss three times over),
+		// the preset / theme-settings / page counts, the sections run. The agents' once-per-site summary reads it.
+		if ( is_dir( $dir ) && is_writable( $dir ) ) {
+			$m = ( isset( $out['media'] ) && is_array( $out['media'] ) ) ? $out['media'] : array();
+			$summary = array(
+				'engine'    => 'php',
+				'version'   => defined( 'FW_SITE_CONVERTER_VERSION' ) ? FW_SITE_CONVERTER_VERSION : '',
+				'sections'  => array_values( array_unique( (array) $out['sections'] ) ),
+				'media'     => array(
+					'imported'  => (int) ( $m['imported'] ?? 0 ),
+					'reused'    => (int) ( $m['reused'] ?? 0 ),
+					'failed'    => (int) ( $m['failed'] ?? 0 ),
+					'available' => (int) ( $m['imported'] ?? 0 ) + (int) ( $m['reused'] ?? 0 ),
+					'total'     => (int) ( $m['total'] ?? 0 ),
+					'errors'    => array_slice( (array) ( $m['errors'] ?? array() ), 0, 20 ),
+				),
+				'presets'   => isset( $out['presets']['imported'] ) ? $out['presets']['imported'] : null,
+				'theme_settings' => isset( $out['theme_settings']['imported'] ) ? $out['theme_settings']['imported'] : null,
+				'pages'     => self::summarize_pages( isset( $out['pages'] ) && is_array( $out['pages'] ) ? $out['pages'] : array() ),
+				'error'     => isset( $out['error'] ) ? (string) $out['error'] : '',
+				'at'        => gmdate( 'c' ),
+			);
+			@file_put_contents( rtrim( $dir, '/\\' ) . '/import-summary.json', wp_json_encode( $summary, JSON_PRETTY_PRINT ) );
+		}
+
 		return $out;
 	}
 
@@ -704,6 +782,41 @@ class FW_Site_Converter_Bundle {
 			}
 			@file_put_contents( rtrim( $dir, '/\\' ) . '/' . $fn, wp_json_encode( $out ) );
 		}
+		// THE EXECUTED BUILD'S OWN REPORT. The service's conversion-report.csv describes the JS twin's build, which this
+		// import just REPLACED — an agent reading it after an import measured the wrong engine (a hero "kept verbatim" that
+		// the PHP twin had decomposed). Write the PHP engine's per-section verdict beside it: which shortcodes each section
+		// became, its code_block count, and the PHP coverage / drop reports the bundle already carries.
+		self::write_executed_report( $dir, $files );
+	}
+
+	/** conversion-report-php.csv (+ conversion-drops.json / class-coverage.json / conversion-parity.json) into the capture folder. */
+	private static function write_executed_report( $dir, array $files ) {
+		$dir = rtrim( (string) $dir, '/\\' );
+		if ( '' === $dir || ! is_dir( $dir ) ) { return; }
+		$pages = isset( $files['pages.json']['pages'] ) && is_array( $files['pages.json']['pages'] ) ? $files['pages.json']['pages'] : array();
+		$rows  = array( array( 'engine', 'page', 's_index', 'css_id', 'shortcodes', 'nodes', 'code_blocks', 'verdict' ) );
+		$walk  = function ( $items, &$codes, &$n, &$cb ) use ( &$walk ) {
+			foreach ( (array) $items as $it ) {
+				if ( ! is_array( $it ) ) { continue; }
+				$sc = (string) ( $it['shortcode'] ?? '' );
+				if ( '' !== $sc ) { $n++; if ( ! in_array( $sc, array( 'section', 'column', 'flexbox' ), true ) ) { $codes[] = $sc; } if ( 'code_block' === $sc ) { $cb++; } }
+				if ( ! empty( $it['_items'] ) ) { $walk( $it['_items'], $codes, $n, $cb ); }
+			}
+		};
+		foreach ( $pages as $pg ) {
+			$slug = (string) ( $pg['slug'] ?? $pg['title'] ?? 'page' );
+			foreach ( (array) ( $pg['builder'] ?? array() ) as $i => $sec ) {
+				$codes = array(); $n = 0; $cb = 0;
+				$walk( $sec['_items'] ?? array(), $codes, $n, $cb );
+				$verdict = $cb > 0 ? ( count( $codes ) === $cb ? 'verbatim' : 'decomposed (with ' . $cb . ' code_block)' ) : 'decomposed';
+				$rows[] = array( 'php', $slug, (string) $i, (string) ( $sec['atts']['css_id'] ?? '' ), implode( ',', $codes ), (string) $n, (string) $cb, $verdict );
+			}
+		}
+		$fh = @fopen( $dir . '/conversion-report-php.csv', 'w' );
+		if ( $fh ) { foreach ( $rows as $r ) { fputcsv( $fh, $r ); } fclose( $fh ); }
+		foreach ( array( 'conversion-drops.json', 'class-coverage.json', 'conversion-parity.json' ) as $fn ) {
+			if ( isset( $files[ $fn ] ) ) { @file_put_contents( $dir . '/' . $fn, wp_json_encode( $files[ $fn ], JSON_PRETTY_PRINT ) ); }
+		}
 	}
 
 	/**
@@ -720,7 +833,7 @@ class FW_Site_Converter_Bundle {
 	private static function activate_bundled_exts( array $slugs ) {
 		$done = array();
 		if ( ! function_exists( 'fw' ) || ! function_exists( 'fw_ext' ) ) { return $done; }
-		$allowed = array( 'animation-engine', 'woocommerce', 'newsletter-crm', 'breadcrumbs', 'chat', 'portfolio', 'snippets' );
+		$allowed = array( 'animation-engine', 'woocommerce', 'newsletter-crm', 'breadcrumbs', 'chat', 'portfolio', 'snippets', 'forms' );
 		if ( ! fw()->extensions->manager->can_activate() ) { return $done; }
 		foreach ( array_values( array_unique( $slugs ) ) as $slug ) {
 			$slug = (string) $slug;
@@ -757,6 +870,19 @@ class FW_Site_Converter_Bundle {
 	 * @param array $results Rows from FW_Site_Converter_Media::import_urls().
 	 * @return array{imported: int, reused: int, failed: int, total: int, names: string[]}
 	 */
+	/** Page rows (FW_Site_Converter_Pages::import) → created / updated / failed counts + the slugs. */
+	private static function summarize_pages( array $res ) {
+		$rows = ( isset( $res['pages'] ) && is_array( $res['pages'] ) ) ? $res['pages'] : array();
+		$created = 0; $updated = 0; $failed = 0; $slugs = array();
+		foreach ( $rows as $r ) {
+			if ( ! is_array( $r ) ) { continue; }
+			if ( ! empty( $r['error'] ) ) { $failed++; continue; }
+			if ( ! empty( $r['created'] ) ) { $created++; } else { $updated++; }
+			if ( ! empty( $r['slug'] ) ) { $slugs[] = (string) $r['slug']; }
+		}
+		return array( 'created' => $created, 'updated' => $updated, 'failed' => $failed, 'total' => count( $rows ), 'slugs' => $slugs, 'error' => (string) ( $res['error'] ?? '' ) );
+	}
+
 	private static function summarize_media( array $results ) {
 		$imported = 0;
 		$reused   = 0;

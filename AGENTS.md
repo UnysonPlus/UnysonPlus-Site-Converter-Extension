@@ -234,6 +234,19 @@ Static so the future Convert bundle / WP-CLI can reuse it (mirrors the media eng
 the `import_presets` step on the Convert page → PRG redirect + result transient (`presets_result`
 stage). Returns `{ imported: {key:count}, skipped: [keys], error: '' }`.
 
+> **⛔ Button and box STYLES live on their PRESET, never on the shortcode (REQUIRED, both engines).** A converted
+> button's / card's look — the resting fill, border, radius, shadow, type, the hover fill / transform / shadow / filter,
+> its `::before` / `::after` layers, their hover states and the `@keyframes` they animate with — belongs in the
+> **Theme Settings preset's Custom CSS** (`button_colors[].custom_css` / the Box Preset's `custom_css`, `{{SELECTOR}}`-
+> scoped), so **every element wearing that preset renders identically on every section and page**, and a later edit of
+> the preset changes them all. The shortcode's own Advanced → Custom CSS carries ONLY what is per-instance by nature
+> (this button's alignment / width / spacing; a card's own inset), never a copy of the preset's skin. A per-element
+> copy is a duplicate in the wrong place, and its `!important` would outrank any later preset edit. Concretely:
+> `n_button` / `buttonBlockNode` emit hover CSS on the element only for a button **no colour preset owns** (the
+> safety-net path); a preset-owned button takes neither the verbatim hover nor a substituted library fx — the preset
+> is the whole hover. The same holds for icon-box / panel skins → Box Presets (`register_box_preset` ↔
+> `buildBorderPresets`). Golden `[R]` + `nocturnal-parity.test.mjs` guard it.
+
 ## Menus importer (shipped)
 
 `includes/class-fw-site-converter-menus.php` (`FW_Site_Converter_Menus`) builds WordPress nav

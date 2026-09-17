@@ -1177,7 +1177,7 @@ class FW_Site_Converter_Theme_Generator {
 		// matches none of the patterns below, so it used to fall through to $default and the site's
 		// real brand colour was silently replaced with the generic blue: measured on
 		// my-website-h3eknqdj, whose accent hsl(67 100% 50%) = rgb(225,255,0) became #2563eb. 61% of
-		// a 120-site Wegic corpus uses this token-themed flavour. Normalise it to real CSS.
+		// a 120-site a second AI-page generator corpus uses this token-themed flavour. Normalise it to real CSS.
 		if ( preg_match( '/^(\d{1,3}(?:\.\d+)?)\s+(\d{1,3}(?:\.\d+)?)%\s+(\d{1,3}(?:\.\d+)?)%$/', $v, $hm ) ) {
 			return 'hsl(' . $hm[1] . ', ' . $hm[2] . '%, ' . $hm[3] . '%)';
 		}
@@ -2345,7 +2345,9 @@ JS;
 				$hd = '';
 				if ( $fh !== '' )  { $hd .= "font-family:{$head_stack} !important;"; }
 				if ( $hwt !== '' ) { $hd .= "font-weight:{$hwt};"; }
-				$out .= ":is(h1,h2,h3,h4,h5,h6) { {$hd} }\n";
+				// the header / footer builder's own headings (`.hf-heading`) carry their MEASURED type (footer_heading_css) —
+				// the site-wide !important family must not outrank it (footer column titles rendered in the heading font, 3 sites)
+				$out .= ":is(h1,h2,h3,h4,h5,h6):not(.hf-heading) { {$hd} }\n";
 			}
 			// Heading color is emitted as a PLAIN element-selector rule (specificity 0,0,1) so it acts
 			// only as the default — any component/section rule that sets a heading color (e.g. a dark

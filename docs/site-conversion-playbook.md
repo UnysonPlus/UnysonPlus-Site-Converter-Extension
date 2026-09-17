@@ -1,7 +1,7 @@
 # Site Conversion Playbook — source site → Theme-Settings-driven UnysonPlus site
 
 How to turn a source website (a real live site, or a template like an
-[openhero.art](https://openhero.art/) hero) into a UnysonPlus **site** whose design is
+an AI-generated hero) into a UnysonPlus **site** whose design is
 reproduced **from Theme Settings + shortcode options**, with a **near-empty child theme** —
 NOT a child theme full of scoped CSS.
 
@@ -43,7 +43,7 @@ reference screenshot). ALWAYS use these:
   (`.liquid-panel`, `.dew`, `.telemetry`, `.light-river`). Grep it for `body`, `::before`, `::after`,
   `:hover`, `@keyframes`, `mask`, `filter`, `backdrop`, and each named class so nothing hides.
   **Caveat — it's complementary, not a replacement:** it only contains INLINE CSS (`<style>` + inline
-  styles), so external `.css` files aren't in it (openhero `page.tsx` templates are all-inline, so
+  styles), so external `.css` files aren't in it (AI-page `page.tsx` templates are all-inline, so
   near-complete; other sites still need the external CSS); and it's AUTHORED, not RESOLVED, so
   Tailwind utilities (`px-8`, `text-[12px]`) still need computed styles to resolve to px. **Ideal =
   view-source (authored CSS, structure, hover/animation/pseudo — nothing hidden) + Playwright

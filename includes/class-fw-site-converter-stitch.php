@@ -983,6 +983,18 @@ class FW_Site_Converter_Stitch {
 				return $a < 1 ? "rgba({$m[1]}, {$m[2]}, {$m[3]}, {$a})" : "rgb({$m[1]}, {$m[2]}, {$m[3]})";
 			}
 			if ( preg_match( '/^#[0-9a-f]{3,8}$/', $c ) ) { return $c; }
+			// oklch() / oklab() / hsl() — the colour spaces AI-built sources paint buttons with (`border:0.5px solid
+			// oklch(1 0 0)` = a WHITE hairline). Unparsed, the border colour read '' and the Outline role defaulted to
+			// the text ink — a white pill shipped with a black outline. Resolve through color_to_hex, keeping alpha.
+			if ( preg_match( '/^(?:okl(?:ch|ab)|hsla?)\(/', $c ) ) {
+				$hex = self::color_to_hex( $c );
+				if ( '' === $hex ) { return ''; }
+				if ( preg_match( '/[\/,]\s*([0-9.]+%?)\s*\)$/', $c, $am ) ) {
+					$a = strpos( $am[1], '%' ) !== false ? (float) $am[1] / 100 : (float) $am[1];
+					if ( $a < 0.99 ) { return 'rgba(' . hexdec( substr( $hex, 1, 2 ) ) . ', ' . hexdec( substr( $hex, 3, 2 ) ) . ', ' . hexdec( substr( $hex, 5, 2 ) ) . ', ' . $a . ')'; }
+				}
+				return $hex;
+			}
 			return '';
 		};
 		// Pick the FIRST visible (non-transparent) layer of a (possibly multi-layer) box-shadow → the preset
@@ -1081,8 +1093,16 @@ class FW_Site_Converter_Stitch {
 				$height = '';
 				if ( $h_px >= 28 && $h_px <= 80 && $py_px < 4 ) { $height = (string) (int) round( $h_px ) . 'px'; }
 
-				// A real button skin = an opaque fill, a GRADIENT fill, a border (ghost/outline), OR an explicit btn/cta class.
-				if ( $bg === '' && $grad === '' && $bw === '' && ! preg_match( '/\b(btn|button|cta)\b/', $cls ) ) { continue; }
+				// A real button skin = an opaque fill, a GRADIENT fill, a border (ghost/outline), OR an explicit btn/cta class —
+				// OR a GHOST: a `<button>` (or role=button) with no fill and no border that is still built as a button
+				// (a pill / rounded radius + ≥ 16px side padding + a button-tall box). It used to be skipped ("nothing to
+				// match by colour"), so the secondary hero action fell to the grey outline fallback (three conversions).
+				$ghost = false;
+				if ( $bg === '' && $grad === '' && $bw === '' ) {
+					$rad_px = $to_px( $radius ); $px_px = $to_px( $px );
+					$ghost = ( 'button' === $tag || 'button' === strtolower( (string) $node->getAttribute( 'role' ) ) ) && $px_px >= 16 && ( $rad_px >= 4 || ( '' !== $radius && false !== strpos( $radius, '%' ) ) ) && $h_px >= 32;
+				}
+				if ( $bg === '' && $grad === '' && $bw === '' && ! $ghost && ! preg_match( '/\b(btn|button|cta)\b/', $cls ) ) { continue; }
 
 				// ROLE from the SEMANTIC class first (bg-primary → Primary, bg-secondary → Secondary), so the
 				// converted button's style class (btn-primary / btn-secondary set by the mapper/chrome) resolves
@@ -1109,6 +1129,7 @@ class FW_Site_Converter_Stitch {
 				elseif ( $grad !== '' )                               { $role = 'Fill'; }   // a gradient fill is a real fill, not an outline
 				elseif ( ( $bg === '' || $whitish( $bg ) ) && $bw !== '' ) { $role = 'Outline'; }
 				elseif ( $filledp( $bg ) && ! $whitish( $bg ) )          { $role = 'Fill'; }
+				elseif ( $ghost )                                     { $role = 'Ghost'; }  // a text button: no fill, no border, its own ink + hover ink
 				else { $role = 'Outline'; }
 
 				$skins[] = array(
@@ -1129,6 +1150,7 @@ class FW_Site_Converter_Stitch {
 					// (`hover-self{background-color:var(--secondary)}`) — a more reliable hover source than the
 					// Tailwind `hover:*` classes, since the browser already computed it. Preferred when present.
 					'hov' => ( $node instanceof DOMElement ) ? (string) $node->getAttribute( 'data-sc-hover' ) : '',
+					'kf'  => ( $node instanceof DOMElement ) ? (string) $node->getAttribute( 'data-sc-keyframes' ) : '', // the @keyframes its pseudo layers animate with
 					// The source's own transition (timing + easing) — the preset's hover motion eases exactly like it.
 					'tr'  => isset( $props['transition'] ) ? trim( (string) $props['transition'] ) : '',
 				);
@@ -1248,7 +1270,7 @@ class FW_Site_Converter_Stitch {
 		// block ({{SELECTOR}}-aware). The source's grow-on-hover (e.g. `hover:scale-105`, the common CTA press)
 		// has no dedicated native colour-preset field, so per the data model it rides in the preset's Custom CSS
 		// tab — reproduced exactly, with a matching transform transition so it eases like the source.
-		$hover_transform_css = function ( $cls, $hov = '', $tr = '' ) {
+		$hover_transform_css = function ( $cls, $hov = '', $tr = '', $kfx = '' ) {
 			$cls = ' ' . strtolower( (string) $cls ) . ' ';
 			$to_scale = function ( $n ) { return rtrim( rtrim( sprintf( '%.2f', (int) $n / 100 ), '0' ), '.' ); };
 			$rules = array();
@@ -1258,6 +1280,40 @@ class FW_Site_Converter_Stitch {
 			if ( preg_match( '/hover-self\{([^}]*)\}/i', (string) $hov, $hm ) && preg_match( '/(?:^|;)\s*transform\s*:\s*([^;]+)/i', $hm[1], $tm ) ) {
 				$tf = trim( $tm[1] );
 				if ( '' !== $tf && 'none' !== strtolower( $tf ) ) { $rules[] = '{{SELECTOR}}:hover { transform: ' . $tf . '; }'; }
+			}
+			// …and the REST of the hover state the native hover fields cannot hold (a lifted shadow, a glow filter, a wider
+			// tracking) — the source's `.btn:hover` rule, verbatim. Colours stay on the native hover fields.
+			if ( preg_match( '/hover-self\{([^}]*)\}/i', (string) $hov, $hm2 ) ) {
+				$hd = array();
+				foreach ( array( 'box-shadow', 'filter', 'letter-spacing', 'opacity' ) as $hp ) { if ( preg_match( '/(?:^|;)\s*' . $hp . '\s*:\s*([^;]+)/i', $hm2[1], $pm ) && preg_match( '/^[a-z0-9()%.,\s#\/-]+$/i', trim( $pm[1] ) ) ) { $hd[] = $hp . ': ' . trim( $pm[1] ); } }
+				if ( $hd ) { $rules[] = '{{SELECTOR}}:hover { ' . implode( '; ', $hd ) . '; }'; }
+			}
+			// PSEUDO LAYERS — a button's own ::before / ::after (a glow that fades in on hover, a sweeping sheen animated with
+			// @keyframes) live only in stylesheet rules; carried verbatim as the preset's ::before / ::after (+ the hover state of
+			// each + the keyframes), with the button positioned + clipped so an inset layer stays inside the pill.
+			$pseudo_rules = array(); $needs_rel = false;
+			foreach ( array( 'before', 'after', 'hover-before', 'hover-after' ) as $pk ) {
+				if ( ! preg_match( '/(?:^|\|)' . $pk . '\{([^}]*)\}/i', (string) $hov, $pmm ) ) { continue; }
+				$pd = array();
+				foreach ( explode( ';', $pmm[1] ) as $decl ) {
+					$cp = strpos( $decl, ':' ); if ( false === $cp ) { continue; }
+					$k = strtolower( trim( substr( $decl, 0, $cp ) ) ); $v = trim( substr( $decl, $cp + 1 ) );
+					if ( '' === $v || 'initial' === $v || 0 === strpos( $k, '--' ) || 'transition-property' === $k || 'transition-duration' === $k || 'transition-timing-function' === $k ) { continue; }
+					if ( ! preg_match( '/^[a-z0-9()%.,\s#\/"\'-]+$/i', $v ) ) { continue; }
+					if ( 'content' === $k ) { $v = '""'; }
+					if ( 'position' === $k && 'absolute' === strtolower( $v ) ) { $needs_rel = true; }
+					$pd[] = $k . ':' . $v;
+				}
+				if ( ! $pd ) { continue; }
+				$sel = ( 0 === strpos( $pk, 'hover-' ) ) ? '{{SELECTOR}}:hover::' . substr( $pk, 6 ) : '{{SELECTOR}}::' . $pk;
+				if ( 0 !== strpos( $pk, 'hover-' ) && ! in_array( 'pointer-events:none', $pd, true ) ) { $pd[] = 'pointer-events:none'; }
+				$pseudo_rules[] = $sel . ' { ' . implode( '; ', $pd ) . '; }';
+			}
+			if ( $pseudo_rules ) {
+				if ( $needs_rel ) { array_unshift( $pseudo_rules, '{{SELECTOR}} { position: relative; overflow: hidden; isolation: isolate; }' ); }
+				$rules = array_merge( $rules, $pseudo_rules );
+				$kf = trim( (string) $kfx );
+				if ( '' !== $kf && false !== stripos( $kf, '@keyframes' ) && ! preg_match( '/<\/|expression\(|javascript:/i', $kf ) ) { $rules[] = $kf; }
 			}
 			if ( empty( $rules ) && preg_match( '/\shover:scale-(\d{1,3})\s/', $cls, $m ) )  { $rules[] = '{{SELECTOR}}:hover { transform: scale(' . $to_scale( $m[1] ) . '); }'; }
 			if ( preg_match( '/\sactive:scale-(\d{1,3})\s/', $cls, $m ) ) { $rules[] = '{{SELECTOR}}:active { transform: scale(' . $to_scale( $m[1] ) . '); }'; }
@@ -1302,7 +1358,7 @@ class FW_Site_Converter_Stitch {
 			// member's hover source when the stored one has none, so the hover isn't dropped by clustering.
 			$has_hov = ( ! empty( $groups[ $key ]['hov'] ) ) || ( strpos( (string) $groups[ $key ]['cls'], 'hover:' ) !== false );
 			$s_hov   = ( ! empty( $s['hov'] ) ) || ( strpos( (string) $s['cls'], 'hover:' ) !== false );
-			if ( ! $has_hov && $s_hov ) { $groups[ $key ]['hov'] = $s['hov']; $groups[ $key ]['cls'] = $s['cls']; }
+			if ( ! $has_hov && $s_hov ) { $groups[ $key ]['hov'] = $s['hov']; $groups[ $key ]['cls'] = $s['cls']; $groups[ $key ]['kf'] = $s['kf'] ?? ''; }
 		}
 		// One preset per ROLE (keep the most common skin for each role); order Primary, Secondary, Outline, Fill.
 		$order = array( 'Primary' => 0, 'Secondary' => 1, 'Outline' => 2, 'Fill' => 3 );
@@ -1397,7 +1453,7 @@ class FW_Site_Converter_Stitch {
 			// Preset Custom CSS (advanced) = only what the native fields can't hold: the hover MOTION (+ its transition),
 			// and — for a MULTI-LAYER shadow (an inset highlight + a drop) — the exact full box-shadow, since the native
 			// Box Shadow field holds one layer (the most visible, set above). Native first, the rest advanced.
-			$ccss    = $hover_transform_css( isset( $g['cls'] ) ? $g['cls'] : '', isset( $g['hov'] ) ? $g['hov'] : '', isset( $g['tr'] ) ? $g['tr'] : '' );
+			$ccss    = $hover_transform_css( isset( $g['cls'] ) ? $g['cls'] : '', isset( $g['hov'] ) ? $g['hov'] : '', isset( $g['tr'] ) ? $g['tr'] : '', isset( $g['kf'] ) ? $g['kf'] : '' );
 			$sh_full = trim( (string) $g['shadow'] ); $sh_n = 0;
 			if ( $sh_full !== '' && strtolower( $sh_full ) !== 'none' ) {
 				$sh_n = 1; $dp = 0;
@@ -1690,9 +1746,7 @@ class FW_Site_Converter_Stitch {
 			$px = (float) $m[1];
 			if ( $px < 480 || $px > 1760 ) { continue; } // outside the plausible content-band range
 			$cls = ' ' . strtolower( (string) $el->getAttribute( 'class' ) ) . ' ';
-			$centered = strpos( $cls, 'mx-auto' ) !== false || strpos( $cls, 'container' ) !== false
-				|| strpos( $cls, 'max-w-' ) !== false || preg_match( '/margin(?:-left|-right)?:\s*auto/', $cs )
-				|| preg_match( '/(?:^|;)\s*margin:\s*[^;]*\bauto\b/', $cs );
+			$centered = self::cap_is_centred( $el, $cls, $cs );
 			if ( ! $centered ) { continue; }
 			$key = (int) round( $px );
 			$tally[ $key ] = ( $tally[ $key ] ?? 0 ) + 1;
@@ -1702,10 +1756,10 @@ class FW_Site_Converter_Stitch {
 		krsort( $tally ); // largest first so a big popular width anchors its cluster
 		arsort( $tally );
 		foreach ( $tally as $px => $w ) {
-			$hit = null;
-			foreach ( $clusters as &$c ) { if ( abs( $c['px'] - $px ) <= 16 ) { $hit = &$c; break; } }
-			unset( $c );
-			if ( $hit ) { $hit['w'] += $w; } else { $clusters[] = array( 'px' => $px, 'w' => $w ); }
+			// (by INDEX, not a reference: `$hit = null` through a reference nulled the cluster it pointed at on the next pass)
+			$hi = -1;
+			foreach ( $clusters as $ci => $c ) { if ( is_array( $c ) && abs( $c['px'] - $px ) <= 16 ) { $hi = $ci; break; } }
+			if ( $hi >= 0 ) { $clusters[ $hi ]['w'] += $w; } else { $clusters[] = array( 'px' => $px, 'w' => $w ); }
 		}
 		// Friendly names for the standard Tailwind max-w steps (px → name). Match within ±10px.
 		$std = array( 640 => 'Small', 672 => 'Prose', 768 => 'Narrow', 896 => 'Medium', 1024 => 'Wide', 1152 => 'Wide L', 1280 => 'Wide XL', 1440 => 'Wide XXL' );
@@ -1966,7 +2020,9 @@ class FW_Site_Converter_Stitch {
 			if ( '' !== $pimg && 'none' !== strtolower( $pimg ) ) {
 				$pop = 0.3;
 				if ( preg_match( '/data-sc-pattern-opacity\s*=\s*(["\'])([0-9.]+)\1/i', $html, $pom ) ) { $pop = min( 1.0, (float) $pom[2] ); }
-				return array( 'image' => $pimg, 'opacity' => $pop );
+				$extra = ''; // the tile's size / blend (a dot grid's `background-size:32px 32px`, a `mix-blend-mode`)
+				if ( preg_match( '/data-sc-pattern-extra\s*=\s*(["\'])([^"\']*)\1/i', $html, $pxm ) && preg_match( '/^[a-z0-9:;\s.%-]+$/i', $pxm[2] ) ) { $extra = trim( $pxm[2] ); }
+				return array( 'image' => $pimg, 'opacity' => $pop, 'extra' => $extra );
 			}
 		}
 		$img = '';
@@ -2106,7 +2162,7 @@ class FW_Site_Converter_Stitch {
 				$used[ $img ] = true;
 				$op = isset( $sp['opacity'] ) ? (float) $sp['opacity'] : 1.0;
 				$pv = ( isset( $found[ $img ] ) && is_array( $found[ $img ] ) ) ? (string) $found[ $img ]['bg'] : '';
-				$out[] = self::pattern_preset_entry( (string) $pid, ++$n, $img, $op, $pv );
+				$out[] = self::pattern_preset_entry( (string) $pid, ++$n, $img, $op, $pv, (string) ( $sp['extra'] ?? '' ) );
 			}
 		}
 		// (2) The remaining scanned patterns (not already applied to a section) — capped, deterministic id.
@@ -2129,9 +2185,9 @@ class FW_Site_Converter_Stitch {
 	/** One Background Pattern preset entry ({id, pattern_name, root_class, html, css, preview_bg}). The id is
 	 *  deterministic (pattern_id_for_image) so a section's applied-pattern reference resolves; $n is the display
 	 *  index for the name. `preview_bg` is preview-only editor metadata and never enters the output `css`. */
-	private static function pattern_preset_entry( $id, $n, $img, $op, $pv ) {
+	private static function pattern_preset_entry( $id, $n, $img, $op, $pv, $extra = '' ) {
 		$cls   = 'pat-' . $id; // pat-captured-<hash>
-		$decls = 'background-image:' . $img . ';' . ( $op < 1 ? 'opacity:' . $op . ';' : '' );
+		$decls = 'background-image:' . $img . ';' . ( $op < 1 ? 'opacity:' . $op . ';' : '' ) . ( '' !== (string) $extra ? trim( (string) $extra, ';' ) . ';' : '' );
 		return array(
 			'id'           => $id,
 			'pattern_name' => 'Captured Pattern ' . $n,
@@ -2306,6 +2362,9 @@ class FW_Site_Converter_Stitch {
 				'shadow_full' => isset( $d['box-shadow'] ) ? trim( (string) $d['box-shadow'] ) : '', // every layer, for the preset CSS
 				'backdrop' => $backdrop,
 				'hover'    => $hv,
+				'hov'      => (string) $node->getAttribute( 'data-sc-hover' ),
+				'kf'       => (string) $node->getAttribute( 'data-sc-keyframes' ),
+				'pseudoOwned' => $node->hasAttribute( 'data-sc-decor-pseudo' ),
 			);
 		}
 		// Don't bail on an empty scan when the mapper REGISTERED boxes (a class-only source has no data-sc-cs
@@ -2317,7 +2376,7 @@ class FW_Site_Converter_Stitch {
 		// card don't merge) — keep the most common dozen (every meaningful kind, not just the top 5).
 		$groups = array();
 		foreach ( $boxes as $bx ) {
-			$key = $bx['fill'] . '|' . $bx['radius'] . '|' . preg_replace( '/\s+/', '', $bx['shadow'] ) . '|' . $bx['bw'] . '|' . $bx['bdcol'] . '|' . preg_replace( '/\s+/', '', $bx['backdrop'] );
+			$key = $bx['fill'] . '|' . $bx['radius'] . '|' . preg_replace( '/\s+/', '', $bx['shadow'] ) . '|' . $bx['bw'] . '|' . $bx['bdcol'] . '|' . preg_replace( '/\s+/', '', $bx['backdrop'] ) . '|' . md5( (string) $bx['hov'] ); // distinct states → distinct presets
 			if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array_merge( $bx, array( 'count' => 0 ) ); }
 			$groups[ $key ]['count']++;
 			// Prefer a group member that actually carries hover data.
@@ -2394,6 +2453,8 @@ class FW_Site_Converter_Stitch {
 
 			$states = array( 'default' => $default );
 			if ( $hover ) { $states['hover'] = $hover; }
+			$scan_state_css = self::state_css( (string) ( $g['hov'] ?? '' ), (string) ( $g['kf'] ?? '' ), ! empty( $g['pseudoOwned'] ), array( 'background-color', 'background', 'border-color', 'box-shadow' ) );
+			if ( '' !== $scan_state_css ) { $ccss = trim( $ccss . "\n" . $scan_state_css ); }
 
 			$derived[] = array(
 				'id'            => 'b' . str_pad( (string) ( 100 + ( ++$n ) ), 9, '0', STR_PAD_LEFT ),
@@ -2455,9 +2516,13 @@ class FW_Site_Converter_Stitch {
 					$has_rest_shadow = ( '' !== $rest_sh && 'none' !== strtolower( $rest_sh ) && preg_match( '/[1-9]/', $rest_sh ) );
 					if ( $rhsh || ! $has_rest_shadow ) { $reg_anim = 'btnfx-lift'; }
 				}
-				if ( ! empty( $rhv['lift'] ) && 'btnfx-lift' !== $reg_anim ) { $reg_hover_fx[] = 'lift'; }
+				// EXACT over library: a CAPTURED hover transform (data-sc-hover `hover-self{transform:…}`) rides the preset CSS verbatim
+				// (state_css below) — a -3px lift stays -3px, a rotate stays a rotate — and no Lift / Grow is substituted on top.
+				$reg_exact_tf = (bool) preg_match( '/hover-self\{[^}]*transform\s*:/i', (string) ( $sk['hov'] ?? '' ) );
+				if ( $reg_exact_tf ) { $reg_anim = ''; }
+				if ( ! empty( $rhv['lift'] ) && 'btnfx-lift' !== $reg_anim && ! $reg_exact_tf ) { $reg_hover_fx[] = 'lift'; }
 				if ( $rhsh )                   { $reg_hover_fx[] = 'glow'; }
-				if ( ! empty( $rhv['scale'] ) && 'btnfx-grow' !== $reg_anim ) { $reg_hover_css = '{{SELECTOR}}:hover{transform:scale(' . (float) $rhv['scale'] . ');}'; }
+				if ( ! empty( $rhv['scale'] ) && 'btnfx-grow' !== $reg_anim && ! $reg_exact_tf ) { $reg_hover_css = '{{SELECTOR}}:hover{transform:scale(' . (float) $rhv['scale'] . ');}'; }
 				// FROSTED GLASS — the card's `backdrop-filter: blur()` has no native Box-Preset field, so carry it
 				// via the preset's own custom_css (applies to every element using this box). The translucent fill
 				// then reads as real frosted glass. Whitelisted chars only (a `blur(Npx)`-shape value).
@@ -2468,10 +2533,14 @@ class FW_Site_Converter_Stitch {
 				// MEDIA FRAME — a rounded box around an image / video clips its content to the radius (the source's
 				// `overflow:hidden`); no native field, so it rides in the preset CSS (a tile preset, distinct slug).
 				if ( ! empty( $sk['clip'] ) ) { $reg_bf_css .= '{{SELECTOR}}{overflow:hidden;}'; }
+				// a PER-CORNER radius (`rounded-t-[20px]` → `20px 20px 0px 0px`: the first row of a stacked list) has no single-value
+				// field — the preset's CSS carries it; the single field stayed empty and the corners went square (a fixture from the feed)
+				$reg_rad = trim( (string) ( $sk['radius'] ?? '' ) );
+				if ( '' !== $reg_rad && '' === (string) ( $unit( $reg_rad )['value'] ?? '' ) && preg_match( '/^[0-9.]+(?:px|rem|em|%)?(?:\s+[0-9.]+(?:px|rem|em|%)?){1,3}$/', $reg_rad ) ) { $reg_bf_css .= '{{SELECTOR}}{border-radius:' . $reg_rad . ';}'; }
 				// The long tail of box-level visual props (Stitch box_extra_css: opacity / filter / clip / mask / blend /
 				// outline / side border / border-image / bg geometry / transforms / sticky) → the preset's own CSS.
 				$reg_extra = trim( (string) ( $sk['extra'] ?? '' ) );
-				if ( '' !== $reg_extra && preg_match( '/^[a-z0-9()%.,:;\s#\/+-]+$/i', $reg_extra ) ) { $reg_bf_css .= '{{SELECTOR}}{' . $reg_extra . ';}'; }
+				if ( '' !== $reg_extra && preg_match( '/^[a-z0-9()%.,:;\s#\/+!-]+$/i', $reg_extra ) ) { $reg_bf_css .= '{{SELECTOR}}{' . $reg_extra . ';}'; } // (`!important` allowed: a side colour must outrank the preset's own `border` rule)
 				$reg_bf_css .= $shadow_css( (string) ( $sk['shadow'] ?? '' ) ); // multi-layer shadow → full value in the preset CSS
 				// A NON-LINEAR fill (radial / conic / several layers) has no native gradient field (Background-Pro is
 				// linear-only) → the preset CSS carries it verbatim, so a radial ring keeps its fill (parity with the scan above).
@@ -2490,7 +2559,7 @@ class FW_Site_Converter_Stitch {
 					'transition'    => '200',
 					'hover_animation' => $reg_anim, // the shared library's native effect (Lift / Grow), when the source's hover is one
 					'hover_fx'      => array_values( array_unique( $reg_hover_fx ) ),
-					'custom_css'    => trim( $reg_pad_css . $reg_hover_css . $reg_bf_css ),
+					'custom_css'    => trim( $reg_pad_css . $reg_hover_css . $reg_bf_css . ( '' !== ( $reg_state_css = self::state_css( (string) ( $sk['hov'] ?? '' ), (string) ( $sk['kf'] ?? '' ), ! empty( $sk['pseudoOwned'] ), array( 'background-color', 'background', 'border-color', 'box-shadow' ) ) ) /* the exact hover transform rides the CSS unless a native lift / grow already carries it */ ? "\n" . $reg_state_css : '' ) ),
 					'states'        => $reg_states,
 				);
 			}
@@ -2852,7 +2921,7 @@ class FW_Site_Converter_Stitch {
 			$brand[]       = array( 'name' => $name, 'color' => $hex );
 		};
 
-		// COMPUTED-STYLE semantic colours — the real brand palette on a rendered SPA (React/shadcn/Wegic:
+		// COMPUTED-STYLE semantic colours — the real brand palette on a rendered SPA (React/shadcn/a second AI-page generator:
 		// no inline tailwind.config, so parse_tokens() sees nothing, but the capture stamps each element's
 		// getComputedStyle onto data-sc-cs). FW_Site_Converter_Tailwind::extract_semantic_colors() pairs a
 		// base colour utility (bg-primary / text-foreground / …) with that computed value → name => #hex. We
@@ -3155,6 +3224,104 @@ class FW_Site_Converter_Stitch {
 		return array( 'icon_badge_presets' => array_merge( $base_lib, $derived, $reg ) );
 	}
 
+	/**
+	 * Table Presets from the skins the mapper REGISTERED (register_table_preset → captured('table')): each becomes
+	 * an entry in the `table_presets` Theme-Settings library, in the shape of unysonplus_default_table_presets(),
+	 * named "Table <hash>" so its slug is the mapper's `table-<hash>` → the front-end `.tbl-table-<hash>` the table
+	 * node points at. The built-in library rides along so the user keeps the defaults. What the preset fields can't
+	 * express (the header's face / size / tracking / own padding, the body weight / face / line-height, a vertical
+	 * rule) rides the preset's own Custom CSS ({{SELECTOR}}-scoped; descendant selectors — the field strips `>`).
+	 * Mirrors build_icon_badge_presets(). JS twin: buildTablePresets.
+	 *
+	 * @return array array('table_presets'=>…) or empty.
+	 */
+	public static function build_table_presets() {
+		if ( ! class_exists( 'FW_Site_Converter_Mapper' ) ) { return array(); }
+		$reg = FW_Site_Converter_Mapper::captured( 'table' );
+		if ( empty( $reg ) || ! is_array( $reg ) ) { return array(); }
+		$empty = array( 'predefined' => '', 'custom' => '' );
+		$c     = function ( $v ) use ( $empty ) { $v = trim( (string) $v ); return '' === $v ? $empty : array( 'predefined' => '', 'custom' => $v ); };
+		$u     = function ( $v ) {
+			$v = trim( (string) $v );
+			return preg_match( '/^(-?[0-9.]+)\s*(px|rem|em|%)?$/', $v, $m ) ? array( 'value' => $m[1], 'unit' => ( isset( $m[2] ) && '' !== $m[2] ? $m[2] : 'px' ) ) : array( 'value' => '', 'unit' => 'px' );
+		};
+		$noshadow = array( 'x' => 0, 'y' => 0, 'blur' => 0, 'spread' => 0, 'color' => '', 'inset' => false );
+		$shadow = function ( $sh ) use ( $noshadow ) {
+			// "rgba(..) 0px 4px 12px 0px" / "0px 4px 12px rgba(..)" → the box-shadow field (first layer only)
+			$sh = trim( (string) $sh );
+			if ( '' === $sh || 'none' === strtolower( $sh ) ) { return $noshadow; }
+			$first = preg_split( '/,(?![^(]*\))/', $sh )[0];
+			$inset = false !== stripos( $first, 'inset' );
+			$col   = '';
+			if ( preg_match( '/(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $first, $m ) ) { $col = $m[1]; $first = str_replace( $m[1], '', $first ); }
+			$nums = array();
+			if ( preg_match_all( '/-?[0-9.]+(?=px)/', $first, $mm ) ) { $nums = $mm[0]; }
+			if ( count( $nums ) < 2 ) { return $noshadow; }
+			return array( 'x' => (float) $nums[0], 'y' => (float) $nums[1], 'blur' => isset( $nums[2] ) ? (float) $nums[2] : 0, 'spread' => isset( $nums[3] ) ? (float) $nums[3] : 0, 'color' => $col, 'inset' => $inset );
+		};
+		$line = function ( $l ) { // "width|style|color" → [w, style, color]
+			$p = explode( '|', (string) $l );
+			return ( count( $p ) === 3 ) ? $p : array( '', '', '' );
+		};
+		$out = array();
+		foreach ( $reg as $slug => $sk ) {
+			if ( ! is_array( $sk ) ) { continue; }
+			$hd = is_array( $sk['header'] ?? null ) ? $sk['header'] : array();
+			$bd = is_array( $sk['body'] ?? null ) ? $sk['body'] : array();
+			$ft = is_array( $sk['footer'] ?? null ) ? $sk['footer'] : array();
+			$cp = is_array( $sk['caption'] ?? null ) ? $sk['caption'] : array();
+			$fr = is_array( $sk['frame'] ?? null ) ? $sk['frame'] : array();
+			list( $hw, $hs, $hc ) = $line( $sk['hline'] ?? '' );
+			list( $vw, $vs, $vc ) = $line( $sk['vline'] ?? '' );
+			list( $dw, $ds, $dc ) = $line( $hd['line'] ?? '' );
+			list( $fw, $fs, $fc ) = $line( $ft['line'] ?? '' );
+			$grid = ( '' !== $hw && '' !== $vw ) ? 'both' : ( '' !== $hw ? 'horizontal' : ( '' !== $vw ? 'vertical' : 'none' ) );
+			$ob = array( '', '', '' );
+			if ( ! empty( $fr['border'] ) && preg_match( '/^([0-9.]+px)\s+(\w+)\s+(.+)$/', trim( (string) $fr['border'] ), $m ) ) { $ob = array( $m[1], $m[2], $m[3] ); }
+			$hov = array();
+			foreach ( explode( ';', (string) ( $sk['hover'] ?? '' ) ) as $dd ) { $cp2 = strpos( $dd, ':' ); if ( false !== $cp2 ) { $hov[ trim( substr( $dd, 0, $cp2 ) ) ] = trim( substr( $dd, $cp2 + 1 ) ); } }
+			// the long tail → the preset's Custom CSS (descendant selectors; `!important` to outrank the theme's table base)
+			$css = array();
+			$imp = function ( array $decl ) { $o = array(); foreach ( $decl as $p => $v ) { if ( '' !== trim( (string) $v ) ) { $o[] = $p . ':' . $v . ' !important'; } } return implode( ';', $o ); };
+			$hx = $imp( array( 'font-family' => $hd['family'] ?? '', 'font-size' => $hd['size'] ?? '', 'letter-spacing' => $hd['tracking'] ?? '', 'line-height' => $hd['lh'] ?? '', 'padding' => $hd['pad'] ?? '' ) );
+			if ( '' !== $hx ) { $css[] = '{{SELECTOR}} thead th,{{SELECTOR}} thead td{' . $hx . ';}'; }
+			$bx = $imp( array( 'font-family' => $bd['family'] ?? '', 'font-weight' => $bd['weight'] ?? '', 'letter-spacing' => $bd['tracking'] ?? '', 'text-transform' => $bd['transform'] ?? '', 'line-height' => $bd['lh'] ?? '' ) );
+			if ( '' !== $bx ) { $css[] = '{{SELECTOR}} tbody td{' . $bx . ';}'; }
+			if ( '' !== $hw && '' === $vw ) { $css[] = '{{SELECTOR}} tbody tr:last-child td{border-bottom:0 !important;}'; } // a divide-y source rules BETWEEN rows only
+			if ( '' !== ( $sk['minw'] ?? '' ) ) { $css[] = '{{SELECTOR}}{overflow-x:auto;}{{SELECTOR}} table{min-width:' . $sk['minw'] . ';}'; }
+			$hash = substr( (string) $slug, 6 ); // slug `table-<hash>` → name "Table <hash>" → slugifies back to the slug
+			$out[] = array(
+				'id'                 => 'tc' . substr( md5( (string) $slug ), 0, 8 ),
+				'preset_name'        => 'Table ' . $hash,
+				'cell_padding_y'     => $u( $sk['pad_y'] ?? '' ),
+				'cell_padding_x'     => $u( $sk['pad_x'] ?? '' ),
+				'grid_lines'         => $grid,
+				'grid_style'         => '' !== $hw ? $hs : $vs,
+				'grid_width'         => $u( '' !== $hw ? $hw : $vw ),
+				'grid_color'         => $c( '' !== $hw ? $hc : $vc ),
+				'outer_border_style' => $ob[1],
+				'outer_border_width' => $u( $ob[0] ),
+				'outer_border_color' => $c( $ob[2] ),
+				'border_radius'      => $u( $fr['radius'] ?? '' ),
+				'outer_shadow'       => $shadow( $fr['shadow'] ?? '' ),
+				'cell_font_size'     => $u( $bd['size'] ?? '' ),
+				'transition'         => '' !== (string) ( $sk['transition'] ?? '' ) ? (string) $sk['transition'] : '150',
+				'custom_css'         => implode( "\n", $css ),
+				'sections'           => array(
+					'header'  => array( 'bg_color' => $c( $hd['bg'] ?? '' ), 'text_color' => $c( $hd['color'] ?? '' ), 'font_weight' => (string) ( $hd['weight'] ?? '' ), 'text_transform' => (string) ( $hd['transform'] ?? '' ), 'border_style' => $ds, 'border_width' => $u( $dw ), 'border_color' => $c( $dc ) ),
+					'body'    => array( 'bg_color' => $c( $bd['bg'] ?? '' ), 'text_color' => $c( $bd['color'] ?? '' ) ),
+					'striped' => array( 'enabled' => '' !== (string) ( $sk['stripe_bg'] ?? '' ) ? 'yes' : 'no', 'bg_color' => $c( $sk['stripe_bg'] ?? '' ) ),
+					'hover'   => array( 'bg_color' => $c( $hov['background-color'] ?? '' ), 'text_color' => $c( $hov['color'] ?? '' ) ),
+					'footer'  => array( 'bg_color' => $c( $ft['bg'] ?? '' ), 'text_color' => $c( $ft['color'] ?? '' ), 'font_weight' => (string) ( $ft['weight'] ?? '' ), 'border_style' => $fs, 'border_width' => $u( $fw ), 'border_color' => $c( $fc ) ),
+					'caption' => array( 'color' => $c( $cp['color'] ?? '' ), 'font_size' => $u( $cp['size'] ?? '' ), 'font_style' => (string) ( $cp['style'] ?? '' ) ),
+				),
+			);
+		}
+		if ( empty( $out ) ) { return array(); }
+		$base_lib = function_exists( 'unysonplus_default_table_presets' ) ? unysonplus_default_table_presets() : array();
+		return array( 'table_presets' => array_merge( $base_lib, $out ) );
+	}
+
 	public static function tokens_to_theme_settings_chrome( array $tokens, $html, $title ) {
 		$el  = function ( $type, $settings = null ) {
 			$et = array( 'element' => $type );
@@ -3253,9 +3420,15 @@ class FW_Site_Converter_Stitch {
 				if ( $is ) { $logo_custom['logo_icon_size'] = $is; }
 			}
 			// A colored tile behind the mark (e.g. the golden fixture's green paw tile) — shape inferred from its radius.
-			if ( $logo['frame'] !== 'none' && $logo['frame_bg'] !== '' ) {
+			if ( $logo['frame'] !== 'none' && ( $logo['frame_bg'] !== '' || '' !== (string) ( $logo['frame_border'] ?? '' ) ) ) {
 				$logo_custom['logo_icon_frame']    = in_array( $logo['frame'], array( 'circle', 'squircle', 'rounded', 'square' ), true ) ? $logo['frame'] : 'rounded';
-				$logo_custom['logo_icon_frame_bg'] = $hex( $logo['frame_bg'] );
+				if ( $logo['frame_bg'] !== '' ) { $logo_custom['logo_icon_frame_bg'] = $hex( $logo['frame_bg'] ); }
+				// the ring (a border-only tile) + the tile's measured size ride the logo's own Custom CSS — the option has no border / size field
+				$fcss = array();
+				if ( '' !== (string) ( $logo['frame_border'] ?? '' ) && preg_match( '/^[a-z0-9#(),.%\s-]+$/i', (string) $logo['frame_border'] ) ) { $fcss[] = 'border:' . $logo['frame_border']; if ( $logo['frame_bg'] === '' ) { $fcss[] = 'background:transparent'; } }
+				if ( '' !== (string) ( $logo['frame_size'] ?? '' ) && preg_match( '/^[0-9.]+(px|rem|em)?$/', (string) $logo['frame_size'] ) ) { $fs = (string) $logo['frame_size']; if ( preg_match( '/^[0-9.]+$/', $fs ) ) { $fs .= 'px'; } $fcss[] = 'width:' . $fs; $fcss[] = 'height:' . $fs; }
+				if ( $fcss ) { $logo_custom['logo_custom_css'] = trim( (string) ( $logo_custom['logo_custom_css'] ?? '' ) . "
+" . '.site-logo__mark--framed{' . implode( ';', $fcss ) . ';box-sizing:border-box;}' ); }
 			}
 		}
 		// TWO-TONE wordmark residual: a single `color` field can't split a wordmark's ink part + accent part. The base
@@ -3263,7 +3436,8 @@ class FW_Site_Converter_Stitch {
 		// residual path — header.md logo_custom_css hooks). Best-effort: colors the emphasized run if the theme
 		// wraps it; otherwise it is a no-op (never wrong, never double-applied to a native field).
 		if ( $logo['title_accent_color'] !== '' && $logo['title_accent_color'] !== $title_color ) {
-			$logo_custom['logo_custom_css'] = '.site-title-text .accent,.site-title-text b,.site-title-text strong{color:' . $logo['title_accent_color'] . '}';
+			$logo_custom['logo_custom_css'] = trim( (string) ( $logo_custom['logo_custom_css'] ?? '' ) . "
+" . '.site-title-text .accent,.site-title-text b,.site-title-text strong{color:' . $logo['title_accent_color'] . '}' ); // (appends: the frame ring css above stays)
 			// SPLIT the wordmark so the scoped CSS above has something to paint: wrap the measured accent run
 			// (the accent run) in `<span class="accent">`, leaving the ink part bare. The theme prints site_title
 			// RAW inside `.site-title-text` (helpers.php), so this two-tone lockup renders natively — richer than
@@ -3450,6 +3624,23 @@ class FW_Site_Converter_Stitch {
 		} else {
 			$header_main = array( 'main_left' => array( $el( 'logo' ) ), 'main_center' => array( $menu_el ), 'main_right' => array_merge( $icon_els, $right ) );
 		}
+		// A LABEL-ONLY masthead (header_label_zones): no link anywhere → no menu_area (the theme would print the WP primary menu
+		// where the source had none); the labels ride as chips in their zones, the logo in the brand leaf's zone.
+		$lbl_zones = self::header_label_zones( (string) $html, (string) $title );
+		if ( is_array( $lbl_zones ) && empty( $right ) && empty( $icon_els ) ) {
+			$header_main = array( 'main_left' => array(), 'main_center' => array(), 'main_right' => array() );
+			$header_main[ 'main_' . $lbl_zones['logo'] ][] = $el( 'logo' );
+			$li_n = count( (array) ( $hdr['chips'] ?? array() ) );
+			foreach ( array( 'left', 'center', 'right' ) as $z ) {
+				foreach ( $lbl_zones[ $z ] as $lab ) {
+					$ccls = 'sc-hdr-chip' . ( $li_n > 0 ? '-' . ( $li_n + 1 ) : '' ); $li_n++;
+					$node = $el( 'list_item', array( 'li_text' => $lab['text'], 'li_link_type' => 'none', 'li_link' => '' ) );
+					$node['element_css_class'] = $ccls;
+					$header_main[ 'main_' . $z ][] = $node;
+					$chip_css .= self::header_chip_css( array( 'cs' => $lab['cs'] ), $ccls );
+				}
+			}
+		}
 		$values['header_main'] = $header_main;
 
 		/* --- header chrome + nav styles read from the captured computed styles (data-sc-cs) --- */
@@ -3559,6 +3750,17 @@ class FW_Site_Converter_Stitch {
 		// from the theme's historic baked-in value, so a default conversion is unchanged.
 		// At-rest header height. The theme default is 80px, so any other source height was silently
 		// normalised to 80 — visible immediately as a bar that is the wrong size before you scroll.
+		// A FLOATING card / pill design: the theme's min-height is the CARD row's (the bar = card + the design's offsets), so the
+		// measured height of the floating SURFACE is the value — the whole bar's height (surface + its gaps) stacked the gaps twice
+		// (a 122px source bar became 181px: a 122px card inside 20px offsets).
+		if ( in_array( $h_design, array( 'card', 'pill' ), true ) ) {
+			$hdom_s = self::load_dom( (string) $html ); $hroot_s = $hdom_s ? self::header_root( $hdom_s ) : null; $surf_s = ( $hroot_s instanceof DOMElement ) ? self::header_float_surface( $hroot_s ) : null;
+			if ( $surf_s instanceof DOMElement && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $surf_s->getAttribute( 'data-sc-cs' ), $shm ) && (float) $shm[1] >= 32 ) {
+				// the min-height is the surface's CONTENT height (the theme adds the card's padding + border around it)
+				$spad = self::sc_padding_box( $surf_s ); $sb = preg_match( '/(?:^|;)\s*border-top-width:\s*([0-9.]+)px/i', (string) $surf_s->getAttribute( 'data-sc-cs' ), $sbm ) ? (float) $sbm[1] : 0.0;
+				$hstyle['rest_height'] = max( 32, (int) round( (float) $shm[1] - (float) $spad['top'] - (float) $spad['bottom'] - 2 * $sb ) );
+			}
+		}
 		if ( ! empty( $hstyle['rest_height'] ) ) {
 			$values['header_layout']['min_height'] = array( 'value' => (string) (int) $hstyle['rest_height'], 'unit' => 'px' );
 		}
@@ -3619,6 +3821,10 @@ class FW_Site_Converter_Stitch {
 			// whose scroll state is blur-only/transparent, the site's dark bg so the frost tints dark.
 			if ( $sc_bg !== '' ) {
 				$values['header_layout']['scroll_bg_color'] = $hex( $sc_bg );
+			} elseif ( '' !== $header_bg_glass && preg_match( '/^rgba\([^)]*,\s*0?\.[0-9]+\s*\)$/i', trim( (string) $header_bg_glass ) ) ) {
+				// the source's TRANSLUCENT resting fill (rgba(0,0,0,.1) glass) is its scrolled fill too — the opaque site-dark
+				// substitute inflated the alpha from .1 to .72 (a reported finding)
+				$values['header_layout']['scroll_bg_color'] = $hex( $header_bg_glass );
 			} elseif ( ( $sc_glass || 'overlay' === $position ) && '' !== $dark ) {
 				$nav_col = ( isset( $mstyle['link_color'] ) && is_string( $mstyle['link_color'] ) && '' !== $mstyle['link_color'] )
 					? $mstyle['link_color']
@@ -3847,6 +4053,16 @@ class FW_Site_Converter_Stitch {
 			$footer_bg = ( $tl !== null && $tl < 0.5 ) ? '#f4f4f7' : $dark;
 		}
 		$values['footer_background'] = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => $footer_bg ) ) );
+		// A GRADIENT footer background: one linear layer → the native Background gradient; a multi-layer stack (a
+		// radial glow over a linear wash) → the whole value verbatim on .footer (the native field holds one layer).
+		$fbg_verbatim = '';
+		$fbg_el = self::footer_root_el( $route_html );
+		$fbgi   = ( $fbg_el instanceof DOMElement ) ? trim( (string) self::sc_css( $fbg_el, 'background-image' ) ) : '';
+		if ( $fbgi !== '' && stripos( $fbgi, 'gradient' ) !== false && stripos( $fbgi, 'url(' ) === false ) {
+			$gv = class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::parse_linear_gradient( $fbgi ) : null;
+			if ( is_array( $gv ) ) { $values['footer_background']['gradient'] = array( 'data' => $gv ); }
+			else { $fbg_verbatim = '.footer{background-image:' . $fbgi . ';}'; }
+		}
 		$values['footer_text_color'] = $hex( $footer_text );
 		$values['footer_link_color'] = $hex( $footer_text );
 		// Footer numeric refinements (theme 2.5.92), read from the capture's `data-sc-footer` stamp —
@@ -3924,6 +4140,17 @@ class FW_Site_Converter_Stitch {
 			if ( ! isset( $values['general_layout'] ) || ! is_array( $values['general_layout'] ) ) { $values['general_layout'] = array(); }
 			$values['general_layout']['site_background'] = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => $site_bg ) ) );
 		}
+		// PAGE-WIDE FIXED PATTERN layer — a body-level fixed inset-0 decorative wrapper (pointer-events none, no text) painting a
+		// CSS gradient grid / a data-URI tile (a console design's terminal grid) → Theme Settings → General → Layout → Site
+		// Background Pattern, backed by a registered Background Pattern preset carrying the image + its tile size. The theme
+		// prints it once, fixed, behind all content — exactly the source's layer. (A blurred glow blob beside it is not a tile.)
+		$spat = self::detect_page_fixed_pattern( (string) $html );
+		if ( is_array( $spat ) ) {
+			$pid = class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::pattern_id_for_image( $spat['image'] ) : 'captured-' . substr( md5( $spat['image'] ), 0, 8 );
+			if ( class_exists( 'FW_Site_Converter_Mapper' ) ) { FW_Site_Converter_Mapper::register_captured( 'pattern', $pid, array( 'image' => $spat['image'], 'opacity' => $spat['opacity'], 'extra' => $spat['extra'] ) ); }
+			if ( ! isset( $values['general_layout'] ) || ! is_array( $values['general_layout'] ) ) { $values['general_layout'] = array(); }
+			$values['general_layout']['site_background_pattern'] = array( 'pattern' => $pid );
+		}
 
 		// PAGE-WIDE FIXED VIDEO backdrop → the Site Background's video layer in FIXED mode. A single
 		// `position:fixed` full-viewport <video> the whole page scrolls over (lumina-arctic's `div.video-portal`)
@@ -3948,6 +4175,7 @@ class FW_Site_Converter_Stitch {
 			if ( ! empty( $pfv['webm'] ) )   { $video['source_webm'] = array( 'url' => $pfv['webm'],   'attachment_id' => '' ); }
 			if ( ! empty( $pfv['poster'] ) ) { $video['poster']      = array( 'url' => $pfv['poster'], 'attachment_id' => '' ); }
 			$values['general_layout']['site_background']['video'] = $video;
+			self::$page_backdrop_css = (string) ( $pfv['css'] ?? '' ); // the layer's own geometry / mask / filter / glow → Misc Custom CSS (appended with the shell rules)
 		}
 
 		/* --- BODY TEXT (ink) → Typography body colour (→ --color-text). The source declares a real body
@@ -3998,6 +4226,13 @@ class FW_Site_Converter_Stitch {
 		// brand to the footer text color so it reads LIGHT. The framed icon tile (its own bg + mark) is left
 		// alone (it's designed to contrast). This is the native model's footer-scoped-CSS escape hatch.
 		$residual = array();
+		if ( ! empty( $fbg_verbatim ) ) { $residual[] = $fbg_verbatim; } // a multi-layer footer gradient (see footer_background above)
+		if ( '' !== self::$header_card_css ) { $residual[] = self::$header_card_css; self::$header_card_css = ''; } // the floating card's side inset + cap
+		// A BLENDED masthead (`mix-blend-mode:difference` on a transparent fixed bar: white labels that read dark over a light
+		// page and light over the dark footage below) — the blend is the header's legibility; without it the white labels
+		// vanish on the light ground. Carried on the theme's header (which paints no fill of its own in overlay mode).
+		{ $hdom = self::load_dom( (string) $html ); $hroot = $hdom ? self::header_root( $hdom ) : null;
+			if ( $hroot instanceof DOMElement && preg_match( '/(?:^|;)\s*mix-blend-mode:\s*(?!normal)([a-z-]+)/i', (string) $hroot->getAttribute( 'data-sc-cs' ), $bmm ) ) { $residual[] = '.site-header{mix-blend-mode:' . strtolower( $bmm[1] ) . ';background:transparent !important;}'; } }
 		// HEADER GLASS — exact frost. `header_glass=yes` (native) supplies the translucent bg + the theme's
 		// default blur; the source's EXACT `backdrop-filter` has no native field, so carry it as a scoped
 		// override here. Safe unconditionally: backdrop-filter only shows over a translucent fill, so if the
@@ -4038,6 +4273,10 @@ class FW_Site_Converter_Stitch {
 		// clean markup with those hook classes; the look rides here, not as inline styles in the element.
 		$fld_css = self::footer_lead_css( (string) $html );
 		if ( $fld_css !== '' ) { $residual[] = $fld_css; }
+		// The FOOTER's own brand lockup differs from the masthead's (a bare 20px glyph + a 14px wordmark, no white circle):
+		// the theme reuses the header logo in the footer, so re-measure the footer's mark + wordmark and scope them.
+		$fbr_css = self::footer_brand_css( $route_html, (string) $site_title );
+		if ( $fbr_css !== '' ) { $residual[] = $fbr_css; }
 		// RESIDUAL (no native option): a rounded footer top (e.g. `rounded-t-[3rem]`) → scoped CSS. Not
 		// double-applied (there is no native footer border-radius option). Header chrome with no option can
 		// join here too; for now only the footer top-radius is emitted when the source has one.
@@ -4066,10 +4305,56 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 
+		// BOXED BODY — the footer's content rows sit in ONE inset panel (a hairline-bordered, tinted, padded shell
+		// with a width cap). Native: Footer → Layout → Boxed Body (theme 2.5.97). The bars inside it go Full Width
+		// (the panel's padding is their gutter). Decor strips inside the shell ride as the panel's pseudo-elements.
+		$cs_foot = self::footer_root_el( (string) $html );
+		$shell   = self::detect_footer_shell( $cs_foot );
+		$copy_in_box = false;
+		if ( $shell instanceof DOMElement ) {
+			$fbv = self::footer_box_values( $shell );
+			$fields = $fbv['fields'];
+			// The bottom bar (© line or a label bar) lives INSIDE the panel when it is one of the shell's own rows.
+			$shell_rows = self::el_children( $shell );
+			foreach ( $shell_rows as $sr ) { if ( self::band_is_copyright( $sr, $sr === end( $shell_rows ) ) ) { $copy_in_box = true; break; } }
+			if ( ! $copy_in_box ) { $ce = self::footer_copyright_el( $cs_foot ); if ( $ce instanceof DOMElement && self::is_ancestor( $shell, $ce ) ) { $copy_in_box = true; } }
+			$fields['footer_box_copyright_inside'] = $copy_in_box ? 'yes' : 'no';
+			$values['footer_body_box'] = array( 'enabled' => 'yes', 'yes' => $fields );
+			foreach ( $fbv['css'] as $r ) { $residual[] = $r; }
+			foreach ( array( 'pre_footer', 'main_footer', 'post_footer', 'copyright' ) as $bp ) {
+				$ck  = $bp . '_custom_styling';
+				$cur = ( isset( $values[ $ck ]['yes'] ) && is_array( $values[ $ck ]['yes'] ) ) ? $values[ $ck ]['yes'] : array();
+				$cur[ $bp . '_container' ] = 'container-fluid';
+				$values[ $ck ] = array( 'enabled' => 'yes', 'yes' => $cur );
+			}
+			// Inside a panel the theme's default 1rem bar padding is replaced by the rows' own measured box: the
+			// main row's padding, and the bottom bar's margin-top (its gap above the divider) + padding.
+			$main_row = null; $bestn = 1;
+			foreach ( $shell_rows as $sr ) { $n = self::band_column_count( $sr ); $t = mb_strlen( trim( $sr->textContent ) ); if ( ! self::band_is_copyright( $sr, $sr === end( $shell_rows ) ) && ( null === $main_row || $t > $bestn ) ) { $main_row = $sr; $bestn = $t; } }
+			if ( $main_row instanceof DOMElement ) {
+				$pp = preg_split( '/\s+/', trim( (string) self::sc_css( $main_row, 'padding' ) ) );
+				$pt = isset( $pp[0] ) ? $pp[0] : '0px'; $pb = isset( $pp[2] ) ? $pp[2] : $pt;
+				$residual[] = '.footer--boxed .footer__body > .footer-section--main-footer{padding-top:' . ( preg_match( '/^[0-9.]+px$/', $pt ) ? $pt : '0' ) . ';padding-bottom:' . ( preg_match( '/^[0-9.]+px$/', $pb ) ? $pb : '0' ) . ';}';
+			}
+			if ( $copy_in_box ) {
+				$last = end( $shell_rows );
+				$mp = preg_split( '/\s+/', trim( (string) self::sc_css( $last, 'margin' ) ) ); $mt = isset( $mp[0] ) ? $mp[0] : '0px';
+				$pp = preg_split( '/\s+/', trim( (string) self::sc_css( $last, 'padding' ) ) ); $pt = isset( $pp[0] ) ? $pp[0] : '0px'; $pb = isset( $pp[2] ) ? $pp[2] : $pt;
+				$residual[] = '.footer--boxed .footer__body > .footer-section--copyright{margin-top:' . ( preg_match( '/^[0-9.]+px$/', $mt ) ? $mt : '0' ) . ';padding-top:' . ( preg_match( '/^[0-9.]+px$/', $pt ) ? $pt : '0' ) . ';padding-bottom:' . ( preg_match( '/^[0-9.]+px$/', $pb ) ? $pb : '0' ) . ';}';
+			}
+		}
+		// COLUMN ALIGNMENT — the main row's `align-items` (a lead heading beside a link row on a shared baseline
+		// = `end`) → Main Footer → Custom Styling → Column Alignment (theme 2.5.97).
+		$fva = self::footer_row_valign( $shell instanceof DOMElement ? $shell : $cs_foot );
+		if ( '' !== $fva ) {
+			$cur = ( isset( $values['main_footer_custom_styling']['yes'] ) && is_array( $values['main_footer_custom_styling']['yes'] ) ) ? $values['main_footer_custom_styling']['yes'] : array();
+			$cur['main_footer_valign'] = $fva;
+			$values['main_footer_custom_styling'] = array( 'enabled' => 'yes', 'yes' => $cur );
+		}
+
 		// The COPYRIGHT band commonly carries its OWN inner `border-t` (separating the columns from the © line)
 		// that the footer-level footer_border_top can't capture — detect the band's border / background and fold
 		// it into copyright_custom_styling (a shared Custom-Styling detector, reusable for the other bars).
-		$cs_foot = self::footer_root_el( (string) $html );
 		$copy_el = ( $cs_foot instanceof DOMElement ) ? self::footer_copyright_el( $cs_foot ) : null;
 		if ( $copy_el instanceof DOMElement ) {
 			// footer_copyright_el returns the TIGHTEST wrapper (the © <p>); the border sits on the enclosing
@@ -4118,12 +4403,12 @@ class FW_Site_Converter_Stitch {
 		// the monitor's left/right edges. Priority: browser-stamped content width → header/footer container
 		// box → the dominant centered content max-width measured across the body → 1280 (Tailwind `xl`, the
 		// most common design width) as a last resort.
-		$content_w = 0;
-		if ( $content_stamped > 0 )      { $content_w = $content_stamped; }
+		$content_w = 0; $cw_outer = false; // true when the width is a MEASURED OUTER box (a stamp / the dominant container) — its own padding may sit inside it
+		if ( $content_stamped > 0 )      { $content_w = $content_stamped; $cw_outer = true; }
 		elseif ( $site_box > 0 )         { $content_w = self::chrome_box_to_content_px( $site_box ); }
 		else {
 			$dom_w   = self::detect_dominant_container_width( (string) $html );
-			$content_w = $dom_w > 0 ? $dom_w : 1280;
+			$content_w = $dom_w > 0 ? $dom_w : 1280; $cw_outer = ( $dom_w > 0 );
 		}
 		if ( $content_w > 0 ) {
 			$values['general_layout']['layout_container_width'] = array(
@@ -4134,8 +4419,16 @@ class FW_Site_Converter_Stitch {
 			// The source container's DECLARED side gutter (`min(1440px, calc(100% - 48px))` → 24px per side) → the native
 			// Container Gutter (--container-gutter). The flexbox Content Width cap renders `min(cap, 100% - 2×gutter)`, so
 			// a converted band keeps the source's exact inset below the cap AND its exact 1440 centred cap above it.
+			self::$gutter_inside = false;
 			$site_gutter = self::declared_container_gutter( (string) $html );
 			if ( $site_gutter > 0 ) { $values['general_layout']['layout_container_gutter'] = array( 'value' => (string) $site_gutter, 'unit' => 'px' ); }
+			// The theme's Container Width is a CONTENT width (gutter outside). A gutter that is the container's own PADDING sits
+			// inside the stamped width (1280 outer → 1232 content): subtract it, or every band renders +2×gutter wider than the
+			// source (RECURS x3 in the findings feed). JS twin: to-theme-settings contentGutterInside.
+			if ( $site_gutter > 0 && $cw_outer && self::container_gutter_inside( (string) $html ) && $content_w > 4 * $site_gutter ) { // (a chrome-box width is already a content width)
+				$content_w -= 2 * $site_gutter;
+				$values['general_layout']['layout_container_width']['lg'] = array( 'value' => (string) $content_w, 'unit' => 'px' );
+			}
 			// …and its PHONE gutter (a `min(100% - 32px, …)` media rule → 16px): the native option is one value, so the phone value rides a
 			// max-width:767px --container-gutter override in the misc CSS (read by the flexbox Content Width cap and .fw-container).
 			$site_gutter_sm = self::declared_container_gutter_sm( (string) $html );
@@ -4170,7 +4463,7 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 		// PROMINENT HEADER BORDER — the theme's `header_border=yes` draws only a 1px hairline (an inset
-		// box-shadow, no layout shift). A source with a THICK accent rule under the header (jukebox's
+		// box-shadow, no layout shift). A source with a THICK accent rule under the header (the burger source's
 		// `border-b-4 border-primary` = 4px red) needs the real border reproduced. Emit a scoped override that
 		// replaces the hairline with the captured width + colour. A named token → the theme's own colour var
 		// (so it tracks the palette); a hex/rgb → used verbatim.
@@ -4259,6 +4552,29 @@ class FW_Site_Converter_Stitch {
 		}
 		$values['misc_custom_css'] = array( 'custom_css' => "/* converted header/footer styles */\n" . implode( "\n", $residual ) . $container_ladder_css . $hdr_border_css  . $seg_css . $chip_css . $navrow_css . $menu_gap_css . $hdr_pad_css );
 
+		// THE PAGE SHELL's OWN RULES — the source <main> (the content wrapper the theme's own <main class="site-main"> stands
+		// in for) can carry stylesheet rules of its own: a scroll-driven background shift (view-timeline-name / animation-timeline
+		// + its @keyframes), a page-wide blend or filter. They belong to no section, so they ride Misc Custom CSS re-targeted at
+		// the theme's main element — the class is never dropped, the rule + its keyframes travel verbatim (a browser without
+		// scroll-driven animations resolves them exactly as it did on the source).
+		if ( ! empty( $hstyle['bg_gradient'] ) ) {
+			$values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . "
+/* Header ground: the source's gradient fade */
+.site-header:not(.is-stuck){background-image:" . $hstyle['bg_gradient'] . ";}
+";
+		}
+		$shell_css = self::page_shell_css( (string) $html );
+		if ( '' !== $shell_css ) {
+			$values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . "\n/* Source page shell (main) */\n" . $shell_css;
+		}
+		// The fixed site-background video's own geometry (a right-anchored 60vw layer), mask, filter and glow — the theme prints
+		// the video inset:0; these re-shape it to the source layer (page_backdrop_css).
+		if ( '' !== self::$page_backdrop_css ) {
+			$values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . "\n/* Site background video layer */\n" . self::$page_backdrop_css;
+			self::$page_backdrop_css = '';
+		}
+
+
 		/* --- D2: global border/divider colour → layout_border_color (--color-border) --- */
 		$bcol = self::detect_border_color( (string) $html );
 		if ( $bcol !== '' ) {
@@ -4324,11 +4640,13 @@ class FW_Site_Converter_Stitch {
 			if ( ! $skip_nl ) {
 				$nl = self::detect_footer_newsletter( $scope_html );
 				if ( $nl ) {
+					// (under a LEAD heading the form's own title / tagline would repeat the lead — the lead text says it once)
+					$nl_dup = ( $lead !== '' && '' !== trim( (string) $nl['title'] ) && false !== stripos( strip_tags( $lead ), trim( (string) $nl['title'] ) ) );
 					$col[] = array( 'element_type' => array( 'element' => 'newsletter', 'newsletter' => array(
-						'title'             => (string) $nl['title'],
-						'description'       => (string) $nl['tagline'],
-						'email_placeholder' => ( $nl['placeholder'] !== '' ? (string) $nl['placeholder'] : 'Your email address' ),
-						'button_label'      => ( $nl['button'] !== '' ? (string) $nl['button'] : 'Subscribe' ),
+						'newsletter_title' => $nl_dup ? '' : (string) $nl['title'],
+						'newsletter_desc' => $nl_dup ? '' : (string) $nl['tagline'],
+						'newsletter_email_ph' => ( $nl['placeholder'] !== '' ? (string) $nl['placeholder'] : 'Your email address' ),
+						'newsletter_button' => ( $nl['button'] !== '' ? (string) $nl['button'] : 'Subscribe' ),
 						'show_name'         => 'no',
 						'design'            => 'inline',
 					) ) );
@@ -4352,10 +4670,10 @@ class FW_Site_Converter_Stitch {
 				$cols[] = $bc;
 				if ( $split_nl ) {
 					$cols[] = array( array( 'element_type' => array( 'element' => 'newsletter', 'newsletter' => array(
-						'title'             => (string) $nl['title'],
-						'description'       => (string) $nl['tagline'],
-						'email_placeholder' => ( $nl['placeholder'] !== '' ? (string) $nl['placeholder'] : 'Your email address' ),
-						'button_label'      => ( $nl['button'] !== '' ? (string) $nl['button'] : 'Subscribe' ),
+						'newsletter_title' => (string) $nl['title'],
+						'newsletter_desc' => (string) $nl['tagline'],
+						'newsletter_email_ph' => ( $nl['placeholder'] !== '' ? (string) $nl['placeholder'] : 'Your email address' ),
+						'newsletter_button' => ( $nl['button'] !== '' ? (string) $nl['button'] : 'Subscribe' ),
 						'show_name'         => 'no',
 						'design'            => 'inline',
 					) ) ) );
@@ -4435,6 +4753,14 @@ class FW_Site_Converter_Stitch {
 			if ( $fcols ) {
 				$has_nl_col = false;
 				$contact_ci = null;
+				// A newsletter "column" titled by the footer's LEAD heading ("Ready to float?" over a tagline + the signup) is the brand
+				// column itself, not a second column — drop the group so the lead column carries the form (title / description blank,
+				// the lead text already says it) instead of the heading appearing twice.
+				$lead_txt = trim( preg_replace( '/\s+/', ' ', strip_tags( (string) self::detect_footer_lead_heading( $route_html ) ) ) );
+				foreach ( $fcols as $gi => $g ) {
+					if ( ( $g['kind'] ?? '' ) === 'newsletter' && '' !== $lead_txt && false !== stripos( $lead_txt, trim( (string) ( $g['title'] ?? '' ) ) ) && '' !== trim( (string) ( $g['title'] ?? '' ) ) ) { unset( $fcols[ $gi ] ); }
+				}
+				$fcols = array_values( $fcols );
 				foreach ( $fcols as $gi => $g ) {
 					if ( ( $g['kind'] ?? '' ) === 'newsletter' ) { $has_nl_col = true; }
 					if ( null === $contact_ci && ( $g['kind'] ?? '' ) === 'contact' ) { $contact_ci = $gi; }
@@ -4445,10 +4771,11 @@ class FW_Site_Converter_Stitch {
 				// contact column, where the source puts them.
 				$has_social  = (bool) self::detect_footer_social( $route_html );
 				$dedicated   = ( null !== $contact_ci );
-				if ( $dedicated && $has_social ) { $fcols[ $contact_ci ]['append_social'] = true; }
-				$brand_col = $footer_brand_col( $route_html, $has_nl_col, $dedicated, $dedicated && $has_social );
+				$social_col  = false; foreach ( $fcols as $g ) { if ( ( $g['kind'] ?? '' ) === 'social' ) { $social_col = true; break; } } // a titled SOCIAL column owns the icons
+				if ( $dedicated && $has_social && ! $social_col ) { $fcols[ $contact_ci ]['append_social'] = true; }
+				$brand_col = $footer_brand_col( $route_html, $has_nl_col, $dedicated, ( $dedicated && $has_social ) || $social_col );
 				$bar = self::build_footer_bar( $fcols, 'main_footer', $route_html, array( $brand_col ) );
-				if ( $bar ) { $values['main_footer_columns'] = $bar; }
+				if ( $bar ) { $values['main_footer_columns'] = $bar; } $ffc = self::footer_flat_links_css(); if ( '' !== $ffc ) { $values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . $ffc; } // the flat-link row layout + pill skin
 			} else {
 				// FLAT LINK ROW. detect_footer_columns() looks for heading+links COLUMN structures; a footer
 				// that is just a row of links ("Field Notes · Open Data · API Access · Partners") yields ZERO
@@ -4468,7 +4795,24 @@ class FW_Site_Converter_Stitch {
 					}
 					$brand_col = $footer_brand_col( $route_html, false, false, false );
 					$bar = self::build_footer_bar( array(), 'main_footer', $route_html, array( $brand_col, $items ) );
-					if ( $bar ) { $values['main_footer_columns'] = $bar; }
+					if ( $bar ) { $values['main_footer_columns'] = $bar; } $ffc = self::footer_flat_links_css(); if ( '' !== $ffc ) { $values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . $ffc; } // the flat-link row layout + pill skin
+				} else {
+					// BRAND-ONLY footer: a wordmark / logo beside ONE disclaimer paragraph and no links at all (a minimal AI page
+					// footer). Neither the column pass nor the flat-link pass had anything, so the footer shipped with NO bar — only
+					// a fabricated © line. Emit the brand column; when the band lays brand and paragraph out side by side (a flex
+					// space-between row) the paragraph takes its own column so it sits opposite the brand, as in the source.
+					$brand_col = $footer_brand_col( $route_html, false, false, false );
+					if ( count( $brand_col ) >= 1 ) {
+						$tg_i = null;
+						foreach ( $brand_col as $bi => $be ) { if ( 'text' === ( $be['element_type']['element'] ?? '' ) && false !== strpos( (string) ( $be['element_type']['text']['text_content'] ?? '' ), 'footer-tagline' ) ) { $tg_i = $bi; break; } }
+						$cols = array( $brand_col );
+						if ( null !== $tg_i && self::footer_band_is_multicol( $route_html ) ) {
+							$tag_el = $brand_col[ $tg_i ]; unset( $brand_col[ $tg_i ] );
+							$cols = array( array_values( $brand_col ), array( $tag_el ) );
+						}
+						$bar = self::build_footer_bar( array(), 'main_footer', $route_html, $cols );
+						if ( $bar ) { $values['main_footer_columns'] = $bar; $values['_footer_brand_only'] = true; }
+					}
 				}
 			}
 		}
@@ -4488,6 +4832,45 @@ class FW_Site_Converter_Stitch {
 		}
 
 		/* --- copyright bar --- */
+		// A LABEL BAR (the footer's last row: ≥ 2 short small labels, no © line) IS the source's bottom bar → the
+		// Copyright bar's columns as-is (auto-aligned left / centre / right), with the bar's own typography and
+		// hairline — instead of a fabricated "© year Site" line the source never showed.
+		$label_bar = null; $label_cells = false;
+		foreach ( $fbands as $fb0 ) { if ( ! empty( $fb0['is_copyright'] ) && isset( $fb0['el'] ) && false !== ( $lc = self::band_is_label_bar( $fb0['el'] ) ) ) { $label_bar = $fb0['el']; $label_cells = $lc; break; } }
+		if ( null === $label_bar && $cs_foot instanceof DOMElement ) {
+			$scan = ( $shell instanceof DOMElement ) ? $shell : $cs_foot;
+			$rows = array(); foreach ( self::el_children( $scan ) as $k ) { if ( trim( $k->textContent ) !== '' ) { $rows[] = $k; } }
+			if ( count( $rows ) >= 2 && false !== ( $lc = self::band_is_label_bar( end( $rows ) ) ) ) { $label_bar = end( $rows ); $label_cells = $lc; }
+		}
+		if ( ! empty( $values['_footer_brand_only'] ) && '' === self::detect_footer_copyright( (string) $html ) && ! self::detect_footer_legal_links( (string) $html ) ) {
+			// A brand-only footer with NO © line in the source: the disclaimer paragraph IS its bottom text — no © bar invented.
+			unset( $values['_footer_brand_only'] );
+			$values['copyright_settings'] = array( 'enabled' => 'no' );
+			$copy = null;
+		} elseif ( $label_bar instanceof DOMElement && is_array( $label_cells ) && '' === self::detect_footer_copyright( (string) $html ) ) {
+			$n = min( 3, count( $label_cells ) );
+			$lcols = array();
+			for ( $i = 0; $i < $n; $i++ ) { $lcols[ 'copyright_col_' . ( $i + 1 ) ] = array( array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<p>' . esc_html( $label_cells[ $i ] ) . '</p>' ) ) ) ); }
+			$cfields = self::detect_band_custom_fields( $label_bar, 'copyright' );
+			$ctypo   = self::detect_copyright_typography( $label_bar );
+			if ( $ctypo ) { $cfields['copyright_typography'] = $ctypo; }
+			$cur = ( isset( $values['copyright_custom_styling']['yes'] ) && is_array( $values['copyright_custom_styling']['yes'] ) ) ? $values['copyright_custom_styling']['yes'] : array();
+			$values['copyright_custom_styling'] = array( 'enabled' => 'yes', 'yes' => array_merge( $cur, $cfields ) );
+			$values['copyright_settings'] = array( 'enabled' => 'yes', 'yes' => array(
+				'copyright_columns'        => array( 'count' => (string) $n, (string) $n => array_merge( $lcols, ( strtolower( self::sc_css( $label_bar, 'display' ) ) === 'flex' && preg_match( '/space-(between|around)|flex-start|flex-end|center/', strtolower( self::sc_css( $label_bar, 'justify-content' ) ), $jm ) ) ? array( 'copyright_auto' => 'yes', 'copyright_justify' => str_replace( array( 'space-', 'flex-' ), '', $jm[0] ) ) : array() ) ),
+				'copyright_custom_styling' => $values['copyright_custom_styling'],
+			) );
+			unset( $values['copyright_custom_styling'] );
+			// Case / tracking have no typography field → a scoped rule; the bar's own gap between labels too.
+			$lb = array();
+			$tt = strtolower( self::sc_css( $label_bar, 'text-transform' ) ); if ( in_array( $tt, array( 'uppercase', 'lowercase', 'capitalize' ), true ) ) { $lb[] = 'text-transform:' . $tt; }
+			$ls = self::sc_css( $label_bar, 'letter-spacing' ); if ( preg_match( '/^-?[0-9.]+px$/', $ls ) ) { $lb[] = 'letter-spacing:' . $ls; }
+			$lh = self::sc_css( $label_bar, 'line-height' ); if ( preg_match( '/^[0-9.]+px$/', $lh ) ) { $lb[] = 'line-height:' . $lh; }
+			$lb[] = '';
+			$values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . "
+" . ( count( $lb ) > 1 ? '.footer .footer-section--copyright{' . implode( ';', $lb ) . '}' : '' ) . '.footer .footer-section--copyright .builder-text-element p{margin:0;}';
+			$copy = null; // handled
+		} else {
 		$copy = self::detect_footer_copyright( (string) $html );
 		if ( $copy === '' ) { $copy = '&copy; {{current_year}} ' . esc_html( $site_title ) . '. All rights reserved.'; }
 		$copyright_col_1 = array(
@@ -4506,6 +4889,8 @@ class FW_Site_Converter_Stitch {
 			// Inline links (no <ul> — its bullets would float in the copyright bar); a middot separates them.
 			$parts = array();
 			foreach ( $legal as $l ) { $parts[] = '<a href="' . esc_url( $l['href'] !== '' ? $l['href'] : '#' ) . '">' . esc_html( $l['label'] ) . '</a>'; }
+			// a plain label riding the legal-link row ("SYS.OP: ONLINE" after Privacy · Terms) stays with the links, its own ink kept
+			foreach ( self::detect_footer_legal_tail( (string) $html ) as $tl ) { $parts[] = ( '' !== $tl['color'] ? '<span style="color:' . esc_attr( $tl['color'] ) . '">' : '<span>' ) . esc_html( $tl['text'] ) . '</span>'; }
 			$legal_html = '<p>' . implode( ' &middot; ', $parts ) . '</p>';
 			$copyright_col_2 = array(
 				array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $legal_html ) ), 'element_css_class' => 'text-end' ),
@@ -4514,7 +4899,7 @@ class FW_Site_Converter_Stitch {
 			// A bottom-bar tagline opposite the © line ("Designed for the modern professional.") → the right
 			// column, auto-aligned end. Without this the second bottom-bar <p> was silently dropped.
 			$copyright_col_2 = array(
-				array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<p>' . esc_html( $tagline ) . '</p>' ) ), 'element_css_class' => 'text-end' ),
+				array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<p>' . self::$bottom_tagline_dot . esc_html( $tagline ) . '</p>' ) ), 'element_css_class' => 'text-end' ), // (a status dot before the label rides inline)
 			);
 		}
 		if ( $copyright_col_2 !== null ) {
@@ -4545,6 +4930,19 @@ class FW_Site_Converter_Stitch {
 			'enabled' => 'yes',
 			'yes'     => $copyright_yes,
 		);
+		// ONE-ROW footer (logo | links | ©): the © text is the main bar's LAST column and there is no copyright bar — it had
+		// become three bars (a fixture from the feed)
+		$f_root = self::footer_root_el( (string) $html );
+		if ( $f_root instanceof DOMElement && self::footer_is_single_row( $f_root ) && ! empty( $values['main_footer_columns']['count'] ) ) {
+			$mfc = $values['main_footer_columns']; $n0 = (int) $mfc['count']; $n1 = min( 6, $n0 + 1 );
+			if ( $n1 > $n0 && isset( $mfc[ (string) $n0 ] ) && is_array( $mfc[ (string) $n0 ] ) ) {
+				$cols0 = $mfc[ (string) $n0 ]; $cols0[ 'main_footer_col_' . $n1 ] = array( array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $copy ) ), 'element_css_class' => 'text-end' ) );
+				$values['main_footer_columns'] = array( 'count' => (string) $n1, (string) $n1 => $cols0 );
+				$values['copyright_settings'] = array( 'enabled' => 'no' );
+			}
+		}
+		} // end: © line vs label bar
+		unset( $values['_footer_brand_only'] );
 
 		/* --- button_colors / button_sizes: presets derived from the source's real button skin --- */
 		// ($btn_presets was built up front, beside header_main, so the header CTAs could resolve against it.)
@@ -4602,6 +5000,13 @@ class FW_Site_Converter_Stitch {
 			$values = array_merge( $values, $badge_presets );
 		}
 
+		/* --- table_presets (Tables): every table the mapper registered from its MEASURED skin → an editable
+		   Table Preset (cell padding, grid lines, header / body faces, row hover, zebra, frame) --- */
+		$tbl_presets = self::build_table_presets();
+		if ( ! empty( $tbl_presets ) ) {
+			$values = array_merge( $values, $tbl_presets );
+		}
+
 		/* --- spacing_scale (Components → Spacing): the source's spacing steps → editable scale (so the
 		   converted site carries a real scale instead of falling back to the theme default). --- */
 		$spacing = self::build_spacing_scale( $tokens, (string) $html );
@@ -4628,9 +5033,16 @@ class FW_Site_Converter_Stitch {
 		$ty_google = '';
 		foreach ( ( $tokens['fonts'] ?? array() ) as $href ) { $ty_google = $href; break; }
 		$ty_gf = self::fonts_from_google( $ty_google );
-		if ( $ty_head === '' && isset( $ty_gf[0] ) ) { $ty_head = $ty_gf[0]; }
-		if ( $ty_body === '' ) { $ty_body = isset( $ty_gf[1] ) ? $ty_gf[1] : ( isset( $ty_gf[0] ) ? $ty_gf[0] : '' ); }
 		$ty = self::detect_typography( (string) $html );
+		// The MEASURED families come before the Google-URL ORDER guess: a page that loads "Outfit|JetBrains Mono" sets its
+		// paragraphs in Outfit and its labels / code in the mono — the second font in the URL is not the body font. The
+		// tailwind fontFamily tokens (pick_fonts_raw) still win when declared; the URL order is the last resort only.
+		if ( $ty_head === '' ) { foreach ( array( 'h1', 'h2', 'h3' ) as $lvl ) { if ( ! empty( $ty[ $lvl ]['family'] ) ) { $ty_head = $ty[ $lvl ]['family']; break; } } }
+		if ( $ty_body === '' && ! empty( $ty['body']['family'] ) ) { $ty_body = $ty['body']['family']; }
+		if ( $ty_head === '' && isset( $ty_gf[0] ) ) { $ty_head = $ty_gf[0]; }
+		// a measured SYSTEM body stack keeps the theme's sans default — the heading's single Google face is never the body's
+		if ( $ty_body === '' && empty( $ty['body']['system'] ) ) { $ty_body = isset( $ty_gf[1] ) ? $ty_gf[1] : ( isset( $ty_gf[0] ) ? $ty_gf[0] : '' ); }
+		elseif ( $ty_body === '' && isset( $ty_gf[1] ) ) { $ty_body = $ty_gf[1]; }
 		// Fallback to the MEASURED families when the token/Google-URL path yielded none (a captured DOM carries
 		// the resolved font-family on data-sc-cs even when no tailwind.config / Google <link> was extracted).
 		if ( $ty_head === '' ) {
@@ -4676,6 +5088,9 @@ class FW_Site_Converter_Stitch {
 			if ( ! isset( $typo['body'] ) || ! is_array( $typo['body'] ) ) { $typo['body'] = array( 'family' => '', 'variation' => 'regular' ); }
 			$typo['body']['color'] = $body_ink;
 		}
+		// A measured source authors FIXED sizes: the theme's fluid growth (body ×1.15 on wide screens, headings shrinking on phones)
+		// would resize what the capture measured — off for a conversion (Typography → Fluid Sizes).
+		if ( ! empty( $typo ) ) { $typo['type_fluid_enable'] = 'no'; }
 		if ( ! empty( $typo ) ) { $values['typography'] = $typo; }
 
 		// CUSTOM CURSOR — the source replaces the native pointer with a JS-followed element → the Animation
@@ -4783,6 +5198,7 @@ class FW_Site_Converter_Stitch {
 			$sz = self::sc_css( $p, 'font-size' );
 			if ( ! preg_match( '/^([0-9.]+)px$/', trim( (string) $sz ), $m ) ) { continue; }
 			$px  = (int) round( (float) $m[1] );
+			if ( $px > 28 ) { continue; } // a DISPLAY-size <p> (a 48px serif hero line) is never body copy — it set the whole site's body to Instrument Serif 48px (a finding from the feed)
 			$len = strlen( trim( self::text( $p ) ) );
 			if ( $len <= 0 ) { continue; }
 			$len_by_size[ $px ] = ( isset( $len_by_size[ $px ] ) ? $len_by_size[ $px ] : 0 ) + $len;
@@ -4791,14 +5207,30 @@ class FW_Site_Converter_Stitch {
 		if ( $len_by_size ) {
 			arsort( $len_by_size ); // most total body text first
 			$px = (int) array_key_first( $len_by_size );
-			$rp = $rep_by_size[ $px ];
+			// The ROOT size wins over the paragraph mode: the Body size sets the rem root the theme measures everything against, so a
+			// page whose copy is mostly `text-lg` (18px) over a 16px root had every rem / em measure inflated by 12.5 % (a finding
+			// filed on eleven conversions). The <body> stamp's font-size is the root the source authored; the paragraphs' mode is
+			// only the fallback when the body carries no stamp.
+			$body_el = $dom->getElementsByTagName( 'body' )->item( 0 );
+			if ( $body_el instanceof DOMElement && preg_match( '/^([0-9.]+)px$/', trim( (string) self::sc_css( $body_el, 'font-size' ) ), $bm ) && (float) $bm[1] >= 12 && (float) $bm[1] <= 22 ) { $px = (int) round( (float) $bm[1] ); }
+			$rp = isset( $rep_by_size[ $px ] ) ? $rep_by_size[ $px ] : $rep_by_size[ (int) array_key_first( $len_by_size ) ];
 			$body = array( 'size' => $px );
-			$fam = $first_family( self::sc_css( $rp, 'font-family' ) );
+			// the FAMILY / line-height come from the <body> stamp when it carries a named face (the root the source authored — every
+			// paragraph inherits it); the representative paragraph is the fallback for a body with no stamp
+			$fam = ( $body_el instanceof DOMElement ) ? $first_family( self::sc_css( $body_el, 'font-family' ) ) : '';
+			if ( '' === $fam ) { $fam = $first_family( self::sc_css( $rp, 'font-family' ) ); }
+			elseif ( $body_el instanceof DOMElement && '' !== $lh_ratio( self::sc_css( $body_el, 'line-height' ), $px ) ) { $rp = $body_el; }
 			if ( $fam !== '' ) { $body['family'] = $fam; }
+			// a SYSTEM stack (`ui-sans-serif, system-ui, …`) resolves to no named face: remember it, so the caller never fills the
+			// body slot with the heading's Google face (a serif display face on every paragraph — a fixture from the feed)
+			elseif ( preg_match( '/^\s*(?:ui-sans-serif|system-ui|-apple-system|blinkmacsystemfont|sans-serif|ui-serif|serif|ui-monospace|monospace)/i', (string) self::sc_css( $rp, 'font-family' ) ) ) { $body['system'] = true; }
 			$lh = $lh_ratio( self::sc_css( $rp, 'line-height' ), $px );
 			if ( $lh !== '' ) { $body['line-height'] = $lh; }
-			$ls = $ls_px( self::sc_css( $rp, 'letter-spacing' ) );
-			if ( $ls !== '' ) { $body['letter-spacing'] = $ls; }
+			// Letter-spacing only when it is the page's PROSE norm — the mode across every paragraph weighted by text length, and
+			// covering at least 60 % of the copy; one `tracking-wide` hero paragraph used to track every paragraph and link on the site.
+			$ls_len = array(); $ls_total = 0;
+			foreach ( $dom->getElementsByTagName( 'p' ) as $p2 ) { if ( ! ( $p2 instanceof DOMElement ) || '' === (string) $p2->getAttribute( 'data-sc-cs' ) ) { continue; } $l2 = strlen( trim( self::text( $p2 ) ) ); if ( $l2 <= 0 ) { continue; } $k = (string) $ls_px( self::sc_css( $p2, 'letter-spacing' ) ); $ls_len[ $k ] = ( $ls_len[ $k ] ?? 0 ) + $l2; $ls_total += $l2; }
+			if ( $ls_len && $ls_total > 0 ) { arsort( $ls_len ); $lsk = (string) array_key_first( $ls_len ); if ( '' !== $lsk && '0' !== $lsk && $ls_len[ $lsk ] >= $ls_total * 0.6 ) { $body['letter-spacing'] = (float) $lsk; } }
 			$out['body'] = $body;
 		}
 
@@ -4849,7 +5281,7 @@ class FW_Site_Converter_Stitch {
 		// Header sanity: a logo wordmark/image and a header_main with element zones.
 		$has_header = ! empty( $v['header_logo'] ) && ! empty( $v['header_main'] );
 		// Footer sanity: a real multi-column grid, or at least a copyright bar.
-		$has_grid = false;
+		$has_grid = false; $ncols = 0;
 		if ( ! empty( $v['main_footer_columns']['count'] ) ) {
 			$cnt = $v['main_footer_columns']['count'];
 			$blk = isset( $v['main_footer_columns'][ $cnt ] ) ? $v['main_footer_columns'][ $cnt ] : array();
@@ -4858,7 +5290,9 @@ class FW_Site_Converter_Stitch {
 			$has_grid = $ncols >= 2;
 		}
 		$has_copyright = ! empty( $v['copyright_settings']['enabled'] ) && $v['copyright_settings']['enabled'] === 'yes';
-		return $has_header && ( $has_grid || $has_copyright );
+		// A brand-only footer (one column, © bar deliberately OFF because the source shows no © line) is a faithful mapping too.
+		$brand_only = ( $ncols >= 1 ) && isset( $v['copyright_settings']['enabled'] ) && 'no' === $v['copyright_settings']['enabled'];
+		return $has_header && ( $has_grid || $has_copyright || $brand_only );
 	}
 
 	/**
@@ -5227,8 +5661,70 @@ class FW_Site_Converter_Stitch {
 		return null;
 	}
 
+	/** The <title>'s brand segment (before a | – — · : separator), '' when the title is empty. */
+	private static function title_brand_segment( $title ) {
+		$t = trim( html_entity_decode( (string) $title, ENT_QUOTES, 'UTF-8' ) ); if ( '' === $t ) { return ''; }
+		$parts = preg_split( '/\s*[|\x{2013}\x{2014}\x{00B7}:]\s+/u', $t, 2 );
+		$b = trim( (string) ( $parts[0] ?? '' ) );
+		return ( mb_strlen( $b ) >= 2 && mb_strlen( $b ) <= 40 ) ? $b : '';
+	}
+
+	/** Among a header's short text LEAVES (no link inside), the one whose text starts with the <title>'s brand segment (case-
+	 *  insensitive) — the wordmark of a link-less masthead. null when none matches. */
+	private static function title_matched_brand_leaf( $header, $title ) {
+		if ( ! ( $header instanceof DOMElement ) ) { return null; }
+		// the document's own <title> first (the caller's title is the page NAME, "Home"), the given one as the fallback
+		$doc_title = ''; if ( $header->ownerDocument ) { $tt = $header->ownerDocument->getElementsByTagName( 'title' )->item( 0 ); if ( $tt ) { $doc_title = trim( (string) $tt->textContent ); } }
+		$seg = mb_strtolower( self::title_brand_segment( '' !== $doc_title ? $doc_title : $title ) ); if ( '' === $seg ) { return null; }
+		foreach ( $header->getElementsByTagName( '*' ) as $e ) {
+			if ( ! ( $e instanceof DOMElement ) || $e->getElementsByTagName( '*' )->length > 2 || $e->getElementsByTagName( 'a' )->length ) { continue; }
+			$t = trim( preg_replace( '/\s+/', ' ', (string) self::text_no_icons( $e ) ) );
+			if ( '' === $t || mb_strlen( $t ) > 48 ) { continue; }
+			if ( 0 === strpos( mb_strtolower( $t ), $seg ) ) { return $e; }
+		}
+		return null;
+	}
+
+	/**
+	 * A LABEL-ONLY masthead: a fixed bar whose zones hold plain text labels and NO link / button at all (a status line left,
+	 * the wordmark centred, a node label right). There is no menu to print; each non-brand label rides as a chip (list_item
+	 * with the label's type) in the zone its DOM position gives it (first → left, last → right, between → centre), and the
+	 * logo takes the brand leaf's zone. Returns { left:[], center:[], right:[], logo:'left'|'center'|'right' } or null when
+	 * the header carries any link / button (a normal masthead). JS twin: labelOnlyMasthead.
+	 */
+	private static function header_label_zones( $html, $title ) {
+		$dom = self::load_dom( (string) $html ); if ( ! $dom ) { return null; }
+		$header = self::header_root( $dom ); if ( ! ( $header instanceof DOMElement ) ) { return null; }
+		if ( $header->getElementsByTagName( 'a' )->length || $header->getElementsByTagName( 'button' )->length || $header->getElementsByTagName( 'nav' )->length && 'nav' !== strtolower( $header->tagName ) ) { return null; }
+		$row = $header; $guard = 0;
+		while ( $guard++ < 4 ) { $kids = self::el_children( $row ); if ( 1 === count( $kids ) && in_array( strtolower( $kids[0]->tagName ), array( 'div', 'header' ), true ) ) { $row = $kids[0]; continue; } break; }
+		$kids = self::el_children( $row ); $n = count( $kids );
+		if ( $n < 2 ) { return null; }
+		$brand = self::title_matched_brand_leaf( $header, $title );
+		$out = array( 'left' => array(), 'center' => array(), 'right' => array(), 'logo' => 'left' );
+		$bi = -1;
+		foreach ( $kids as $i => $k ) { if ( $brand && ( $k === $brand || self::is_ancestor( $k, $brand ) ) ) { $bi = $i; } }
+		if ( $bi < 0 ) { $bi = 0; }
+		foreach ( $kids as $i => $k ) {
+			$zone = ( 0 === $i ) ? 'left' : ( ( $i === $n - 1 ) ? 'right' : 'center' );
+			if ( $i === $bi ) { $out['logo'] = $zone; continue; }
+			$t = trim( preg_replace( '/\s+/', ' ', (string) self::text_no_icons( $k ) ) );
+			if ( '' === $t || mb_strlen( $t ) > 48 ) { continue; }
+			$leaf = $k; while ( $leaf instanceof DOMElement && 1 === count( self::el_children( $leaf ) ) && '' === trim( self::own_text_of( $leaf ) ) ) { $leaf = self::el_children( $leaf )[0]; }
+			$out[ $zone ][] = array( 'text' => $t, 'cs' => (string) $leaf->getAttribute( 'data-sc-cs' ) );
+		}
+		return $out;
+	}
+
+	/** An element's own (direct) text, descendants excluded. */
+	private static function own_text_of( $el ) {
+		$t = ''; if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		foreach ( $el->childNodes as $c ) { if ( XML_TEXT_NODE === $c->nodeType ) { $t .= $c->nodeValue; } }
+		return trim( preg_replace( '/\s+/', ' ', $t ) );
+	}
+
 	private static function detect_logo( $html, $title ) {
-		$out = array( 'text' => '', 'tagline' => '', 'tagline_above' => false, 'icon' => '', 'image' => '', 'image_height' => 0, 'svg' => '', 'icon_color' => '', 'frame' => 'none', 'frame_bg' => '', 'title_color' => '', 'title_size' => '', 'title_weight' => '', 'title_font' => '', 'title_ls' => '', 'title_transform' => '', 'title_hover' => '', 'icon_size' => '', 'title_accent_color' => '', 'title_accent_text' => '' );
+		$out = array( 'text' => '', 'tagline' => '', 'tagline_above' => false, 'icon' => '', 'image' => '', 'image_height' => 0, 'svg' => '', 'icon_color' => '', 'frame' => 'none', 'frame_bg' => '', 'frame_border' => '', 'frame_size' => '', 'title_color' => '', 'title_size' => '', 'title_weight' => '', 'title_font' => '', 'title_ls' => '', 'title_transform' => '', 'title_hover' => '', 'icon_size' => '', 'title_accent_color' => '', 'title_accent_text' => '' );
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return $out; }
 		$header = self::header_root( $dom );
@@ -5251,11 +5747,27 @@ class FW_Site_Converter_Stitch {
 			if ( $brand_nonnav === null && ! $in_nav ) { $brand_nonnav = $a; }
 		}
 		$brand = $brand_img ? $brand_img : ( $brand_nonnav ? $brand_nonnav : $brand_any );
+		// The only home-anchor candidates are MENU links in a LINK CLUSTER (a masthead that IS the <nav>: every '#' link
+		// is "in nav", so the first menu item — "Products" — was read as the wordmark and became the site title). A
+		// link-less brand block (icon + wordmark span) that PRECEDES that cluster is the real brand → the leftmost slot.
+		if ( $brand instanceof DOMElement && $brand === $brand_any && null === $brand_img && $brand->parentNode instanceof DOMElement && $brand->parentNode->getElementsByTagName( 'a' )->length >= 2 ) {
+			$slot = self::header_brand_block( $header );
+			if ( $slot instanceof DOMElement && $slot !== $brand && ! self::is_ancestor( $slot, $brand ) && self::dom_precedes( $slot, $brand, $header ) ) { $brand = $slot; }
+		}
 		// No brand ANCHOR at all? Many sites use a LINK-LESS text/image logo — e.g. modfii's
 		// `<div class="flex items-center gap-2">Mod<span>Fii</span></div>` (no <a>). Falling back to the
 		// whole <header> made text_no_icons() harvest the ENTIRE header ("ModFiiFinancingResources…Get
 		// Started") as the wordmark. Locate the header's leftmost logo SLOT instead.
+		// A LINK-LESS masthead of plain labels (a fixed bar of "Headless Architecture · Brand Spatial · Low-Latency Node"): the
+		// label that starts with the <title>'s brand segment is the wordmark, wherever it sits — not the leftmost label.
 		if ( $brand === null ) { $brand = self::header_brand_block( $header ); }
+		if ( $brand instanceof DOMElement && 0 === $header->getElementsByTagName( 'a' )->length ) {
+			$leaf = self::title_matched_brand_leaf( $header, (string) $title );
+			if ( $leaf instanceof DOMElement && $leaf !== $brand && ! self::is_ancestor( $brand, $leaf ) ) {
+				$seg = mb_strtolower( self::title_brand_segment( (string) ( $header->ownerDocument && $header->ownerDocument->getElementsByTagName( 'title' )->item( 0 ) ? $header->ownerDocument->getElementsByTagName( 'title' )->item( 0 )->textContent : $title ) ) );
+				if ( '' === $seg || false === strpos( mb_strtolower( trim( preg_replace( '/\s+/', ' ', (string) self::text_no_icons( $brand ) ) ) ), $seg ) ) { $brand = $leaf; } // the leftmost slot is a label, the brand sits elsewhere
+			}
+		}
 		if ( $brand === null ) { $brand = $header; }
 
 		// Image logo?
@@ -5453,7 +5965,13 @@ class FW_Site_Converter_Stitch {
 			// Icon color: a `text-white`/`text-*` class or the svg's computed color; else the wordmark color.
 			$scls = self::cls( $svg );
 			if ( strpos( $scls, 'text-white' ) !== false ) { $out['icon_color'] = '#ffffff'; }
-			else { $out['icon_color'] = self::sc_css( $svg, 'color' ); }
+			else {
+				$out['icon_color'] = self::sc_css( $svg, 'color' );
+				// The capture never stamps an <svg> itself; a glyph painted with currentColor takes its ink from the nearest
+				// stamped ancestor (the <iconify-icon> host / the mark wrapper: `text-pearl` = black on a white circle). Without
+				// this the frame fallback below painted it white-on-white.
+				if ( '' === $out['icon_color'] ) { for ( $ap = $svg->parentNode, $ai = 0; $ap instanceof DOMElement && $ai < 3; $ap = $ap->parentNode, $ai++ ) { $ac = self::sc_css( $ap, 'color' ); if ( '' !== $ac ) { $out['icon_color'] = $ac; break; } } }
+			}
 			// Icon glyph size: computed width, else a Tailwind `w-N`/`w-[..]` class (N × 4px). e.g. `w-6` = 24px.
 			$isz = self::sc_css( $svg, 'width' );
 			if ( $isz === '' ) { $isz = self::tw_size_px( $scls ); }
@@ -5465,12 +5983,18 @@ class FW_Site_Converter_Stitch {
 			while ( $anc instanceof DOMElement && $anc !== $brand ) {
 				$bg = self::sc_css( $anc, 'background-color' );
 				$br = self::sc_css( $anc, 'border-radius' );
-				if ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba\([^)]*,\s*0\s*\)/i', $bg ) ) {
-					$out['frame_bg'] = $bg;
+				$has_fill = ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba\([^)]*,\s*0\s*\)/i', $bg ) );
+				// a RING tile — a bordered box with no fill (`w-8 h-8 rounded-lg border border-white/20`) — is a frame too; its hairline
+				// rides logo_custom_css since the frame option only has a fill (a finding filed on six conversions)
+				$bw = self::sc_css( $anc, 'border-top-width' ); $has_ring = ( '' !== $bw && preg_match( '/^([0-9.]+)px$/', $bw, $bwm ) && (float) $bwm[1] > 0 );
+				if ( $has_fill || $has_ring ) {
+					if ( $has_fill ) { $out['frame_bg'] = $bg; }
+					if ( $has_ring ) { $bc = self::sc_css( $anc, 'border-top-color' ); $out['frame_border'] = $bw . ' solid ' . ( '' !== $bc ? $bc : 'currentColor' ); }
 					$tile_px = self::sc_css( $anc, 'width' );
 					if ( $tile_px === '' ) { $tile_px = self::tw_size_px( self::cls( $anc ) ); }
+					if ( '' !== $tile_px ) { $out['frame_size'] = $tile_px; }
 					$out['frame'] = self::infer_frame_shape( $br, $tile_px );
-					if ( $out['icon_color'] === '' ) { $out['icon_color'] = '#ffffff'; } // colored tile ⇒ white mark
+					if ( $has_fill && $out['icon_color'] === '' ) { $out['icon_color'] = '#ffffff'; } // colored tile ⇒ white mark
 					break;
 				}
 				$anc = $anc->parentNode;
@@ -5645,6 +6169,11 @@ class FW_Site_Converter_Stitch {
 			$cls = self::cls( $i );
 			if ( preg_match( '/\blucide-([a-z0-9-]+)/', $cls, $m ) ) { return 'lucide/' . $m[1]; }
 		}
+		// lucide-react / lucide-static render the icon as `<svg class="lucide lucide-star …">` — the commonest shape on AI-built
+		// pages; it was invisible here, so every such card lost its icon (a fixture from the feed)
+		foreach ( $node->getElementsByTagName( 'svg' ) as $sv ) {
+			if ( preg_match( '/(?:^|\s)lucide-([a-z0-9-]+)(?:\s|$)/', self::cls( $sv ), $m ) && 'lucide' !== $m[1] ) { return 'lucide/' . $m[1]; }
+		}
 		// iconify-icon icon="lucide:wind"
 		foreach ( $node->getElementsByTagName( '*' ) as $any ) {
 			$ic = trim( (string) $any->getAttribute( 'icon' ) );
@@ -5680,19 +6209,36 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** The footer's copyright line (a © / "rights reserved" text node), or '' if none. */
+	/** Plain text leaves (no link) that sit in the legal-link row beside the © line — a status label — as { text, color }. */
+	private static function detect_footer_legal_tail( $html ) {
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return array(); }
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( ! $footer ) { return array(); }
+		$cp = self::footer_copyright_el( $footer );
+		if ( ! ( $cp instanceof DOMElement ) || ! ( $cp->parentNode instanceof DOMElement ) ) { return array(); }
+		$out = array();
+		foreach ( self::el_children( $cp->parentNode ) as $sib ) {
+			if ( $sib === $cp || 0 === $sib->getElementsByTagName( 'a' )->length ) { continue; } // the row that holds the links
+			foreach ( self::el_children( $sib ) as $k ) {
+				if ( 'a' === strtolower( $k->tagName ) || 0 !== $k->getElementsByTagName( '*' )->length ) { continue; }
+				$t = trim( preg_replace( '/\s+/', ' ', (string) $k->textContent ) );
+				if ( '' === $t || mb_strlen( $t ) > 40 ) { continue; }
+				$c = self::color_keep_alpha( (string) self::sc_css( $k, 'color' ) );
+				$out[] = array( 'text' => $t, 'color' => $c );
+			}
+		}
+		return $out;
+	}
+
 	private static function detect_footer_copyright( $html ) {
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return ''; }
 		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
 		if ( ! $footer ) { return ''; }
 		$best = '';
-		foreach ( $footer->getElementsByTagName( 'p' ) as $p ) {
-			$t = trim( (string) $p->textContent );
-			if ( $t !== '' && ( strpos( $t, '©' ) !== false || stripos( $t, 'rights reserved' ) !== false || stripos( $t, 'copyright' ) !== false ) ) {
-				$best = $t;
-				break;
-			}
-		}
+		$cp = self::footer_copyright_el( $footer );
+		if ( $cp instanceof DOMElement ) { $best = trim( (string) $cp->textContent ); }
 		if ( $best !== '' ) {
 			// Normalize a year to the live token so it stays current.
 			$best = preg_replace( '/\b(19|20)\d{2}\b/', '{{current_year}}', $best, 1 );
@@ -5713,17 +6259,39 @@ class FW_Site_Converter_Stitch {
 		if ( ! $dom ) { return ''; }
 		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
 		if ( ! $footer ) { return ''; }
-		$copy_p = null;
-		foreach ( $footer->getElementsByTagName( 'p' ) as $p ) {
-			$t = trim( (string) $p->textContent );
-			if ( $t !== '' && ( strpos( $t, '©' ) !== false || stripos( $t, 'rights reserved' ) !== false || stripos( $t, 'copyright' ) !== false ) ) { $copy_p = $p; break; }
-		}
+		$copy_p = self::footer_copyright_el( $footer );
 		if ( ! ( $copy_p instanceof DOMElement ) || ! ( $copy_p->parentNode instanceof DOMElement ) ) { return ''; }
 		foreach ( self::el_children( $copy_p->parentNode ) as $sib ) {
-			if ( $sib === $copy_p || strtolower( $sib->tagName ) !== 'p' ) { continue; }
+			if ( $sib === $copy_p ) { continue; }
+			// a sibling <p>, OR a small status lockup (a status dot + one label span: "● System operational") — a text-only
+			// sibling with no link, ≤ 80 chars; a painted dot inside carries no text and is dropped with the wrapper
+			$stag = strtolower( $sib->tagName );
+			if ( 'p' !== $stag && ! ( in_array( $stag, array( 'div', 'span' ), true ) && $sib->getElementsByTagName( '*' )->length <= 3 ) ) { continue; }
 			if ( $sib->getElementsByTagName( 'a' )->length > 0 ) { continue; } // legal-link list — handled separately
 			$t = trim( preg_replace( '/\s+/', ' ', (string) $sib->textContent ) );
-			if ( $t !== '' && mb_strlen( $t ) <= 80 && stripos( $t, 'rights reserved' ) === false && strpos( $t, '©' ) === false ) { return $t; }
+			if ( $t !== '' && mb_strlen( $t ) <= 80 && stripos( $t, 'rights reserved' ) === false && strpos( $t, '©' ) === false ) { self::$bottom_tagline_dot = self::status_dot_html( $sib ); return $t; }
+		}
+		return '';
+	}
+
+	/** The status DOT of the last detected bottom-bar lockup (a kses-safe inline span, '' when none) — set by detect_footer_bottom_tagline. */
+	private static $bottom_tagline_dot = '';
+
+	/** A small painted empty leaf inside a status lockup ("● Node Connected": a `w-2 h-2 rounded-full bg-emerald-400` span before
+	 *  the label) → an inline dot the label can carry (`<span style="…">` — hex fill, kses-safe), or ''. */
+	private static function status_dot_html( $lockup ) {
+		if ( ! ( $lockup instanceof DOMElement ) ) { return ''; }
+		foreach ( $lockup->getElementsByTagName( '*' ) as $d ) {
+			if ( $d->getElementsByTagName( '*' )->length || '' !== trim( (string) $d->textContent ) ) { continue; }
+			$cs = (string) $d->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/background-color:\s*([^;]+)/i', $cs, $bm ) || preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent/i', $bm[1] ) ) { continue; }
+			$h = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $hm ) ? (float) $hm[1] : 0;
+			$w = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $cs, $wm ) ? (float) $wm[1] : $h;
+			if ( $h <= 0 || $h > 16 || $w > 16 ) { continue; }
+			$hex = self::color_to_hex( trim( $bm[1] ) ); if ( '' === $hex ) { continue; }
+			$round = ( false !== strpos( self::cls( $d ), 'rounded-full' ) || preg_match( '/border-radius:\s*(?:9999px|50%)/i', $cs ) ) ? '50%' : '0';
+			$gap = 8; if ( $d->parentNode instanceof DOMElement && preg_match( '/(?:^|;)\s*gap:\s*([0-9.]+)px/i', (string) $d->parentNode->getAttribute( 'data-sc-cs' ), $gm ) ) { $gap = (int) round( (float) $gm[1] ); }
+			return '<span style="display:inline-block;width:' . $w . 'px;height:' . $h . 'px;border-radius:' . $round . ';background-color:' . $hex . ';margin-right:' . $gap . 'px;vertical-align:middle"></span>';
 		}
 		return '';
 	}
@@ -5832,11 +6400,15 @@ class FW_Site_Converter_Stitch {
 		if ( ! $dom ) { return ''; }
 		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
 		if ( ! ( $footer instanceof DOMElement ) ) { return ''; }
+		// the brand column's TAGLINE (the same small paragraph detect_footer_tagline puts under the logo) is not a disclaimer —
+		// it was doubling into the copyright bar
+		$tagline = trim( preg_replace( '/\s+/', ' ', (string) self::detect_footer_tagline( $html ) ) );
 		foreach ( $footer->getElementsByTagName( 'p' ) as $p ) {
 			$cls = ' ' . strtolower( self::cls( $p ) ) . ' ';
 			if ( strpos( $cls, 'text-xs' ) === false && strpos( $cls, 'text-\[' ) === false ) { continue; }
 			$t = trim( preg_replace( '/\s+/', ' ', self::text( $p ) ) );
 			if ( mb_strlen( $t ) < 60 ) { continue; }
+			if ( '' !== $tagline && $t === $tagline ) { continue; }
 			if ( stripos( $t, 'all rights reserved' ) !== false ) { continue; } // the © line, not a disclaimer
 			return '<p class="footer-disclaimer">' . self::clean_inline_html( $p ) . '</p>';
 		}
@@ -5882,21 +6454,91 @@ class FW_Site_Converter_Stitch {
 		if ( ! $footer ) { return array(); }
 		$out  = array();
 		$seen = array();
+		$rows = array(); // the parents of recognised social links — their OTHER icon-only links belong to the same row
 		foreach ( $footer->getElementsByTagName( 'a' ) as $a ) {
 			$href = trim( (string) $a->getAttribute( 'href' ) );
 			$net  = self::social_network_of( $a, $href );
 			if ( $net === null || isset( $seen[ $net['key'] ] ) ) { continue; }
 			$seen[ $net['key'] ] = true;
+			if ( $a->parentNode instanceof DOMElement ) { $rows[ spl_object_hash( $a->parentNode ) ] = $a->parentNode; }
 			$link = preg_match( '~^https?://~i', $href ) ? $href : '#'; // real URL, else '#' (non-empty ⇒ renders)
 			$out[] = array(
 				'name'    => ucfirst( $net['key'] ),
 				'link'    => $link,
 				'new_tab' => 'yes',
 				'icon'    => array( 'type' => 'svg', 'svg-source' => 'library', 'svg-id' => $net['icon'] ),
+				'_el'     => $a,
 			);
 			if ( count( $out ) >= 8 ) { break; }
 		}
+		// The same icon row's OTHER icon-only links (a "terminal" / "cpu" glyph beside the GitHub mark — a network the library
+		// doesn't name) keep their place as profiles with their own inline glyph, in DOM order; the row is what the source shows.
+		if ( $out && $rows ) {
+			$ordered = array();
+			foreach ( $rows as $row ) {
+				foreach ( self::el_children( $row ) as $a ) {
+					if ( 'a' !== strtolower( $a->tagName ) || '' !== trim( self::text_no_icons( $a ) ) ) { continue; }
+					$known = null; foreach ( $out as $o ) { if ( isset( $o['_el'] ) && $o['_el'] === $a ) { $known = $o; break; } }
+					if ( $known ) { $ordered[] = $known; continue; }
+					$svg = null; foreach ( $a->getElementsByTagName( 'svg' ) as $sv ) { $svg = $sv; break; }
+					if ( ! $svg || ! $a->ownerDocument ) { continue; }
+					$markup = self::strip_cs( (string) $a->ownerDocument->saveHTML( $svg ) );
+					if ( '' === $markup || strlen( $markup ) > 8000 ) { continue; }
+					$ico = ''; foreach ( $a->getElementsByTagName( 'iconify-icon' ) as $ii ) { $ico = (string) $ii->getAttribute( 'icon' ); break; }
+					if ( '' === $ico ) { $ico = (string) $svg->getAttribute( 'data-sc-iconify' ); }
+					$name = ucwords( trim( preg_replace( '/[-_]+/', ' ', preg_replace( '/^[a-z0-9]+:|-(?:light|bold|fill|thin|regular|duotone|outline)$/', '', $ico ) ) ) );
+					if ( '' === $name ) { $name = 'Link ' . ( count( $ordered ) + 1 ); }
+					$href = trim( (string) $a->getAttribute( 'href' ) );
+					$ordered[] = array( 'name' => $name, 'link' => preg_match( '~^https?://~i', $href ) ? $href : '#', 'new_tab' => 'yes', 'icon' => array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => $markup, 'svg-id' => '' ) );
+					if ( count( $ordered ) >= 8 ) { break 2; }
+				}
+			}
+			foreach ( $out as $o ) { $found = false; foreach ( $ordered as $q ) { if ( isset( $q['_el'] ) && isset( $o['_el'] ) && $q['_el'] === $o['_el'] ) { $found = true; break; } } if ( ! $found ) { $ordered[] = $o; } }
+			$out = $ordered;
+		}
+		// NO named network at all, but an ICON-ONLY LINK ROW (≥ 2 glyph links side by side — a terminal / cpu / activity
+		// trio under an "Interface" label): the row IS the source's social slot. Its links become profiles with their own
+		// inline glyphs, in order — never the theme's default Facebook / X / Instagram set, which the source never showed.
+		if ( ! $out ) {
+			$row = self::footer_icon_link_row( $footer );
+			if ( $row ) {
+				foreach ( self::el_children( $row ) as $a ) {
+					if ( 'a' !== strtolower( $a->tagName ) || '' !== trim( self::text_no_icons( $a ) ) ) { continue; }
+					$svg = null; foreach ( $a->getElementsByTagName( 'svg' ) as $sv ) { $svg = $sv; break; }
+					if ( ! $svg || ! $a->ownerDocument ) { continue; }
+					$markup = self::strip_cs( (string) $a->ownerDocument->saveHTML( $svg ) );
+					if ( '' === $markup || strlen( $markup ) > 8000 ) { continue; }
+					$ico = ''; foreach ( $a->getElementsByTagName( 'iconify-icon' ) as $ii ) { $ico = (string) $ii->getAttribute( 'icon' ); break; }
+					if ( '' === $ico ) { $ico = (string) $svg->getAttribute( 'data-sc-iconify' ); }
+					$name = ucwords( trim( preg_replace( '/[-_]+/', ' ', preg_replace( '/^[a-z0-9]+:|-(?:light|bold|fill|thin|regular|duotone|outline)$/', '', $ico ) ) ) );
+					if ( '' === $name ) { $name = 'Link ' . ( count( $out ) + 1 ); }
+					$href = trim( (string) $a->getAttribute( 'href' ) );
+					$out[] = array( 'name' => $name, 'link' => preg_match( '~^https?://~i', $href ) ? $href : '#', 'new_tab' => 'yes', 'icon' => array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => $markup, 'svg-id' => '' ) );
+					if ( count( $out ) >= 8 ) { break; }
+				}
+			}
+		}
+		foreach ( $out as &$o ) { unset( $o['_el'] ); } unset( $o );
 		return $out;
+	}
+
+	/** The footer's icon-only link ROW (a parent whose element children are ≥ 2 glyph-only `<a>`s), or null. */
+	private static function footer_icon_link_row( $footer ) {
+		if ( ! ( $footer instanceof DOMElement ) ) { return null; }
+		$parents = array();
+		foreach ( $footer->getElementsByTagName( 'a' ) as $a ) {
+			if ( '' !== trim( self::text_no_icons( $a ) ) ) { continue; }
+			if ( ! $a->getElementsByTagName( 'svg' )->length && ! $a->getElementsByTagName( 'iconify-icon' )->length && ! $a->getElementsByTagName( 'i' )->length ) { continue; }
+			$par = $a->parentNode; if ( ! ( $par instanceof DOMElement ) ) { continue; }
+			$k = spl_object_hash( $par ); if ( ! isset( $parents[ $k ] ) ) { $parents[ $k ] = array( 'el' => $par, 'n' => 0 ); } $parents[ $k ]['n']++;
+		}
+		foreach ( $parents as $pinfo ) {
+			if ( $pinfo['n'] < 2 ) { continue; }
+			$kids = self::el_children( $pinfo['el'] ); $links = 0;
+			foreach ( $kids as $k ) { if ( 'a' === strtolower( $k->tagName ) ) { $links++; } }
+			if ( $links >= 2 && $links === count( $kids ) ) { return $pinfo['el']; }
+		}
+		return null;
 	}
 
 	/**
@@ -5917,6 +6559,10 @@ class FW_Site_Converter_Stitch {
 		$chip = null;
 		foreach ( $footer->getElementsByTagName( 'a' ) as $a ) {
 			if ( self::social_network_of( $a, (string) $a->getAttribute( 'href' ) ) !== null ) { $chip = $a; break; }
+		}
+		if ( ! ( $chip instanceof DOMElement ) ) { // no named network: the icon-only link row's first link is the chip (detect_footer_social's fallback)
+			$row = self::footer_icon_link_row( $footer );
+			if ( $row ) { foreach ( self::el_children( $row ) as $k ) { if ( 'a' === strtolower( $k->tagName ) ) { $chip = $k; break; } } }
 		}
 		if ( ! ( $chip instanceof DOMElement ) ) { return array(); }
 
@@ -6071,10 +6717,11 @@ class FW_Site_Converter_Stitch {
 		return false;
 	}
 
-	private static function band_is_copyright( $el ) {
+	private static function band_is_copyright( $el, $is_last = false ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		$t = strtolower( trim( preg_replace( '/\s+/', ' ', (string) $el->textContent ) ) );
 		if ( $t === '' ) { return false; }
+		if ( $is_last && self::band_is_label_bar( $el ) ) { return true; }
 		if ( strpos( $t, '©' ) !== false || strpos( $t, '&copy;' ) !== false || strpos( $t, 'copyright' ) !== false
 			|| strpos( $t, 'rights reserved' ) !== false || strpos( $t, 'all rights' ) !== false ) { return true; }
 		// Or a short strip that is predominantly legal links (Privacy / Terms / Cookies) and little else —
@@ -6091,6 +6738,29 @@ class FW_Site_Converter_Stitch {
 			if ( ! $has_heading && self::band_column_count( $el ) < 2 ) { return true; }
 		}
 		return false;
+	}
+
+	/**
+	 * A footer BOTTOM BAR without a © line: a flex row of ≥ 2 short (≤ 8 words), small (≤ 14px) text cells and
+	 * nothing else — "Studio name · palette · site claim". The theme's Copyright bar IS that bottom bar (its
+	 * columns auto-align left / centre / right), so the band routes there instead of being dropped.
+	 * @return array|false the cell texts, or false
+	 */
+	private static function band_is_label_bar( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'img', 'svg', 'form', 'input', 'ul' ) as $tag ) { if ( $el->getElementsByTagName( $tag )->length ) { return false; } }
+		$disp = strtolower( self::sc_css( $el, 'display' ) );
+		if ( $disp !== 'flex' && $disp !== 'grid' && $disp !== 'inline-flex' ) { return false; }
+		$cells = array();
+		foreach ( self::el_children( $el ) as $k ) {
+			$t = trim( preg_replace( '/\s+/', ' ', self::text( $k ) ) );
+			if ( $t === '' ) { continue; }
+			if ( str_word_count( preg_replace( '/[^a-z0-9 ]/i', ' ', $t ) ) > 8 || mb_strlen( $t ) > 60 ) { return false; }
+			$fs = self::sc_css( $k, 'font-size' ); if ( $fs === '' ) { $fs = self::sc_css( $el, 'font-size' ); }
+			if ( preg_match( '/^([0-9.]+)px$/', $fs, $m ) && (float) $m[1] > 14 ) { return false; }
+			$cells[] = $t;
+		}
+		return count( $cells ) >= 2 ? $cells : false;
 	}
 
 	/** Rough column count of a band = the widest grid/flex row's element-child count (for main-anchor ranking). */
@@ -6135,7 +6805,7 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( count( $rows ) < 2 ) { return array(); }
 		// STRONG signal gate: a border divider on some row, a copyright strip, OR a row with its OWN opaque
-		// background fill that differs from the footer's (a coloured CTA band — the jukeboxburgers red
+		// background fill that differs from the footer's (a coloured CTA band — the burger-source's red
 		// "Craving a Juicy Burger?" pre-footer sits in a `bg-primary` div above the white link grid). Without a
 		// strong signal, treat the footer as one band (don't split a normal single-row footer into false strips).
 		$footer_bg = self::color_to_hex( (string) self::sc_css( $footer, 'background-color' ) );
@@ -6149,8 +6819,12 @@ class FW_Site_Converter_Stitch {
 		foreach ( $rows as $r ) {
 			$c = ' ' . strtolower( self::cls( $r ) ) . ' ';
 			if ( strpos( $c, 'border-t' ) !== false || strpos( $c, 'border-b' ) !== false ) { $strong = true; break; }
-			if ( self::band_is_copyright( $r ) ) { $strong = true; break; }
+			if ( self::band_is_copyright( $r, $r === end( $rows ) ) ) { $strong = true; break; }
 			if ( $is_filled_band( $r ) ) { $strong = true; break; }
+			// A computed top hairline on a later row (border-top:1px solid rgba(...) with no border-t class) is
+			// the same divider signal as the utility class.
+			$bw = self::sc_css( $r, 'border-top-width' ); $bs = self::sc_css( $r, 'border-top-style' ); $bc = self::sc_css( $r, 'border-top-color' );
+			if ( $r !== reset( $rows ) && $bw !== '' && (float) $bw > 0 && $bs !== '' && $bs !== 'none' && $bc !== '' && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bc ) ) { $strong = true; break; }
 		}
 		if ( ! $strong ) { return array(); }
 		$doc  = $footer->ownerDocument;
@@ -6161,7 +6835,7 @@ class FW_Site_Converter_Stitch {
 			if ( trim( $inner ) === '' ) { continue; }
 			$out[] = array(
 				'html'         => '<footer class="' . esc_attr( $fcls ) . '">' . $inner . '</footer>',
-				'is_copyright' => self::band_is_copyright( $r ),
+				'is_copyright' => self::band_is_copyright( $r, $r === end( $rows ) ),
 				'ncols'        => self::band_column_count( $r ),
 				// The band's own custom-styling fields (opaque background + borders) so a coloured band (the red
 				// CTA) can carry its fill onto its Pre/Post bar. Prefix is fixed up per-bar by the router.
@@ -6174,7 +6848,7 @@ class FW_Site_Converter_Stitch {
 	/**
 	 * Split a leading FILLED CTA band out of the footer. A footer's first band-level child can be a coloured
 	 * call-to-action (an opaque fill different from the footer's own bg) holding a lead heading + a button —
-	 * the jukeboxburgers red "Craving a Juicy Burger? … BOOK A TABLE" pre-footer, which lives INSIDE `<footer>`
+	 * the burger-source's red "Craving a Juicy Burger? … BOOK A TABLE" pre-footer, which lives INSIDE `<footer>`
 	 * above the white link grid. Left in place it renders white-on-white in the main footer's brand column (its
 	 * heading/button are white, designed for the red band) and its subtitle leaks in as the brand tagline. This
 	 * lifts that band OUT so it becomes its own Pre-Footer bar (with its fill), and returns the REST of the page
@@ -6240,6 +6914,23 @@ class FW_Site_Converter_Stitch {
 	 * @param string $html footer-scoped markup
 	 * @return array<int,array{label:string,url:string}>
 	 */
+	/** Side channel of footer_flat_links: { row, gap, justify, skin } of the links' container / first link. */
+	private static $flat_links_meta = array();
+
+	/** Scoped CSS that lays the flat-link column out like the source (a horizontal, end-justified row of pill links)
+	 *  — '' when the source stacks them. Targets the theme's footer list, which only the flat fallback fills. */
+	private static function footer_flat_links_css() {
+		$m = self::$flat_links_meta;
+		if ( empty( $m ) || empty( $m['row'] ) ) { return ''; }
+		$d = array( 'display:flex', 'flex-wrap:wrap', 'list-style:none', 'padding:0', 'margin:0', 'align-items:center' );
+		if ( preg_match( '/^([0-9.]+)px/', (string) $m['gap'], $gm ) ) { $d[] = 'gap:' . (int) round( (float) $gm[1] ) . 'px'; }
+		$jmap = array( 'flex-end' => 'flex-end', 'end' => 'flex-end', 'center' => 'center', 'space-between' => 'space-between', 'flex-start' => 'flex-start' );
+		if ( isset( $jmap[ (string) $m['justify'] ] ) ) { $d[] = 'justify-content:' . $jmap[ (string) $m['justify'] ]; }
+		$css = "\n/* Source footer: a horizontal row of links */\n.footer-column ul.footer-links-list{" . implode( ';', $d ) . ";}\n.footer-column ul.footer-links-list > li{margin:0;}";
+		if ( '' !== (string) $m['skin'] ) { $css .= "\n.footer-column ul.footer-links-list > li > .list-item{display:inline-block;" . $m['skin'] . ";}"; }
+		return $css;
+	}
+
 	private static function footer_flat_links( $html ) {
 		$out = array();
 		if ( ! is_string( $html ) || '' === trim( $html ) ) { return $out; }
@@ -6259,6 +6950,7 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( ! $scope ) { $scope = $dom; }
 		$seen = array();
+		self::$flat_links_meta = array();
 		foreach ( $scope->getElementsByTagName( 'a' ) as $a ) {
 			$label = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $a ) ) );
 			if ( '' === $label || mb_strlen( $label ) > 40 ) { continue; }
@@ -6266,6 +6958,22 @@ class FW_Site_Converter_Stitch {
 			$key = mb_strtolower( $label );
 			if ( isset( $seen[ $key ] ) ) { continue; }
 			$seen[ $key ] = 1;
+			// The FIRST link's container layout + the link's own pill skin (a footer's `flex gap-14 justify-end` row of
+			// rounded, tinted links): the column's List Items otherwise stack vertically in the theme's default list.
+			if ( empty( self::$flat_links_meta ) && $a->parentNode instanceof DOMElement ) {
+				$pcs = (string) $a->parentNode->getAttribute( 'data-sc-cs' );
+				$g = function ( $cs, $pr ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $pr, '/' ) . ':\s*([^;]+)/i', $cs, $m ) ? trim( $m[1] ) : ''; };
+				$row = preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $pcs ) && ! preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $pcs );
+				$acs = (string) $a->getAttribute( 'data-sc-cs' ); $skin = array();
+				foreach ( array( 'background-color', 'padding', 'border-radius', 'font-size', 'letter-spacing', 'text-transform', 'line-height' ) as $pr ) {
+					$v = $g( $acs, $pr );
+					if ( '' === $v || 'none' === $v || '0px' === $v || 'normal' === $v || preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent/i', $v ) || ! preg_match( '/^[a-z0-9(),.\s#%-]+$/i', $v ) ) { continue; }
+					$skin[] = $pr . ':' . $v;
+				}
+				$bw = $g( $acs, 'border-top-width' ); $bc = $g( $acs, 'border-top-color' );
+				if ( preg_match( '/^[0-9.]+px$/', $bw ) && '0px' !== $bw && '' !== $bc && preg_match( '/^[a-z0-9(),.\s#%]+$/i', $bc ) ) { $skin[] = 'border:' . $bw . ' solid ' . $bc; }
+				self::$flat_links_meta = array( 'row' => $row, 'gap' => $g( $pcs, 'gap' ), 'justify' => $g( $pcs, 'justify-content' ), 'skin' => implode( ';', $skin ) );
+			}
 			$href = trim( (string) $a->getAttribute( 'href' ) );
 			if ( 0 === stripos( $href, 'javascript:' ) ) { $href = ''; }
 			$out[] = array( 'label' => $label, 'url' => $href );
@@ -6311,14 +7019,20 @@ class FW_Site_Converter_Stitch {
 			return $els;
 		}
 
+		// SOCIAL column → its heading + the site's social icons (where the source puts them).
+		if ( ( $group['kind'] ?? '' ) === 'social' ) {
+			$els = array(); $h = $mk_heading( 'h4' ); if ( $h ) { $els[] = $h; }
+			$els[] = array( 'element_type' => array( 'element' => 'social_icons' ) );
+			return $els;
+		}
 		// NEWSLETTER column → the native newsletter element (unchanged).
 		if ( ( $group['kind'] ?? '' ) === 'newsletter' && ! empty( $group['newsletter'] ) ) {
 			$nw = $group['newsletter'];
 			return array( array( 'element_type' => array( 'element' => 'newsletter', 'newsletter' => array(
-				'title'             => $title,
-				'description'       => (string) ( $nw['tagline'] ?? '' ),
-				'email_placeholder' => ( ! empty( $nw['placeholder'] ) ? (string) $nw['placeholder'] : 'Your email address' ),
-				'button_label'      => ( ! empty( $nw['button'] ) ? (string) $nw['button'] : 'Subscribe' ),
+				'newsletter_title' => $title,
+				'newsletter_desc' => (string) ( $nw['tagline'] ?? '' ),
+				'newsletter_email_ph' => ( ! empty( $nw['placeholder'] ) ? (string) $nw['placeholder'] : 'Your email address' ),
+				'newsletter_button' => ( ! empty( $nw['button'] ) ? (string) $nw['button'] : 'Subscribe' ),
 				'show_name'         => 'no',
 				'design'            => 'inline',
 			) ) ) );
@@ -6394,9 +7108,66 @@ class FW_Site_Converter_Stitch {
 		// row) — matching the footer builder, which forces auto for count >= 7 (see footer-builder.php).
 		$wide = self::detect_footer_wide_brand( (string) $html, $count );
 		if ( $count >= 7 ) { $bar[ $prefix . '_auto' ] = 'yes'; $bar[ $prefix . '_justify' ] = 'between'; }
-		elseif ( $count >= 2 && 5 !== $count ) { $bar[ $prefix . '_split' ] = self::footer_split_segments( $count, $wide ); }
+		elseif ( $count >= 2 && 5 !== $count ) {
+			// MEASURED first: the source row's computed grid tracks (747.5px 552.5px → 57 / 43) when the track
+			// count matches the column count; the equal / wide-brand heuristic only when there is no such row.
+			$measured = self::footer_measured_split( (string) $html, $count );
+			$bar[ $prefix . '_split' ] = $measured ? $measured : self::footer_split_segments( $count, $wide );
+		}
 		elseif ( 5 === $count ) { $bar[ $prefix . '_layout' ] = '5-equal'; }
 		return array( 'count' => (string) $count, (string) $count => $bar );
+	}
+
+	/** The footer's MAIN row (the grid / flex row with the most text and ≥ 2 content children), or null. */
+	private static function footer_main_row_el( $scope ) {
+		if ( ! ( $scope instanceof DOMElement ) ) { return null; }
+		$best = null; $bestt = -1;
+		foreach ( $scope->getElementsByTagName( 'div' ) as $d ) {
+			$disp = strtolower( self::sc_css( $d, 'display' ) );
+			if ( $disp !== 'grid' && $disp !== 'flex' ) { continue; }
+			$n = 0; foreach ( self::el_children( $d ) as $k ) { if ( trim( $k->textContent ) !== '' || $k->getElementsByTagName( 'img' )->length ) { $n++; } }
+			if ( $n < 2 ) { continue; }
+			$t = mb_strlen( trim( preg_replace( '/\s+/', ' ', (string) $d->textContent ) ) );
+			if ( $t > $bestt ) { $bestt = $t; $best = $d; }
+		}
+		return $best;
+	}
+
+	/** Split segments from the main row's computed grid-template-columns when it has exactly $count px tracks
+	 *  that differ (≥ 5 % apart); array() otherwise (equal tracks → the caller's equal split is already right). */
+	private static function footer_measured_split( $html, $count ) {
+		$footer = self::footer_root_el( $html );
+		$row = self::footer_main_row_el( $footer );
+		if ( ! ( $row instanceof DOMElement ) ) { return array(); }
+		$gtc = self::sc_css( $row, 'grid-template-columns' );
+		if ( ! preg_match_all( '/([0-9.]+)px/', $gtc, $m ) || count( $m[1] ) !== (int) $count ) {
+			// A 12-TRACK grid whose cells SPAN (`grid-cols-12`: a `col-span-4` brand column beside a `col-span-8` that holds a nested
+			// `grid-cols-3` of link columns) has 12 px tracks, not one per column — the equal split squeezed the brand column to a
+			// quarter (a finding filed on thirteen conversions). Read each direct cell's span (`col-span-N`, else its measured
+			// `track-frac`), and split a nested grid's span evenly among its own columns; use it only when the count matches.
+			$segs = array(); $kids = self::el_children( $row );
+			$ntracks = preg_match_all( '/([0-9.]+)px/', $gtc, $mm ) ? count( $mm[1] ) : 0;
+			foreach ( $kids as $k ) {
+				$kcls = self::cls( $k ); $span = self::col_span( $kcls );
+				$frac = 0.0; if ( preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/', (string) $k->getAttribute( 'data-sc-cs' ), $fm ) ) { $frac = (float) $fm[1]; }
+				if ( $span >= 1 && $ntracks >= 2 ) { $frac = $span / $ntracks; }
+				if ( $frac <= 0 ) { $segs = array(); break; }
+				$inner = self::grid_col_count( $k );
+				if ( $inner < 2 ) { $kd = strtolower( (string) self::sc_css( $k, 'display' ) ); if ( 'grid' === $kd && preg_match_all( '/[0-9.]+px/', (string) self::sc_css( $k, 'grid-template-columns' ), $im ) ) { $inner = count( $im[0] ); } }
+				if ( $inner >= 2 && count( self::el_children( $k ) ) >= $inner ) { for ( $i = 0; $i < $inner; $i++ ) { $segs[] = array( 'w' => $frac / $inner, 'name' => '' ); } }
+				else { $segs[] = array( 'w' => $frac, 'name' => '' ); }
+			}
+			if ( count( $segs ) !== (int) $count ) { return array(); }
+			$tot = array_sum( wp_list_pluck( $segs, 'w' ) ); if ( $tot <= 0 ) { return array(); }
+			foreach ( $segs as &$sg ) { $sg['w'] = (int) round( $sg['w'] / $tot * 100 ); } unset( $sg );
+			$segs[0]['w'] += 100 - array_sum( wp_list_pluck( $segs, 'w' ) );
+			return $segs;
+		}
+		$tracks = array_map( 'floatval', $m[1] ); $sum = array_sum( $tracks );
+		if ( $sum <= 0 || ( max( $tracks ) - min( $tracks ) ) / $sum < 0.05 ) { return array(); }
+		$segs = array(); foreach ( $tracks as $t ) { $segs[] = array( 'w' => (int) round( $t / $sum * 100 ), 'name' => '' ); }
+		$segs[0]['w'] += 100 - array_sum( wp_list_pluck( $segs, 'w' ) );
+		return $segs;
 	}
 
 	/**
@@ -6429,7 +7200,7 @@ class FW_Site_Converter_Stitch {
 
 	/**
 	 * The footer band's CTA LEAD heading element — an h1/h2 lockup, OR an h3 when the band is a CTA
-	 * (it holds a button-styled link, e.g. the jukeboxburgers "Craving a Juicy Burger? … BOOK A TABLE"
+	 * (it holds a button-styled link, e.g. the the burger restaurant source "Craving a Juicy Burger? … BOOK A TABLE"
 	 * pre-footer). h3 is admitted ONLY in a CTA band because bare h3/h4 are normal footer COLUMN titles;
 	 * requiring a CTA button keeps a column heading from being mistaken for the lead. A logo/brand column
 	 * (heading beside an <img>) is skipped. Shared by detect_footer_lead_heading() + footer_lead_css() so
@@ -6459,9 +7230,88 @@ class FW_Site_Converter_Stitch {
 		while ( $n && $n->nodeType !== XML_ELEMENT_NODE ) { $n = $n->nextSibling; }
 		if ( $n instanceof DOMElement && in_array( strtolower( $n->nodeName ), array( 'p', 'span', 'div' ), true ) ) {
 			$st = trim( preg_replace( '/\s+/', ' ', self::text( $n ) ) );
-			if ( $st !== '' && str_word_count( $st ) <= 14 ) { return $n; }
+			if ( $st !== '' && str_word_count( $st ) <= 40 ) { return $n; }
 		}
 		return null;
+	}
+
+	/** "margin-top:0 !important;" / "margin-bottom:0 !important;" for each vertical margin the source computes as 0 —
+	 *  significant_text_decls only carries POSITIVE margins, so a theme default (an h3's bottom margin) would
+	 *  otherwise leak into a lockup whose source had none. */
+	private static function zero_margin_decls( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		$out = '';
+		$m = preg_split( '/\s+/', trim( (string) self::sc_css( $el, 'margin' ) ) );
+		$mt = isset( $m[0] ) ? $m[0] : ''; $mb = isset( $m[2] ) ? $m[2] : $mt;
+		if ( $mt === '0px' ) { $out .= 'margin-top:0 !important;'; }
+		if ( $mb === '0px' ) { $out .= 'margin-bottom:0 !important;'; }
+		return $out;
+	}
+
+	/**
+	 * The footer's OWN brand lockup measures → scoped CSS on the footer logo element (the theme renders the header
+	 * logo there). The wordmark = the footer leaf whose text is the site title; its type (size / weight / colour /
+	 * tracking) → .footer .site-title-text. The mark = the svg beside it; when its wrapper paints NO frame the header's
+	 * framed circle is dropped in the footer and the glyph takes the footer's measured size + ink. '' when no lockup.
+	 */
+	private static function footer_brand_css( $html, $site_title ) {
+		$footer = self::footer_root_el( $html );
+		if ( ! ( $footer instanceof DOMElement ) || '' === trim( (string) $site_title ) ) { return ''; }
+		$want = strtolower( trim( preg_replace( '/\s+/', ' ', (string) $site_title ) ) );
+		$word = null;
+		foreach ( $footer->getElementsByTagName( '*' ) as $e ) {
+			if ( ! in_array( strtolower( $e->tagName ), array( 'span', 'div', 'a', 'p', 'strong', 'b' ), true ) ) { continue; }
+			if ( 0 !== $e->getElementsByTagName( '*' )->length ) { continue; }
+			if ( strtolower( trim( preg_replace( '/\s+/', ' ', self::text( $e ) ) ) ) === $want ) { $word = $e; break; }
+		}
+		if ( ! ( $word instanceof DOMElement ) ) { return ''; }
+		$css = '';
+		$wd = FW_Site_Converter_Mapper::cs_decls( (string) $word->getAttribute( 'data-sc-cs' ), array( 'font-size', 'font-weight', 'letter-spacing', 'color', 'text-transform' ) );
+		$d = array();
+		if ( ! empty( $wd['font-size'] ) && preg_match( '/^[0-9.]+px$/', $wd['font-size'] ) ) { $d[] = 'font-size:' . $wd['font-size']; }
+		if ( ! empty( $wd['font-weight'] ) && preg_match( '/^[1-9]00$/', $wd['font-weight'] ) ) { $d[] = 'font-weight:' . $wd['font-weight']; }
+		if ( ! empty( $wd['letter-spacing'] ) && preg_match( '/^-?[0-9.]+px$/', $wd['letter-spacing'] ) ) { $d[] = 'letter-spacing:' . $wd['letter-spacing']; }
+		if ( ! empty( $wd['color'] ) && preg_match( '/^rgba?\(/i', $wd['color'] ) ) { $d[] = 'color:' . $wd['color']; }
+		if ( $d ) { $css .= '.footer .site-title-text{' . implode( ' !important;', $d ) . ' !important;}'; }
+		// The mark beside the wordmark (a sibling svg / icon host, within the same lockup wrapper).
+		$wrap = $word->parentNode; $mark = null;
+		if ( $wrap instanceof DOMElement ) { foreach ( $wrap->getElementsByTagName( 'svg' ) as $sv ) { if ( ! self::is_ancestor( $word, $sv ) ) { $mark = $sv; break; } } }
+		if ( $mark instanceof DOMElement ) {
+			$host = $mark->parentNode; $tile = null;
+			for ( $ap = $host, $i = 0; $ap instanceof DOMElement && $ap !== $wrap && $i < 3; $ap = $ap->parentNode, $i++ ) {
+				$bg = self::sc_css( $ap, 'background-color' );
+				if ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bg ) ) { $tile = $ap; break; }
+			}
+			$m = array();
+			if ( ! $tile ) {
+				// unframed in the footer → no circle / tile there; the glyph is sized + inked by its host's computed style
+				$m[] = 'background:transparent'; $m[] = 'border-radius:0'; $m[] = 'box-shadow:none';
+				$hs = ( $host instanceof DOMElement ) ? self::sc_css( $host, 'font-size' ) : '';
+				$hh = ( $host instanceof DOMElement ) ? self::sc_css( $host, 'height' ) : '';
+				$sz = preg_match( '/^[0-9.]+px$/', $hh ) ? $hh : ( preg_match( '/^[0-9.]+px$/', $hs ) ? $hs : '' );
+				if ( '' !== $sz ) { $m[] = 'width:' . $sz; $m[] = 'height:' . $sz; $m[] = 'font-size:' . $sz; }
+				$hc = ( $host instanceof DOMElement ) ? self::sc_css( $host, 'color' ) : '';
+				if ( '' !== $hc ) { $m[] = 'color:' . $hc; }
+			}
+			if ( $m ) { $css .= '.footer .site-logo__mark{' . implode( ' !important;', $m ) . ' !important;}'; }
+		}
+		return $css;
+	}
+
+	/** The lead heading's EYEBROW: the previous element sibling when it is a short (≤ 40 chars) leaf that reads
+	 *  small (≤ 13px) or uppercase — "The Rooftop Footer" over a display heading. Null otherwise. */
+	private static function footer_lead_eyebrow_el( $h ) {
+		if ( ! ( $h instanceof DOMElement ) ) { return null; }
+		$n = $h->previousSibling;
+		while ( $n && $n->nodeType !== XML_ELEMENT_NODE ) { $n = $n->previousSibling; }
+		if ( ! ( $n instanceof DOMElement ) || ! in_array( strtolower( $n->nodeName ), array( 'div', 'span', 'p', 'small', 'em', 'strong' ), true ) ) { return null; }
+		if ( $n->getElementsByTagName( 'img' )->length || $n->getElementsByTagName( 'svg' )->length || $n->getElementsByTagName( 'a' )->length ) { return null; }
+		$t = trim( preg_replace( '/\s+/', ' ', self::text( $n ) ) );
+		if ( $t === '' || mb_strlen( $t ) > 40 || preg_match( '/[.!?]$/', $t ) ) { return null; }
+		$fs = self::sc_css( $n, 'font-size' );
+		$small = preg_match( '/^([0-9.]+)px$/', $fs, $m ) && (float) $m[1] <= 13;
+		$upper = stripos( self::sc_css( $n, 'text-transform' ), 'uppercase' ) !== false || ( preg_match( '/[a-z]/i', $t ) && $t === mb_strtoupper( $t ) );
+		return ( $small || $upper ) ? $n : null;
 	}
 
 	/** The footer band's CTA button (a button-styled <a> with a text label), or null. */
@@ -6497,14 +7347,25 @@ class FW_Site_Converter_Stitch {
 		if ( $centered ) { $css .= '.footer-lead{text-align:center;}'; }
 		// The complete text translator (max-width / margin / padding / line-height / letter-spacing / size /
 		// weight / align / colour), PLUS font-family (a wordmark concern the general helper leaves out).
-		$d = self::cs_decl_str( $h, array( 'font-family' ) ) . self::significant_text_decls( (string) $h->getAttribute( 'data-sc-cs' ), array(), true );
+		$dff = self::cs_decl_str( $h, array( 'font-family' ) );
+		$d   = ( $dff !== '' ? $dff . ';' : '' ) . self::significant_text_decls( (string) $h->getAttribute( 'data-sc-cs' ), array(), true );
+		$d .= self::zero_margin_decls( $h );
 		if ( $d !== '' ) { $css .= '.footer-lead-title{' . $d . '}'; }
+		// The lockup's EYEBROW (a small mono / uppercase label above the lead heading) — its type (family,
+		// size, tracking, case, colour with its alpha) as a scoped rule. JS twin: footerLeadEyebrow.
+		$eb = self::footer_lead_eyebrow_el( $h );
+		if ( $eb instanceof DOMElement ) {
+			$dff2 = self::cs_decl_str( $eb, array( 'font-family' ) );
+			$d0   = ( $dff2 !== '' ? $dff2 . ';' : '' ) . self::significant_text_decls( (string) $eb->getAttribute( 'data-sc-cs' ), array(), true );
+			$css .= '.footer-lead-eyebrow{display:block;' . $d0 . self::zero_margin_decls( $eb ) . '}';
+		}
 		if ( $sub instanceof DOMElement ) {
 			$d2 = self::significant_text_decls( (string) $sub->getAttribute( 'data-sc-cs' ), array(), true );
 			// A capped subtitle (`max-w-md mx-auto`) keeps only its max-width (the horizontal auto-margins are
 			// dropped by significant_text_decls), so it pins LEFT instead of centring under the heading. When the
 			// lockup is centred, re-assert the auto side-margins so the narrowed box sits centred like the source.
 			if ( $centered && stripos( $d2, 'max-width' ) !== false ) { $d2 .= 'margin-left:auto !important;margin-right:auto !important;'; }
+			$d2 .= self::zero_margin_decls( $sub );
 			if ( $d2 !== '' ) { $css .= '.footer-lead-subtitle{' . $d2 . '}'; }
 		}
 		// The CTA button's fill / ink / padding / radius / typography → a scoped `.footer-lead-btn` rule so the
@@ -6539,7 +7400,10 @@ class FW_Site_Converter_Stitch {
 		// Bake the source's computed look via scoped `.footer-lead-*` rules (footer_lead_css), NOT inline
 		// styles — the Text element's kses would drop inline soup, and scoped rules are the documented pattern.
 		// CLEAN semantic HTML only, wrapped in `.footer-lead` so the whole CTA lockup can be centred as one.
-		$out = '<h3 class="footer-lead-title">' . self::clean_inline_html( $h ) . '</h3>';
+		$out = '';
+		$eb  = self::footer_lead_eyebrow_el( $h );
+		if ( $eb instanceof DOMElement ) { $out .= '<span class="footer-lead-eyebrow">' . esc_html( trim( preg_replace( '/\s+/', ' ', self::text( $eb ) ) ) ) . '</span>'; }
+		$out .= '<h3 class="footer-lead-title">' . self::clean_inline_html( $h ) . '</h3>';
 		$sub = self::footer_lead_subtitle_el( $h );
 		if ( $sub instanceof DOMElement ) { $out .= '<p class="footer-lead-subtitle">' . self::clean_inline_html( $sub ) . '</p>'; }
 		// The CTA button ("BOOK A TABLE") — carried as a real link with the `.footer-lead-btn` skin. Text label
@@ -6579,6 +7443,30 @@ class FW_Site_Converter_Stitch {
 		return esc_html( $line );
 	}
 
+	/** LABEL elements acting as footer column titles: a short uppercase / tracked leaf <div>/<span>/<p> that OPENS a column of ≥ 2 links. */
+	private static function footer_label_heads( $footer ) {
+		$out = array();
+		if ( ! ( $footer instanceof DOMElement ) ) { return $out; }
+		foreach ( array( 'div', 'span', 'p' ) as $ltag ) {
+			foreach ( $footer->getElementsByTagName( $ltag ) as $lb ) {
+				if ( 0 !== $lb->getElementsByTagName( '*' )->length ) { continue; } // a leaf
+				$lt = trim( preg_replace( '/\s+/', ' ', (string) $lb->textContent ) );
+				if ( '' === $lt || mb_strlen( $lt ) > 24 || str_word_count( $lt ) > 3 ) { continue; }
+				$lcs = (string) $lb->getAttribute( 'data-sc-cs' );
+				$upper = preg_match( '/text-transform:\s*uppercase/i', $lcs ) || ( preg_match( '/[a-z]/i', $lt ) && $lt === mb_strtoupper( $lt ) );
+				$tracked = preg_match( '/letter-spacing:\s*([0-9.]+)px/i', $lcs, $lsm ) && (float) $lsm[1] >= 1;
+				if ( ! $upper && ! $tracked ) { continue; }
+				$par = $lb->parentNode; if ( ! ( $par instanceof DOMElement ) ) { continue; }
+				$first = null; foreach ( self::el_children( $par ) as $pc ) { $first = $pc; break; }
+				if ( $first !== $lb ) { continue; } // the label OPENS its column
+				$links = 0; foreach ( self::el_children( $par ) as $pc ) { if ( 'a' === strtolower( $pc->tagName ) ) { $links++; } } if ( $links < 2 ) { $links = $par->getElementsByTagName( 'a' )->length; }
+				if ( $links < 2 ) { continue; }
+				$out[] = $lb;
+			}
+		}
+		return $out;
+	}
+
 	private static function detect_footer_columns( $html ) {
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return array(); }
@@ -6586,8 +7474,14 @@ class FW_Site_Converter_Stitch {
 		if ( ! $footer ) { return array(); }
 		$out  = array();
 		$seen = array(); // dedupe headings shared across h-levels
-		foreach ( array( 'h2', 'h3', 'h4', 'h5', 'h6' ) as $htag ) {
-			foreach ( $footer->getElementsByTagName( $htag ) as $h ) {
+		// The column TITLES: real headings, plus a LABEL <div> / <span> that acts as one — a short uppercase / tracked leaf
+		// ("NAVIGATION", "SOCIAL SIGNAL") that opens a column of ≥ 2 links (the source never used a heading tag).
+		$heads = array();
+		foreach ( array( 'h2', 'h3', 'h4', 'h5', 'h6' ) as $htag ) { foreach ( $footer->getElementsByTagName( $htag ) as $h ) { $heads[] = array( $h, $htag ); } }
+		foreach ( self::footer_label_heads( $footer ) as $lb ) { $heads[] = array( $lb, 'h4' ); }
+		foreach ( $heads as $hh ) {
+			{
+				list( $h, $htag ) = $hh;
 				$title = trim( preg_replace( '/\s+/', ' ', (string) $h->textContent ) );
 				if ( $title === '' || str_word_count( $title ) > 4 || isset( $seen[ $title ] ) ) { continue; }
 				$parent = $h->parentNode;
@@ -6693,11 +7587,21 @@ class FW_Site_Converter_Stitch {
 						$news = array( 'tagline' => $tagline, 'placeholder' => $ph, 'button' => ( $btn !== '' ? $btn : 'Subscribe' ) );
 					}
 				}
-				if ( count( $links ) >= 2 || count( $items ) >= 2 || ( $kind === 'contact' && count( $rows ) >= 1 ) || $news !== null ) {
-					$out[] = array( 'title' => $title, 'tag' => $htag, 'links' => $links, 'items' => $items, 'kind' => ( $news !== null ? 'newsletter' : $kind ), 'rows' => ( $kind === 'contact' ? $rows : array() ), 'newsletter' => $news, 'cls' => self::cls( $parent ) );
+				// A SOCIAL column: a heading ("Telemetry" / "Follow us") over a row of ≥ 2 icon-only links (an svg / iconify / icon-font
+				// glyph, no label) and nothing else → its own column kind: the heading + the site's social icons, where the source
+				// puts them (they were hung on the brand column and this column vanished).
+				$social_n = 0;
+				if ( count( $links ) < 2 && count( $items ) < 2 && $kind !== 'contact' && null === $news ) {
+					foreach ( $parent->getElementsByTagName( 'a' ) as $a ) {
+						if ( '' !== trim( self::text_no_icons( $a ) ) ) { continue; }
+						if ( $a->getElementsByTagName( 'svg' )->length || $a->getElementsByTagName( 'iconify-icon' )->length || $a->getElementsByTagName( 'i' )->length || $a->getElementsByTagName( 'img' )->length ) { $social_n++; }
+					}
+				}
+				if ( count( $links ) >= 2 || count( $items ) >= 2 || ( $kind === 'contact' && count( $rows ) >= 1 ) || $news !== null || $social_n >= 2 ) {
+					$out[] = array( 'title' => $title, 'tag' => $htag, 'links' => $links, 'items' => $items, 'kind' => ( $news !== null ? 'newsletter' : ( $social_n >= 2 ? 'social' : $kind ) ), 'rows' => ( $kind === 'contact' ? $rows : array() ), 'newsletter' => $news, 'cls' => self::cls( $parent ), 'append_social' => ( $social_n >= 2 ) );
 					$seen[ $title ] = true;
 				}
-				if ( count( $out ) >= 8 ) { break 2; }
+				if ( count( $out ) >= 8 ) { break; }
 			}
 		}
 		return $out;
@@ -6820,15 +7724,12 @@ class FW_Site_Converter_Stitch {
 		if ( ! $footer ) { return array(); }
 		// Find the copyright © node, then collect the sibling links within its band.
 		$band = null;
-		foreach ( $footer->getElementsByTagName( 'p' ) as $p ) {
-			$t = (string) $p->textContent;
-			if ( strpos( $t, '©' ) !== false || stripos( $t, 'rights reserved' ) !== false || stripos( $t, 'copyright' ) !== false ) {
-				// Walk up a couple of levels to the band that also holds the legal links.
-				$band = $p->parentNode instanceof DOMElement ? $p->parentNode : null;
-				break;
-			}
-		}
+		$cp = self::footer_copyright_el( $footer );
+		if ( $cp instanceof DOMElement ) { $band = $cp->parentNode instanceof DOMElement ? $cp->parentNode : null; } // the band that also holds the legal links
 		if ( ! ( $band instanceof DOMElement ) ) { return array(); }
+		// a ONE-ROW footer (logo | links | ©): the © shares its row with the BRAND and the main links — those are the menu, not
+		// legal links; they were cloned into the copyright bar beneath the same links (a fixture from the feed)
+		if ( self::footer_is_single_row( $footer ) ) { return array(); }
 		$out = array();
 		foreach ( $band->getElementsByTagName( 'a' ) as $a ) {
 			$lbl = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $a ) ) );
@@ -6856,10 +7757,22 @@ class FW_Site_Converter_Stitch {
 		$footer = self::footer_root_el( $html );
 		if ( ! ( $footer instanceof DOMElement ) ) { return ''; }
 		$h = null;
+		// the first COLUMN title: a heading whose parent holds a link list (≥ 2 links), else a LABEL div / span that opens one
+		// (the same titles detect_footer_columns builds on) — never the footer's lead h2 ("Ready to float?" at 48px)
+		$links_in = function ( $el ) { return ( $el->parentNode instanceof DOMElement ) ? $el->parentNode->getElementsByTagName( 'a' )->length : 0; };
 		foreach ( array( 'h3', 'h4', 'h5', 'h6', 'h2' ) as $tag ) {
 			foreach ( $footer->getElementsByTagName( $tag ) as $el ) {
 				$t = trim( preg_replace( '/\s+/', ' ', (string) $el->textContent ) );
-				if ( $t !== '' && str_word_count( $t ) <= 4 && ! self::band_is_copyright( $el ) ) { $h = $el; break 2; }
+				if ( $t !== '' && str_word_count( $t ) <= 4 && ! self::band_is_copyright( $el ) && $links_in( $el ) >= 2 ) { $h = $el; break 2; }
+			}
+		}
+		if ( ! ( $h instanceof DOMElement ) ) { foreach ( self::footer_label_heads( $footer ) as $lb ) { $h = $lb; break; } }
+		if ( ! ( $h instanceof DOMElement ) ) {
+			foreach ( array( 'h3', 'h4', 'h5', 'h6', 'h2' ) as $tag ) {
+				foreach ( $footer->getElementsByTagName( $tag ) as $el ) {
+					$t = trim( preg_replace( '/\s+/', ' ', (string) $el->textContent ) );
+					if ( $t !== '' && str_word_count( $t ) <= 4 && ! self::band_is_copyright( $el ) ) { $h = $el; break 2; }
+				}
 			}
 		}
 		if ( ! ( $h instanceof DOMElement ) ) { return ''; }
@@ -6870,6 +7783,8 @@ class FW_Site_Converter_Stitch {
 		$fw = self::sc_css( $h, 'font-weight' );     if ( preg_match( '/^(300|400|500|600|700|800|900)$/', trim( $fw ) ) ) { $decls .= 'font-weight:' . trim( $fw ) . ';'; }
 		$fs = self::sc_css( $h, 'font-size' );        if ( preg_match( '/^[0-9.]+px$/', trim( $fs ) ) ) { $decls .= 'font-size:' . trim( $fs ) . ';'; }
 		$c  = self::sc_css( $h, 'color' );            if ( $c !== '' ) { $decls .= 'color:' . $c . ';'; }
+		// measured = authoritative: outranks the generated site-wide heading family (which is !important)
+		$decls = str_replace( ';', ' !important;', $decls );
 		return $decls !== '' ? '.footer-links-title{' . $decls . '}' : '';
 	}
 
@@ -7486,8 +8401,48 @@ class FW_Site_Converter_Stitch {
 				// The stamp is a MEASUREMENT at the capture viewport; the source's DECLARED cap wins when it is
 				// larger (a `width:min(1440px, calc(100% - 48px))` shell measures 1392 at 1440 wide).
 				$d = self::declared_container_cap( (string) $html, $w );
-				return $d > 0 ? $d : $w;
+				$w = $d > 0 ? $d : $w;
+				$o = self::outer_container_wins( (string) $html, $w );
+				return $o > 0 ? $o : $w;
 			}
+		}
+		return 0;
+	}
+
+	/**
+	 * THE OUTER CONTAINER WINS over the inner caps it wraps. The stamp is the heaviest centred width by area, so a
+	 * `.container max-w-7xl px-6` (1280) whose bands centre a `max-w-6xl` (1152) block inside it stamped 1152 and the
+	 * theme's Container Width came out 128px under the design (a feed regression). When every element measuring the
+	 * stamped width sits INSIDE a centred box of a wider width (≤ 1.25×) that spans as many bands, that box is the site
+	 * container and the narrow one a per-section cap. Returns the outer width or 0. JS twin: capture.mjs (same rule).
+	 */
+	private static function outer_container_wins( $html, $w ) {
+		$dom = self::load_dom( $html ); if ( ! $dom ) { return 0; }
+		$inner = array(); $outer = array();
+		$band = function ( $el ) { for ( $a = $el; $a instanceof DOMElement; $a = $a->parentNode ) { if ( in_array( strtolower( $a->tagName ), array( 'section', 'header', 'footer', 'main', 'body' ), true ) ) { return $a; } } return null; };
+		foreach ( $dom->getElementsByTagName( '*' ) as $el ) {
+			$cs = (string) $el->getAttribute( 'data-sc-cs' ); if ( '' === $cs ) { continue; }
+			$cw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $cs, $m ) ? (float) $m[1] : 0.0;
+			$mw = preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/i', $cs, $m ) ? (float) $m[1] : 0.0;
+			$box = $cw >= 600 ? $cw : $mw; if ( $box < 600 ) { continue; }
+			if ( abs( $box - $w ) <= 8 ) { $inner[] = $el; continue; }
+			if ( $box <= $w || $box > $w * 1.25 ) { continue; }
+			$centred = (bool) preg_match( '/(?:^|;)\s*margin(?:-left)?:\s*(?:0px\s+)?(?:auto|[1-9][0-9.]*px)/i', $cs ) || preg_match( '/\b(?:mx-auto|container)\b/', self::cls( $el ) );
+			if ( ! $centred ) { continue; }
+			$k = (string) ( (int) round( $box / 8 ) * 8 ); $outer[ $k ][] = $el;
+		}
+		if ( ! $outer ) { return 0; }
+		if ( ! $inner ) { // nothing in this document measures the stamp (a band cut from a page whose other bands carried the inner cap): the centred container box IS the width
+			krsort( $outer, SORT_NUMERIC ); return (int) array_key_first( $outer );
+		}
+		$n_inner_bands = count( array_unique( array_map( function ( $e ) use ( $band ) { $b = $band( $e ); return $b ? spl_object_id( $b ) : 0; }, $inner ) ) );
+		krsort( $outer, SORT_NUMERIC );
+		foreach ( $outer as $k => $els ) {
+			$wraps = true;
+			foreach ( $inner as $ie ) { $ok = false; foreach ( $els as $oe ) { if ( $oe !== $ie && self::is_ancestor( $oe, $ie ) ) { $ok = true; break; } } if ( ! $ok ) { $wraps = false; break; } }
+			if ( ! $wraps ) { continue; }
+			$n_bands = count( array_unique( array_map( function ( $e ) use ( $band ) { $b = $band( $e ); return $b ? spl_object_id( $b ) : 0; }, $els ) ) );
+			if ( $n_bands >= (int) ceil( $n_inner_bands * 0.6 ) ) { return (int) $k; }
 		}
 		return 0;
 	}
@@ -7516,15 +8471,63 @@ class FW_Site_Converter_Stitch {
 	 * source's exact side breathing room at EVERY viewport, not just the capture width. 0 = leave the theme default.
 	 */
 	private static function declared_container_gutter( $html ) {
+		// THE CONTAINER'S OWN PADDING WINS over a stamped gutter that disagrees with it: the box that measures the stamped content
+		// width (`max-width:1400px … padding:0 24px`) carries its gutter INSIDE that width, so a stamp of 48 (a wider tier's value,
+		// a sibling band's inset) put the theme gutter OUTSIDE 1400 and the rail rendered 1304 (a fixture from the feed). Measured:
+		// the container's equal side padding, and the width is then an OUTER width.
+		if ( preg_match( '/<html\b[^>]*\bdata-sc-content-width\s*=\s*["\']?([0-9]+)/i', (string) $html, $wm0 ) ) {
+			$w0 = (int) $wm0[1]; $dom0 = self::load_dom( (string) $html );
+			if ( $dom0 && $w0 >= 600 ) {
+				foreach ( $dom0->getElementsByTagName( '*' ) as $c0 ) {
+					$c0cs = (string) $c0->getAttribute( 'data-sc-cs' ); if ( '' === $c0cs ) { continue; }
+					$c0w = preg_match( '/(?:^|;)\s*(?:max-)?width:\s*([0-9.]+)px/i', $c0cs, $c0m ) ? (float) $c0m[1] : 0.0;
+					if ( abs( $c0w - $w0 ) > 2 || ! preg_match( '/\b(?:container|mx-auto)\b/', self::cls( $c0 ) ) && ! preg_match( '/(?:^|;)\s*margin(?:-left)?:\s*(?:0px\s+)?(?:auto|[1-9][0-9.]*px)/i', $c0cs ) ) { continue; }
+					$pad0 = self::el_padding( $c0 ); $pl0 = (float) ( $pad0['base']['left'] ?? 0 ); $pr0 = (float) ( $pad0['base']['right'] ?? 0 );
+					if ( $pl0 > 0 && $pl0 <= 200 && abs( $pl0 - $pr0 ) < 1 ) { self::$gutter_inside = true; return (int) round( $pl0 ); }
+					break; // the first container-sized centred box decides
+				}
+			}
+		}
 		if ( preg_match( '/<html\b[^>]*\bdata-sc-content-gutter\s*=\s*["\']?([0-9]+)/i', (string) $html, $m ) ) {
 			$g = (int) $m[1];
 			if ( $g > 0 && $g <= 200 ) { return $g; }
 		}
 		$w = 0;
 		if ( preg_match( '/<html\b[^>]*\bdata-sc-content-width\s*=\s*["\']?([0-9]+)/i', (string) $html, $m ) ) { $w = (int) $m[1]; }
-		if ( $w < 600 ) { return 0; }
-		$r = self::declared_container_rule( $html, $w );
-		return (int) $r['gutter'];
+		if ( $w >= 600 ) {
+			$r = self::declared_container_rule( $html, $w );
+			if ( (int) $r['gutter'] > 0 ) { return (int) $r['gutter']; }
+		}
+		// (no content-width stamp — a fixture, an older capture — still measures the bands' padding below)
+		// MEASURED (JS twin: capture.mjs contentGutter fallback): no calc() rule — the gutter is the equal side padding of the
+		// sections' content containers (`mx-auto max-w-[1600px] px-8` → 32; a `<section class="px-8">` → 32). The mode wins.
+		$dom = self::load_dom( (string) $html ); if ( ! $dom ) { return 0; }
+		$tally = array();
+		foreach ( $dom->getElementsByTagName( 'section' ) as $sec ) {
+			$cands = array( $sec ); foreach ( self::el_children( $sec ) as $k ) { $cands[] = $k; }
+			foreach ( $cands as $c ) {
+				// only a CONTAINER-sized box counts (≥ 600px wide, or a declared max-width ≥ 600): a padded pill / card inside the band is not the gutter
+				$ccs = (string) $c->getAttribute( 'data-sc-cs' );
+				$cw  = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $ccs, $cwm ) ? (float) $cwm[1] : 0.0;
+				$cmw = preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/i', $ccs, $cmm ) ? (float) $cmm[1] : 0.0;
+				if ( $c !== $sec && $cw < 600 && $cmw < 600 ) { continue; }
+				$pad = self::el_padding( $c ); $pl = (float) ( $pad['base']['left'] ?? 0 ); $pr = (float) ( $pad['base']['right'] ?? 0 );
+				if ( $pl > 0 && $pl <= 200 && abs( $pl - $pr ) < 1 ) { $k = (int) round( $pl ); $tally[ $k ] = ( $tally[ $k ] ?? 0 ) + 1; break; }
+			}
+		}
+		if ( ! $tally ) { return 0; }
+		arsort( $tally ); $best = (int) array_key_first( $tally );
+		$n_secs = $dom->getElementsByTagName( 'section' )->length;
+		if ( $tally[ $best ] >= 2 || ( 1 === $n_secs && $tally[ $best ] >= 1 ) ) { self::$gutter_inside = true; return $best; } // one band = its padding is the gutter
+		return 0;
+	}
+
+	/** True when the container gutter sits INSIDE its measured width (the container's own padding — `max-w-7xl px-6`: 1280
+	 *  outer, 1232 content): the stamp `data-sc-content-gutter-inside`, or the measured-padding fallback above. */
+	private static $gutter_inside = false;
+	private static function container_gutter_inside( $html ) {
+		if ( preg_match( '/<html\b[^>]*\bdata-sc-content-gutter-inside\s*=\s*["\']?1/i', (string) $html ) ) { return true; }
+		return self::$gutter_inside;
 	}
 
 	/**
@@ -7604,9 +8607,7 @@ class FW_Site_Converter_Stitch {
 			if ( $px < 700 || $px > 1900 ) { continue; }
 			if ( in_array( strtolower( (string) $el->tagName ), $leaf, true ) ) { continue; } // reading-measure cap, not a band
 			$cls = ' ' . strtolower( self::cls( $el ) ) . ' ';
-			$centered = strpos( $cls, 'mx-auto' ) !== false || strpos( $cls, 'container' ) !== false
-				|| strpos( $cls, 'max-w-' ) !== false
-				|| preg_match( '/margin(?:-left|-right)?:\s*auto|(?:^|;)\s*margin:\s*[^;]*\bauto\b/', $cs );
+			$centered = self::cap_is_centred( $el, $cls, $cs );
 			if ( ! $centered ) { continue; }
 			$b = (int) round( $px );
 			$tally[ $b ] = ( $tally[ $b ] ?? 0 ) + 1;
@@ -7821,7 +8822,7 @@ class FW_Site_Converter_Stitch {
 		if ( ! ( $header instanceof DOMElement ) ) { return $out; }
 		// A floating / overlay header commonly paints its APPEARANCE (translucent fill, blur, shadow, border,
 		// pill radius) on an INNER "pill" container, while the <header> root is a transparent positioning
-		// wrapper (openhero nature previews: `<header class="fixed top-6 left-1/2 -translate-x-1/2"><div
+		// wrapper (AI-page nature previews: `<header class="fixed top-6 left-1/2 -translate-x-1/2"><div
 		// class="header-float rounded-full ...">`). Reading chrome off the root then saw nothing — the pill's
 		// frost/shadow/fill were dropped and the bar rendered flat + full-width. Read chrome off the pill when
 		// there is one, falling back to the header itself for a normal bar. Twin of the JS to-pages path.
@@ -7867,6 +8868,11 @@ class FW_Site_Converter_Stitch {
 		}
 		$bg = self::sc_css( $chrome, 'background-color' );
 		if ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba\([^)]*,\s*0\s*\)/i', $bg ) ) { $out['bg'] = $bg; }
+		// A GRADIENT header ground (`bg-gradient-to-b from-black/80 to-transparent` — a fade over the hero) has no header option; it
+		// rides Misc CSS on .site-header (a finding filed on six conversions). Also the header's own padding when the bar is a
+		// padded band (pt-8 pb-16) rather than a fixed-height bar.
+		$bgi = trim( (string) self::sc_css( $chrome, 'background-image' ) );
+		if ( '' !== $bgi && preg_match( '/^(linear|radial)-gradient\(/i', $bgi ) && false === stripos( $bgi, 'url(' ) && strlen( $bgi ) < 600 ) { $out['bg_gradient'] = $bgi; }
 		// Border — a bar shows a bottom hairline; a PILL shows a uniform all-round border, so read any side.
 		if ( self::css_len_present( self::sc_css( $chrome, 'border-bottom-width' ) ) || self::css_len_present( self::sc_css( $chrome, 'border-top-width' ) ) ) {
 			$st  = self::sc_css( $chrome, 'border-bottom-style' ); if ( $st === '' || $st === 'none' ) { $st = self::sc_css( $chrome, 'border-top-style' ); }
@@ -7920,7 +8926,7 @@ class FW_Site_Converter_Stitch {
 			if ( '' !== $bcc && stripos( $bcc, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bcc ) ) { $out['border_color'] = $bcc; }
 		}
 		// PROMINENT bottom border on the header's INNER bar — the class-less `<header>` pattern, where the
-		// visible nav bar is a `border-b-4 border-primary` child (jukebox). The header-level reads above miss it.
+		// visible nav bar is a `border-b-4 border-primary` child (the burger source). The header-level reads above miss it.
 		// Capture the WIDTH (`border-b-N` → Npx) + the COLOUR TOKEN so the converter reproduces the real thick
 		// accent rule instead of the theme's default 1px hairline. Only a THICK border (≥2px) qualifies — a bare
 		// `border-b` (1px) is already covered by the hairline toggle.
@@ -8072,7 +9078,7 @@ class FW_Site_Converter_Stitch {
 	/**
 	 * Classify the header LAYOUT MODE — 'top' | 'vertical' | 'off-canvas-only' | 'overlay'. 'top' is the
 	 * default (a normal horizontal header, whose structural Design is then picked by detect_header_design).
-	 * The non-top modes are gated tightly so a normal horizontal bar never trips them (no openhero/wegic
+	 * The non-top modes are gated tightly so a normal horizontal bar never trips them (no AI-generated
 	 * classic header should ever read as anything but 'top').
 	 */
 	private static function detect_header_mode( $html ) {
@@ -8100,7 +9106,15 @@ class FW_Site_Converter_Stitch {
 		$nav  = $header->getElementsByTagName( 'nav' )->item( 0 );
 		$vnav = false;
 		if ( $nav instanceof DOMElement ) { $nfd = strtolower( (string) self::sc_css( $nav, 'flex-direction' ) ); $vnav = ( 'column' === $nfd ) || (bool) preg_match( '/\sflex-col\s/', ' ' . strtolower( self::cls( $nav ) ) . ' ' ); }
-		if ( $positioned && $column && ( $full_h || $narrow || $vnav ) ) { return 'vertical'; }
+		// A rail is TALLER than it is wide, and its menu runs down. A floating centred PILL bar (`fixed top-6
+		// left-1/2 -translate-x-1/2 w-[640px]`, a column wrapper around a horizontal nav) is wide + short with a
+		// ROW nav — it was read as a vertical-left rail (a finding filed twice). The measured box decides.
+		$hw = preg_match( '/^([0-9.]+)px$/', trim( (string) self::sc_css( $header, 'width' ) ), $hwm ) ? (float) $hwm[1] : 0.0;
+		$hh = preg_match( '/^([0-9.]+)px$/', trim( (string) self::sc_css( $header, 'height' ) ), $hhm ) ? (float) $hhm[1] : 0.0;
+		$wide_short = ( $hw > 0 && $hh > 0 && $hw > $hh );
+		$row_nav = false;
+		if ( $nav instanceof DOMElement ) { $nfd2 = strtolower( (string) self::sc_css( $nav, 'flex-direction' ) ); $row_nav = ( 'row' === $nfd2 || '' === $nfd2 ) && $nav->getElementsByTagName( 'a' )->length >= 3 && ! $vnav; }
+		if ( $positioned && $column && ( $full_h || $narrow || $vnav ) && ! ( $wide_short && $row_nav ) ) { return 'vertical'; }
 
 		// DESKTOP INLINE NAV gate — overlay / off-canvas-only apply ONLY when the header has NO real desktop
 		// menu. A responsive site ships a mobile hamburger + a fixed full-viewport menu in the DOM ALONGSIDE
@@ -8385,13 +9399,31 @@ class FW_Site_Converter_Stitch {
 			return $sub;
 		}
 		if ( 'card' === $design ) {
-			return array(
+			$sub = array(
 				'card_radius' => ( $rad >= 20 ? 'large' : ( $rad >= 10 ? 'medium' : 'small' ) ),
 				'card_shadow' => $shadow_tier,
 			);
+			// The card's OWN placement: the source bar's padding is the gap around the floating card — its top padding → the
+			// native Top Offset, its side padding → a side inset on the card (no native field; a residual rule). Without it the
+			// card sat flush against the viewport edges while the source floated it 40px in.
+			if ( $header instanceof DOMElement ) {
+				$hp = self::sc_padding_box( $header );
+				if ( (float) $hp['top'] > 0 ) { $sub['card_offset'] = array( 'value' => (string) (int) round( (float) $hp['top'] ), 'unit' => 'px' ); }
+				$side = min( (float) $hp['left'], (float) $hp['right'] );
+				if ( $side > 0 ) {
+					$cw = ( $surface instanceof DOMElement ) ? (float) ( preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/i', (string) $surface->getAttribute( 'data-sc-cs' ), $mwm ) ? $mwm[1] : 0 ) : 0;
+					$spad2 = self::sc_padding_box( $surface ); $pad_css = ( (float) $spad2['top'] > 0 || (float) $spad2['left'] > 0 ) ? 'padding:' . (int) round( (float) $spad2['top'] ) . 'px ' . (int) round( (float) $spad2['right'] ) . 'px ' . (int) round( (float) $spad2['bottom'] ) . 'px ' . (int) round( (float) $spad2['left'] ) . 'px;' : ''; // the card's own inset (the theme's .5rem 1.5rem otherwise)
+					self::$header_card_css = '.site-header--design-card .header-main > [class*="fw-container"]{margin-left:' . (int) round( $side ) . 'px;margin-right:' . (int) round( $side ) . 'px;width:auto;flex:1 1 auto;' . $pad_css . ( $cw >= 600 ? 'max-width:' . (int) round( $cw ) . 'px;' : '' ) . '}' . "
+" . '@media (min-width:' . ( (int) round( $cw >= 600 ? $cw + 2 * $side : 0 ) ) . 'px){.site-header--design-card .header-main > [class*="fw-container"]{margin-left:auto;margin-right:auto;}}';
+				}
+			}
+			return $sub;
 		}
 		return array();
 	}
+
+	/** The floating card header's side inset rule (header_design_sub), appended to the residual chrome CSS. */
+	private static $header_card_css = '';
 
 	/**
 	 * The primary NAV MENU link styling, read from the header nav <a> computed styles. Returns any of:
@@ -8489,7 +9521,7 @@ class FW_Site_Converter_Stitch {
 		$bgs = array(); $rads = array(); $pads_x = array(); $pads_y = array(); $borders = 0; $underlines = 0; $items = 0;
 		$fss = array(); $fws = array(); $tts = array(); $lss = array(); // typography tallies (the MODE across the nav links decides)
 		foreach ( $header->getElementsByTagName( 'a' ) as $a ) {
-			if ( self::is_button( $a ) || self::cs_is_button( $a ) ) { continue; }         // skip the CTA
+			if ( ( self::is_button( $a ) || self::cs_is_button( $a ) ) && ! self::nav_pill_sibling( $a ) ) { continue; }         // skip the CTA (a pill nav's items are all skinned — they ARE the menu)
 			if ( self::nav_el_hidden( $a ) ) { continue; }                               // skip a hidden drawer's duplicate links
 			if ( $a->getElementsByTagName( 'svg' )->length || $a->getElementsByTagName( 'img' )->length ) { continue; } // skip brand/icon links
 			// Skip the BRAND wordmark — a LARGE home link (e.g. "Maison" at 30px, font-serif/tracking-tight)
@@ -8581,6 +9613,8 @@ class FW_Site_Converter_Stitch {
 				$out['item_style'] = 'outline';
 			} elseif ( $underlines >= $half ) {
 				$out['item_style'] = 'underline';
+			} else {
+				$out['item_style'] = 'none'; // plain links: written EXPLICITLY so a previous conversion's (or the install's) pill / box default never leaks onto square links
 			}
 			// Link padding — the median measured inset (rounded), so the converted item box matches the source.
 			$mid = function ( $arr ) { if ( ! $arr ) { return 0; } sort( $arr ); return $arr[ intval( floor( ( count( $arr ) - 1 ) / 2 ) ) ]; };
@@ -8636,7 +9670,7 @@ class FW_Site_Converter_Stitch {
 			$out[ $prefix . '_border' ] = array(
 				'width' => array( 'value' => (string) max( 1, (int) round( (float) $bw ) ), 'unit' => 'px' ),
 				'style' => $bstyle,
-				'color' => array( 'predefined' => '', 'custom' => self::color_to_hex( $bcolor ) ),
+				'color' => array( 'predefined' => '', 'custom' => self::color_keep_alpha( $bcolor ) ),
 			);
 			$out[ $prefix . '_border_sides' ]  = $sides;
 			$out[ $prefix . '_border_extent' ] = array( 'mode' => 'full' );
@@ -8644,9 +9678,152 @@ class FW_Site_Converter_Stitch {
 		// BACKGROUND — an opaque fill on the band itself (skips transparent / inherited).
 		$bg = self::sc_css( $el, 'background-color' );
 		if ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bg ) ) {
-			$out[ $prefix . '_background' ] = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => self::color_to_hex( $bg ) ) ) );
+			$out[ $prefix . '_background' ] = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => self::color_keep_alpha( $bg ) ) ) );
 		}
 		return $out;
+	}
+
+	/** A colour for a custom colour field: opaque → #hex; translucent (alpha < 1) → the rgba() itself, so a
+	 *  hairline rgba(255,255,255,.08) stays a hairline instead of flattening to solid white. */
+	private static function color_keep_alpha( $color ) {
+		$c = trim( (string) $color );
+		if ( preg_match( '/^rgba?\(\s*[0-9.]+[,\s]+[0-9.]+[,\s]+[0-9.]+[,\s\/]+([0-9.]+%?)\s*\)$/i', $c, $m ) ) {
+			$a = strpos( $m[1], '%' ) !== false ? (float) $m[1] / 100 : (float) $m[1];
+			if ( $a < 0.99 ) { return preg_replace( '/\s+/', ' ', $c ); }
+		}
+		return self::color_to_hex( $c );
+	}
+
+	/**
+	 * The footer's BOXED BODY: a single-child chain from <footer> reaches a PANEL — an element with ≥ 2 content
+	 * rows that paints its own skin (a hairline border, a translucent / opaque fill, a gradient or a shadow) and
+	 * carries an inset (padding). That panel is the theme's Footer → Layout → Boxed Body. Null when the footer's
+	 * content sits directly on the footer (the common case).
+	 */
+	private static function detect_footer_shell( $footer ) {
+		if ( ! ( $footer instanceof DOMElement ) ) { return null; }
+		$node = $footer;
+		for ( $d = 0; $d < 4; $d++ ) {
+			$kids = self::el_children( $node );
+			$content = array();
+			foreach ( $kids as $k ) { if ( trim( $k->textContent ) !== '' || $k->getElementsByTagName( 'img' )->length || $k->getElementsByTagName( 'svg' )->length ) { $content[] = $k; } }
+			if ( $node !== $footer && count( $content ) >= 2 && self::el_paints_panel( $node ) ) { return $node; }
+			if ( count( $content ) !== 1 ) { return null; }
+			$node = $content[0];
+		}
+		return null;
+	}
+
+	/** TRUE when an element paints a panel skin: a visible border on any edge, a non-transparent fill, a gradient
+	 *  background-image, or a visible box-shadow — AND a non-zero padding (a skinned wrapper with no inset is a band). */
+	private static function el_paints_panel( $el ) {
+		$pad = self::sc_css( $el, 'padding' );
+		if ( ! preg_match( '/[1-9]/', $pad ) ) { return false; }
+		foreach ( array( 'top', 'right', 'bottom', 'left' ) as $side ) {
+			$w = self::sc_css( $el, 'border-' . $side . '-width' ); $st = self::sc_css( $el, 'border-' . $side . '-style' ); $c = self::sc_css( $el, 'border-' . $side . '-color' );
+			if ( $w !== '' && (float) $w > 0 && $st !== '' && $st !== 'none' && $c !== '' && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $c ) ) { return true; }
+		}
+		$bg = self::sc_css( $el, 'background-color' );
+		if ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bg ) ) { return true; }
+		$bgi = self::sc_css( $el, 'background-image' );
+		if ( $bgi !== '' && stripos( $bgi, 'gradient' ) !== false ) { return true; }
+		$sh = self::sc_css( $el, 'box-shadow' );
+		if ( $sh !== '' && $sh !== 'none' ) { return true; }
+		return false;
+	}
+
+	/**
+	 * Read a footer shell → { fields: footer_body_box.yes values, css: residual rules[], copyright_inside: bool }.
+	 *  - Max Width from the WIDE (xl, 1920px) pass: a margin that GROWS with the viewport means the panel is
+	 *    capped (width:min(1600px, 100% - 32px)) → 1920 − 2 × xl-margin; the base margin is the side gutter.
+	 *  - Padding (y / x), fill (colour with alpha; ONE linear gradient → native, a multi-layer stack → verbatim
+	 *    CSS), a uniform four-edge border, radius, the first box-shadow layer.
+	 *  - Empty absolutely-positioned DECOR children (a gradient "roofline" strip) → the panel's ::before/::after.
+	 */
+	private static function footer_box_values( $shell ) {
+		$f = array(); $css = array();
+		$g = function ( $p ) use ( $shell ) { return trim( (string) self::sc_css( $shell, $p ) ); };
+		$px = function ( $v ) { return preg_match( '/^(-?[0-9.]+)px$/', trim( (string) $v ), $m ) ? (float) $m[1] : null; };
+		// Width cap + gutter.
+		$m_base = preg_split( '/\s+/', $g( 'margin' ) ); $ml = isset( $m_base[1] ) ? $px( $m_base[1] ) : ( isset( $m_base[0] ) ? $px( $m_base[0] ) : null );
+		$xl = (string) $shell->getAttribute( 'data-sc-cs-xl' ); $mxl = null;
+		if ( preg_match( '/(?:^|;)\s*margin:\s*([^;]+)/i', $xl, $mm ) ) { $mp = preg_split( '/\s+/', trim( $mm[1] ) ); $mxl = isset( $mp[1] ) ? $px( $mp[1] ) : $px( $mp[0] ); }
+		if ( null !== $mxl && null !== $ml && $mxl > $ml + 1 ) { $f['footer_box_max_width'] = array( 'value' => (string) (int) round( 1920 - 2 * $mxl ), 'unit' => 'px' ); }
+		elseif ( preg_match( '/^([0-9.]+)px$/', $g( 'max-width' ), $mw ) ) { $f['footer_box_max_width'] = array( 'value' => (string) (int) round( (float) $mw[1] ), 'unit' => 'px' ); }
+		if ( null !== $ml && $ml > 0 ) { $f['footer_box_gutter'] = array( 'value' => (string) (int) round( $ml ), 'unit' => 'px' ); }
+		// Padding.
+		$pp = preg_split( '/\s+/', $g( 'padding' ) );
+		$pt = $px( $pp[0] ); $pr = isset( $pp[1] ) ? $px( $pp[1] ) : $pt;
+		if ( null !== $pt ) { $f['footer_box_padding_y'] = array( 'value' => (string) (int) round( $pt ), 'unit' => 'px' ); }
+		if ( null !== $pr ) { $f['footer_box_padding_x'] = array( 'value' => (string) (int) round( $pr ), 'unit' => 'px' ); }
+		// Fill.
+		$bg = $g( 'background-color' ); $bgi = $g( 'background-image' );
+		$bgv = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => '' ) ) );
+		if ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bg ) ) { $bgv['color']['value']['custom'] = self::color_keep_alpha( $bg ); }
+		if ( $bgi !== '' && stripos( $bgi, 'gradient' ) !== false && stripos( $bgi, 'url(' ) === false ) {
+			$gv = class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::parse_linear_gradient( $bgi ) : null;
+			if ( is_array( $gv ) ) { $bgv['gradient'] = array( 'data' => $gv ); }
+			else { $css[] = '.footer--boxed .footer__body{background-image:' . $bgi . ';}'; }
+		}
+		if ( $bgv['color']['value']['custom'] !== '' || isset( $bgv['gradient'] ) ) { $f['footer_box_background'] = $bgv; }
+		// Border — uniform four edges → the native row; anything partial → residual per edge.
+		$edges = array();
+		foreach ( array( 'top', 'right', 'bottom', 'left' ) as $side ) {
+			$w = $g( 'border-' . $side . '-width' ); $st = $g( 'border-' . $side . '-style' ); $c = $g( 'border-' . $side . '-color' );
+			if ( $w !== '' && (float) $w > 0 && $st !== '' && $st !== 'none' && $c !== '' && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $c ) ) { $edges[ $side ] = array( $w, $st, $c ); }
+		}
+		if ( count( $edges ) === 4 && count( array_unique( array_map( 'json_encode', $edges ) ) ) === 1 ) {
+			$e = reset( $edges );
+			$f['footer_box_border'] = array( 'width' => array( 'value' => (string) max( 1, (int) round( (float) $e[0] ) ), 'unit' => 'px' ), 'style' => $e[1], 'color' => array( 'predefined' => '', 'custom' => self::color_keep_alpha( $e[2] ) ) );
+		} elseif ( $edges ) {
+			$d = array(); foreach ( $edges as $side => $e ) { $d[] = 'border-' . $side . ':' . $e[0] . ' ' . $e[1] . ' ' . $e[2]; }
+			$css[] = '.footer--boxed .footer__body{' . implode( ';', $d ) . ';}';
+		}
+		$rad = $px( $g( 'border-radius' ) );
+		if ( null !== $rad && $rad > 0 ) { $f['footer_box_radius'] = array( 'value' => (string) (int) round( $rad ), 'unit' => 'px' ); }
+		// Shadow — the first layer: <color> x y blur spread (computed order) or x y blur spread <color>.
+		$sh = $g( 'box-shadow' );
+		if ( $sh !== '' && $sh !== 'none' ) {
+			$first = trim( explode( '),', $sh . ',' )[0] ); if ( substr_count( $first, '(' ) > substr_count( $first, ')' ) ) { $first .= ')'; }
+			$col = ''; if ( preg_match( '/(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $first, $cm ) ) { $col = $cm[1]; $first = trim( str_replace( $cm[1], '', $first ) ); }
+			$nums = preg_split( '/\s+/', trim( str_ireplace( 'inset', '', $first ) ) );
+			$n = array(); foreach ( $nums as $v ) { $vv = $px( $v ); if ( null !== $vv ) { $n[] = $vv; } }
+			if ( count( $n ) >= 2 ) { $f['footer_box_shadow'] = array( 'x' => (int) round( $n[0] ), 'y' => (int) round( $n[1] ), 'blur' => (int) round( isset( $n[2] ) ? $n[2] : 0 ), 'spread' => (int) round( isset( $n[3] ) ? $n[3] : 0 ), 'color' => $col, 'inset' => stripos( $first, 'inset' ) !== false ); }
+		}
+		// Decor children → ::before / ::after on the panel.
+		$pseudo = array( '::before', '::after' ); $pi = 0;
+		foreach ( self::el_children( $shell ) as $k ) {
+			if ( $pi >= 2 ) { break; }
+			if ( trim( $k->textContent ) !== '' || $k->getElementsByTagName( 'img' )->length || $k->getElementsByTagName( 'svg' )->length || $k->getElementsByTagName( '*' )->length ) { continue; }
+			if ( stripos( self::sc_css( $k, 'position' ), 'absolute' ) === false ) { continue; }
+			$kbg = self::sc_css( $k, 'background-image' ); $kbc = self::sc_css( $k, 'background-color' );
+			$paint = ( $kbg !== '' && $kbg !== 'none' ) || ( $kbc !== '' && stripos( $kbc, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $kbc ) );
+			if ( ! $paint ) { continue; }
+			$d = array( 'content:""', 'position:absolute', 'pointer-events:none', 'z-index:0' );
+			$top = self::sc_css( $k, 'top' ); $bot = self::sc_css( $k, 'bottom' ); $h = self::sc_css( $k, 'height' );
+			// Anchor to the bottom when it sits at the panel's bottom edge (a strip along the floor), else the top.
+			if ( '0px' === $bot && null !== $px( $h ) ) { $d[] = 'bottom:0'; } elseif ( null !== $px( $top ) ) { $d[] = 'top:' . $top; }
+			foreach ( array( 'left', 'right' ) as $pr2 ) { $v = self::sc_css( $k, $pr2 ); if ( null !== $px( $v ) ) { $d[] = $pr2 . ':' . $v; } }
+			if ( null !== $px( $h ) ) { $d[] = 'height:' . $h; }
+			$w = self::sc_css( $k, 'width' ); if ( null !== $px( $w ) ) { $d[] = 'width:' . $w; }
+			foreach ( array( 'background-image', 'background-color', 'background-size', 'background-position', 'background-repeat', 'opacity', 'clip-path', 'border-radius', 'filter', 'mix-blend-mode' ) as $pr2 ) {
+				$v = self::sc_css( $k, $pr2 );
+				if ( $v === '' || $v === 'none' || $v === 'normal' || ( $pr2 === 'opacity' && $v === '1' ) || ( $pr2 === 'border-radius' && $v === '0px' ) ) { continue; }
+				$d[] = $pr2 . ':' . $v;
+			}
+			$css[] = '.footer--boxed .footer__body' . $pseudo[ $pi++ ] . '{' . implode( ';', $d ) . ';}';
+		}
+		return array( 'fields' => $f, 'css' => $css );
+	}
+
+	/** The vertical alignment of a band's MAIN row (the widest grid / flex row): 'end' | 'center' | '' (top). */
+	private static function footer_row_valign( $scope ) {
+		$best = self::footer_main_row_el( $scope );
+		if ( ! $best ) { return ''; }
+		$ai = strtolower( self::sc_css( $best, 'align-items' ) );
+		if ( $ai === 'end' || $ai === 'flex-end' || $ai === 'last baseline' ) { return 'end'; }
+		if ( $ai === 'center' ) { return 'center'; }
+		return '';
 	}
 
 	/**
@@ -8658,19 +9835,22 @@ class FW_Site_Converter_Stitch {
 		if ( ! ( $el instanceof DOMElement ) ) { return array(); }
 		$out = array();
 		$fam = trim( (string) self::sc_css( $el, 'font-family' ) );
-		if ( $fam !== '' ) {
-			$first = trim( explode( ',', $fam )[0], "\"' " );
-			if ( $first !== '' ) { $out['family'] = $first; }
+		if ( $fam !== '' && preg_match( '/^[a-z0-9"\',\s-]+$/i', $fam ) ) {
+			// the WHOLE stack (`ui-monospace, SFMono-Regular, Menlo, monospace`), not its first token — a first-token-only
+			// family fell to the browser's serif when that token wasn't installed (unysonplus_hf_typography_css quotes each)
+			$out['family'] = str_replace( '"', "'", $fam );
 		}
+		$tt = strtolower( trim( (string) self::sc_css( $el, 'text-transform' ) ) );
+		if ( in_array( $tt, array( 'uppercase', 'lowercase', 'capitalize' ), true ) ) { $out['text-transform'] = $tt; } // an uppercase copyright line
 		$fs = trim( (string) self::sc_css( $el, 'font-size' ) );
 		if ( preg_match( '/^([0-9.]+)px$/', $fs, $m ) ) { $out['size'] = array( 'value' => (string) round( (float) $m[1] ), 'unit' => 'px' ); }
 		$fw = trim( (string) self::sc_css( $el, 'font-weight' ) );
 		if ( preg_match( '/^\d{3}$/', $fw ) ) { $out['weight'] = $fw; }
 		$col = trim( (string) self::sc_css( $el, 'color' ) );
 		if ( $col !== '' && stripos( $col, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $col ) ) {
-			$hex = self::color_to_hex( $col );
+			$hex = self::color_keep_alpha( $col );
 			// The `typography` option stores colour as a plain string (unysonplus_hf_typography_css passes it
-			// straight through hf_css_val, which casts to string) — pass the hex, not a {predefined,custom} array.
+			// straight through hf_css_val, which casts to string) — pass the hex (or the rgba() when translucent), not a {predefined,custom} array.
 			if ( $hex !== '' ) { $out['color'] = $hex; }
 		}
 		$ls = trim( (string) self::sc_css( $el, 'letter-spacing' ) );
@@ -8812,7 +9992,11 @@ class FW_Site_Converter_Stitch {
 		if ( isset( $c_head_stack ) && $c_head_stack !== '' ) { $head_stack = (string) $c_head_stack; }
 		// Fall back to the families named in the Google-Fonts URL only when a computed face is still missing.
 		if ( $head_font === '' && isset( $gfonts[0] ) ) { $head_font = $gfonts[0]; }
-		if ( $body_font === '' ) { $body_font = isset( $gfonts[1] ) ? $gfonts[1] : ( isset( $gfonts[0] ) ? $gfonts[0] : '' ); }
+		// (a measured SYSTEM body stack — `ui-sans-serif, system-ui` — keeps the sans default: the heading's single Google face is
+		// never the body's; it landed on every paragraph and in the child theme's --font-body — a fixture from the feed)
+		$body_system = (bool) preg_match( '/<body\b[^>]*data-sc-cs="[^"]*font-family:\s*(?:ui-sans-serif|system-ui|-apple-system|blinkmacsystemfont|sans-serif)/i', (string) $html )
+			|| (bool) preg_match( '/<p\b[^>]*data-sc-cs="[^"]*font-family:\s*(?:ui-sans-serif|system-ui|-apple-system|blinkmacsystemfont|sans-serif)/i', (string) $html );
+		if ( $body_font === '' ) { $body_font = isset( $gfonts[1] ) ? $gfonts[1] : ( ( isset( $gfonts[0] ) && ! $body_system ) ? $gfonts[0] : '' ); }
 		// SYNTHESIZE the Google-Fonts css2 URL when the source shipped no googleapis <link> but uses a real
 		// named family (self-hosted, e.g. Cormorant Garamond / Inter). This is what functions_php enqueues, so
 		// the family in the carried CSS actually loads instead of falling back to a system serif.
@@ -8997,11 +10181,14 @@ class FW_Site_Converter_Stitch {
 	private static function header_root( $dom ) {
 		$header = $dom->getElementsByTagName( 'header' )->item( 0 );
 		$body   = $dom->getElementsByTagName( 'body' )->item( 0 );
-		// A full-viewport <header> that holds the H1 + CTA (openhero-style: `<header class="min-h-screen">`,
+		// A full-viewport <header> that holds the H1 + CTA (AI-page-style: `<header class="min-h-screen">`,
 		// with the real nav in a SEPARATE <nav>) is a HERO band, not the masthead — don't let it become
 		// chrome. When the first <header> is a hero, prefer a distinct top-level sticky/fixed <nav>. Mirrors
 		// the capture service's isHeroHeader() split.
 		$header_is_hero = self::is_hero_header( $header );
+		// …or a <header> that is a CONTENT band by shape: inside the page's <main>, holding a heading but no link / nav at all (a
+		// grid canvas's hero copy: h1 + p + a button) — a masthead always carries links. The fixed <nav> beside it is the masthead.
+		if ( $header && ! $header_is_hero && $body && self::has_ancestor_tag( $header, 'main', $body ) && 0 === $header->getElementsByTagName( 'a' )->length && 0 === $header->getElementsByTagName( 'nav' )->length && ( $header->getElementsByTagName( 'h1' )->length || $header->getElementsByTagName( 'h2' )->length ) ) { $header_is_hero = true; }
 		if ( $header && ! $header_is_hero ) { return $header; }
 		if ( ! $body ) { return $header; }
 		$first = null;
@@ -9051,6 +10238,12 @@ class FW_Site_Converter_Stitch {
 	 */
 	private static function is_hero_header( $el ) {
 		if ( ! $el ) { return false; }
+		// a STICKY / FIXED header, or one holding a <nav> of links, is the masthead whatever its height context: a sticky
+		// `<header>` with a serif h1 wordmark under a `min-h-screen` app wrapper was read as a hero and became page section 1,
+		// its nav duplicated (a fixture from the feed)
+		$pcs0 = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*position:\s*(?:sticky|fixed)/i', $pcs0 ) || preg_match( '/(?:^|\s)(?:sticky|fixed)(?:\s|$)/', ' ' . self::cls( $el ) . ' ' ) ) { return false; }
+		foreach ( $el->getElementsByTagName( 'nav' ) as $nv0 ) { if ( $nv0->getElementsByTagName( 'a' )->length >= 3 ) { return false; } }
 		$c    = ' ' . self::cls( $el ) . ' ';
 		$tall = ( strpos( $c, ' min-h-screen ' ) !== false ) || ( strpos( $c, ' h-screen ' ) !== false )
 			|| preg_match( '/\b(?:min-)?h-\[\s*(?:[6-9]\d|1\d\d)(?:vh|dvh|svh)/', $c );
@@ -9142,6 +10335,9 @@ class FW_Site_Converter_Stitch {
 			foreach ( $header->getElementsByTagName( 'button' ) as $b ) {
 				if ( $in_nav( $b ) ) { continue; }
 				$lbl = trim( (string) self::text_no_icons( $b ) );
+				// an ICON CONTROL whose only text is a count badge ("0" on a bag icon) or a bare glyph is never the CTA (three sites in the feed)
+				if ( preg_match( '/^\d{1,2}$/', $lbl ) || ! preg_match( '/\p{L}/u', $lbl ) ) { continue; }
+				if ( preg_match( '/(?:^|\s)(?:cart|bag|basket|account|user-menu|wishlist|search)(?:\s|$|-)/', ' ' . strtolower( self::cls( $b ) ) . ' ' ) ) { continue; }
 				if ( $lbl !== '' ) { $out['cta']['label'] = $lbl; $cta_node = $b; break; }
 			}
 			if ( $out['cta']['label'] === '' ) {
@@ -9152,6 +10348,7 @@ class FW_Site_Converter_Stitch {
 					// that ISN'T a styled button (a dropdown-trigger anchor), not the CTA itself.
 					if ( ! self::is_button( $a ) ) { continue; }
 					if ( $in_nav( $a ) && trim( (string) $a->getAttribute( 'href' ) ) === '' ) { continue; }
+					if ( $in_nav( $a ) && self::nav_pill_sibling( $a ) ) { continue; } // a pill among pills is a menu item (see nav_pill_sibling)
 					$out['cta']['label'] = trim( (string) self::text_no_icons( $a ) ); $out['cta']['href'] = $a->getAttribute( 'href' ); $cta_node = $a; break;
 				}
 			}
@@ -9303,11 +10500,45 @@ class FW_Site_Converter_Stitch {
 	 *
 	 * @return array[] [ { label, href, cls, cs, hov } … ] (≤ 4)
 	 */
+	/** A skinned link whose SIBLING links are skinned alike (a rounded-anchor PILL nav): a menu item, not the standout CTA. */
+	private static function nav_pill_sibling( $el ) {
+		if ( ! ( $el instanceof DOMElement ) || ! ( $el->parentNode instanceof DOMElement ) ) { return false; }
+		$skin = function ( $x ) { return strtolower( trim( (string) self::sc_css( $x, 'background-color' ) ) ) . '|' . strtolower( trim( (string) self::sc_css( $x, 'border-top-color' ) ) ); };
+		$own = $skin( $el ); $sib_btn = 0; $sib_n = 0; $alike = 0;
+		foreach ( $el->parentNode->childNodes as $sb ) {
+			if ( ! ( $sb instanceof DOMElement ) || $sb === $el ) { continue; }
+			$sa = ( 'a' === strtolower( $sb->tagName ) ) ? $sb : $sb->getElementsByTagName( 'a' )->item( 0 );
+			if ( ! ( $sa instanceof DOMElement ) || '' === trim( self::text_no_icons( $sa ) ) ) { continue; }
+			$sib_n++;
+			if ( self::is_button( $sa ) || self::cs_is_button( $sa ) ) { $sib_btn++; if ( $skin( $sa ) === $own ) { $alike++; } }
+		}
+		// ≥ 2 skinned siblings AND at least one wears the SAME skin: a pill among pills. A link skinned unlike every
+		// sibling (the filled "Get started" beside the translucent items) is the standout — the CTA.
+		return ( $sib_n >= 2 && $sib_btn >= 2 && $alike >= 1 );
+	}
+
+	/** An icon's wrapper IS a tile when its MEASURED style paints it (a fill, a border or a shadow) at a tile size (≤ 120px):
+	 *  a `.icon-tile` styled by a sheet is the same tile a `bg-primary/10 rounded-full w-14 h-14` is (a RECURRING finding:
+	 *  tinted circle tiles were dropped whenever the fill came from a class the utility scan could not see). */
+	private static function el_is_icon_tile( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( '' === $cs ) { return false; }
+		$w = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $cs, $wm ) ? (float) $wm[1] : 0.0;
+		$h = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $hm ) ? (float) $hm[1] : 0.0;
+		if ( $w <= 0 || $h <= 0 || $w > 120 || $h > 120 ) { return false; }
+		$fill = preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $cs, $bm ) && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent|\/\s*0\s*\)/i', $bm[1] );
+		$grad = (bool) preg_match( '/(?:^|;)\s*background-image:\s*(?:linear|radial|conic)-gradient/i', $cs );
+		$bord = preg_match( '/(?:^|;)\s*border-top-width:\s*([0-9.]+)px/i', $cs, $bw ) && (float) $bw[1] > 0 && preg_match( '/(?:^|;)\s*border-top-style:\s*(?!none)/i', $cs ) && ! preg_match( '/(?:^|;)\s*border-top-color:\s*(?:rgba\([^)]*,\s*0\s*\)|transparent)/i', $cs );
+		$shad = preg_match( '/(?:^|;)\s*box-shadow:\s*([^;]+)/i', $cs, $sm ) && 'none' !== strtolower( trim( $sm[1] ) );
+		return $fill || $grad || $bord || $shad;
+	}
+
 	private static function header_actions( $header ) {
 		$out = array();
 		if ( ! ( $header instanceof DOMElement ) || ! $header->ownerDocument ) { return $out; }
-		$in_nav = function ( $el ) {
-			for ( $p = $el->parentNode; $p instanceof DOMElement; $p = $p->parentNode ) { if ( strtolower( $p->tagName ) === 'nav' ) { return true; } }
+		$in_nav = function ( $el ) use ( $header ) {
+			for ( $p = $el->parentNode; $p instanceof DOMElement && $p !== $header; $p = $p->parentNode ) { if ( strtolower( $p->tagName ) === 'nav' ) { return true; } } // a nested <nav> only — a masthead that IS the <nav> holds its CTA button directly
 			return false;
 		};
 		$xp = new DOMXPath( $header->ownerDocument );
@@ -9318,15 +10549,24 @@ class FW_Site_Converter_Stitch {
 			$href = trim( (string) $el->getAttribute( 'href' ) );
 			$lbl  = trim( (string) self::text_no_icons( $el ) );
 			if ( '' === $lbl || mb_strlen( $lbl ) > 40 ) { continue; }
+			// an ICON CONTROL whose only text is a 1–2 char COUNT badge (a bag / cart icon with an absolute "0") is never a CTA —
+			// it became a 'Get Started'-styled button labelled "0" (three sites in the feed); a bare glyph label is none either
+			if ( preg_match( '/^\d{1,2}$/', $lbl ) || ! preg_match( '/\p{L}/u', $lbl ) ) { continue; }
 			$lc = ' ' . strtolower( self::cls( $el ) ) . ' ';
-			if ( preg_match( '/\b(toggle|toggler|hamburger|menu-?icon|navbar-toggler|search)\b/', $lc ) ) { continue; }
+			if ( preg_match( '/\b(toggle|toggler|hamburger|menu-?icon|navbar-toggler|search|cart|bag|basket|account|user-menu|wishlist)\b/', $lc ) ) { continue; }
 			$is_tel = ( stripos( $href, 'tel:' ) === 0 );
 			if ( 'button' === $tag ) {
 				if ( $in_nav( $el ) ) { continue; }
+				// The masthead IS the <nav>: a button directly in it counts only when it is a real skinned CTA (fill / border / pill), never a bare control.
+				if ( 'nav' === strtolower( $header->tagName ) && ! self::is_button( $el ) && ! self::cs_is_button( $el ) ) { continue; }
 				if ( '' !== $el->getAttribute( 'aria-controls' ) || '' !== $el->getAttribute( 'aria-haspopup' ) ) { continue; }
 			} elseif ( ! $is_tel ) {
 				if ( ! self::is_button( $el ) && ! self::cs_is_button( $el ) ) { continue; }
 				if ( $in_nav( $el ) && '' === $href ) { continue; }
+				// A CTA is the STANDOUT among the nav's links. When the menu's own items are pills too (a rounded-anchor
+				// pill nav: every link skinned alike), a skinned anchor is a menu item — it was emitted as a menu item AND
+				// a CTA button, three times over (a RECURRING finding). Only a link skinned unlike its siblings stands out.
+				if ( $in_nav( $el ) && self::nav_pill_sibling( $el ) ) { continue; }
 			}
 			$out[] = array(
 				'label' => $lbl,
@@ -9364,6 +10604,8 @@ class FW_Site_Converter_Stitch {
 			$href = trim( (string) $a->getAttribute( 'href' ) );
 			if ( '' === $lbl || mb_strlen( $lbl ) > 24 || '' === $href ) { continue; }
 			if ( $is_btn( $a ) || $in_brand( $a ) || $a->getElementsByTagName( 'svg' )->length > 0 ) { continue; }
+			// a HOME link (`/`, `#`, the origin) is the brand — the logo already carries it (it doubled as a list item beside the logo)
+			if ( '/' === $href || preg_match( '~^https?://[^/]+/?$~', $href ) ) { continue; }
 			// The action cluster: a sibling button-styled CTA in the SAME parent.
 			$parent = $a->parentNode; if ( ! ( $parent instanceof DOMElement ) ) { continue; }
 			$has_cta = false; $links_here = 0;
@@ -9382,6 +10624,11 @@ class FW_Site_Converter_Stitch {
 	private static function header_row_hidden( $row ) {
 		if ( self::nav_el_hidden( $row ) ) { return true; }
 		$lc = ' ' . strtolower( self::cls( $row ) ) . ' ';
+		// the MOBILE DRAWER: a `md:hidden` / `lg:hidden` panel, or a `fixed inset-0` full-screen overlay (the phone menu's own
+		// markup, closed on desktop) is never a masthead row — it became a 900px-tall bottom bar holding the menu (a finding)
+		if ( preg_match( '/\s(?:sm|md|lg|xl|2xl):hidden\s/', $lc ) ) { return true; }
+		$rcs = (string) $row->getAttribute( 'data-sc-cs' );
+		if ( ( strpos( $lc, ' fixed ' ) !== false || preg_match( '/(?:^|;)\s*position:\s*fixed/i', $rcs ) ) && ( strpos( $lc, ' inset-0 ' ) !== false || preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $rcs, $rh ) && (float) $rh[1] >= 500 ) ) { return true; }
 		if ( strpos( $lc, ' hidden ' ) !== false && ! preg_match( '/\s(?:sm|md|lg|xl|2xl):(?:flex|block|grid|inline-flex|inline)\s/', $lc ) ) { return true; }
 		return 'none' === strtolower( self::sc_css( $row, 'display' ) );
 	}
@@ -9965,7 +11212,8 @@ class FW_Site_Converter_Stitch {
 		}
 		// If body ended up equal to the heading display face (headings dominate the <p> sample on a sparse
 		// page), leave body empty rather than mislabel — the theme's default body stack is safer than a serif.
-		if ( $body !== '' && $head !== '' && strcasecmp( $body, $head ) === 0 ) { $body = ''; }
+		// (a body face that EQUALS the heading face is the site's one family — Outfit for both — not a mislabel: keep it. Blanking it
+		// handed the body to the Google-URL's SECOND font, the site's mono for labels and code.)
 		return array( $head, $body, $head_stack );
 	}
 
@@ -10150,7 +11398,7 @@ class FW_Site_Converter_Stitch {
 		if ( $dom ) {
 			$body = $dom->getElementsByTagName( 'body' )->item( 0 );
 			// PRE-PASS: de-animate word/char SPLIT-TEXT. AI/animation builders shatter a heading or eyebrow into
-			// per-word <span>s (openhero `.breeze-word`; GSAP/Framer SplitText `.word`/`.char`) so each word can be
+			// per-word <span>s (AI-page `.breeze-word`; GSAP/Framer SplitText `.word`/`.char`) so each word can be
 			// tweened. To the converter those inline-block spans read as SEPARATE blocks and stack vertically (or
 			// lose the inter-word spacing). Unwrap them back to plain text so the line is one heading/overline again;
 			// the whitespace + separator glyphs between the spans are already text nodes, so they survive intact.
@@ -10173,7 +11421,7 @@ class FW_Site_Converter_Stitch {
 					$hpx = preg_match( '/(?:^|;)\s*height:\s*([\d.]+)px/i', $hcs, $hm ) ? (float) $hm[1] : 0;
 					$overlay_px = $hpx > 0 ? (int) round( $hpx ) : 80;
 				}
-				// SOLID FIXED CHROME (the jukebox pattern): the semantic <header> is often class-less while its
+				// SOLID FIXED CHROME (the the burger source pattern): the semantic <header> is often class-less while its
 				// BARS (a `fixed top-0` ticker + a `fixed top-12` nav) are the position:fixed, TOP-pinned, OPAQUE
 				// elements. Being out of flow, the source reserves top padding on the FIRST section to clear them.
 				// We reproduce that chrome as an IN-FLOW static/sticky header (it occupies its own height), so the
@@ -10237,7 +11485,7 @@ class FW_Site_Converter_Stitch {
 				// examined and its cells were emitted as full-width stacked blocks — a text|image hero
 				// rendered as a text block with the photo full-bleed underneath at natural size.
 				$root_row = self::section_root_row( $node, $rules );
-				if ( is_array( $root_row ) ) { $blocks[] = $root_row; }
+				if ( is_array( $root_row ) ) { $rd = $root_row['rootDecor'] ?? array(); unset( $root_row['rootDecor'] ); $blocks[] = $root_row; foreach ( (array) $rd as $rdb ) { $blocks[] = $rdb; } }
 				else { self::collect_blocks( $node, $blocks, $rules ); }
 				$blocks = array_values( array_filter( $blocks ) );
 				if ( ! $blocks ) { continue; }
@@ -10270,6 +11518,7 @@ class FW_Site_Converter_Stitch {
 					'sectionCsSm'  => (string) $node->getAttribute( 'data-sc-cs-sm' ), // the PHONE-pass diff (capture >= 1.10.96: padding / margin at 390px when they differ) → Pass #5 base tier
 					'sectionCsMd'  => (string) $node->getAttribute( 'data-sc-cs-md' ), // the TABLET-pass diff (capture >= 1.10.97: 820px) → Pass #5 md tier
 					'sectionCsXl'  => (string) $node->getAttribute( 'data-sc-cs-xl' ), // the WIDE-pass diff (capture >= 1.10.99: 1920px → the >= 1536px tier) → Pass #5 min-width:1536px rule
+					'bandPlace'    => self::band_placement_of( $node ), // a grid-canvas band's column placement { frac, x, w } (stamp_band_placement) → the mapper keeps it at its column
 					'phonePass'    => (bool) preg_match( '/<html\b[^>]*\bdata-sc-phone-pass\s*=\s*["\']?1/i', (string) $html ), // the capture measured 390px too → "no diff" means "same as desktop" (no clamp)
 					'sectionLayers' => self::section_layers( $node ), // direct-child "full-bleed" layers (class/style/computed) → mapper hoists a solid band fill that lives on an INNER layer, not the section root
 					'sectionBgImage' => $section_bg, // a HERO full-bleed background <img> → the section's Background image (detected + removed from content above)
@@ -10301,6 +11550,14 @@ class FW_Site_Converter_Stitch {
 					'blocks'       => $blocks,
 				);
 				$idx++;
+			}
+			// A FLOATING DOCK — a page-level `position:fixed` pill of icon links anchored to the bottom (a four-icon glass dock at
+			// bottom:24px, left:50%, translated back by half its width) → ONE fixed-positioned row of icon tiles, appended to the
+			// first section (a single page-level element; its fixed position lifts it out of flow). It was dropped: fixed body-level
+			// elements are neither sections nor chrome (measured on a real conversion).
+			if ( $sections && $body instanceof DOMElement ) {
+				$dock = self::detect_floating_dock( $body );
+				if ( $dock ) { $sections[0]['blocks'][] = $dock; }
 			}
 			if ( ! empty( $page_bg_video ) && $sections ) {
 				if ( ! empty( $page_bg_video['floating'] ) ) {
@@ -10355,7 +11612,10 @@ class FW_Site_Converter_Stitch {
 		// default) it is VERTICAL centering — e.g. a `min-h-screen flex items-center` hero band that vertically
 		// centers its two-column grid — which must NOT be read as a centered/text-center band (that was
 		// wrongly centering left-aligned heroes). So require `flex-col` for items-center to count.
-		if ( strpos( $c, 'items-center' ) !== false && strpos( $c, 'flex-col' ) !== false ) { return true; }
+		// …and only when the column is STILL a column at desktop: `flex flex-col lg:flex-row items-center` is a row at 1440 (the
+		// stamp says flex-direction:row) and its items-center is vertical — it centred a left-aligned hero (a fixture from the feed)
+		$col_at_desktop = function ( $el ) { $cs = (string) $el->getAttribute( 'data-sc-cs' ); return ! preg_match( '/(?:^|;)\s*flex-direction:\s*row/i', $cs ); };
+		if ( strpos( $c, 'items-center' ) !== false && strpos( $c, 'flex-col' ) !== false && $col_at_desktop( $node ) ) { return true; }
 		// COMPUTED text-align:center on the section root (data-sc-cs) — a source that centres its band via
 		// CSS rather than a `text-center` class. Guard against the inherited `text-align:start` default.
 		if ( $node instanceof DOMElement && preg_match( '/text-align:\s*center/i', (string) $node->getAttribute( 'data-sc-cs' ) ) ) { return true; }
@@ -10363,8 +11623,10 @@ class FW_Site_Converter_Stitch {
 		foreach ( $node->childNodes as $ch ) {
 			if ( $ch->nodeType !== XML_ELEMENT_NODE ) { continue; }
 			$cc = self::cls( $ch );
-			if ( strpos( $cc, 'text-center' ) !== false || ( strpos( $cc, 'items-center' ) !== false && strpos( $cc, 'flex-col' ) !== false ) ) { return true; }
-			if ( $ch instanceof DOMElement && preg_match( '/text-align:\s*center/i', (string) $ch->getAttribute( 'data-sc-cs' ) ) ) { return true; }
+			if ( strpos( $cc, 'text-center' ) !== false || ( strpos( $cc, 'items-center' ) !== false && strpos( $cc, 'flex-col' ) !== false && $col_at_desktop( $ch ) ) ) { return true; }
+			// (a computed centre counts only on a WRAPPER that holds children — a <button> centres its own label by UA default,
+			// a lone centred leaf centres itself; neither centres the band)
+			if ( $ch instanceof DOMElement && ! in_array( strtolower( $ch->tagName ), array( 'button', 'a', 'input', 'select', 'textarea' ), true ) && $ch->getElementsByTagName( '*' )->length > 0 && preg_match( '/text-align:\s*center/i', (string) $ch->getAttribute( 'data-sc-cs' ) ) ) { return true; }
 		}
 		return false;
 	}
@@ -10571,6 +11833,14 @@ class FW_Site_Converter_Stitch {
 		// mask/geometry. Detect that shape and emit it as a fixed-positioned `media_video` CONTENT element that
 		// keeps its exact place/size/radius/mask (scoped `position:fixed` Custom CSS) instead of a section bg.
 		list( $is_floating, $float_css ) = self::fixed_layer_geometry( $best );
+		// A full-viewport FIXED backdrop the whole page scrolls over is the SITE background's fixed video layer (Theme Settings →
+		// General → Layout → Site Background; detect_page_fixed_video routes it there) — not the first section's background.
+		// Attaching it here too painted the video twice (a scrolling section copy over the fixed one) and forced a hero height.
+		// The layer is still removed from the DOM below so it never lands as an orphan band.
+		if ( ! $is_floating && ( self::el_is_page_fixed_layer( $vid ) || self::page_backdrop_layer_of( $vid ) ) ) {
+			if ( $best->parentNode instanceof DOMElement ) { $best->parentNode->removeChild( $best ); }
+			return array();
+		}
 		// Remove the page-level layer from the DOM (handled here, not left as an orphan band).
 		if ( $best->parentNode instanceof DOMElement ) { $best->parentNode->removeChild( $best ); }
 		if ( $is_floating && '' !== $float_css ) {
@@ -10580,10 +11850,16 @@ class FW_Site_Converter_Stitch {
 				'autoplay' => 'yes', 'muted' => 'yes', 'loop' => 'yes', 'controls' => 'no', 'playsinline' => 'yes',
 			);
 		}
+		// The band the backdrop lands on decides the height: its own full-viewport signal (min-h-screen / min-h-[Nvh]) wins;
+		// a band cut out of a segmented container (data-sc-band-of) is content-tall — its container's 120vh spanned EVERY
+		// band, so forcing 100vh here pushed the next band 270px down. Only an un-segmented hero keeps the 100vh default.
+		$first = ( isset( $roots[0] ) && $roots[0] instanceof DOMElement ) ? $roots[0] : null;
+		$hh0 = $first ? self::fullbleed_hero_height( $first ) : '';
+		if ( '' === $hh0 ) { $hh0 = ( $first && $first->hasAttribute( 'data-sc-band-of' ) ) ? 'auto' : '100vh'; }
 		return array(
 			't' => 'video', 'role' => 'video', 'mode' => 'self_hosted', 'bg' => true,
 			'src' => $src, 'webm' => $webm, 'poster' => $poster, 'overlay' => $overlay,
-			'valign' => 'middle', 'hero_height' => '100vh',
+			'valign' => 'middle', 'hero_height' => $hh0,
 		);
 	}
 
@@ -10731,6 +12007,123 @@ class FW_Site_Converter_Stitch {
 	 * (inset-0 / w-full+h-full / w-screen+h-screen, or a computed 100vw/100vh box). Distinct from `absolute`
 	 * (a section-local bleed) — a FIXED full-viewport layer is a SITE-level backdrop, not a section one.
 	 */
+	/**
+	 * The page's FIXED decorative PATTERN layer: an element inside a body-level fixed inset-0 wrapper (or that wrapper itself)
+	 * with no text and no media, whose computed background-image is a gradient / data-URI TILE (a repeating grid), not a
+	 * photo. Returns { image, opacity, extra } (extra = the tile's background-size / -repeat) or null. Glow blobs (a
+	 * blurred rounded box) are skipped: they are a fill, not a pattern.
+	 */
+	/**
+	 * The stylesheet rules the source <main> wears by its own classes / id (+ the @keyframes they animate), re-targeted at the
+	 * theme's `main.site-main`. Layout the theme's wrapper owns (display / position / size / spacing / overflow) is dropped from the
+	 * copied bodies; everything else (a background animation, a blend, a filter, a colour) is kept. '' when <main> has none.
+	 */
+	private static function page_shell_css( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return ''; }
+		$all_css = self::all_style_css( (string) $html );
+		$out_all = '';
+		// the two shells: the source <body> → the theme's body; the source <main> → the theme's main.site-main
+		// (the body's rules are scoped to the FRONT END: Misc Custom CSS also loads in the builder's admin page, where a page-wide
+		// ground / a fixed pattern layer bled over the editor)
+		foreach ( array( array( 'body', 'body:not(.wp-admin)' ), array( 'main', 'main.site-main' ) ) as $pair ) {
+			list( $tag, $target ) = $pair;
+			$el = $dom->getElementsByTagName( $tag )->item( 0 );
+			if ( ! ( $el instanceof DOMElement ) ) { continue; }
+			$tokens = array();
+			$id = trim( (string) $el->getAttribute( 'id' ) ); if ( '' !== $id ) { $tokens[] = '#' . $id; }
+			foreach ( preg_split( '/\s+/', trim( (string) $el->getAttribute( 'class' ) ) ) as $c ) {
+				if ( '' === $c || ! preg_match( '/^[A-Za-z_][\w-]*$/', $c ) ) { continue; }
+				// a resolvable utility (text-white, font-sans, antialiased) is the design's token, carried natively — only the source's
+				// OWN classes (.ascending-bg, .noise) are looked up in its sheets
+				if ( class_exists( 'FW_Site_Converter_Tailwind' ) ) { $cm = FW_Site_Converter_Tailwind::compile_class_set( $c ); if ( ! empty( $cm['base'] ) ) { continue; } }
+				$tokens[] = '.' . $c;
+			}
+			// …plus the ELEMENT's own bare rules (`body{background:…}` — a layered gradient ground, `body::before{…}` — a fixed grid
+			// pattern): a source that styles the shell by tag, not by class, carries just as much design.
+			$bare = self::bare_element_css( $all_css, $tag );
+			if ( ! $tokens && '' === trim( $bare ) ) { continue; }
+			$css = ( $tokens ? self::extract_scoped_css( $all_css, $tokens ) : '' ) . "
+" . $bare;
+			if ( '' === trim( $css ) ) { continue; }
+			$tokens[] = $tag;
+			// re-target: every selector that names the shell → the theme's element; drop the wrapper-owned layout props from the bodies
+			$out = preg_replace_callback( '/([^{}]+)\{([^{}]*)\}/', function ( $m ) use ( $tokens, $tag, $target ) {
+				$sel = trim( $m[1] );
+				if ( 0 === strpos( $sel, '@' ) || preg_match( '/^\d|^from$|^to$/i', $sel ) ) { return $m[0]; } // an at-rule prelude / a keyframe step: verbatim
+				$sels = array();
+				foreach ( explode( ',', $sel ) as $one ) {
+					$one = trim( $one ); $hit = false;
+					foreach ( $tokens as $t ) { if ( false !== stripos( $one, $t ) ) { $hit = true; $one = preg_replace( '/(?:' . $tag . ')?' . preg_quote( $t, '/' ) . '(?![\w-])/i', $target, $one ); } }
+					if ( $hit ) { $sels[] = $one; }
+				}
+				if ( ! $sels ) { return ''; }
+				// declaration by declaration (a regex over the joined body eats the boundary of the next one)
+				$keep = array();
+				$pseudo = (bool) preg_match( '/::?(?:before|after)(?![a-z-])/i', $sel ); // a pseudo LAYER's placement (fixed, inset:0, z-index:-1) is its design, not the wrapper's layout
+				foreach ( explode( ';', $m[2] ) as $decl ) {
+					$decl = trim( $decl ); if ( '' === $decl || false === strpos( $decl, ':' ) ) { continue; }
+					$prop = strtolower( trim( substr( $decl, 0, strpos( $decl, ':' ) ) ) );
+					if ( ! $pseudo && preg_match( '/^(?:display|position|top|right|bottom|left|width|min-width|max-width|height|min-height|margin[a-z-]*|padding[a-z-]*|overflow[a-z-]*|flex[a-z-]*|grid[a-z-]*|z-index)$/', $prop ) ) { continue; } // the theme's wrapper owns its layout
+					if ( 'body' === $tag && preg_match( '/^(?:font[a-z-]*|color|line-height|letter-spacing|-webkit-font-smoothing|-moz-osx-font-smoothing|text-rendering)$/', $prop ) ) { continue; } // the body's TYPE is Theme Settings → Typography
+					$keep[] = $decl;
+				}
+				$body = implode( ';', $keep );
+				if ( '' === trim( $body, "; \t\r\n" ) ) { return ''; }
+				return implode( ',', array_unique( $sels ) ) . '{' . trim( $body, "; \t\r\n" ) . ';}';
+			}, $css );
+			$out = trim( preg_replace( '/\s+/', ' ', (string) $out ) );
+			if ( '' !== $out && ( false !== strpos( $out, $target . '{' ) || false !== strpos( $out, $target . ':' ) ) ) { $out_all .= ( '' !== $out_all ? "\n" : '' ) . $out; }
+		}
+		return $out_all;
+	}
+
+	/** The rules whose every selector IS the bare element (`body`, `body::before`, `html, body`) — the shell's own tag-level design. */
+	private static function bare_element_css( $all_css, $tag ) {
+		$out = '';
+		if ( ! preg_match_all( '/([^{}]+)\{([^{}]*)\}/', (string) $all_css, $mm, PREG_SET_ORDER ) ) { return ''; }
+		foreach ( $mm as $m ) {
+			$sel = trim( $m[1] );
+			if ( 0 === strpos( $sel, '@' ) || '' === trim( $m[2] ) ) { continue; }
+			$keep = array();
+			foreach ( explode( ',', $sel ) as $one ) { $one = trim( $one ); if ( preg_match( '/^' . $tag . '(::?[a-z-]+)?$/i', $one ) ) { $keep[] = $one; } }
+			if ( $keep ) { $out .= implode( ',', $keep ) . '{' . trim( $m[2] ) . '}' . "
+"; }
+		}
+		return $out;
+	}
+
+	private static function detect_page_fixed_pattern( $html ) {
+		$dom = self::load_dom( (string) $html );
+		if ( ! $dom ) { return null; }
+		$body = $dom->getElementsByTagName( 'body' )->item( 0 );
+		if ( ! $body ) { return null; }
+		foreach ( self::el_children( $body ) as $wrap ) {
+			if ( ! self::el_is_page_fixed_layer( $wrap ) || '' !== trim( self::text( $wrap ) ) ) { continue; }
+			foreach ( array( 'img', 'video', 'svg', 'iframe', 'canvas' ) as $mt ) { if ( $wrap->getElementsByTagName( $mt )->length ) { continue 2; } }
+			$cands = array_merge( array( $wrap ), iterator_to_array( $wrap->getElementsByTagName( '*' ) ) );
+			foreach ( $cands as $c ) {
+				if ( ! ( $c instanceof DOMElement ) ) { continue; }
+				$cs = (string) $c->getAttribute( 'data-sc-cs' );
+				if ( ! preg_match( '/(?:^|;)\s*background-image:\s*([^;]+)/i', $cs, $m ) ) { continue; }
+				$img = trim( $m[1] );
+				if ( 'none' === strtolower( $img ) || preg_match( '/url\((?!"?data:image\/svg)/i', $img ) || strlen( $img ) > 3000 ) { continue; } // a photo is not a pattern
+				if ( ! preg_match( '/gradient\(|data:image\/svg/i', $img ) ) { continue; }
+				$sz = preg_match( '/(?:^|;)\s*background-size:\s*([^;]+)/i', $cs, $sm ) ? trim( $sm[1] ) : '';
+				$blur = preg_match( '/(?:^|;)\s*filter:\s*blur\(/i', $cs );
+				// a TILE: a repeating gradient, an svg tile, or a gradient with a px tile size; a single soft gradient blob is not one
+				if ( $blur || ( ! preg_match( '/repeating-|data:image\/svg/i', $img ) && ! preg_match( '/^[0-9.]+px/', $sz ) ) ) { continue; }
+				$op = preg_match( '/(?:^|;)\s*opacity:\s*([0-9.]+)/i', $cs, $om ) ? min( 1.0, (float) $om[1] ) : 1.0;
+				$extra = '';
+				if ( '' !== $sz && preg_match( '/^[a-z0-9.%,\s-]+$/i', $sz ) ) { $extra .= 'background-size:' . $sz . ';'; }
+				$rp = preg_match( '/(?:^|;)\s*background-repeat:\s*([^;]+)/i', $cs, $rm ) ? trim( $rm[1] ) : '';
+				if ( '' !== $rp && preg_match( '/^[a-z\s-]+$/i', $rp ) && 'repeat' !== strtolower( $rp ) ) { $extra .= 'background-repeat:' . $rp . ';'; }
+				return array( 'image' => $img, 'opacity' => $op, 'extra' => $extra );
+			}
+		}
+		return null;
+	}
+
 	private static function el_is_page_fixed_layer( $el ) {
 		$node = $el; $guard = 0;
 		while ( $node instanceof DOMElement && $guard++ < 6 ) {
@@ -10743,7 +12136,9 @@ class FW_Site_Converter_Stitch {
 			if ( $is_fixed ) {
 				$full = (bool) preg_match( '/inset-0|w-screen|h-screen/', $cls )
 					|| ( strpos( $cls, 'w-full' ) !== false && strpos( $cls, 'h-full' ) !== false )
-					|| (bool) preg_match( '/\b100vw\b|\b100vh\b|width:\s*100vw|height:\s*100vh/i', $cs );
+					|| (bool) preg_match( '/\b100vw\b|\b100vh\b|width:\s*100vw|height:\s*100vh/i', $cs )
+					// the computed stamp of a stylesheet `inset:0` (no utility class): all four offsets at 0
+					|| ( preg_match( '/(?:^|;)\s*top:\s*0px/i', $cs ) && preg_match( '/(?:^|;)\s*bottom:\s*0px/i', $cs ) && preg_match( '/(?:^|;)\s*left:\s*0px/i', $cs ) && preg_match( '/(?:^|;)\s*right:\s*0px/i', $cs ) );
 				if ( $full ) { return true; }
 			}
 			$node = $node->parentNode instanceof DOMElement ? $node->parentNode : null;
@@ -10758,13 +12153,17 @@ class FW_Site_Converter_Stitch {
 	 * <video>): it maps to the SITE background's video layer in FIXED mode, rendered once behind everything by
 	 * the theme (unysonplus_render_site_bg_video). Returns { mp4, webm, poster } or array() when there is none.
 	 */
+	/** Misc Custom CSS for the page backdrop video layer, set by the site-background pass and appended with the shell css. */
+	private static $page_backdrop_css = '';
+
 	private static function detect_page_fixed_video( $html ) {
 		$dom = self::load_dom( (string) $html );
 		if ( ! $dom ) { return array(); }
 		$body = $dom->getElementsByTagName( 'body' )->item( 0 );
 		if ( ! ( $body instanceof DOMElement ) ) { return array(); }
 		foreach ( $body->getElementsByTagName( 'video' ) as $vid ) {
-			if ( ! self::el_is_page_fixed_layer( $vid ) ) { continue; }
+			$backdrop = self::page_backdrop_layer_of( $vid ); // a fixed, viewport-tall, unframed layer the page scrolls over (full-bleed OR a partial-width anchor)
+			if ( ! self::el_is_page_fixed_layer( $vid ) && ! $backdrop ) { continue; }
 			$src = (string) $vid->getAttribute( 'src' ); $webm = '';
 			foreach ( $vid->getElementsByTagName( 'source' ) as $s ) {
 				$ss = (string) $s->getAttribute( 'src' ); $st = strtolower( (string) $s->getAttribute( 'type' ) );
@@ -10773,16 +12172,90 @@ class FW_Site_Converter_Stitch {
 				if ( '' === $src  && ( 'video/mp4'  === $st || preg_match( '/\.mp4(\?|$)/i',  $ss ) ) ) { $src  = $ss; }
 			}
 			if ( '' === $src && '' === $webm ) { continue; }
-			return array( 'mp4' => $src, 'webm' => $webm, 'poster' => (string) $vid->getAttribute( 'poster' ) );
+			return array( 'mp4' => $src, 'webm' => $webm, 'poster' => (string) $vid->getAttribute( 'poster' ), 'css' => $backdrop ? self::page_backdrop_css( $backdrop, $vid ) : '' );
 		}
 		return array();
+	}
+
+	/**
+	 * The PAGE BACKDROP layer a <video> sits in: a `position:fixed` wrapper (or the video itself) that is viewport-TALL
+	 * (100vh), UNFRAMED (no radius — a framed one is a floating portal), sits behind the content (z-index ≤ 1 or
+	 * pointer-events:none) and is not part of any section — full-bleed OR anchored to one side at a partial width
+	 * (a `video-anchor` pinned top/right at 60vw with a radial mask, the page scrolling over it). Such a layer is the
+	 * SITE background's fixed video, never a section's. Returns the layer element or null. JS twin: pageBackdropLayerOf.
+	 */
+	private static function page_backdrop_layer_of( $vid ) {
+		if ( ! ( $vid instanceof DOMElement ) ) { return null; }
+		$node = $vid; $guard = 0;
+		while ( $node instanceof DOMElement && $guard++ < 4 ) {
+			$tag = strtolower( $node->tagName );
+			if ( in_array( $tag, array( 'body', 'html', 'section', 'main', 'header', 'footer' ), true ) ) { return null; }
+			$cs = (string) $node->getAttribute( 'data-sc-cs' );
+			$pos = strtolower( (string) self::sc_css( $node, 'position' ) );
+			if ( 'fixed' === $pos || preg_match( '/(?:^|\s)fixed(?:\s|$)/', ' ' . strtolower( self::cls( $node ) ) . ' ' ) ) {
+				$h = (float) ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $hm ) ? $hm[1] : 0 );
+				$tall = ( $h >= 800 ) || (bool) preg_match( '/(?:^|;)\s*height:\s*100vh|h-screen|inset-0/i', $cs . ' ' . self::cls( $node ) ); // the capture viewport is 900px tall
+				$framed = preg_match( '/(?:^|;)\s*border-radius:\s*([0-9.]+)px/i', $cs, $rm ) && (float) $rm[1] > 0;
+				$z = preg_match( '/(?:^|;)\s*z-index:\s*(-?[0-9]+)/i', $cs, $zm ) ? (int) $zm[1] : 0;
+				$behind = ( $z <= 1 ) || (bool) preg_match( '/(?:^|;)\s*pointer-events:\s*none/i', $cs );
+				// the layer must hold nothing but the video and decor (a scrim / glow layer) — no text
+				if ( $tall && ! $framed && $behind && '' === trim( self::text( $node ) ) && ! $node->getElementsByTagName( 'a' )->length ) { return $node; }
+				return null;
+			}
+			$node = $node->parentNode instanceof DOMElement ? $node->parentNode : null;
+		}
+		return null;
+	}
+
+	/**
+	 * Misc Custom CSS that gives the theme's fixed site-background video (`.site-bg-video`, printed inset:0 / 100vw × 100vh)
+	 * the source layer's OWN geometry: the anchored side + width (a 60vw right anchor), its mask, the video's filter, and a
+	 * decor sibling inside the layer (a radial glow with a blend mode) as a `::after` pseudo-layer. '' for a plain full-bleed.
+	 */
+	private static function page_backdrop_css( $layer, $vid ) {
+		$g = self::el_style_props( $layer, array( 'top', 'right', 'bottom', 'left', 'width', 'height', 'mask-image', '-webkit-mask-image', 'opacity', 'mix-blend-mode' ) );
+		$d = array();
+		$w = isset( $g['width'] ) ? trim( $g['width'] ) : '';
+		// a measured px width → the viewport share it was (60vw), so the layer keeps its proportion on every screen
+		if ( preg_match( '/^([0-9.]+)px$/', $w, $wm ) ) { $vw = 0; $de = $layer->ownerDocument ? $layer->ownerDocument->documentElement : null; if ( $de ) { $vw = (int) $de->getAttribute( 'data-sc-content-width' ); } if ( $vw <= 0 ) { $vw = 1440; } $w = ( round( (float) $wm[1] / $vw * 1000 ) / 10 ) . 'vw'; }
+		if ( '' !== $w && ! preg_match( '/^100(vw|%)$/', $w ) && (float) $w < 98 ) {
+			// a partial width anchored to one side: the side the source declared (right:0 + a left offset = right-anchored)
+			$left_off = isset( $g['left'] ) && ! preg_match( '/^0(px)?$/', trim( $g['left'] ) );
+			$d[] = 'width:' . $w;
+			if ( $left_off || ( isset( $g['right'] ) && preg_match( '/^0(px)?$/', trim( $g['right'] ) ) ) ) { $d[] = 'left:auto'; $d[] = 'right:0'; } else { $d[] = 'right:auto'; $d[] = 'left:0'; }
+		}
+		$mask = isset( $g['mask-image'] ) ? $g['mask-image'] : ( isset( $g['-webkit-mask-image'] ) ? $g['-webkit-mask-image'] : '' );
+		if ( '' !== $mask && 'none' !== strtolower( trim( $mask ) ) ) { $d[] = '-webkit-mask-image:' . $mask; $d[] = 'mask-image:' . $mask; }
+		if ( isset( $g['opacity'] ) && '' !== $g['opacity'] && '1' !== trim( $g['opacity'] ) ) { $d[] = 'opacity:' . $g['opacity']; }
+		if ( isset( $g['mix-blend-mode'] ) && 'normal' !== strtolower( trim( $g['mix-blend-mode'] ) ) ) { $d[] = 'mix-blend-mode:' . $g['mix-blend-mode']; }
+		$out = array();
+		if ( $d ) { $out[] = '.site-bg-video{' . implode( ' !important;', $d ) . ' !important;}'; } // (the theme prints the layer's inset:0 / 100vw inline)
+		$vf = self::el_style_props( $vid, array( 'filter', 'object-position', 'opacity' ) ); $vd = array();
+		if ( ! empty( $vf['filter'] ) && 'none' !== strtolower( trim( $vf['filter'] ) ) ) { $vd[] = 'filter:' . $vf['filter']; }
+		if ( ! empty( $vf['object-position'] ) && ! preg_match( '/^50%\s+50%$/', trim( $vf['object-position'] ) ) ) { $vd[] = 'object-position:' . $vf['object-position']; }
+		if ( ! empty( $vf['opacity'] ) && '1' !== trim( $vf['opacity'] ) ) { $vd[] = 'opacity:' . $vf['opacity']; }
+		if ( $vd ) { $out[] = '.site-bg-video video{' . implode( ';', $vd ) . ';}'; }
+		// a DECOR sibling inside the layer (a radial glow / scrim with a blend mode) → a pseudo-layer over the video
+		foreach ( self::el_children( $layer ) as $kid ) {
+			if ( $kid === $vid || 'video' === strtolower( $kid->tagName ) || '' !== trim( self::text( $kid ) ) ) { continue; }
+			$k = self::el_style_props( $kid, array( 'background-image', 'background-color', 'mix-blend-mode', 'opacity', 'backdrop-filter' ) ); $kd = array();
+			if ( ! empty( $k['background-image'] ) && 'none' !== strtolower( trim( $k['background-image'] ) ) ) { $kd[] = 'background-image:' . $k['background-image']; }
+			if ( ! empty( $k['background-color'] ) && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent/i', $k['background-color'] ) ) { $kd[] = 'background-color:' . $k['background-color']; }
+			if ( ! $kd ) { continue; }
+			if ( ! empty( $k['mix-blend-mode'] ) && 'normal' !== strtolower( trim( $k['mix-blend-mode'] ) ) ) { $kd[] = 'mix-blend-mode:' . $k['mix-blend-mode']; }
+			if ( ! empty( $k['opacity'] ) && '1' !== trim( $k['opacity'] ) ) { $kd[] = 'opacity:' . $k['opacity']; }
+			if ( ! empty( $k['backdrop-filter'] ) && 'none' !== strtolower( trim( $k['backdrop-filter'] ) ) ) { $kd[] = 'backdrop-filter:' . $k['backdrop-filter']; }
+			$out[] = '.site-bg-video::after{content:"";position:absolute;inset:0;pointer-events:none;' . implode( ';', $kd ) . ';}';
+			break;
+		}
+		return implode( "\n", $out );
 	}
 
 	/**
 	 * De-animate word/char SPLIT-TEXT: unwrap the per-word/per-char `<span>`s that animation builders emit so a
 	 * shattered heading/eyebrow becomes plain text again. Structural, not name-based — it fires on any container
 	 * that DIRECTLY holds ≥3 short single-token `<span>` children and NO other element children (so it is clearly a
-	 * split line, e.g. openhero `.breeze-word`, GSAP/Framer SplitText `.word`/`.char`), never on a mixed line that
+	 * split line, e.g. AI-page `.breeze-word`, GSAP/Framer SplitText `.word`/`.char`), never on a mixed line that
 	 * carries a real `<em>`/`<a>`/`<br>` (those are left untouched). The inter-span whitespace and separator glyphs
 	 * are already text nodes and survive the unwrap, so `Atmospheric</span> <span>Equilibrium</span> <span>·</span>`
 	 * reassembles to `Atmospheric Equilibrium ·` — one overline instead of a vertical stack of one-word blocks.
@@ -10816,6 +12289,7 @@ class FW_Site_Converter_Stitch {
 					&& 0 === $c->getElementsByTagName( '*' )->length            // a leaf span (no nested markup)
 					&& '' !== trim( $c->textContent )
 					&& mb_strlen( trim( $c->textContent ) ) <= 24                // a single word / char / separator, not a sentence
+					&& ! preg_match( '/(?:^|;)\s*display:\s*block/i', (string) $c->getAttribute( 'data-sc-cs' ) ) // a `block` span is a LINE of the title, not a split word (measured: 3 lines → 2)
 					&& ! self::span_is_boxed( $c ) ) {                          // a BOXED span (padding / fill / border) is a chip, never a split word
 					$spans[] = $c;
 				} else {
@@ -10860,12 +12334,12 @@ class FW_Site_Converter_Stitch {
 			// clip, not a backdrop. living-architecture's `fullscreen-video-container` needed the name signal.
 			$name_bleed = ( preg_match( '/\b(?:fullscreen|video-bg|bg-video|video-background|video-cover|cover-video)\b/', $cls ) && strpos( $cls, 'portal' ) === false && strpos( $cls, 'mask' ) === false && strpos( $cls, 'shell' ) === false );
 			$abs   = ( 'absolute' === $pos || 'fixed' === $pos || strpos( $cls, ' absolute ' ) !== false || strpos( $cls, ' fixed ' ) !== false );
-			// GEOMETRY signal (name-agnostic) — the openhero pattern the NAME test above deliberately can't catch:
+			// GEOMETRY signal (name-agnostic) — the AI-page pattern the NAME test above deliberately can't catch:
 			// the hero backdrop is a `.video-portal` (computed position:absolute, inset via the stylesheet not the
-			// data-sc-cs stamp, and NO bleed class) — the SAME class openhero also uses for its decorative lens, so
+			// data-sc-cs stamp, and NO bleed class) — the SAME class AI-page also uses for its decorative lens, so
 			// only the SHAPE separates them. A backdrop layer has SQUARE corners (border-radius < 24px, matching the
 			// PASS-2 rounded-content threshold) and NO transform; the lens has a blob `%`-radius + `transform:matrix`.
-			// This is the UNIVERSAL full-bleed idiom (lovable/wegic/jiro use `absolute inset-0 object-cover`, already
+			// This is the UNIVERSAL full-bleed idiom (lovable/a second AI-page generator/jiro use `absolute inset-0 object-cover`, already
 			// caught by the class test; this adds the CUSTOM-class case). Kept STRUCTURAL on purpose — a
 			// `*-portal`/`*-mask` NAME exclusion was tried and REVERTED (see Fragility Register); shape is the sturdy
 			// signal. Guarded to a LONE video (one <video>, no content <img>) so a content collage never qualifies.
@@ -10882,6 +12356,15 @@ class FW_Site_Converter_Stitch {
 			if ( ! ( $abs && $bleed ) ) { continue; }
 			if ( 0 === $el->getElementsByTagName( 'video' )->length ) { continue; }
 			if ( mb_strlen( trim( self::text( $el ) ) ) > 40 ) { continue; } // a bg layer is text-free, not a content band
+			// The layer must cover the SECTION, not a card: an `absolute inset-0` video inside a FRAMED grid cell (a hero's right-column
+			// clip) measured a fraction of the band's height and sat in a column — it was hoisted to the section backdrop and lost its
+			// frame (a RECURRING finding). A layer under a `data-sc-col` cell, or shorter than 70 % of the band, stays content.
+			$in_cell = false; foreach ( array( $el->parentNode, $el->parentNode instanceof DOMElement ? $el->parentNode->parentNode : null ) as $an ) { if ( $an instanceof DOMElement && $an !== $node && $an->hasAttribute( 'data-sc-col' ) ) { $in_cell = true; } }
+			for ( $an = $el->parentNode; $an instanceof DOMElement && $an !== $node; $an = $an->parentNode ) { if ( $an->hasAttribute( 'data-sc-col' ) ) { $in_cell = true; break; } }
+			if ( $in_cell ) { continue; }
+			$lh = preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $el, 'height' ), $lhm ) ? (float) $lhm[1] : 0.0;
+			$sh = preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $node, 'height' ), $shm ) ? (float) $shm[1] : 0.0;
+			if ( $lh > 0 && $sh > 0 && $lh < $sh * 0.7 ) { continue; }
 			$vid0 = $el->getElementsByTagName( 'video' )->item( 0 );
 			if ( ! ( $vid0 instanceof DOMElement ) || ! $vid0->hasAttribute( 'autoplay' ) || ! $vid0->hasAttribute( 'muted' ) ) { continue; }
 			$best = $el; $vid = $vid0; break;
@@ -10932,18 +12415,26 @@ class FW_Site_Converter_Stitch {
 		if ( '' === $overlay ) { $overlay = self::pseudo_scrim_of( $best ); }
 		if ( '' === $overlay ) { $overlay = self::pseudo_scrim_of( $node ); }
 		// EFFECT WRAPPER — a wrapper between the bleed layer and the <video> carrying a visual effect that
-		// Background-Pro CANNOT reproduce (mask-image / filter / mix-blend-mode / clip-path — openhero's
+		// Background-Pro CANNOT reproduce (mask-image / filter / mix-blend-mode / clip-path — an AI page's
 		// `.kinetic-breach` radial mask + saturate/brightness that fades the headset into black). Read it
 		// from the SOURCE STYLESHEET (custom classes define these there, not in the curated data-sc-cs).
 		// When present, the mapper renders the bg video as a media_video in Section-Background mode with the
 		// effect carried as vanilla CSS, instead of flattening to a Background-Pro video (which drops it).
 		$effect_css = self::bg_video_effect_css( (string) $html, $best, $vid );
+		// The source <video>'s own paint under its frames: a transparent backdrop shows the page / section ground while the
+		// clip loads (or where a frame can't decode) — the media_video's default black under-paint would otherwise turn
+		// that hero black. Carried only when the stamp says transparent. JS twin: bgVideoBlock (videoBg).
+		$video_bg = '';
+		if ( $vid instanceof DOMElement && preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', (string) $vid->getAttribute( 'data-sc-cs' ), $vbm ) ) {
+			$vbc = strtolower( trim( $vbm[1] ) );
+			if ( 'transparent' === $vbc || preg_match( '/^rgba\([^)]*,\s*0\s*\)$/', $vbc ) ) { $video_bg = 'transparent'; }
+		} elseif ( $vid instanceof DOMElement && '' !== (string) $vid->getAttribute( 'data-sc-cs' ) ) { $video_bg = 'transparent'; } // (a stamp that carries no fill = no fill of its own)
 		if ( $best->parentNode instanceof DOMElement ) { $best->parentNode->removeChild( $best ); } // now the section bg
-			// DUPLICATE PARALLAX COPY — some generators (openhero) stamp the backdrop video TWICE: the true bleed
+			// DUPLICATE PARALLAX COPY — some generators (AI-page) stamp the backdrop video TWICE: the true bleed
 			// layer PLUS a second offset copy for a parallax/lens effect, both playing the SAME `.mp4`. The first is
 			// now the section background; a leftover same-src absolute lone-video layer would otherwise render as a
 			// stray inline tile beside the hero. Drop any remaining absolute/fixed lone-video wrapper in this section
-			// that plays the same clip — a general rule (a de-duplicated bg video), not an openhero special case.
+			// that plays the same clip — a general rule (a de-duplicated bg video), not an AI-page special case.
 			$same_src = function ( $v ) use ( $src, $webm ) {
 				if ( ! ( $v instanceof DOMElement ) ) { return false; }
 				$cand = array( (string) $v->getAttribute( 'src' ) );
@@ -10986,7 +12477,7 @@ class FW_Site_Converter_Stitch {
 		return array(
 			't' => 'video', 'role' => 'video', 'mode' => 'self_hosted', 'bg' => true,
 			'src' => $src, 'webm' => $webm, 'poster' => $poster, 'overlay' => $overlay,
-			'valign' => 'middle', 'hero_height' => $hh, 'boxMaxW' => $box_mw, 'effectCss' => $effect_css,
+			'valign' => 'middle', 'hero_height' => $hh, 'boxMaxW' => $box_mw, 'effectCss' => $effect_css, 'videoBg' => $video_bg,
 		);
 	}
 
@@ -11091,7 +12582,8 @@ class FW_Site_Converter_Stitch {
 		}
 		// No scrim ELEMENT → a `::before` / `::after` pseudo-layer tint stamped by the capture (data-sc-scrim).
 		if ( '' === $overlay ) { $overlay = self::pseudo_scrim_of( $node ); }
-		$ret = function ( $src ) use ( $hero, $valign, $hero_height, $overlay ) { return array( 'src' => $src, 'hero' => $hero, 'valign' => $valign, 'hero_height' => $hero_height, 'overlay' => $overlay ); };
+		$centred_cap = self::band_has_centred_cap( $node );
+		$ret = function ( $src ) use ( $hero, $valign, $hero_height, $overlay, $centred_cap ) { return array( 'src' => $src, 'contentCentred' => $centred_cap, 'hero' => $hero, 'valign' => $valign, 'hero_height' => $hero_height, 'overlay' => $overlay ); };
 
 		// A real image URL out of a computed `background-image` layer list (skips gradients + data:svg).
 		$url_of = function ( $bg ) {
@@ -11140,13 +12632,20 @@ class FW_Site_Converter_Stitch {
 				$anc = $anc->parentNode; $depth++;
 			}
 			if ( ! $is_bg ) { continue; }
+			// …but only when the layer COVERS THE BAND: an `absolute inset-0 object-cover` image filling a HALF-WIDTH cell of a
+			// split band (`md:w-1/2 relative > img.absolute.inset-0`, 720 px of a 1440 band) is that cell's picture, not the
+			// section backdrop — lifting it emptied the image half (a fixture from the feed). Measured: the image's stamped
+			// width against the band's (the capture viewport when the band carries none).
+			$iw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', (string) $img->getAttribute( 'data-sc-cs' ), $iwm ) ? (float) $iwm[1] : 0.0;
+			$bw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $scs, $bwm ) ? (float) $bwm[1] : 1440.0;
+			if ( $iw > 0 && $iw < $bw * 0.7 ) { continue; }
 			$src = trim( (string) $img->getAttribute( 'src' ) );
 			if ( $src === '' ) { $src = trim( (string) $img->getAttribute( 'data-src' ) ); }
 			if ( $src === '' || strpos( $src, 'data:image/svg' ) === 0 ) { continue; }
 			return $ret( $src );
 		}
 		// (3b) HERO ASPECT-BOX — an `<img w-full h-full object-cover>` FILLING a `relative aspect-[…]` container
-		// whose `absolute inset-0` overlay carries a HEADING (h1–h6). The Tailwind hero-banner pattern (jukebox:
+		// whose `absolute inset-0` overlay carries a HEADING (h1–h6). The Tailwind hero-banner pattern (the burger source:
 		// `<div class="relative aspect-[2/1]"><img object-cover><div class="absolute inset-0 …"><h2>…</h2><a>…`).
 		// The image isn't in a full-bleed inset-0 LAYER (paths above missed it), so the whole hero collapsed to a
 		// verbatim code_block. A HEADING in the overlay is the gate that distinguishes a hero from an image-tile
@@ -11181,7 +12680,7 @@ class FW_Site_Converter_Stitch {
 				foreach ( $am as $a ) { $w = (float) $a[1]; $h2 = (float) $a[2]; if ( $w > 0 && $h2 > 0 ) { $r = $w / $h2; if ( $r > $best_r ) { $best_r = $r; } } }
 				if ( $best_r > 0 ) { $ah = (int) round( 1440 / $best_r ) . 'px'; }
 			}
-			return array( 'src' => $src, 'hero' => true, 'valign' => $valign, 'hero_height' => $ah, 'overlay' => $overlay );
+			return array( 'src' => $src, 'hero' => true, 'contentCentred' => self::band_has_centred_cap( $node ), 'valign' => $valign, 'hero_height' => $ah, 'overlay' => $overlay );
 		}
 		return array();
 	}
@@ -11195,16 +12694,52 @@ class FW_Site_Converter_Stitch {
 	 * @param DOMElement $node
 	 * @return float px, or 0
 	 */
+	/** A capped wrapper is the CENTRED band only when it centres itself (`mx-auto` / `container` / a computed auto margin) or its
+	 *  parent centres it (a column flex with justify-center; an inline box in a text-center parent). A bare `max-w-*` is NOT centred —
+	 *  a hero's `max-w-3xl` text column sits at the band's LEFT edge (margin 0); reading it as the band cap centred the whole hero
+	 *  and shrank its container to 768px (measured on a real conversion). */
+	/** The band (the section holding $el, or $el itself) has a CENTRED capped content wrapper (`max-w-7xl mx-auto`, ≥ 480px, not a
+	 *  text leaf): its copy is centred by design — a left-flush container would drag it to the viewport edge (measured: a hero's
+	 *  `max-w-7xl mx-auto` grid pinned left at 24px instead of centred at 80px). */
+	private static function band_has_centred_cap( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$band = $el;
+		for ( $p = $el; $p instanceof DOMElement; $p = $p->parentNode ) { if ( in_array( strtolower( $p->tagName ), array( 'section', 'header', 'main', 'body' ), true ) ) { $band = $p; break; } }
+		foreach ( $band->getElementsByTagName( '*' ) as $w ) {
+			if ( in_array( strtolower( $w->tagName ), array( 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 'li', 'img', 'svg', 'video', 'button' ), true ) ) { continue; }
+			$wcs = (string) $w->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/', $wcs, $mm ) || (float) $mm[1] < 480 ) { continue; }
+			if ( self::cap_is_centred( $w, ' ' . strtolower( self::cls( $w ) ) . ' ', $wcs ) ) { return true; }
+		}
+		return false;
+	}
+
+	private static function cap_is_centred( $el, $cls, $cs ) {
+		if ( strpos( $cls, 'mx-auto' ) !== false || strpos( $cls, 'container' ) !== false ) { return true; }
+		if ( preg_match( '/margin(?:-left|-right)?:\s*auto|(?:^|;)\s*margin:\s*[^;]*\bauto\b/', $cs ) ) { return true; }
+		if ( strpos( $cls, 'max-w-' ) === false || ! ( $el instanceof DOMElement ) || ! ( $el->parentNode instanceof DOMElement ) ) { return false; }
+		$par = $el->parentNode;
+		$pjc = (string) self::sc_css( $par, 'justify-content' ); $pai = (string) self::sc_css( $par, 'align-items' ); $pfd = (string) self::sc_css( $par, 'flex-direction' ); $pd = (string) self::sc_css( $par, 'display' );
+		if ( false !== strpos( $pd, 'flex' ) && ( ( 'column' === $pfd && 'center' === $pai ) || ( 'column' !== $pfd && 'center' === $pjc ) ) ) { return true; }
+		if ( false !== strpos( $pd, 'grid' ) && 'center' === (string) self::sc_css( $par, 'justify-items' ) ) { return true; }
+		return false;
+	}
+
 	private static function section_content_max_width( $node, $max_px = 1300.0 ) {
 		if ( ! ( $node instanceof DOMElement ) ) { return 0.0; }
 		$best = 0.0;
+		// The section ROOT can BE the capped box (a segmented band = the `max-w-4xl mx-auto` hero copy wrapper itself): its own
+		// max-width is the band's measure. Only when the root is a non-leaf, centred, in-range cap (the leaf / column guards below
+		// apply to descendants; a root is never inside its own grid).
+		{ $rcs = (string) $node->getAttribute( 'data-sc-cs' ); $rcls = ' ' . strtolower( (string) $node->getAttribute( 'class' ) ) . ' ';
+			if ( preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/', $rcs, $rm ) && (float) $rm[1] >= 480 && (float) $rm[1] <= $max_px && ( strpos( $rcls, 'mx-auto' ) !== false || strpos( $rcls, 'max-w-' ) !== false || preg_match( '/margin(?:-left|-right)?:\s*auto|(?:^|;)\s*margin:\s*[^;]*\bauto\b/', $rcs ) ) ) { $best = (float) $rm[1]; } }
 		foreach ( $node->getElementsByTagName( '*' ) as $el ) {
 			$cs = (string) $el->getAttribute( 'data-sc-cs' );
 			if ( $cs === '' || ! preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/', $cs, $m ) ) { continue; }
 			$px = (float) $m[1];
 			// A max-width on a TEXT LEAF (paragraph, heading, span, link, list item) is a typographic READING-
 			// MEASURE cap (`max-w-xl`/`max-w-prose` on a `<p>` description), NOT the section's content band — the
-			// band WRAPS the blocks (heading + copy + button). jukeboxburgers' hero puts `max-w-xl` (576px) on its
+			// band WRAPS the blocks (heading + copy + button). the burger source's hero puts `max-w-xl` (576px) on its
 			// description `<p>` while its `<h2>` title is full-width; treating the `<p>`'s cap as the section
 			// container pinned the whole hero to 576px and wrapped the 2-line title to 4 lines. The leaf keeps its
 			// own measure via its block/subtitle CSS; the section container must not inherit it.
@@ -11218,19 +12753,20 @@ class FW_Site_Converter_Stitch {
 			// finds the section's OUTER CONTAINER (the ~1400 wrapper) for the section's own container_width.
 			if ( $px < 480 || $px > $max_px ) { continue; }
 			$cls = ' ' . strtolower( (string) $el->getAttribute( 'class' ) ) . ' ';
-			$centered = strpos( $cls, 'mx-auto' ) !== false || strpos( $cls, 'container' ) !== false
-				|| strpos( $cls, 'max-w-' ) !== false || preg_match( '/margin(?:-left|-right)?:\s*auto|(?:^|;)\s*margin:\s*[^;]*\bauto\b/', $cs );
+			$centered = self::cap_is_centred( $el, $cls, $cs );
 			if ( ! $centered ) { continue; }
 			// Skip a cap that lives INSIDE a multi-column grid/flex row — that's a COLUMN width (e.g. the
 			// hero's `max-w-xl` text column inside `grid lg:grid-cols-2`), NOT the section's content band.
 			// The real content band WRAPS the grid (`max-w-5xl mx-auto` around it). Pinning the section to a
 			// column's 576px cramped the whole hero — the "container max-width not fixed" bug.
 			$in_col = false;
-			for ( $p = $el->parentNode; $p instanceof DOMElement && $p !== $node; $p = $p->parentNode ) {
+			// (the section ROOT itself may be the grid — a `<section class="grid lg:grid-cols-[.46fr_.54fr]">` hero — so it is checked too)
+			for ( $p = $el->parentNode; $p instanceof DOMElement; $p = ( $p === $node ) ? null : $p->parentNode ) {
 				$pc = ' ' . strtolower( self::cls( $p ) ) . ' ';
 				$pcs = (string) $p->getAttribute( 'data-sc-cs' );
-				if ( preg_match( '/(?:^|\s)(?:sm:|md:|lg:|xl:|2xl:)?grid-cols-[2-9]/', $pc )
+				if ( preg_match( '/(?:^|\s)(?:sm:|md:|lg:|xl:|2xl:)?grid-cols-(?:[2-9]|\[)/', $pc )
 					|| preg_match( '/grid-template-columns:\s*(?:[^;]*(?:\d+px|\dfr|minmax)[^;]*){2,}/i', $pcs )
+					|| preg_match( '/grid-template-columns:\s*[0-9.]+px\s+[0-9.]+px/i', $pcs )
 					|| ( ( strpos( $pc, ' flex ' ) !== false || strpos( $pc, ':flex-row ' ) !== false ) && strpos( $pc, 'flex-col' ) === false && count( self::el_children( $p ) ) >= 2 ) ) {
 					$in_col = true; break;
 				}
@@ -11296,7 +12832,14 @@ class FW_Site_Converter_Stitch {
 		$full_vh = ( strpos( $cls, ' min-h-screen ' ) !== false || strpos( $cls, ' h-screen ' ) !== false
 			|| preg_match( '/\bmin-h-\[100(?:v|d|s)h\]/', $cls )
 			|| preg_match( '/(?:^|;)\s*min-height:\s*100(?:vh|dvh|svh)/', $scs ) );
-		return $full_vh && self::section_is_multicol_grid( $node ) && self::section_content_max_width( $node, 1600.0 ) < 480;
+		// …or a section that IS the grid and whose measured tracks span the viewport (`720px 720px` at 1440 — a split band with a
+		// CSS-painted photo half): boxed to the container, its halves lost 48px each (a fixture from the feed)
+		$edge = false;
+		if ( ! $full_vh && preg_match( '/(?:^|;)\s*grid-template-columns:\s*([^;]+)/i', $scs, $gm ) ) {
+			$sum = 0.0; $n = 0; foreach ( preg_split( '/\s+/', trim( $gm[1] ) ) as $t ) { if ( preg_match( '/^([0-9.]+)px$/', $t, $tm ) ) { $sum += (float) $tm[1]; $n++; } }
+			$edge = ( $n >= 2 && $sum >= 1400 && ! preg_match( '/(?:^|;)\s*padding(?:-left)?:\s*[1-9]/i', $scs ) );
+		}
+		return ( $full_vh || $edge ) && self::section_is_multicol_grid( $node ) && self::section_content_max_width( $node, 1600.0 ) < 480;
 	}
 
 	/** The full-viewport hero's height for the section min_height — `min-h-screen`/`h-screen`/`min-height:100vh`
@@ -11312,7 +12855,7 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** The full-viewport hero's vertical alignment from its column's main-axis justification — a `flex-col`
-	 *  column with `justify-center` centres its content vertically (the openhero split-hero pattern). Maps to the
+	 *  column with `justify-center` centres its content vertically (the AI-page split-hero pattern). Maps to the
 	 *  section's column_valign. Defaults to 'middle' (a full-viewport split hero is centred by convention). */
 	private static function fullbleed_hero_valign( $node ) {
 		if ( ! ( $node instanceof DOMElement ) ) { return 'middle'; }
@@ -11564,12 +13107,12 @@ class FW_Site_Converter_Stitch {
 	/**
 	 * Guard against a capture that serialized the app MORE THAN ONCE.
 	 *
-	 * Some JS sources (React/Vite SPAs — measured on Wegic) end up with the whole app rendered several
+	 * Some JS sources (React/Vite SPAs — measured on a second AI-page generator) end up with the whole app rendered several
 	 * times inside a single `#root` by the time `rendered.html` is serialized: the live DOM has one
 	 * `<main>`, the captured file has 4 (and one source had 10). The JS extractor reads the LIVE DOM so
 	 * it never saw this; the PHP engine reads `rendered.html` and faithfully converted the corruption —
 	 * a 6-section page became 24 sections and rendered 25,000px tall against a 6,589px source.
-	 * Measured: 7 of 120 sites in the Wegic corpus, 3x-10x.
+	 * Measured: 7 of 120 sites in the a second AI-page generator corpus, 3x-10x.
 	 *
 	 * Fixing the capture is the real fix, but the converter must not emit a 4x page whatever it is
 	 * handed. This detects only the exact corruption signature — the ENTIRE root list repeating as a
@@ -11610,7 +13153,7 @@ class FW_Site_Converter_Stitch {
 
 	/**
 	 * Pre-order DFS (= document order) that claims each top-level <section> AND each hero <header>
-	 * (a full-viewport <header> that is NOT the masthead — openhero-style), diving through plain
+	 * (a full-viewport <header> that is NOT the masthead — AI-page-style), diving through plain
 	 * wrappers but never into a claimed band or chrome (nav/footer/masthead). Mirrors the capture
 	 * service folding hero headers into its section list.
 	 *
@@ -11630,7 +13173,7 @@ class FW_Site_Converter_Stitch {
 				continue;                                                          // never descend into a <header>
 			}
 			if ( 'footer' === $tag || 'nav' === $tag ) { continue; }              // chrome — never a body band
-			// A full-viewport <main>/<div> HERO built WITHOUT a <section> tag (openhero's `<main class="min-h-[120vh]
+			// A full-viewport <main>/<div> HERO built WITHOUT a <section> tag (an AI page's `<main class="min-h-[120vh]
 			// flex-col items-center">` hero, or a `<div class="min-h-screen">` hero) → claim it as a band. Guarded:
 			// must be full-viewport-tall AND lead with a heading (is_hero_header), AND contain NO nested <section>
 			// (else it's a page-wrapper <main> holding real sections — dive in for those instead).
@@ -11643,7 +13186,19 @@ class FW_Site_Converter_Stitch {
 			if ( 0 === $ch->getElementsByTagName( 'section' )->length
 				&& ( 'main' === $tag || ( in_array( $tag, array( 'main', 'div' ), true ) && self::is_hero_header( $ch ) ) ) ) {
 				$bands = self::segment_bands( $ch );
-				if ( count( $bands ) >= 2 ) { foreach ( $bands as $band ) { $out[] = $band; } continue; }
+				if ( count( $bands ) >= 2 ) {
+					// The CONTAINER's own vertical padding (a `pt-[25vh]` on the <main> = 225px above the hero copy) belongs to
+					// the bands it wraps: top → the first band, bottom → the last. Without this the first band's section only
+					// got the overlay-header minimum (82px) and the hero sat 143px too high. Stamped into the band's own
+					// computed padding so every later reader (Pass #5 rhythm, heroTopPad minimum) sees one value.
+					self::band_inherit_padding( $bands[0], $ch, 'top' );
+					self::band_inherit_padding( $bands[ count( $bands ) - 1 ], $ch, 'bottom' );
+					self::band_padding_handed_over( $ch ); // …and the container itself no longer carries it (main_style would pad #main a second time)
+					self::stamp_band_placement( $bands, $ch ); // a GRID container's bands keep their column placement (col-start / col-span)
+					$bands = self::group_canvas_rows( $bands, $ch ); // …and bands that share a grid ROW become one flex-row band (side by side)
+					foreach ( $bands as $band ) { $band->setAttribute( 'data-sc-band-of', strtolower( $ch->tagName ) ); $out[] = $band; }
+					continue;
+				}
 				if ( 1 === count( $bands ) ) { $out[] = $bands[0]; continue; }   // single content band -> claim it
 				if ( self::is_hero_header( $ch ) ) { $out[] = $ch; continue; }
 				// A <main> with NO detectable bands still holds the page content -> claim it whole rather than dive-
@@ -11653,6 +13208,147 @@ class FW_Site_Converter_Stitch {
 			}
 			self::walk_section_roots( $ch, $masthead_path, $out );                // dive through wrappers to reach sections
 		}
+	}
+
+	/**
+	 * A section-less page whose content container is a GRID (a 12-track "fractal" canvas: the hero copy on tracks 1–7, a card
+	 * on 8–11, the next on 2–6 …) places each band by COLUMN, not only by row. Stamp every band with its measured placement
+	 * inside the container's content box — `data-sc-band-place="frac:F;x:X;w:W"` (F = the band's width fraction, X = its left
+	 * offset in px, W = the content width = the tracks + gaps) — so the mapper can keep the band at its column (width + left
+	 * offset) instead of stretching every band across the page. Only a grid container with px tracks; a flow container stamps
+	 * nothing. JS twin: bandPlacementOf.
+	 */
+	/**
+	 * A GRID canvas places bands SIDE BY SIDE: the hero copy on tracks 1–7 and a card on 8–11 share the first grid row, the
+	 * next two cards the second. Claimed one by one they stacked into four full-width sections. Group the bands that share a
+	 * row (their measured track-y / track-h spans overlap, as bento_split does) into ONE synthetic flex-row wrapper — the
+	 * container's gap, the cells' own top margins kept (a `mt-40` card sits lower than the hero beside it), each cell's
+	 * column offset beyond the previous cell (a col-start gap) as its own margin-left — so the section machinery builds a
+	 * row of two placed columns. A row of one band stays as it was. JS twin: groupCanvasRows.
+	 */
+	private static function group_canvas_rows( array $bands, $container ) {
+		if ( count( $bands ) < 2 || ! ( $container instanceof DOMElement ) || ! $container->ownerDocument ) { return $bands; }
+		$ccs = (string) $container->getAttribute( 'data-sc-cs' );
+		if ( ! preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?grid/i', $ccs ) ) { return $bands; }
+		$geo = array();
+		foreach ( $bands as $i => $b ) {
+			$st = (string) $b->getAttribute( 'data-sc-band-place' ); $bcs = (string) $b->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/frac:([0-9.]+);x:(-?[0-9.]+);w:([0-9.]+)/', $st, $m ) ) { return $bands; } // every band must be placed
+			$y = preg_match( '/(?:^|;)\s*track-y:\s*(-?[0-9.]+)/', $bcs, $ym ) ? (float) $ym[1] : 0.0;
+			$h = preg_match( '/(?:^|;)\s*track-h:\s*([0-9.]+)/', $bcs, $hm ) ? (float) $hm[1] : 0.0;
+			$mt = (float) ( self::el_margin( $b )['top'] ?? 0 );
+			$geo[ $i ] = array( 'frac' => (float) $m[1], 'x' => (float) $m[2], 'w' => (float) $m[3], 'y' => $y - $mt, 'h' => $h + $mt ); // the grid ROW starts above the band's own top margin
+		}
+		$gap = (float) self::grid_gap_px( $container );
+		$rows = array();
+		foreach ( $bands as $i => $b ) {
+			$placed = false;
+			foreach ( $rows as &$r ) {
+				$ov = min( $r['y'] + $r['h'], $geo[ $i ]['y'] + $geo[ $i ]['h'] ) - max( $r['y'], $geo[ $i ]['y'] );
+				$x_ok = true; foreach ( $r['i'] as $j ) { $a0 = $geo[ $j ]['x']; $a1 = $a0 + $geo[ $j ]['frac'] * $geo[ $j ]['w']; $b0 = $geo[ $i ]['x']; $b1 = $b0 + $geo[ $i ]['frac'] * $geo[ $i ]['w']; if ( min( $a1, $b1 ) - max( $a0, $b0 ) > 8 ) { $x_ok = false; } } // side by side, never overlapping columns
+				if ( $x_ok && ( abs( $r['y'] - $geo[ $i ]['y'] ) <= 8 || ( $geo[ $i ]['h'] > 0 && $r['h'] > 0 && $ov >= 0.5 * min( $r['h'], $geo[ $i ]['h'] ) ) ) ) { $r['i'][] = $i; $r['y'] = min( $r['y'], $geo[ $i ]['y'] ); $r['h'] = max( $r['h'], $geo[ $i ]['h'] ); $placed = true; break; }
+			}
+			unset( $r );
+			if ( ! $placed ) { $rows[] = array( 'y' => $geo[ $i ]['y'], 'h' => $geo[ $i ]['h'], 'i' => array( $i ) ); }
+		}
+		if ( count( $rows ) === count( $bands ) ) { return $bands; } // every band its own row: nothing to group
+		$doc = $container->ownerDocument; $out = array();
+		foreach ( $rows as $r ) {
+			if ( 1 === count( $r['i'] ) ) { $out[] = $bands[ $r['i'][0] ]; continue; }
+			usort( $r['i'], function ( $a, $b ) use ( $geo ) { return $geo[ $a ]['x'] <=> $geo[ $b ]['x']; } );
+			$first = $bands[ $r['i'][0] ];
+			$wrap = $doc->createElement( 'div' );
+			$wrap->setAttribute( 'class', 'sc-canvas-row' );
+			$wrap->setAttribute( 'data-sc-cs', 'display:flex;flex-direction:row;align-items:flex-start;gap:' . round( $gap ) . 'px;padding:' . round( (float) ( self::sc_padding_box( $first )['top'] ?? 0 ) ) . 'px 0px 0px 0px' );
+			// the source stacked its bands on phones (col-span-12) and kept them side by side on tablets: one / N measured tracks
+			// (tracks_count_at reads a grid-template-columns stamp, whichever display the wrapper has)
+			$wrap->setAttribute( 'data-sc-cs-sm', 'flex-direction:column;grid-template-columns:1fr' );
+			$wrap->setAttribute( 'data-sc-cs-md', 'grid-template-columns:' . implode( ' ', array_fill( 0, count( $r['i'] ), '1fr' ) ) );
+			$first->parentNode->insertBefore( $wrap, $first );
+			$prev_end = null;
+			foreach ( $r['i'] as $j ) {
+				$b = $bands[ $j ]; $g = $geo[ $j ];
+				$bcs = (string) $b->getAttribute( 'data-sc-cs' );
+				$bcs = preg_replace( '/(?:^|;)\s*padding(?:-(?:top|right|bottom|left))?:[^;]*/i', '', $bcs ); // the container's inherited padding rides the row wrapper
+				// a column offset beyond the previous cell's edge (+ the grid gap) → the cell's own left margin
+				$off = ( null === $prev_end ) ? $g['x'] : ( $g['x'] - $prev_end - $gap );
+				if ( $off > 4 ) { $bcs = trim( $bcs, '; ' ) . ';margin-left:' . round( $off / $g['w'] * 100, 2 ) . '%'; } // as a share of the canvas width, so the offset scales with the container
+				$prev_end = $g['x'] + $g['frac'] * $g['w'];
+				$b->setAttribute( 'data-sc-cs', ltrim( $bcs, ';' ) );
+				$b->removeAttribute( 'data-sc-band-place' );
+				$wrap->appendChild( $b );
+			}
+			$out[] = $wrap;
+		}
+		return $out;
+	}
+
+	/** The stamped `data-sc-band-place` → { frac, x, w } or array() (a full-width band, or no grid canvas). */
+	private static function band_placement_of( $node ) {
+		if ( ! ( $node instanceof DOMElement ) ) { return array(); }
+		$st = (string) $node->getAttribute( 'data-sc-band-place' );
+		if ( '' === $st || ! preg_match( '/frac:([0-9.]+);x:(-?[0-9.]+);w:([0-9.]+)/', $st, $m ) ) { return array(); }
+		$frac = (float) $m[1]; $x = (float) $m[2]; $w = (float) $m[3];
+		if ( $w <= 0 || $frac <= 0 || ( $frac >= 0.97 && $x <= 4 ) ) { return array(); } // full-width = nothing to place
+		return array( 'frac' => $frac, 'x' => $x, 'w' => $w );
+	}
+
+	private static function stamp_band_placement( array $bands, $container ) {
+		if ( ! ( $container instanceof DOMElement ) ) { return; }
+		$ccs = (string) $container->getAttribute( 'data-sc-cs' );
+		if ( ! preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?grid/i', $ccs ) ) { return; }
+		$tpl = trim( (string) self::sc_css( $container, 'grid-template-columns' ) ); $toks = ( '' !== $tpl ) ? preg_split( '/\s+/', $tpl ) : array();
+		$w = 0.0; $n = 0; foreach ( $toks as $t ) { if ( preg_match( '/^([0-9.]+)px$/', $t, $tm ) ) { $w += (float) $tm[1]; $n++; } }
+		if ( $n < 2 ) { return; }
+		$w += (float) self::grid_gap_px( $container ) * ( $n - 1 );
+		if ( $w <= 0 ) { return; }
+		foreach ( $bands as $band ) {
+			if ( ! ( $band instanceof DOMElement ) ) { continue; }
+			$bcs = (string) $band->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/', $bcs, $fm ) ) { continue; }
+			$x = preg_match( '/(?:^|;)\s*track-x:\s*(-?[0-9.]+)/', $bcs, $xm ) ? (float) $xm[1] : 0.0;
+			$band->setAttribute( 'data-sc-band-place', 'frac:' . round( (float) $fm[1], 3 ) . ';x:' . round( $x ) . ';w:' . round( $w ) );
+		}
+	}
+
+	/** The container handed its vertical padding to its first / last band: zero it on the container's own stamp + utility classes,
+	 *  so the #main carry (main_style reads the source <main>'s pt / pb) does not pad the page a second time. */
+	private static function band_padding_handed_over( $container ) {
+		if ( ! ( $container instanceof DOMElement ) ) { return; }
+		$bp = self::sc_padding_box( $container );
+		$cs = (string) $container->getAttribute( 'data-sc-cs' );
+		$cs = preg_replace( '/(?:^|;)\s*padding(?:-(?:top|right|bottom|left))?:[^;]*/i', '', $cs );
+		$cs = trim( $cs, '; ' ) . ';padding:0px ' . round( (float) $bp['right'] ) . 'px 0px ' . round( (float) $bp['left'] ) . 'px';
+		$container->setAttribute( 'data-sc-cs', ltrim( $cs, ';' ) );
+		$cls = preg_replace( '/(?:^|\s)(?:[a-z0-9]+:)?p[ty]-(?:\[[^\]]+\]|[0-9.]+)(?=\s|$)/', ' ', ' ' . self::cls( $container ) . ' ' );
+		$container->setAttribute( 'class', trim( preg_replace( '/\s+/', ' ', $cls ) ) );
+	}
+
+	/** Add the container's padding-$side to a band's own computed padding (data-sc-cs), so a segmented band carries the
+	 *  space its wrapper gave it. Only a positive container padding; the band's other three sides are kept. */
+	private static function band_inherit_padding( $band, $container, $side ) {
+		if ( ! ( $band instanceof DOMElement ) || ! ( $container instanceof DOMElement ) ) { return; }
+		$cp = self::sc_padding_box( $container ); $add = (float) ( $cp[ $side ] ?? 0 );
+		if ( $add <= 0 ) { return; }
+		$bp = self::sc_padding_box( $band ); $bp[ $side ] = (float) ( $bp[ $side ] ?? 0 ) + $add;
+		$cs = (string) $band->getAttribute( 'data-sc-cs' );
+		$cs = preg_replace( '/(?:^|;)\s*padding(?:-(?:top|right|bottom|left))?:[^;]*/i', '', $cs );
+		$cs = trim( $cs, '; ' ) . ';padding:' . round( $bp['top'] ) . 'px ' . round( $bp['right'] ) . 'px ' . round( $bp['bottom'] ) . 'px ' . round( $bp['left'] ) . 'px';
+		$band->setAttribute( 'data-sc-cs', ltrim( $cs, ';' ) );
+	}
+
+	/** An element's computed padding box { top, right, bottom, left } in px from its data-sc-cs (shorthand or per side). */
+	private static function sc_padding_box( $el ) {
+		$out = array( 'top' => 0.0, 'right' => 0.0, 'bottom' => 0.0, 'left' => 0.0 );
+		if ( ! ( $el instanceof DOMElement ) ) { return $out; }
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*padding:\s*([^;]+)/i', $cs, $m ) ) {
+			$v = array_map( 'floatval', preg_split( '/\s+/', trim( $m[1] ) ) );
+			$t = $v[0] ?? 0; $r = $v[1] ?? $t; $b = $v[2] ?? $t; $l = $v[3] ?? $r;
+			$out = array( 'top' => $t, 'right' => $r, 'bottom' => $b, 'left' => $l );
+		}
+		foreach ( array( 'top', 'right', 'bottom', 'left' ) as $sd ) { if ( preg_match( '/(?:^|;)\s*padding-' . $sd . ':\s*([\d.]+)px/i', $cs, $m ) ) { $out[ $sd ] = (float) $m[1]; } }
+		return $out;
 	}
 
 	/**
@@ -11715,7 +13411,20 @@ class FW_Site_Converter_Stitch {
 		$paras = $el->getElementsByTagName( 'p' )->length;
 		if ( ( $media + $paras ) >= 3 ) { return true; }
 		$txt = trim( preg_replace( '/\s+/', ' ', (string) $el->textContent ) );
-		return mb_strlen( $txt ) >= 120;
+		if ( mb_strlen( $txt ) >= 120 ) { return true; }
+		// A BOXED CARD with any text (a sculpted tile holding a label + a caption, no heading) is content too — on a grid canvas
+		// it is a whole band, and dropping it lost a tile of the composition. The skin may sit on the band or its single wrapper.
+		if ( '' !== $txt ) {
+			$cands = array( $el ); $kids = self::el_children( $el ); if ( 1 === count( $kids ) ) { $cands[] = $kids[0]; }
+			foreach ( $cands as $cand ) {
+				$ccs = (string) $cand->getAttribute( 'data-sc-cs' );
+				$fill = preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $ccs, $bm ) && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent|\/\s*0\s*\)/i', $bm[1] );
+				$shadow = preg_match( '/(?:^|;)\s*box-shadow:\s*(?!none)[^;]+/i', $ccs );
+				$radius = preg_match( '/(?:^|;)\s*border-radius:\s*([0-9.]+)px/i', $ccs, $rm ) && (float) $rm[1] >= 8;
+				if ( ( $fill && $radius ) || $shadow ) { return true; }
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -11860,7 +13569,7 @@ class FW_Site_Converter_Stitch {
 		// (a) a baseline/end-aligned flex lockup of number+unit spans (`<span>4.9</span><span>star</span>`).
 		if ( strpos( $c, 'items-baseline' ) !== false || strpos( $c, 'items-end' ) !== false ) { return $has_digit; }
 		// (b) a STANDALONE BIG-DISPLAY number — a large-font leaf whose text is a short statistic
-		//     (`<div class="text-6xl font-semibold">84%</div>`, openhero cloud-forest's carbon-sink stat).
+		//     (`<div class="text-6xl font-semibold">84%</div>`, AI-page cloud-forest's carbon-sink stat).
 		//     collect_blocks otherwise emits NOTHING for it (a letter-less number is treated as decorative by
 		//     the salvage net) → the stat vanished. Gated on a LARGE font (a text-{3..9}xl utility, or computed
 		//     font-size ≥ 36px) so a small inline "3" isn't promoted, AND on the value reading as a real stat
@@ -11880,7 +13589,7 @@ class FW_Site_Converter_Stitch {
 	private static function register_builtin_recognizers() {
 		// A FREE-FORM ABSOLUTE-POSITIONED COLLAGE — a relative stage (min-height / position:relative) whose
 		// direct children are ≥2 absolutely-positioned CONTENT cards scattered by top/left/right/bottom offsets
-		// (openhero cloud-forest's `.vapor` glass blobs: `absolute left-[4%] top-0`, `absolute right-[8%]
+		// (AI-page cloud-forest's `.vapor` glass blobs: `absolute left-[4%] top-0`, `absolute right-[8%]
 		// top-[14rem]`, …). Descending it flattens the cards into ONE flexbox — merging distinct cards (card 1's
 		// heading absorbed card 2's paragraph as a subtitle) and dropping BOTH the scatter and the glass skin.
 		// Claimed FIRST (priority 97) so each card renders as its own absolutely-placed glass card (its native
@@ -11995,7 +13704,7 @@ class FW_Site_Converter_Stitch {
 		);
 		self::register_recognizer( 'card_grid', 90,
 			function ( $el ) { return self::is_card_grid( $el ); },
-			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'tracksMd' => self::tracks_count_at( $el, 'data-sc-cs-md' ), 'tracksSm' => self::tracks_count_at( $el, 'data-sc-cs-sm' ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols ) : null; }
+			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? self::bento_split( $el, array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'tracksMd' => self::tracks_count_at( $el, 'data-sc-cs-md' ), 'tracksSm' => self::tracks_count_at( $el, 'data-sc-cs-sm' ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols ) ) : null; }
 		);
 		// A NEWSLETTER / email-signup FORM — a `<form>` with a text/email input (+ usually a submit button) →
 		// the native `newsletter` shortcode (an AJAX signup wired to the Mailer extension), NOT a stray button
@@ -12003,9 +13712,49 @@ class FW_Site_Converter_Stitch {
 		// <input> was lost and the "Subscribe" button became a bare text block). The section's heading +
 		// description stay as their own special_heading ABOVE it (the newsletter's own title/desc are left blank
 		// = hidden), matching the source order (heading, copy, form). Parity mirrored in JS to-pages.
+		// A CONTACT FORM — a <form> (or a form-named container) with a message <textarea>, or ≥ 3 text-like fields, and a
+		// submit — → the native contact_form (the forms extension), each field kept with its label / placeholder / required.
+		// It was mapped to the NEWSLETTER (two fields, the textarea dropped) on every AI page with a contact section.
+		self::register_recognizer( 'contact_form', 89,
+			function ( $el, $tag ) { return self::is_contact_form( $el, $tag ); },
+			function ( $el ) { return self::contact_form_build( $el ); }
+		);
 		self::register_recognizer( 'newsletter', 88,
 			function ( $el, $tag ) { return self::is_newsletter_form( $el, $tag ); },
 			function ( $el ) { return self::newsletter_build( $el ); }
+		);
+		// A CODE LISTING — a container whose lines are <code> blocks (a mock terminal / editor: <code class="block"> per line
+		// with coloured token spans), or a <pre> of code. Decomposed, every line became a text block (the coloured spans split
+		// into flex rows, the indentation collapsed). Claimed as ONE listing (the lines' inline colours kept, whitespace
+		// preserved, the container's mono type) + whatever non-code children follow, as their own blocks. Below newsletter (88).
+		// An EMPTY PAINTED block IN FLOW (a product card's gradient frame that takes the card's middle, a colour swatch): no
+		// text, no media, a fill / gradient / border of its own and a measured height — the native empty Div carrying that
+		// paint, its height (or its flex growth), radius and margins. An absolute / fixed layer stays a decor layer.
+		// A LABEL + BUTTON row (a product card's "$2,450 | Acquire", a "Starting at $9 | Get started" line): a flex row of one or two
+		// short text leaves and a button, spaced by the row's justify-content — ONE row block of content-sized cells (the row
+		// builder maps the raw justify). Walked flat it stacked the price over the button.
+		self::register_recognizer( 'label_cta_row', 78,
+			function ( $el, $tag ) { return self::is_label_cta_row( $el ); },
+			function ( $el, $tag, $rules ) { return self::label_cta_row_build( $el, $rules ); }
+		);
+		// A DECOR LAYER: an absolute, text-less, media-less child that PAINTS (a blurred radial glow blob pinned at left-[20%], a
+		// 1px "light river" gradient hairline along a section's bottom edge) → the native empty Div carrying the paint at the
+		// source's placement, size, blur and stacking (pointer-events none). Both were dropped as "decorative" before.
+		self::register_recognizer( 'decor_layer', 71,
+			function ( $el, $tag ) { return self::is_decor_layer_block( $el, $tag ); },
+			function ( $el ) { return self::decor_layer_block( $el ); }
+		);
+		self::register_recognizer( 'paint_block', 72,
+			function ( $el, $tag ) { return self::is_paint_block( $el, $tag ); },
+			function ( $el ) { return self::paint_block( $el ); }
+		);
+		self::register_recognizer( 'lone_icon', 70,
+			function ( $el, $tag ) { return self::is_lone_icon( $el, $tag ); },
+			function ( $el ) { return self::lone_icon_block( $el ); }
+		);
+		self::register_recognizer( 'code_listing', 87,
+			function ( $el, $tag ) { return self::is_code_listing( $el, $tag ); },
+			function ( $el, $tag, $rules ) { return self::code_listing_build( $el, $rules ); }
 		);
 		// A section-intro HEADING beside a trailing "View All →" CTA link in a `flex justify-between` row
 		// (heading LEFT, link RIGHT). Claimed as ONE block BEFORE the generic heading walk splits it (which
@@ -12052,7 +13801,7 @@ class FW_Site_Converter_Stitch {
 		// (Formerly split as `announcement_pill` + `badge`; consolidated — the output was always `badge`.)
 		self::register_recognizer( 'badge', 76,
 			function ( $el ) { return self::is_badge( $el ); },
-			function ( $el ) { $p = self::pill_parts( $el ); return array( 't' => 'badge', 'role' => 'badge', 'tag_text' => $p['tag_text'], 'message' => $p['message'], 'icon' => $p['icon'], 'link' => $p['link'], 'align' => '', 'pillCls' => $p['pillCls'], 'tagCls' => $p['tagCls'], 'msgCls' => $p['msgCls'], 'pillCs' => $p['pillCs'], 'leadingSvg' => $p['leadingSvg'] ); }
+			function ( $el ) { $p = self::pill_parts( $el ); return array( 't' => 'badge', 'role' => 'badge', 'tag_text' => $p['tag_text'], 'message' => $p['message'], 'icon' => $p['icon'], 'link' => $p['link'], 'align' => '', 'pillCls' => $p['pillCls'], 'tagCls' => $p['tagCls'], 'msgCls' => $p['msgCls'], 'pillCs' => $p['pillCs'], 'leadingSvg' => $p['leadingSvg'], 'pillDot' => $p['pillDot'] ?? null ); }
 		);
 		self::register_recognizer( 'badge_verbatim', 75,
 			function ( $el ) { return self::is_badge_verbatim( $el ); },
@@ -12198,6 +13947,7 @@ class FW_Site_Converter_Stitch {
 					// an ancestor) → the section min-height, so the hero keeps its full-height breathing room
 					// instead of collapsing to the 80vh fallback. Content valign from the ancestor flex-justify.
 					'hero_height' => $is_bg ? self::media_hero_height( $el ) : '',
+					'contentCentred' => $is_bg ? self::band_has_centred_cap( $el ) : false, // the hero's copy lives in a CENTRED container → never left-flush
 					'valign'      => $is_bg ? self::media_hero_valign( $el ) : 'middle',
 					'src' => $src, 'webm' => $webm, 'poster' => (string) $el->getAttribute( 'poster' ),
 					'autoplay'    => $el->hasAttribute( 'autoplay' )    ? 'yes' : 'no',
@@ -12227,7 +13977,29 @@ class FW_Site_Converter_Stitch {
 		// A wrapper holding a lone image → emit just the image (skip the chrome).
 		self::register_recognizer( 'image_wrapper', 35,
 			function ( $el ) { return self::is_image_wrapper( $el ); },
-			function ( $el ) { $img = $el->getElementsByTagName( 'img' )->item( 0 ); return $img ? array( 't' => 'image', 'role' => 'image', 'html' => self::img_html( $img ) ) : null; }
+			function ( $el ) {
+				$img = $el->getElementsByTagName( 'img' )->item( 0 ); if ( ! $img ) { return null; }
+				$blk = array( 't' => 'image', 'role' => 'image', 'html' => self::img_html( $img ) );
+				// A FIXED-HEIGHT COVER FRAME (`w-full h-[80vh] overflow-hidden > img.w-full.h-full.object-cover`): the wrapper's measured
+				// height is the picture's height and the image covers it — it rendered at its natural 1024×544 inside the container
+				// (a fixture from the feed). The height is kept as the source wrote it (`80vh`) when a vh utility says so, else the px.
+				$wcs = (string) $el->getAttribute( 'data-sc-cs' ); $wcl = ' ' . self::cls( $el ) . ' '; $icl = ' ' . self::cls( $img ) . ' ';
+				$cover = false !== strpos( $icl, ' object-cover ' ) || preg_match( '/object-fit:\s*cover/i', (string) $img->getAttribute( 'data-sc-cs' ) );
+				$hpx = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $wcs, $hm ) ? (float) $hm[1] : 0.0;
+				$hvh = preg_match_all( '/(?:^|\s)(?:sm:|md:|lg:|xl:)?h-\[([0-9.]+)(?:s|d)?vh\]/', $wcl, $vm ) ? (float) end( $vm[1] ) : 0.0; // the largest tier
+				if ( $cover && $hpx >= 120 && ( $hvh > 0 || preg_match( '/(?:^|\s)(?:sm:|md:|lg:|xl:)?h-(?:\d{2,3}|\[[0-9.]+px\]|screen)(?=\s|$)/', $wcl ) || preg_match( '/(?:^|;)\s*overflow:\s*hidden/i', $wcs ) ) ) {
+					$hv = $hvh > 0 ? $hvh . 'vh' : (int) round( $hpx ) . 'px';
+					$blk['skinCss'] = 'selector{height:' . $hv . ';overflow:hidden;} selector img{width:100%;height:100%;object-fit:cover;}';
+					$blk['frameHeight'] = $hpx;
+					// …and a frame that is a DIRECT child of its band beside the container (`w-full`, as wide as the viewport) is a BLEED
+					// picture: it leaves the content width (the mapper's full-width column)
+					$par = $el->parentNode; $pw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', (string) $img->getAttribute( 'data-sc-cs' ), $iwm ) ? (float) $iwm[1] : 0.0;
+					if ( $par instanceof DOMElement && in_array( strtolower( $par->tagName ), array( 'section', 'main', 'body' ), true ) && ( false !== strpos( $wcl, ' w-full ' ) || $pw >= 1200 ) ) { $blk['bleed'] = true; }
+				}
+				$ix = self::img_extra_css( $img );
+				if ( '' !== $ix && empty( $blk['skinCss'] ) ) { $blk['skinCss'] = 'selector img{' . $ix . ';}'; }
+				return $blk;
+			}
 		);
 		// An image with an OVERLAID UI (player/caption/controls, a floating badge, a decorative blob) →
 		// whole widget verbatim in a code block. saveHTML($el) carries the OUTER element, so the widget's
@@ -12243,6 +14015,12 @@ class FW_Site_Converter_Stitch {
 				// shape, DECOMPOSE it into native, editable elements (media_image + icon_box) rather than
 				// freezing it in one opaque code_block. Only a genuinely un-decomposable overlay
 				// (a player/caption/controls layer) falls through to the verbatim block below.
+				// A CAPTION TILE — one photo with an absolute caption layer (a title / a line / a link, at the bottom or over the
+				// whole tile, always-on or hover-revealed) + an optional scrim — is the image box's OVERLAY family, natively: the
+				// caption leaves were dropped (a category tile lost its title + "Explore" link; a team photo its button; two practice
+				// tiles their serif title + gold link — four sightings in the feed).
+				$ct = self::caption_tile_block( $el );
+				if ( $ct ) { return $ct; }
 				if ( self::is_decomposable_image_composite( $el ) ) {
 					$cb = self::image_composite_decompose( $el );
 					if ( $cb ) { return $cb; }
@@ -12303,7 +14081,7 @@ class FW_Site_Converter_Stitch {
 		);
 		self::register_recognizer( 'card_grid_cs', 85,
 			function ( $el ) { return self::cs_is_card_grid( $el ); },
-			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'tracksMd' => self::tracks_count_at( $el, 'data-sc-cs-md' ), 'tracksSm' => self::tracks_count_at( $el, 'data-sc-cs-sm' ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols ) : null; }
+			function ( $el ) { $cols = self::grid_cols( $el ); return $cols ? self::bento_split( $el, array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'tracksMd' => self::tracks_count_at( $el, 'data-sc-cs-md' ), 'tracksSm' => self::tracks_count_at( $el, 'data-sc-cs-sm' ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols ) ) : null; }
 		);
 		self::register_recognizer( 'button_cs', 55,
 			function ( $el ) { return self::cs_is_button( $el ); },
@@ -12345,6 +14123,15 @@ class FW_Site_Converter_Stitch {
 		self::register_recognizer( 'scroller', 92,
 			function ( $el ) { return self::is_scroller( $el ); },
 			function ( $el ) { return self::layout_row_build( $el ); }
+		);
+		// A TOOLBAR ROW — a flex row of SHORT labels / empty painted dots spread by `justify-content` (a code window's
+		// title bar: three dots · "Nocturnal logic console" · "LIVE"; a card's meta strip). Its children are too small for
+		// is_substantial_cell, so collect_blocks flattened it into stacked kicker headings. Kept as ONE block whose stamps
+		// survive, so the mapper's structural mirror rebuilds it as a flex row with the source's placement, dots and
+		// label typography. Priority 81 sits BELOW layout_row / card_grid / chips, so a real content row keeps its own builder. JS: toolbarRowOf.
+		self::register_recognizer( 'toolbar_row', 81,
+			function ( $el ) { return self::is_toolbar_row( $el ); },
+			function ( $el ) { $doc = $el->ownerDocument; $m = self::el_margin( $el ); return array( 't' => 'code', 'role' => 'code', 'toolbar' => true, 'html' => $doc ? (string) $doc->saveHTML( $el ) : '', 'mt' => (float) ( $m['top'] ?? 0 ), 'mb' => (float) ( $m['bottom'] ?? 0 ) ); }
 		);
 		self::register_recognizer( 'layout_row', 82,
 			function ( $el ) { return self::is_layout_row( $el ); },
@@ -12475,6 +14262,43 @@ class FW_Site_Converter_Stitch {
 	 * native animate.css effect string for the node's Animations tab. Absent a
 	 * clear signal, returns '' (no false motion — the node stays un-animated).
 	 * --------------------------------------------------------------------- */
+	/**
+	 * The capture's CSS-class reveal stamp (data-sc-reveal="dir:up;distance:30;scale:1;duration:1.2;delay:0.2;ease:…") →
+	 * { dir, distance, scale, duration, delay, ease } or null. A reveal class sits on the animated element itself. JS twin: revealOf.
+	 */
+	/**
+	 * The element's OWN running class animation (capture data-sc-anim: a pulsing dot, a swaying word, a drifting shell, a
+	 * scroll-grown card) + its @keyframes (data-sc-keyframes) → { css, kf } or null. Carried on the block's own Custom CSS
+	 * by the mapper (apply_block_anim / carry_cell_geometry / the mirror). JS twin: loopAnimOf.
+	 */
+	private static function loop_anim_of( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return null; }
+		$a = trim( (string) $el->getAttribute( 'data-sc-anim' ) );
+		if ( '' === $a || ! preg_match( '/^animation:[a-z0-9_ .,()%-]+(?:;animation-(?:timeline|range):[a-z0-9 ().%-]+)*$/i', $a ) ) { return null; }
+		// An unbalanced paren (a `cubic-bezier(0.4` cut at a comma by an older capture) would swallow the rest of the
+		// stylesheet — the declaration is never carried as-is: the broken function falls back to `ease`.
+		if ( substr_count( $a, '(' ) !== substr_count( $a, ')' ) ) { $a = preg_replace( '/[a-z-]+\([^)]*$/i', 'ease', $a ); if ( substr_count( $a, '(' ) !== substr_count( $a, ')' ) ) { return null; } }
+		$kf = trim( (string) $el->getAttribute( 'data-sc-keyframes' ) );
+		if ( '' !== $kf && ! preg_match( '/^@keyframes\s+[\w-]+\s*\{[^<>]*\}\s*$/s', $kf ) ) { $kf = ''; }
+		return array( 'css' => $a, 'kf' => $kf );
+	}
+
+	private static function reveal_of( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return null; }
+		$v = trim( (string) $el->getAttribute( 'data-sc-reveal' ) );
+		if ( '' === $v ) { return null; }
+		$o = array();
+		foreach ( explode( ';', $v ) as $part ) { $i = strpos( $part, ':' ); if ( $i > 0 ) { $o[ substr( $part, 0, $i ) ] = substr( $part, $i + 1 ); } }
+		return array(
+			'dir'      => isset( $o['dir'] ) ? (string) $o['dir'] : 'none',
+			'distance' => (float) ( $o['distance'] ?? 0 ),
+			'scale'    => isset( $o['scale'] ) && '' !== $o['scale'] ? (float) $o['scale'] : 1.0,
+			'duration' => (float) ( $o['duration'] ?? 0 ),
+			'delay'    => (float) ( $o['delay'] ?? 0 ),
+			'ease'     => isset( $o['ease'] ) ? (string) $o['ease'] : '',
+		);
+	}
+
 	private static function anim_intent( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
 		$dir = array( 'up' => 'animate__fadeInUp', 'down' => 'animate__fadeInDown', 'left' => 'animate__fadeInLeft', 'right' => 'animate__fadeInRight' );
@@ -12552,18 +14376,47 @@ class FW_Site_Converter_Stitch {
 		$len     = strlen( $num_raw );
 		$before  = substr( $txt, 0, $pos );
 		$after   = substr( $txt, $pos + $len );
+		// A number GLUED into a word (a filename "kernel_v4.sh", a code "A4", "MK2") is not a statistic.
+		if ( preg_match( '/[A-Za-z_]$/', $before ) || preg_match( '/^[_]/', $after ) ) { return null; }
+		// A zero-padded 1–2 digit value ("01", "02") is a step / row MARKER, never a statistic.
+		if ( preg_match( '/^0\d$/', $num_raw ) ) { return null; }
 		$prefix  = '';
-		if ( preg_match( '/([$€£¥+~])\s*$/u', $before, $pm ) ) { $prefix = $pm[1]; $before = preg_replace( '/([$€£¥+~])\s*$/u', '', $before ); }
+		// a comparison / approximation sign reads as the stat's prefix too ("< 1.2ms", "> 99%", "≈ 40", "~ 3x")
+		if ( preg_match( '/([$€£¥+~<>≈≤≥])\s*$/u', $before, $pm ) ) { $prefix = $pm[1]; $before = preg_replace( '/([$€£¥+~<>≈≤≥])\s*$/u', '', $before ); }
 		$suffix  = '';
 		// A unit suffix is TERMINAL ("12K", "5M", "3x", "500+", "94%") -- it is never the first letter of a
 		// following WORD. Without the trailing-letter guard, "3 Beds" parsed as number 3 + suffix "B" +
 		// label "eds", and a property card's spec row rendered as garbage counters (urban_living_ams).
-		if ( preg_match( '/^\s*(%|\+)/u', $after, $sm )
+		if ( preg_match( '/^\s*(%|\+|×|°|\/\d{1,3})/u', $after, $sm ) // (× U+00D7 is the multiplication sign — "3.2×" reads like "3.2x"; a "/7" tail is the stat's own — "24/7" spilled "/7" into the label; both from the feed)
 			|| preg_match( '/^\s*(k|K|m|M|b|B|x|X)(?![A-Za-z])/u', $after, $sm ) ) {
 			$suffix = $sm[1];
 			$after  = preg_replace( '/^\s*' . preg_quote( $sm[1], '/' ) . '/u', '', $after, 1 );
+			// a COMPOUND unit ("20k+", "1.5M+", "99.9%+"): the sign after the letter unit belongs to the value, not the label
+			if ( preg_match( '/^[kKmMbBxX]$/', $suffix ) && preg_match( '/^\s*(%|\+)/u', $after, $s2 ) ) { $suffix .= $s2[1]; $after = preg_replace( '/^\s*' . preg_quote( $s2[1], '/' ) . '/u', '', $after, 1 ); }
+		}
+		// The number's OWN LEAF: a unit written onto the digits inside it ("1.2ms", "24h", "7 Days" in the same leaf) is the
+		// suffix (≤ 4 letters, then the leaf ends), and a leaf that MIXES the digits with words at a SMALL size ("TTY // 1",
+		// "5 min read", a caption with a number) is a label, not a statistic — a real stat isolates its number, or sets it big.
+		$num_leaf = null;
+		foreach ( $cell->getElementsByTagName( '*' ) as $e ) {
+			if ( $e->getElementsByTagName( '*' )->length > 0 ) { continue; }
+			if ( false !== strpos( self::text( $e ), $num_raw ) ) { $num_leaf = $e; break; }
+		}
+		if ( ! ( $num_leaf instanceof DOMElement ) && false !== strpos( $txt, $num_raw ) ) { $num_leaf = $cell; }
+		if ( $num_leaf instanceof DOMElement ) {
+			$lt = trim( preg_replace( '/\s+/', ' ', self::text( $num_leaf ) ) );
+			$lp = strpos( $lt, $num_raw );
+			$lb = trim( substr( $lt, 0, (int) $lp ) ); $la = trim( substr( $lt, (int) $lp + $len ) );
+			if ( '' !== $suffix && 0 === strpos( $la, $suffix ) ) { $la = trim( substr( $la, strlen( $suffix ) ) ); } // the unit already read above
+			if ( '' === $suffix && preg_match( '/^([A-Za-z]{1,4}|%|\+|×|°)$/u', $la ) ) { $suffix = $la; $after = preg_replace( '/^\s*' . preg_quote( $la, '/' ) . '/u', '', $after, 1 ); $la = ''; }
+			$lb_rest = trim( preg_replace( '/[$€£¥+~<>≈≤≥]\s*$/u', '', $lb ) );
+			if ( '' !== $lb_rest || '' !== $la ) {
+				$lfs = trim( (string) self::sc_css( $num_leaf, 'font-size' ) ); $lbig = preg_match( '/^([0-9.]+)px$/', $lfs, $lfm ) && (float) $lfm[1] >= 24;
+				if ( ! $lbig && ! preg_match( '/\btext-[2-9]xl\b/', ' ' . self::cls( $num_leaf ) . ' ' ) ) { return null; }
+			}
 		}
 		$label   = trim( preg_replace( '/\s+/', ' ', $before . ' ' . $after ) );
+		$label_first = '' !== trim( $before ) && '' === trim( $after ); // the caption sits ABOVE the number ("ENERGY STATE" over "98%") — keep that order
 		// A STAT cell is DOMINATED by its number: the leftover label is a short caption ("Happy pets",
 		// "Satisfaction"), NOT prose. Reject a long remainder so a paragraph that merely contains a number
 		// (e.g. an FAQ answer "…within 30 days…") never reads as a counter.
@@ -12574,7 +14427,7 @@ class FW_Site_Converter_Stitch {
 		if ( '' === $label && '' === $prefix && '' === $suffix ) { return null; }
 		// TIME / OPENING-HOURS — "11:30 AM", "10 PM", "9:00", "4h", "24 h". An opening-hours card decomposes
 		// into these, and the leftover (":30 AM", " PM", "h") is a non-empty label that would sneak past the
-		// guard above. None of these are stats (the Jukebox "14 phantom counters from the hours" bug).
+		// guard above. None of these are stats (the the burger source "14 phantom counters from the hours" bug).
 		if ( preg_match( '/\b\d{1,2}\s*:\s*\d{2}\b/', $txt )                     // 11:30 / 9:00
 			|| preg_match( '/\b\d{1,2}\s*(?:am|pm)\b/i', $txt )                  // 10 PM / 4 AM
 			|| preg_match( '/^\s*\d{1,3}\s*h\s*$/i', $txt ) ) { return null; }   // 4h / 24 h (hours)
@@ -12584,13 +14437,14 @@ class FW_Site_Converter_Stitch {
 		// Capture the NUMBER's colour (the leaf element that renders the digits) so a stat on a DARK panel
 		// keeps its light / accent tone (e.g. modfii's `$12K` in accent-orange, `7`/`94%` in white on the
 		// glass hero card) instead of collapsing to the default dark foreground = invisible on dark.
-		$num_color = ''; $label_color = ''; $num_size = ''; $label_size = '';
+		$num_color = ''; $label_color = ''; $num_size = ''; $label_size = ''; $num_cs = ''; $label_cs = '';
 		foreach ( $cell->getElementsByTagName( '*' ) as $e ) {
 			if ( $e->getElementsByTagName( '*' )->length > 0 ) { continue; } // leaf only
 			$et = trim( self::text( $e ) );
 			if ( $et === '' ) { continue; }
 			$cc = trim( (string) self::sc_css( $e, 'color' ) );
 			if ( $num_color === '' && ( strpos( $et, $num_raw ) !== false || strpos( $et, $number ) !== false ) ) {
+				if ( '' === $num_cs ) { $num_cs = (string) $e->getAttribute( 'data-sc-cs' ); } // the digits' whole treatment (weight / family / tracking)
 				if ( $cc !== '' && stripos( $cc, 'inherit' ) === false ) { $num_color = self::color_to_hex( $cc ); }
 				// The stat NUMBER's font-SIZE (e.g. modfii's `$12K` = 30px). Without it the counter falls to its
 				// 44px default — bigger than the source and mis-scaled. Carried → n_counter number/prefix/suffix.
@@ -12598,13 +14452,14 @@ class FW_Site_Converter_Stitch {
 				if ( $num_size === '' && preg_match( '/^([0-9.]+)px$/', $fs, $fm ) ) { $num_size = $fm[1]; }
 			} elseif ( $label_color === '' && $label !== '' && $cc !== '' && stripos( $cc, 'inherit' ) === false && strpos( $et, substr( $label, 0, 6 ) ) !== false ) {
 				$label_color = self::color_to_hex( $cc );
+				if ( '' === $label_cs ) { $label_cs = (string) $e->getAttribute( 'data-sc-cs' ); } // the caption's whole treatment → a Text Style match
 				if ( $label_size === '' ) { $lfs = trim( (string) self::sc_css( $e, 'font-size' ) ); if ( preg_match( '/^([0-9.]+)px$/', $lfs, $lm ) ) { $label_size = $lm[1]; } }
 			}
 		}
 		// The stat cell's text-ALIGN (source hero stats are centered) → the counter + its label centre to match.
 		$ta = trim( (string) self::sc_css( $cell, 'text-align' ) );
 		$align = in_array( $ta, array( 'center', 'right' ), true ) ? $ta : '';
-		return array( 'number' => $number, 'prefix' => $prefix, 'suffix' => $suffix, 'decimals' => (string) $decimals, 'label' => $label, 'numberColor' => $num_color, 'suffixColor' => $num_color, 'prefixColor' => $num_color, 'labelColor' => $label_color, 'labelSize' => $label_size, 'numberSize' => $num_size, 'suffixSize' => $num_size, 'prefixSize' => $num_size, 'align' => $align );
+		return array( 'number' => $number, 'prefix' => $prefix, 'suffix' => $suffix, 'decimals' => (string) $decimals, 'label' => $label, 'numberColor' => $num_color, 'suffixColor' => $num_color, 'prefixColor' => $num_color, 'labelColor' => $label_color, 'labelSize' => $label_size, 'numberSize' => $num_size, 'suffixSize' => $num_size, 'prefixSize' => $num_size, 'align' => $align, 'numberCs' => $num_cs, 'labelCs' => $label_cs, 'labelFirst' => $label_first );
 	}
 
 	/**
@@ -12653,7 +14508,7 @@ class FW_Site_Converter_Stitch {
 		if ( $el->getElementsByTagName( 'details' )->length || $el->getElementsByTagName( 'summary' )->length
 			|| $el->getElementsByTagName( 'table' )->length || $el->getElementsByTagName( 'ul' )->length
 			|| $el->getElementsByTagName( 'ol' )->length ) { return false; }
-		$cells = 0; $numeric = 0;
+		$cells = 0; $numeric = 0; $wordish = 0;
 		foreach ( self::el_children( $el ) as $k ) {
 			$kt = strtolower( $k->tagName );
 			if ( in_array( $kt, array( 'script', 'style', 'br', 'hr' ), true ) ) { continue; }
@@ -12675,8 +14530,360 @@ class FW_Site_Converter_Stitch {
 			if ( self::cell_is_icon_meta_chip( $k ) ) { return false; }
 			$cells++;
 			if ( self::counter_cell_parse( $k ) !== null ) { $numeric++; }
+			elseif ( self::stat_word_cell( $k ) ) { $wordish++; } // a big-display WORD / glyph value ("∞" over "Creativity") in a stat band
 		}
-		return $cells >= 2 && $numeric >= 2 && $numeric === $cells;
+		return $cells >= 2 && $numeric >= 2 && $numeric + $wordish === $cells;
+	}
+
+	/**
+	 * A stat cell whose VALUE is a word or a glyph, not a number ("∞" over "Creativity", "High" over "Water reserve"): a big
+	 * (≥ 24px, or a text-2xl+ class) short leaf (≤ 12 chars, no digit) followed by a small caption leaf. Returns
+	 * { value, value_el, label, label_el, align } or null. JS twin: statWordCell.
+	 */
+	private static function stat_word_cell( $k ) {
+		if ( ! ( $k instanceof DOMElement ) ) { return null; }
+		$leaves = array();
+		foreach ( $k->getElementsByTagName( '*' ) as $e ) { if ( 0 === $e->getElementsByTagName( '*' )->length && '' !== trim( self::text( $e ) ) ) { $leaves[] = $e; } }
+		if ( 2 !== count( $leaves ) ) { return null; }
+		$v = trim( preg_replace( '/\s+/', ' ', self::text( $leaves[0] ) ) ); $l = trim( preg_replace( '/\s+/', ' ', self::text( $leaves[1] ) ) );
+		if ( '' === $v || mb_strlen( $v ) > 12 || preg_match( '/\d/', $v ) || '' === $l || mb_strlen( $l ) > 40 ) { return null; }
+		$vfs = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $leaves[0]->getAttribute( 'data-sc-cs' ), $fm ) ? (float) $fm[1] : 0;
+		$lfs = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $leaves[1]->getAttribute( 'data-sc-cs' ), $lm ) ? (float) $lm[1] : 16;
+		$big = $vfs >= 24 || preg_match( '/\btext-[2-9]xl\b/', ' ' . self::cls( $leaves[0] ) . ' ' );
+		if ( ! $big || $vfs <= $lfs ) { return null; }
+		$ta = trim( (string) self::sc_css( $k, 'text-align' ) );
+		return array( 'value' => $v, 'value_el' => $leaves[0], 'label' => $l, 'label_el' => $leaves[1], 'align' => in_array( $ta, array( 'center', 'right' ), true ) ? $ta : '' );
+	}
+
+	/** A flex ROW (not column) of 2–3 direct children: ≥ 1 button (a <button> / a button-shaped link) and the rest short text
+	 *  leaves (≤ 40 chars, no link inside) — never a nav / a header / a form. */
+	private static function is_label_cta_row( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( ! preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $cs ) || preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $cs ) ) { return false; }
+		$kids = self::el_children( $el ); $n = count( $kids );
+		if ( $n < 2 || $n > 3 ) { return false; }
+		$btn = 0; $lbl = 0;
+		foreach ( $kids as $k ) {
+			$kt = strtolower( $k->tagName );
+			if ( 'button' === $kt || ( 'a' === $kt && self::is_button( $k ) ) ) { $btn++; continue; }
+			if ( in_array( $kt, array( 'span', 'div', 'p', 'strong', 'em', 'b' ), true ) && ! $k->getElementsByTagName( 'a' )->length && ! $k->getElementsByTagName( 'img' )->length && ! $k->getElementsByTagName( 'svg' )->length ) {
+				$t = trim( self::text( $k ) ); if ( '' !== $t && mb_strlen( $t ) <= 40 ) { $lbl++; continue; }
+			}
+			return false;
+		}
+		return $btn >= 1 && $lbl >= 1;
+	}
+
+	/** The label + button row: each child claimed as its own block (the text builder / the button recognizer), one content-sized
+	 *  cell each, the row's raw justify-content + vertical alignment, its own margins. */
+	private static function label_cta_row_build( $el, array $rules ) {
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		$row = array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => (int) self::grid_gap_px( $el ), 'mt' => 0, 'mb' => 0, 'nowrap' => true, 'cols' => array() );
+		$jc = preg_match( '/(?:^|;)\s*justify-content:\s*([a-z-]+)/i', $cs, $jm ) ? strtolower( $jm[1] ) : '';
+		if ( preg_match( '/^(space-between|space-around|space-evenly|center|flex-end|end)$/', $jc ) ) { $row['justify'] = $jc; }
+		$m = self::el_margin( $el ); $row['mt'] = (float) ( $m['top'] ?? 0 ); $row['mb'] = (float) ( $m['bottom'] ?? 0 );
+		foreach ( self::el_children( $el ) as $k ) {
+			$hb = array(); self::collect_blocks_of( $k, $hb, $rules );
+			$hb = array_values( array_filter( $hb, function ( $b ) { return is_array( $b ) && isset( $b['t'] ); } ) );
+			if ( ! $hb ) {
+				// a leaf label no recognizer claims (a <span> price) → a text block on its own stamp
+				$t = trim( self::text( $k ) ); if ( '' === $t ) { continue; }
+				$hb = array( array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $k ), 'cs' => (string) $k->getAttribute( 'data-sc-cs' ), 'csSm' => (string) $k->getAttribute( 'data-sc-cs-sm' ), 'maxWidth' => '', 'text' => $t, 'html' => '<p>' . esc_html( $t ) . '</p>', 'contentSized' => true ) );
+			}
+			foreach ( $hb as &$b ) { if ( 'text' === ( $b['t'] ?? '' ) ) { $b['contentSized'] = true; } } unset( $b );
+			$row['cols'][] = array( 'cls' => '', 'blocks' => $hb );
+		}
+		return count( $row['cols'] ) >= 2 ? $row : null;
+	}
+
+	/** An in-flow element with no text / media of its own (decor-only descendants allowed) that PAINTS: a fill, a gradient or a
+	 *  border, at a measured height ≥ 40px. Never an absolute / fixed layer (a backdrop), never a tiny dot (mirror_dot_css). */
+	private static function is_paint_block( $el, $tag ) {
+		if ( ! ( $el instanceof DOMElement ) || ! in_array( $tag, array( 'div', 'span', 'figure', 'section' ), true ) ) { return false; }
+		if ( '' !== trim( self::text( $el ) ) || $el->getElementsByTagName( 'img' )->length || $el->getElementsByTagName( 'svg' )->length || $el->getElementsByTagName( 'video' )->length || $el->getElementsByTagName( 'iframe' )->length || $el->getElementsByTagName( 'a' )->length ) { return false; }
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', $cs ) ) { return false; }
+		$h = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $hm ) ? (float) $hm[1] : 0.0;
+		$fill = preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $cs, $bm ) && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent|\/\s*0\s*\)/i', $bm[1] );
+		$grad = (bool) preg_match( '/(?:^|;)\s*background-image:\s*(?:linear|radial|conic)-gradient/i', $cs );
+		// A HAIRLINE (≤ 4px tall, painted, with a measured width — a `w-16 h-px bg-accent` accent bar, a gradient rule)
+		// is a paint block too: it kept its colour but lost its width (a RECURRING finding) when it fell to the generic path.
+		if ( $h > 0 && $h <= 4 && ( $fill || $grad ) && preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $cs, $wm ) && (float) $wm[1] > 0 ) { return true; }
+		if ( $h < 40 ) { return false; }
+		$border = preg_match( '/(?:^|;)\s*border-top-width:\s*([0-9.]+)px/i', $cs, $bw ) && (float) $bw[1] > 0 && preg_match( '/(?:^|;)\s*border-top-style:\s*(?!none)/i', $cs );
+		return $fill || $grad || $border;
+	}
+
+	/** An absolute / fixed child with no text / media that paints: a gradient / fill / blur with a measured size (a glow blob, a
+	 *  gradient hairline). Never a full-bleed cover (that is the section's own background / scrim, read elsewhere). */
+	private static function is_decor_layer_block( $el, $tag ) {
+		if ( ! ( $el instanceof DOMElement ) || ! in_array( $tag, array( 'div', 'span' ), true ) ) { return false; }
+		if ( $el->hasAttribute( 'data-sc-pattern-layer' ) ) { return false; } // the section's pattern (already its Background Pattern preset)
+		if ( '' !== trim( self::text( $el ) ) || $el->getElementsByTagName( '*' )->length ) { return false; }
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( ! preg_match( '/(?:^|;)\s*position:\s*absolute/i', $cs ) ) { return false; }
+		$h = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $hm ) ? (float) $hm[1] : 0.0;
+		$w = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $cs, $wm ) ? (float) $wm[1] : 0.0;
+		if ( $h <= 0 ) { return false; }
+		// a full-bleed cover (inset:0 with no own size) is a scrim / backdrop — not a placed decor layer
+		if ( preg_match( '/(?:^|;)\s*top:\s*0px/i', $cs ) && preg_match( '/(?:^|;)\s*bottom:\s*0px/i', $cs ) && preg_match( '/(?:^|;)\s*left:\s*0px/i', $cs ) && preg_match( '/(?:^|;)\s*right:\s*0px/i', $cs ) && $h > 200 ) { return false; }
+		$paint = ( preg_match( '/(?:^|;)\s*background-image:\s*(?:linear|radial|conic)-gradient/i', $cs ) ) || ( preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $cs, $bm ) && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent|\/\s*0\s*\)/i', $bm[1] ) );
+		return $paint;
+	}
+
+	/** The decor layer block: the paint + blur + radius, its measured size, its placement (the declared sides: a `left-[20%]` as the
+	 *  computed left in px, `bottom-0` as bottom:0), the stacking; pointer-events none. Built by the `paint` builder. */
+	private static function decor_layer_block( $el ) {
+		$cs = (string) $el->getAttribute( 'data-sc-cs' ); $cls = ' ' . self::cls( $el ) . ' ';
+		$get = function ( $p ) use ( $cs ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $p, '/' ) . ':\s*([^;]+)/i', $cs, $m ) ? trim( $m[1] ) : ''; };
+		$d = array( 'position:absolute', 'pointer-events:none' );
+		$bi = $get( 'background-image' ); if ( '' !== $bi && 'none' !== strtolower( $bi ) ) { $d[] = 'background-image:' . $bi; }
+		$bc = $get( 'background-color' ); if ( '' !== $bc && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent|\/\s*0\s*\)/i', $bc ) ) { $d[] = 'background-color:' . $bc; }
+		$br = $get( 'border-radius' ); if ( '' !== $br && '0px' !== $br ) { $d[] = 'border-radius:' . $br; }
+		$f = $get( 'filter' ); if ( '' !== $f && 'none' !== strtolower( $f ) ) { $d[] = 'filter:' . $f; }
+		$op = $get( 'opacity' ); if ( '' !== $op && '1' !== $op ) { $d[] = 'opacity:' . $op; }
+		$z = $get( 'z-index' ); if ( '' !== $z && 'auto' !== $z ) { $d[] = 'z-index:' . $z; }
+		$h = $get( 'height' ); $w = $get( 'width' );
+		if ( preg_match( '/^[0-9.]+px$/', $h ) ) { $d[] = 'height:' . $h; }
+		// width: the declared size (`w-72` = 288px), else a horizontal stretch (`inset-x-0` / left+right 0) → left:0;right:0
+		$stretch = preg_match( '/(?:^|;)\s*left:\s*0px/i', $cs ) && preg_match( '/(?:^|;)\s*right:\s*0px/i', $cs ) && ( '' === $w || ! preg_match( '/(?:^|\s)w-(?:\d+|\[[^\]]+\])(?:\s|$)/', $cls ) );
+		if ( $stretch ) { $d[] = 'left:0'; $d[] = 'right:0'; }
+		else {
+			// the width: the stamp, else the utility (`w-72` = 288px, `w-[30rem]`), else a round blob is as wide as it is tall
+			if ( ! preg_match( '/^[0-9.]+px$/', $w ) ) {
+				if ( preg_match( '/(?:^|\s)w-(\d+)(?:\s|$)/', $cls, $wc ) ) { $w = ( (int) $wc[1] * 4 ) . 'px'; }
+				elseif ( preg_match( '/(?:^|\s)w-\[([0-9.]+)(px|rem)\]/', $cls, $wc ) ) { $w = round( (float) $wc[1] * ( 'px' === $wc[2] ? 1 : 16 ) ) . 'px'; }
+				elseif ( preg_match( '/^[0-9.]+px$/', $h ) && ( false !== strpos( $cls, 'rounded-full' ) || preg_match( '/(?:^|;)\s*border-radius:\s*(?:9999px|50%)/i', $cs ) ) ) { $w = $h; }
+			}
+			if ( preg_match( '/^[0-9.]+px$/', $w ) ) { $d[] = 'width:' . $w; }
+			// the side the source DECLARED (a Tailwind top-*/left-*/right-*/bottom-* utility), read as the computed px
+			foreach ( array( 'top', 'left', 'right', 'bottom' ) as $sd ) {
+				if ( preg_match( '/(?:^|\s)-?' . $sd . '-(?:\d+|\[[^\]]+\]|auto|px|full)(?:\s|$)/', $cls ) ) { $v = $get( $sd ); if ( preg_match( '/^-?[0-9.]+px$/', $v ) ) { $d[] = $sd . ':' . $v; } }
+			}
+			if ( ! preg_match( '/(?:^|;)(?:top|bottom):/', implode( ';', $d ) ) ) { $v = $get( 'top' ); if ( preg_match( '/^-?[0-9.]+px$/', $v ) ) { $d[] = 'top:' . $v; } }
+			if ( ! preg_match( '/(?:^|;)(?:left|right):/', implode( ';', $d ) ) ) { $v = $get( 'left' ); if ( preg_match( '/^-?[0-9.]+px$/', $v ) ) { $d[] = 'left:' . $v; } }
+		}
+		if ( ! preg_match( '/(?:^|;)(?:top|bottom):/', implode( ';', $d ) ) ) { $v = $get( 'bottom' ); if ( preg_match( '/^-?[0-9.]+px$/', $v ) ) { $d[] = 'bottom:' . $v; } }
+		return array( 't' => 'paint', 'role' => 'paint', 'css' => implode( ';', $d ), 'mt' => 0, 'mb' => 0, 'decorLayer' => true );
+	}
+
+	/** The paint block: the element's fill / gradient / border / radius / shadow, its height (a flex-grown one carries `grow`), margins. */
+	private static function paint_block( $el ) {
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		$get = function ( $p ) use ( $cs ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $p, '/' ) . ':\s*([^;]+)/i', $cs, $m ) ? trim( $m[1] ) : ''; };
+		$d = array();
+		$bc = $get( 'background-color' ); if ( '' !== $bc && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent|\/\s*0\s*\)/i', $bc ) ) { $d[] = 'background-color:' . $bc; }
+		$bi = $get( 'background-image' ); if ( '' !== $bi && 'none' !== strtolower( $bi ) ) { $d[] = 'background-image:' . $bi; }
+		$br = $get( 'border-radius' ); if ( '' !== $br && '0px' !== $br ) { $d[] = 'border-radius:' . $br; }
+		$bw = $get( 'border-top-width' ); $bs = $get( 'border-top-style' ); $bcol = $get( 'border-top-color' );
+		if ( '' !== $bw && (float) $bw > 0 && '' !== $bs && 'none' !== $bs && '' !== $bcol ) { $d[] = 'border:' . $bw . ' ' . $bs . ' ' . $bcol; }
+		$sh = $get( 'box-shadow' ); if ( '' !== $sh && 'none' !== $sh ) { $d[] = 'box-shadow:' . $sh; }
+		$h = (float) $get( 'height' );
+		// a `h-full` / flex-1 block inside a flex column grows to the space the neighbours leave — keep the growth, with the measured height as the minimum
+		$grow = (bool) preg_match( '/(?:^|\s)(?:h-full|flex-1|grow)(?:\s|$)/', ' ' . self::cls( $el ) . ' ' ) || (bool) preg_match( '/(?:^|;)\s*flex-grow:\s*[1-9]/i', $cs );
+		if ( $grow ) { $d[] = 'flex:1 1 auto'; $d[] = 'min-height:' . round( $h ) . 'px'; } else { $d[] = 'height:' . round( $h ) . 'px'; }
+		// A hairline / short bar narrower than its parent keeps its MEASURED width (+ its auto centring); a block that
+		// spans its parent stays fluid.
+		$w  = (float) $get( 'width' );
+		$pw = ( $el->parentNode instanceof DOMElement ) ? (float) self::sc_css( $el->parentNode, 'width' ) : 0.0;
+		$ecls = ' ' . self::cls( $el ) . ' ';
+		if ( $h <= 4 && $w > 0 && ( $pw <= 0 || $w < $pw - 2 ) && false === strpos( $ecls, ' w-full ' ) ) {
+			$d[] = 'width:' . round( $w ) . 'px';
+			if ( false !== strpos( $ecls, ' mx-auto ' ) || 'auto' === strtolower( trim( $get( 'margin-left' ) ) ) ) { $d[] = 'margin-left:auto'; $d[] = 'margin-right:auto'; }
+		} else { $d[] = 'width:100%'; }
+		// a decor child (a blurred overlay) inside the paint → a backdrop filter on the block itself
+		foreach ( self::el_children( $el ) as $k ) { $kf = (string) self::sc_css( $k, 'backdrop-filter' ); if ( '' !== $kf && 'none' !== $kf ) { $d[] = 'backdrop-filter:' . $kf; break; } }
+		$m = self::el_margin( $el );
+		return array( 't' => 'paint', 'role' => 'paint', 'css' => implode( ';', $d ), 'mt' => (float) ( $m['top'] ?? 0 ), 'mb' => (float) ( $m['bottom'] ?? 0 ) );
+	}
+
+	/** A glyph element standing on its own as a block (not inside a link / button / heading / label lockup): an <iconify-icon>, an
+	 *  inline <svg> or an icon-font <i>/<span> with no text. */
+	private static function is_lone_icon( $el, $tag ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$is_icon = ( 'iconify-icon' === $tag ) || ( 'svg' === $tag ) || ( in_array( $tag, array( 'i', 'span' ), true ) && preg_match( '/\b(?:fa|fas|far|fab|bi|ri|material-symbols|material-icons|icon-|lucide)/i', self::cls( $el ) ) && '' === trim( self::text_no_icons( $el ) ) );
+		if ( ! $is_icon ) { return false; }
+		if ( '' !== trim( self::text_no_icons( $el ) ) ) { return false; }
+		for ( $a = $el->parentNode; $a instanceof DOMElement; $a = $a->parentNode ) {
+			$at = strtolower( $a->tagName );
+			// an ICON-ONLY LINK TILE (a `<a class="w-12 h-12 rounded-full border …">` scroll cue holding just the glyph) is a lone icon
+			// with a link + tile, not a text link — only when the <a> holds nothing but this glyph
+			if ( 'a' === $at && $a === $el->parentNode && '' === trim( self::text_no_icons( $a ) ) && 1 === count( self::el_children( $a ) ) ) { continue; }
+			if ( in_array( $at, array( 'a', 'button', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'label', 'body' ), true ) ) { return 'body' === $at; }
+			if ( '' !== trim( self::text( $a ) ) && $a->getElementsByTagName( '*' )->length <= 3 ) {
+				// an icon + text LOCKUP (a chip "★ 4.9", a meta row) owns its glyph — but a sibling that is its OWN box (a "SCAN_01"
+				// chip with a fill / border beside a bare mark in a justify-between header) is a separate element: the mark stands alone
+				$boxed = false;
+				foreach ( self::el_children( $a ) as $sib ) { if ( $sib === $el || '' === trim( self::text( $sib ) ) ) { continue; } $scs = (string) $sib->getAttribute( 'data-sc-cs' ); if ( preg_match( '/background-color:\s*(?!rgba\([^)]*,\s*0\s*\))(?!transparent)/i', $scs ) || preg_match( '/(?:^|;)\s*border-top-width:\s*[1-9]/i', $scs ) ) { $boxed = true; } }
+				if ( ! $boxed ) { return false; }
+			}
+		}
+		return true;
+	}
+
+	/** The lone icon's block: its inline svg markup (an iconify host's inlined svg), measured size and ink, own margins. */
+	/** A page-level fixed DOCK: `position:fixed`, anchored to the bottom (≤ 120px) or top, ≤ 120px tall, at most half the
+	 *  viewport wide, no copy (≤ 30 chars), ≥ 2 icon-only links / buttons. Returns a `dock` block (its icon tiles as lone_icon
+	 *  blocks + the pill's measured skin + the anchor geometry), or null. JS twin: to be added (capture-extract dockOf). */
+	private static function detect_floating_dock( $body ) {
+		$xp = new DOMXPath( $body->ownerDocument );
+		foreach ( $xp->query( '//*[@data-sc-cs]', $body ) as $el ) {
+			if ( ! ( $el instanceof DOMElement ) ) { continue; }
+			$cs = (string) $el->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/(?:^|;)\s*position:\s*fixed/i', $cs ) ) { continue; }
+			$h = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $hm ) ? (float) $hm[1] : 0.0;
+			if ( $h <= 0 || $h > 120 ) { continue; }
+			if ( mb_strlen( trim( self::text( $el ) ) ) > 30 ) { continue; }
+			$bottom = preg_match( '/(?:^|;)\s*bottom:\s*([0-9.]+)px/i', $cs, $bm ) ? (float) $bm[1] : -1.0;
+			$top    = preg_match( '/(?:^|;)\s*top:\s*([0-9.]+)px/i', $cs, $tm ) ? (float) $tm[1] : -1.0;
+			$edge   = ( $bottom >= 0 && $bottom <= 120 ) ? 'bottom' : ( ( $top >= 0 && $top <= 120 ) ? 'top' : '' );
+			if ( '' === $edge ) { continue; }
+			// the icon links: each an <a> / <button> whose only content is an svg / iconify glyph
+			$links = array();
+			foreach ( $xp->query( './/a | .//button', $el ) as $a ) {
+				if ( ! ( $a instanceof DOMElement ) ) { continue; }
+				if ( '' !== trim( self::text_no_icons( $a ) ) ) { $links = array(); break; }
+				if ( ! $a->getElementsByTagName( 'svg' )->length && ! $a->getElementsByTagName( 'iconify-icon' )->length && ! $a->getElementsByTagName( 'i' )->length ) { $links = array(); break; }
+				$links[] = $a;
+			}
+			if ( count( $links ) < 2 || count( $links ) > 8 ) { continue; }
+			// the pill: the links' common parent (its skin is the dock's)
+			$pill = $links[0]->parentNode instanceof DOMElement ? $links[0]->parentNode : $el;
+			$pcs  = (string) $pill->getAttribute( 'data-sc-cs' );
+			$pd   = FW_Site_Converter_Mapper::cs_decls( $pcs, array( 'background-color', 'background-image', 'border-top-width', 'border-top-color', 'border-radius', 'padding', 'gap', 'backdrop-filter', 'box-shadow' ) );
+			$blocks = array();
+			foreach ( $links as $a ) {
+				// the GLYPH is the block; its <a> is the tile (skin + size + link — lone_icon_block reads the parent as the tile)
+				$glyph = null; foreach ( array( 'iconify-icon', 'svg', 'i' ) as $gt ) { $g = $a->getElementsByTagName( $gt )->item( 0 ); if ( $g instanceof DOMElement ) { $glyph = $g; break; } }
+				if ( ! $glyph ) { continue; }
+				$lb = self::lone_icon_block( $glyph ); if ( is_array( $lb ) ) { $lb['mt'] = 0; $lb['mb'] = 0; $blocks[] = $lb; }
+			}
+			if ( count( $blocks ) < 2 ) { continue; }
+			$vw = 0.0; $root = $body->ownerDocument->documentElement;
+			if ( $root instanceof DOMElement && preg_match( '/^\d+$/', (string) $root->getAttribute( 'data-sc-content-width' ) ) ) { $vw = 1440.0; }
+			$left = preg_match( '/(?:^|;)\s*left:\s*([0-9.]+)px/i', $cs, $lm ) ? (float) $lm[1] : -1.0;
+			$tx   = preg_match( '/transform:\s*matrix\(\s*1,\s*0,\s*0,\s*1,\s*(-?[0-9.]+),\s*(-?[0-9.]+)\s*\)/i', $cs, $mm ) ? (float) $mm[1] : 0.0;
+			$centred = ( $left >= 0 && abs( $left - 720 ) <= 2 ); // the source's `left:50%` at the 1440 capture viewport
+			return array(
+				't' => 'dock', 'role' => 'dock', 'blocks' => $blocks, 'edge' => $edge, 'offset' => ( 'bottom' === $edge ? $bottom : $top ),
+				'left' => $left, 'centred' => $centred, 'tx' => $tx, 'pillCs' => $pd, 'gap' => (string) ( $pd['gap'] ?? '' ),
+				'z' => ( preg_match( '/(?:^|;)\s*z-index:\s*(\d+)/i', $cs, $zm ) ? (int) $zm[1] : 60 ), 'mt' => 0, 'mb' => 0,
+			);
+		}
+		return null;
+	}
+
+	private static function lone_icon_block( $el ) {
+		$svg = ( 'svg' === strtolower( $el->tagName ) ) ? $el : null;
+		if ( ! $svg ) { foreach ( $el->getElementsByTagName( 'svg' ) as $sv ) { $svg = $sv; break; } }
+		$markup = ( $svg && $el->ownerDocument ) ? self::strip_cs( (string) $el->ownerDocument->saveHTML( $svg ) ) : '';
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		// an <svg>'s box (its `w-7 h-7`) is its size; the inherited font-size (16px) is not — the arrow rendered at 16 (a finding from the feed)
+		$sz = 0; foreach ( ( $svg === $el ? array( 'height', 'width', 'font-size' ) : array( 'font-size', 'height', 'width' ) ) as $pr ) { if ( preg_match( '/(?:^|;)\s*' . $pr . ':\s*([0-9.]+)px/i', $cs, $m ) && (float) $m[1] > 0 ) { $sz = (float) $m[1]; break; } }
+		$col = self::color_keep_alpha( (string) self::sc_css( $el, 'color' ) );
+		$cls = self::cls( $el ); $fa = '';
+		// the capture does not stamp an <svg> (the sanitizer keeps only its class): its size is its `w-N h-N` / `size-N` utility and
+		// its ink is the nearest stamped ancestor's colour — both were empty, so a row of 20px amber stars rendered at the default
+		// size in the default ink (a finding from the feed)
+		if ( $sz <= 0 ) { if ( preg_match( '/(?:^|\s)(?:w|h|size)-(\d+)(?:\s|$)/', $cls, $um ) ) { $sz = (int) $um[1] * 4; } elseif ( preg_match( '/(?:^|\s)(?:w|h|size)-\[(\d+)px\]/', $cls, $um ) ) { $sz = (int) $um[1]; } }
+		if ( '' === $col ) { for ( $anc = $el->parentNode, $ai = 0; $anc instanceof DOMElement && $ai < 4; $anc = $anc->parentNode, $ai++ ) { $ac = self::color_keep_alpha( (string) self::sc_css( $anc, 'color' ) ); if ( '' !== $ac ) { $col = $ac; break; } } }
+		if ( '' === $markup && preg_match( '/\b((?:fa[srb]?|bi|ri)\s+[a-z0-9-]+|[a-z]+-[a-z0-9-]+)\b/i', $cls, $fm ) ) { $fa = trim( $fm[1] ); }
+		if ( '' === $markup && '' === $fa ) { return null; }
+		$m = self::el_margin( $el );
+		// a Lucide glyph (`<svg class="lucide lucide-star">`) whose geometry the capture dropped (`<path></path>`) → its library id;
+		// the mapper draws it from the icon library instead of an empty inline svg
+		$lucide = ( $svg && preg_match( '/(?:^|\s)lucide-([a-z0-9-]+)(?:\s|$)/', self::cls( $svg ), $lm ) && 'lucide' !== $lm[1] ) ? 'lucide/' . $lm[1] : (string) self::detect_lucide_in( $el );
+		$out = array( 't' => 'lone_icon', 'role' => 'lone_icon', 'svg' => $markup, 'fa' => $fa, 'lucide' => $lucide, 'size' => (int) round( $sz ), 'color' => $col, 'cls' => $cls, 'cs' => $cs, 'mt' => (float) ( $m['top'] ?? 0 ), 'mb' => (float) ( $m['bottom'] ?? 0 ) );
+		// The icon's TILE — a wrapper holding only this glyph, painted (a fill / a border / a shadow) and sized like a badge
+		// (≤ 200px): a ring emblem over a CTA, a square chip. Its skin rides as an Icon Badge Preset (the same preset an
+		// icon_box's chip gets); its own margins / centring stand for the glyph's. JS twin: loneIconOf tile.
+		$tile = ( $el->parentNode instanceof DOMElement && 'body' !== strtolower( $el->parentNode->tagName ) ) ? $el->parentNode : null;
+		if ( $tile && count( self::el_children( $tile ) ) === 1 && '' === trim( self::text_no_icons( $tile ) ) ) {
+			$tcs  = (string) $tile->getAttribute( 'data-sc-cs' ); $tcls = self::cls( $tile );
+			$painted = preg_match( '/background-color:\s*(?!rgba\([^)]*,\s*0\s*\))(?!transparent)/i', $tcs ) || preg_match( '/(?:^|;)\s*border-top-width:\s*[1-9]/i', $tcs ) || preg_match( '/(?:^|;)\s*box-shadow:\s*(?!none)/i', $tcs );
+			$tw = 0; if ( preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $tcs, $wm ) ) { $tw = (float) $wm[1]; } elseif ( preg_match( '/(?:^|\s)(?:w|size)-(\d+)(?:\s|$)/', $tcls, $wm ) ) { $tw = (int) $wm[1] * 4; } elseif ( preg_match( '/(?:^|\s)w-\[(\d+)px\]/', $tcls, $wm ) ) { $tw = (int) $wm[1]; }
+			if ( $tw <= 0 && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $tcs, $hm ) && (float) $hm[1] <= 200 ) { $tw = (float) $hm[1]; } // a square tile: its height stands for its width
+			if ( $painted && $tw > 0 && $tw <= 200 ) {
+				$tm = self::el_margin( $tile );
+				$out['tileCs'] = $tcs; $out['tileCls'] = $tcls; $out['tileSize'] = (int) round( $tw );
+				$out['mt'] = (float) ( $tm['top'] ?? 0 ); $out['mb'] = (float) ( $tm['bottom'] ?? 0 );
+				if ( 'a' === strtolower( $tile->tagName ) ) { $out['link'] = trim( (string) $tile->getAttribute( 'href' ) ); }
+				// a PINNED tile (`absolute bottom-12 left-1/2 -translate-x-1/2`: a scroll cue) keeps its placement: the mapper's native
+				// Position option + the centring transform (a RECURRING finding: the cue fell into the flow under the buttons)
+				// the pin may sit on the tile itself or on a SOLE-CHILD wrapper around it (`<div class="absolute bottom-12 left-1/2"><a class="w-12 …">`)
+				for ( $pin = $tile, $k = 0; $pin instanceof DOMElement && $k < 3 && 'body' !== strtolower( $pin->tagName ); $pin = $pin->parentNode, $k++ ) {
+					if ( $pin !== $tile && ( count( self::el_children( $pin ) ) !== 1 || '' !== trim( self::text_no_icons( $pin ) ) ) ) { break; }
+					$pcs = (string) $pin->getAttribute( 'data-sc-cs' );
+					if ( preg_match( '/(?:^|;)\s*position:\s*(absolute|fixed)/i', $pcs ) ) {
+						$out['pinned'] = true; $out['pinCls'] = self::cls( $pin ); $out['pinCs'] = $pcs;
+						$tf = trim( (string) self::sc_css( $pin, 'transform' ) ); if ( '' !== $tf && 'none' !== $tf ) { $out['tileTransform'] = $tf; }
+						break;
+					}
+				}
+				if ( preg_match( '/(?:^|\s)mx-auto(?:\s|$)/', $tcls ) || ( preg_match( '/(?:^|;)\s*margin-left:\s*auto/i', $tcs ) && preg_match( '/(?:^|;)\s*margin-right:\s*auto/i', $tcs ) ) ) { $out['center'] = true; }
+			}
+		}
+		return $out;
+	}
+
+	/** A container with ≥ 2 direct `<code>` children (each a line), or one whose only code child is a `<pre>`. */
+	private static function is_code_listing( $el, $tag ) {
+		if ( ! ( $el instanceof DOMElement ) || in_array( $tag, array( 'code', 'pre', 'a', 'button' ), true ) ) { return false; }
+		$codes = 0; $others = 0;
+		foreach ( self::el_children( $el ) as $k ) { $kt = strtolower( $k->tagName ); if ( 'code' === $kt || 'pre' === $kt ) { $codes++; } elseif ( '' !== trim( self::text( $k ) ) || $k->getElementsByTagName( '*' )->length ) { $others++; } }
+		return $codes >= 2 && $codes >= $others;
+	}
+
+	/**
+	 * The listing block: the code lines as `<pre>` markup (each `<code>` a line, its token spans keeping their measured colour
+	 * inline via the scrub, non-breaking spaces → spaces), the container's mono family / size / leading / ink / inset; the
+	 * NON-code children (a footer row of chips) follow as their own blocks. Returns a LIST of blocks.
+	 */
+	private static function code_listing_build( $el, array $rules ) {
+		$lines = array(); $rest = array();
+		foreach ( self::el_children( $el ) as $k ) {
+			$kt = strtolower( $k->tagName );
+			if ( 'code' === $kt || 'pre' === $kt ) {
+				$inner = self::clean_inline_html_pre( $k );
+				$lines[] = $inner;
+			} else {
+				$rest[] = $k;
+			}
+		}
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		$m  = self::el_margin( $el );
+		$out = array( array( 't' => 'code_listing', 'role' => 'code_listing', 'lines' => $lines, 'cs' => $cs, 'mt' => (float) ( $m['top'] ?? 0 ), 'mb' => (float) ( $m['bottom'] ?? 0 ) ) );
+		foreach ( $rest as $k ) {
+			$sub = array(); self::collect_blocks_of( $k, $sub, $rules );
+			foreach ( $sub as $b ) { if ( is_array( $b ) ) { $out[] = $b; } }
+		}
+		return $out;
+	}
+
+	/** Inline HTML of a code line: the scrub keeps each token span's own colour; the whitespace is PRESERVED (a `<pre>` line). */
+	private static function clean_inline_html_pre( $el ) {
+		if ( ! $el->ownerDocument ) { return self::text( $el ); }
+		$clone = $el->cloneNode( true );
+		self::scrub( $clone, (string) $el->getAttribute( 'data-sc-cs' ) );
+		$h = '';
+		foreach ( $clone->childNodes as $c ) { $h .= $clone->ownerDocument->saveHTML( $c ); }
+		$h = self::strip_cs( $h );
+		$h = str_replace( array( '&nbsp;', "\xC2\xA0" ), ' ', $h );
+		return trim( $h, "\r\n" );
+	}
+
+	/** collect_blocks over ONE element (the element itself is offered to the recognizers first, then its children). */
+	private static function collect_blocks_of( $el, array &$blocks, array $rules ) {
+		$claimed = self::claim_element( $el, $rules );
+		if ( is_array( $claimed ) ) { if ( isset( $claimed['t'] ) ) { $blocks[] = $claimed; } else { foreach ( $claimed as $b ) { $blocks[] = $b; } } return; }
+		$tag = strtolower( $el->tagName );
+		foreach ( self::recognizers() as $r ) {
+			if ( ! call_user_func( $r['match'], $el, $tag, $rules ) ) { continue; }
+			$o = call_user_func( $r['build'], $el, $tag, $rules );
+			if ( is_array( $o ) ) { if ( isset( $o['t'] ) ) { $blocks[] = $o; } else { foreach ( $o as $b ) { if ( is_array( $b ) && isset( $b['t'] ) ) { $blocks[] = $b; } } } return; }
+		}
+		self::collect_blocks( $el, $blocks, $rules );
 	}
 
 	/** Build a `row` block whose cells are counter payloads (reuses the mapper's columns→counter cell path). */
@@ -12688,14 +14895,29 @@ class FW_Site_Converter_Stitch {
 			$kids[] = $k;
 		}
 		$n    = count( $kids );
-		$desk = $n > 0 ? max( 1, min( 12, (int) round( 12 / $n ) ) ) : 4;
+		// the cells take the SOURCE grid's column count (`grid-cols-2` with four stats = a 2×2 that wraps), not 12/n — four white
+		// stat cards were squeezed into one row of 60px cells (a finding from the feed)
+		$gcn  = self::grid_col_count( $el );
+		$per  = ( $gcn >= 2 && $gcn < $n ) ? $gcn : $n;
+		$desk = $per > 0 ? max( 1, min( 12, (int) round( 12 / $per ) ) ) : 4;
 		$cols = array();
 		foreach ( $kids as $k ) {
 			$p = self::counter_cell_parse( $k );
-			if ( null === $p ) { continue; }
+			if ( null === $p ) {
+				// a WORD / glyph stat ("∞" over "Creativity"): the value as a heading over its caption, in the same cell shape
+				$sw = self::stat_word_cell( $k );
+				if ( ! $sw ) { continue; }
+				$col = array_merge( array( 'wResp' => array( 'desktop' => $desk ), 'blocks' => array(
+					array( 't' => 'heading', 'role' => 'heading', 'level' => 3, 'cls' => self::cls( $sw['value_el'] ), 'cs' => (string) $sw['value_el']->getAttribute( 'data-sc-cs' ), 'csSm' => '', 'align' => $sw['align'], 'text' => $sw['value'], 'html' => esc_html( $sw['value'] ) ),
+					array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $sw['label_el'] ), 'cs' => (string) $sw['label_el']->getAttribute( 'data-sc-cs' ), 'csSm' => '', 'maxWidth' => '', 'text' => $sw['label'], 'html' => '<p>' . esc_html( $sw['label'] ) . '</p>', 'linkCs' => '' ),
+				) ), self::cell_geometry( $k ) );
+				$box = self::read_card_skin( $k ); if ( $box ) { $col['cardBox'] = $box; }
+				$cols[] = $col;
+				continue;
+			}
 			// Each stat cell is often its OWN sub-card (source `text-center p-4 bg-white/10 rounded-xl`) —
 			// carry its box skin so the converted counters sit in matching sub-boxes, not bare on the panel.
-			$col = array( 'counter' => $p, 'wResp' => array( 'desktop' => $desk ) );
+			$col = array_merge( array( 'counter' => $p, 'wResp' => array( 'desktop' => $desk ) ), self::cell_geometry( $k ) ); // + the cell's own placement / edge rule
 			$box = self::read_card_skin( $k );
 			if ( $box ) { $col['cardBox'] = $box; }
 			$cols[] = $col;
@@ -12717,13 +14939,21 @@ class FW_Site_Converter_Stitch {
 	 * becomes a row of cells; a `<th>` cell is flagged `header` so the mapper can derive `<thead>`.
 	 */
 	private static function table_block( $el ) {
+		// The table's MEASURED skin first (the mode of every body / header cell's computed style = what the
+		// Table Preset owns), so each cell can carry only what DIFFERS from that base as its own inline style.
+		$ev   = self::table_style_evidence( $el );
 		$rows = array();
 		foreach ( $el->getElementsByTagName( 'tr' ) as $tr ) {
 			$cells = array();
 			foreach ( self::el_children( $tr ) as $c ) {
 				$ct = strtolower( $c->tagName );
 				if ( 'td' !== $ct && 'th' !== $ct ) { continue; }
-				$cells[] = array( 'html' => self::strip_cs( trim( self::inner_html( $c ) ) ), 'header' => ( 'th' === $ct ) );
+				$is_th   = ( 'th' === $ct );
+				$cells[] = array(
+					'html'   => self::table_cell_html( $c, $is_th ? $ev['th_base'] : $ev['td_base'] ),
+					'header' => $is_th,
+					'align'  => self::table_cell_align( $c ),
+				);
 			}
 			if ( $cells ) { $rows[] = $cells; }
 		}
@@ -12731,16 +14961,249 @@ class FW_Site_Converter_Stitch {
 		$caption = '';
 		$cap = $el->getElementsByTagName( 'caption' )->item( 0 );
 		if ( $cap ) { $caption = self::text( $cap ); }
-		// Capture the table's styling evidence (the computed styles the capture stamps as data-sc-cs) so the
-		// mapper can pick the best-matching Table Preset skin: the first header cell's fill/text, the table
-		// border, and whether the body rows are zebra-striped (>=2 distinct row backgrounds).
+		// The table's styling evidence (the computed styles the capture stamps as data-sc-cs): the legacy keys
+		// (first header cell / table / zebra) the name-matching pick reads, plus the MEASURED skin the mapper
+		// registers as a real Table Preset (register_table_preset → build_table_presets).
 		$th = $el->getElementsByTagName( 'th' )->item( 0 );
-		$style = array(
+		$style = array_merge( array(
 			'header_cs' => $th ? (string) $th->getAttribute( 'data-sc-cs' ) : '',
 			'table_cs'  => (string) $el->getAttribute( 'data-sc-cs' ),
 			'striped'   => self::table_is_striped( $el ),
-		);
+		), $ev['style'] );
 		return array( 't' => 'table', 'rows' => $rows, 'caption' => $caption, 'style' => $style );
+	}
+
+	/**
+	 * The MEASURED skin of a `<table>` from the capture's computed-style stamps — what a Table Preset owns
+	 * (cell padding, grid lines, the header / body / footer faces, the row hover, zebra fill, the frame, the
+	 * caption) — plus the per-cell BASE (the mode of every body cell / header cell for the text props) that
+	 * table_cell_html() diffs each cell against. General: nothing here reads a class name; a `divide-y`
+	 * source and a `td{border-bottom}` source both land as "horizontal grid lines". JS twin: tableEvidence.
+	 *
+	 * @return array { style:[…], td_base:[prop=>val], th_base:[prop=>val] }
+	 */
+	private static function table_style_evidence( $el ) {
+		$cs    = function ( $n ) { return ( $n instanceof DOMElement ) ? (string) $n->getAttribute( 'data-sc-cs' ) : ''; };
+		$decls = function ( $str, array $allow ) { return class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::cs_decls( (string) $str, $allow ) : array(); };
+		$EDGES = array();
+		foreach ( array( 'top', 'right', 'bottom', 'left' ) as $e ) { $EDGES[] = "border-$e-width"; $EDGES[] = "border-$e-style"; $EDGES[] = "border-$e-color"; }
+		$TEXT  = array( 'color', 'font-family', 'font-size', 'font-weight', 'letter-spacing', 'text-transform', 'line-height' );
+		$PADS  = array( 'padding-top', 'padding-right', 'padding-bottom', 'padding-left' );
+
+		// Rows by section: <thead> / <tfoot> rows, else a LEADING all-<th> row is a header row.
+		$head_rows = array(); $body_rows = array(); $foot_rows = array();
+		foreach ( $el->getElementsByTagName( 'tr' ) as $tr ) {
+			$pt = ( $tr->parentNode instanceof DOMElement ) ? strtolower( $tr->parentNode->tagName ) : '';
+			if ( 'thead' === $pt ) { $head_rows[] = $tr; continue; }
+			if ( 'tfoot' === $pt ) { $foot_rows[] = $tr; continue; }
+			$all_th = true; $any = false;
+			foreach ( self::el_children( $tr ) as $c ) { $t = strtolower( $c->tagName ); if ( 'td' === $t || 'th' === $t ) { $any = true; if ( 'th' !== $t ) { $all_th = false; } } }
+			if ( $any && $all_th && ! $body_rows ) { $head_rows[] = $tr; } else { $body_rows[] = $tr; }
+		}
+		$cells_of = function ( array $rows ) {
+			$out = array();
+			foreach ( $rows as $tr ) { foreach ( self::el_children( $tr ) as $c ) { $t = strtolower( $c->tagName ); if ( 'td' === $t || 'th' === $t ) { $out[] = $c; } } }
+			return $out;
+		};
+		$head_cells = $cells_of( $head_rows ); $body_cells = $cells_of( $body_rows ); $foot_cells = $cells_of( $foot_rows );
+
+		// The MODE of each prop across a cell set = the base the preset owns; a cell that differs carries its own diff.
+		// A prop the stamp OMITS at its default (letter-spacing normal, text-transform none, no fill) still votes —
+		// as '' — so four uppercase cells never out-vote sixteen plain ones; a '' winner is left unset.
+		$mode = function ( array $cells, array $props ) use ( $decls, $cs ) {
+			$votes = array();
+			foreach ( $cells as $c ) {
+				$d = $decls( $cs( $c ), $props );
+				foreach ( $props as $p ) { $v = isset( $d[ $p ] ) ? trim( (string) $d[ $p ] ) : ''; $votes[ $p ][ $v ] = ( $votes[ $p ][ $v ] ?? 0 ) + 1; }
+			}
+			$out = array();
+			foreach ( $votes as $p => $vs ) { arsort( $vs ); $w = (string) key( $vs ); if ( '' !== $w ) { $out[ $p ] = $w; } }
+			return $out;
+		};
+		$td_base = $mode( $body_cells, array_merge( $TEXT, $PADS, array( 'background-color', 'text-align' ) ) );
+		$th_base = $mode( $head_cells, array_merge( $TEXT, $PADS, array( 'background-color', 'text-align' ) ) );
+		$tf_base = $mode( $foot_cells, array_merge( $TEXT, $PADS, array( 'background-color' ) ) );
+		// The body's TEXT base is what the cells INHERIT — the `<tbody>` (or the first body row) stamp — when the
+		// source styles the group (`tbody.text-sm.font-light`); the cells' mode only fills what the group leaves
+		// unset. A bold first column and a mono value column then diff against the real base, not against each other.
+		$tbody = null;
+		foreach ( $el->getElementsByTagName( 'tbody' ) as $n ) { $tbody = $n; break; }
+		$group = $decls( $cs( $tbody ?: ( $body_rows ? $body_rows[0] : null ) ), $TEXT );
+		foreach ( $TEXT as $p ) {
+			$v = isset( $group[ $p ] ) ? trim( (string) $group[ $p ] ) : '';
+			if ( '' === $v ) { if ( 'letter-spacing' === $p || 'text-transform' === $p ) { unset( $td_base[ $p ] ); } continue; }
+			if ( 'letter-spacing' === $p && 'normal' === strtolower( $v ) ) { unset( $td_base[ $p ] ); continue; }
+			if ( 'text-transform' === $p && 'none' === strtolower( $v ) ) { unset( $td_base[ $p ] ); continue; }
+			$td_base[ $p ] = $v;
+		}
+
+		// A rule on one edge → "width|style|color" ('' when none / 0).
+		$rule = function ( array $d, $edge ) {
+			$w = trim( (string) ( $d[ "border-$edge-width" ] ?? '' ) );
+			if ( '' === $w || '0px' === $w || '0' === $w ) { return ''; }
+			$st = trim( (string) ( $d[ "border-$edge-style" ] ?? 'solid' ) );
+			if ( '' === $st || 'none' === $st || 'hidden' === $st ) { return ''; }
+			$col = trim( (string) ( $d[ "border-$edge-color" ] ?? '' ) );
+			if ( '' === $col || preg_match( '/^rgba\([^)]*,\s*0\s*\)\s*$/i', $col ) || 'transparent' === $col ) { return ''; }
+			return $w . '|' . $st . '|' . $col;
+		};
+		// Grid lines: the second body row's top rule (a `divide-y` source), else a body cell's bottom / top rule;
+		// vertical: a body cell's right / left rule.
+		$hline = ''; $vline = '';
+		if ( count( $body_rows ) >= 2 ) { $d = $decls( $cs( $body_rows[1] ), $EDGES ); $hline = $rule( $d, 'top' ); if ( '' === $hline ) { $hline = $rule( $d, 'bottom' ); } }
+		if ( '' === $hline && $body_cells ) { $d = $decls( $cs( $body_cells[0] ), $EDGES ); $hline = $rule( $d, 'bottom' ); if ( '' === $hline ) { $hline = $rule( $d, 'top' ); } }
+		if ( $body_cells ) { $d = $decls( $cs( $body_cells[ count( $body_cells ) > 1 ? 1 : 0 ] ), $EDGES ); $vline = $rule( $d, 'right' ); if ( '' === $vline ) { $vline = $rule( $d, 'left' ); } }
+		// The header's rule: the header row's bottom, else the first header cell's bottom.
+		$hdline = '';
+		if ( $head_rows ) { $hdline = $rule( $decls( $cs( $head_rows[0] ), $EDGES ), 'bottom' ); }
+		if ( '' === $hdline && $head_cells ) { $hdline = $rule( $decls( $cs( $head_cells[0] ), $EDGES ), 'bottom' ); }
+		// The footer's rule: the footer row's top, else its first cell's top.
+		$ftline = '';
+		if ( $foot_rows ) { $ftline = $rule( $decls( $cs( $foot_rows[0] ), $EDGES ), 'top' ); }
+		if ( '' === $ftline && $foot_cells ) { $ftline = $rule( $decls( $cs( $foot_cells[0] ), $EDGES ), 'top' ); }
+
+		// The frame: the table's own border / radius / shadow / fill, else the wrapper that holds ONLY the table.
+		$FR = array( 'border', 'border-radius', 'box-shadow', 'background-color' );
+		$is_frame = function ( array $d ) {
+			return ! empty( $d['border'] ) || ( ! empty( $d['border-radius'] ) && '0px' !== $d['border-radius'] ) || ( ! empty( $d['box-shadow'] ) && 'none' !== $d['box-shadow'] );
+		};
+		$fd = $decls( $cs( $el ), $FR );
+		if ( ! $is_frame( $fd ) && $el->parentNode instanceof DOMElement && count( self::el_children( $el->parentNode ) ) === 1 ) {
+			$pd = $decls( $cs( $el->parentNode ), $FR );
+			if ( $is_frame( $pd ) ) { $fd = $pd; }
+		}
+		$frame = array();
+		if ( ! empty( $fd['border'] ) )                                                       { $frame['border'] = trim( (string) $fd['border'] ); }
+		if ( ! empty( $fd['border-radius'] ) && '0px' !== $fd['border-radius'] )              { $frame['radius'] = trim( (string) $fd['border-radius'] ); }
+		if ( ! empty( $fd['box-shadow'] ) && 'none' !== strtolower( (string) $fd['box-shadow'] ) ) { $frame['shadow'] = trim( (string) $fd['box-shadow'] ); }
+
+		// The row hover (the capture's `hover-self{…}` stamp on a body row, else on a body cell).
+		$hover = '';
+		foreach ( array_merge( $body_rows, $body_cells ) as $n ) {
+			$h = (string) $n->getAttribute( 'data-sc-hover' );
+			if ( '' !== $h && preg_match( '/hover-self\{([^}]*)\}/', $h, $m ) ) { $hover = trim( $m[1] ); break; }
+		}
+		// Row fills: a uniform row fill is the body fill; two alternating fills are zebra stripes.
+		$fills = array();
+		foreach ( $body_rows as $tr ) {
+			$d = $decls( $cs( $tr ), array( 'background-color' ) );
+			$bg = trim( (string) ( $d['background-color'] ?? '' ) );
+			if ( '' === $bg && self::el_children( $tr ) ) { $d = $decls( $cs( self::el_children( $tr )[0] ), array( 'background-color' ) ); $bg = trim( (string) ( $d['background-color'] ?? '' ) ); }
+			$fills[] = ( '' === $bg || 'transparent' === $bg || preg_match( '/^rgba\([^)]*,\s*0\s*\)\s*$/i', $bg ) ) ? '' : $bg;
+		}
+		$distinct = array_values( array_unique( array_filter( $fills ) ) );
+		$stripe = ( count( $distinct ) >= 2 ) ? (string) $distinct[1] : '';
+		$row_bg = ( count( $distinct ) >= 1 ) ? (string) $distinct[0] : '';
+		if ( '' === $row_bg && ! empty( $td_base['background-color'] ) && 'transparent' !== $td_base['background-color'] && ! preg_match( '/^rgba\([^)]*,\s*0\s*\)\s*$/i', $td_base['background-color'] ) ) { $row_bg = (string) $td_base['background-color']; }
+
+		// The caption's face.
+		$capd = array();
+		$cap = $el->getElementsByTagName( 'caption' )->item( 0 );
+		if ( $cap ) { $capd = $decls( $cs( $cap ), array( 'color', 'font-size', 'font-style', 'text-align' ) ); }
+
+		// The row's transition (ms) when the stamp carries a duration.
+		$transition = '';
+		if ( $body_rows ) { $d = $decls( $cs( $body_rows[0] ), array( 'transition-duration' ) ); if ( ! empty( $d['transition-duration'] ) && preg_match( '/^([0-9.]+)(m?s)$/', trim( $d['transition-duration'] ), $m ) ) { $transition = (string) round( 'ms' === $m[2] ? (float) $m[1] : (float) $m[1] * 1000 ); } }
+
+		$style = array(
+			'td'         => $td_base,
+			'th'         => $th_base,
+			'tf'         => $tf_base,
+			'hline'      => $hline,
+			'vline'      => $vline,
+			'hdline'     => $hdline,
+			'ftline'     => $ftline,
+			'frame'      => $frame,
+			'hover'      => $hover,
+			'stripe_bg'  => $stripe,
+			'row_bg'     => $row_bg,
+			'caption'    => $capd,
+			'transition' => $transition,
+			'has_head'   => ! empty( $head_cells ),
+			'has_foot'   => ! empty( $foot_cells ),
+		);
+		return array( 'style' => $style, 'td_base' => $td_base, 'th_base' => $th_base );
+	}
+
+	/**
+	 * A cell's content for the native table: the inner markup with every descendant's OWN computed diff (vs its
+	 * parent's stamp) as an inline style — a badge span keeps its fill / padding / face — and the cell's own diff
+	 * vs the table base (colour / face / weight / size / tracking / case) as a wrapping `<span style>`, so a bold
+	 * first column or a mono value column survives editing without a class the site never compiles. Source
+	 * classes and capture stamps are dropped (the Table editor allows `span[style]`, not classes). JS twin: tableCellHtml.
+	 */
+	/** Every rgb()/rgba() in a value → hex (8-digit when translucent): wp_kses drops function colours in inline styles. */
+	private static function hexify_colors( $v ) {
+		return preg_replace_callback( '/rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*(?:,\s*([0-9.]+)\s*)?\)/i', function ( $m ) {
+			$h = sprintf( '#%02x%02x%02x', min( 255, (int) round( (float) $m[1] ) ), min( 255, (int) round( (float) $m[2] ) ), min( 255, (int) round( (float) $m[3] ) ) );
+			if ( isset( $m[4] ) && '' !== $m[4] && (float) $m[4] < 1 ) { $h .= sprintf( '%02x', (int) round( (float) $m[4] * 255 ) ); }
+			return $h;
+		}, (string) $v );
+	}
+
+	private static function table_cell_html( $c, array $base ) {
+		if ( ! ( $c instanceof DOMElement ) ) { return ''; }
+		$CELL  = array( 'color', 'font-family', 'font-size', 'font-weight', 'letter-spacing', 'text-transform' );
+		$INNER = array( 'background-color', 'color', 'font-family', 'font-size', 'font-weight', 'letter-spacing', 'text-transform', 'padding', 'border', 'border-radius', 'display' );
+		$decls = function ( $str, array $allow ) { return class_exists( 'FW_Site_Converter_Mapper' ) ? FW_Site_Converter_Mapper::cs_decls( (string) $str, $allow ) : array(); };
+		$inert = function ( $p, $v ) {
+			$v = strtolower( trim( (string) $v ) );
+			if ( '' === $v || 'inherit' === $v || 'initial' === $v ) { return true; }
+			if ( 'letter-spacing' === $p && 'normal' === $v ) { return true; }
+			if ( 'text-transform' === $p && 'none' === $v ) { return true; }
+			if ( 'background-color' === $p && ( 'transparent' === $v || preg_match( '/^rgba\([^)]*,\s*0\s*\)\s*$/i', $v ) ) ) { return true; }
+			if ( 'border-radius' === $p && ( '0px' === $v || '0' === $v ) ) { return true; }
+			if ( 'padding' === $p && preg_match( '/^(0px\s*)+$/', $v ) ) { return true; }
+			if ( 'display' === $p && ! in_array( $v, array( 'inline-block', 'block', 'inline-flex', 'flex' ), true ) ) { return true; }
+			return false;
+		};
+		// Colours as HEX (#rrggbb / #rrggbbaa): the cell is sanitised by wp_kses, whose style filter drops rgb()/rgba()
+		// function values but passes hex — a translucent badge fill survives as 8-digit hex.
+		$hex = function ( $v ) { return self::hexify_colors( $v ); };
+		$diff = function ( array $d, array $ref, array $props ) use ( $inert, $hex ) {
+			$out = array();
+			foreach ( $props as $p ) {
+				if ( ! isset( $d[ $p ] ) ) { continue; }
+				$v = trim( (string) $d[ $p ] );
+				if ( $inert( $p, $v ) ) { continue; }
+				if ( isset( $ref[ $p ] ) && 0 === strcasecmp( trim( (string) $ref[ $p ] ), $v ) ) { continue; }
+				$out[ $p ] = $hex( str_replace( '"', "'", $v ) );
+			}
+			return $out;
+		};
+		$clone = $c->cloneNode( true );
+		$nodes = array();
+		foreach ( $clone->getElementsByTagName( '*' ) as $n ) { $nodes[] = $n; }
+		foreach ( $nodes as $n ) {
+			if ( ! ( $n instanceof DOMElement ) ) { continue; }
+			$own = $decls( (string) $n->getAttribute( 'data-sc-cs' ), $INNER );
+			$par = ( $n->parentNode instanceof DOMElement ) ? $decls( (string) $n->parentNode->getAttribute( 'data-sc-cs' ), $INNER ) : array();
+			$d   = $diff( $own, $par, $INNER );
+			// padding / display only matter on a PAINTED or FRAMED chip (a bare inline span's padding is layout noise)
+			$painted = isset( $d['background-color'] ) || isset( $d['border'] );
+			if ( ! $painted ) { unset( $d['padding'], $d['display'], $d['border-radius'] ); } // (an inline chip keeps its inline display — its padding paints without growing the line)
+			$attrs = array();
+			foreach ( $n->attributes as $a ) { $attrs[] = $a->nodeName; }
+			foreach ( $attrs as $an ) { if ( 'class' === $an || 'id' === $an || 'style' === $an || 0 === strpos( $an, 'data-sc-' ) ) { $n->removeAttribute( $an ); } }
+			if ( $d ) { $st = array(); foreach ( $d as $p => $v ) { $st[] = $p . ':' . $v; } $n->setAttribute( 'style', implode( ';', $st ) ); }
+		}
+		$html = trim( self::inner_html( $clone ) );
+		if ( '' === $html ) { return ''; }
+		$own = $decls( (string) $c->getAttribute( 'data-sc-cs' ), $CELL );
+		$d   = $diff( $own, $base, $CELL );
+		if ( $d ) {
+			$st = array(); foreach ( $d as $p => $v ) { $st[] = $p . ':' . $v; }
+			$html = '<span style="' . htmlspecialchars( implode( ';', $st ), ENT_QUOTES, 'UTF-8' ) . '">' . $html . '</span>';
+		}
+		return $html;
+	}
+
+	/** A cell's horizontal alignment from its stamp: 'right' / 'center', else '' (the column default). */
+	private static function table_cell_align( $c ) {
+		$ta = strtolower( trim( (string) self::sc_css( $c, 'text-align' ) ) );
+		if ( 'right' === $ta || 'end' === $ta ) { return 'right'; }
+		if ( 'center' === $ta ) { return 'center'; }
+		return '';
 	}
 
 	/** Are the body rows zebra-striped? True when the `<tr>` computed backgrounds show >=2 distinct fills. */
@@ -12751,7 +15214,7 @@ class FW_Site_Converter_Stitch {
 			if ( '' === $cs ) { continue; }
 			if ( preg_match( '/background-color\s*:\s*([^;]+)/i', $cs, $m ) ) {
 				$v = trim( $m[1] );
-				if ( '' !== $v && 'transparent' !== $v && ! preg_match( '/,\s*0\s*\)\s*$/', $v ) ) { $bgs[ $v ] = true; }
+				if ( '' !== $v && 'transparent' !== $v && ! preg_match( '/^rgba\([^)]*,\s*0\s*\)\s*$/i', $v ) ) { $bgs[ $v ] = true; }
 			}
 		}
 		return count( $bgs ) >= 2;
@@ -12797,7 +15260,26 @@ class FW_Site_Converter_Stitch {
 		foreach ( $el->getElementsByTagName( '*' ) as $t ) {
 			if ( $t->hasAttribute( 'aria-expanded' ) && self::text( $t ) !== '' ) { $toggles++; }
 		}
-		return $toggles >= 2;
+		if ( $toggles >= 2 ) { return true; }
+		// UNANNOTATED toggles (a React FAQ with no aria): ≥ 2 same-shaped items, each a <button> carrying text + a chevron / plus
+		// svg FOLLOWED by a sibling panel with text — six such Q/A rows fell to code blocks (a fixture from the feed)
+		return count( self::plain_toggle_items( $el ) ) >= 2;
+	}
+
+	/** The `[button, panel]` pairs of an unannotated accordion: a text button with a chevron/plus/arrow svg whose next element sibling is a text panel. */
+	private static function plain_toggle_items( $el ) {
+		$out = array();
+		foreach ( $el->getElementsByTagName( 'button' ) as $b ) {
+			if ( '' === trim( self::text( $b ) ) ) { continue; }
+			$chev = false; foreach ( $b->getElementsByTagName( 'svg' ) as $sv ) { if ( preg_match( '/chevron|plus|minus|arrow|caret|angle/i', self::cls( $sv ) ) ) { $chev = true; break; } }
+			if ( ! $chev && ! preg_match( '/^[^\p{L}]*[+−–-]\s*$|[+−]$/u', trim( self::text( $b ) ) ) ) { continue; }
+			$sib = $b->nextSibling; while ( $sib && XML_ELEMENT_NODE !== $sib->nodeType ) { $sib = $sib->nextSibling; }
+			// a React accordion UNMOUNTS its closed panels — the button stands alone in its card; the item is still a toggle
+			// (its answer comes from the FAQ JSON-LD fallback when the page carries one, else stays empty for the editor)
+			if ( $sib instanceof DOMElement && ( 'button' === strtolower( $sib->tagName ) || '' === trim( self::text( $sib ) ) ) ) { $sib = null; }
+			$out[] = array( $b, $sib );
+		}
+		return $out;
 	}
 
 	/** Extract accordion items `{ title, content }` from a `<details>` group or an aria-toggle group. */
@@ -12815,6 +15297,13 @@ class FW_Site_Converter_Stitch {
 				$content = self::strip_cs( trim( self::inner_html( $clone ) ) );
 				if ( '' === $content ) { $content = ''; }
 				if ( '' !== $title ) { $items[] = array( 'title' => $title, 'content' => $content, 'open' => $d->hasAttribute( 'open' ) ); }
+			}
+		} elseif ( ! count( self::el_all_with_aria( $el ) ) && count( self::plain_toggle_items( $el ) ) >= 2 ) {
+			// unannotated toggles (see plain_toggle_items): title = the button's text without its glyph; content = the sibling panel
+			foreach ( self::plain_toggle_items( $el ) as $pair ) {
+				$title = trim( preg_replace( '/\s*[+−–]\s*$/u', '', self::text_no_icons( $pair[0] ) ) );
+				if ( '' === $title ) { continue; }
+				$items[] = array( 'title' => $title, 'content' => ( $pair[1] instanceof DOMElement ) ? self::strip_cs( trim( self::inner_html( $pair[1] ) ) ) : '', 'open' => false );
 			}
 		} else {
 			// aria-expanded toggles: title = toggle text; content = aria-controls target or next sibling.
@@ -13259,6 +15748,20 @@ class FW_Site_Converter_Stitch {
 			$t = trim( self::text( $k ) );
 			if ( '' === $t ) { continue; }
 			$row = array( 'text' => $t, 'html' => self::clean_inline_html( $k ) );
+			// A STAT row — the text holder is two stacked leaves, a VALUE (larger, ≥ 1.3× the label's size) over a LABEL
+			// ("20k+" / "Teams worldwide"): the value is the item text, the label its sub-line. Read as one line before
+			// ("20k+ Teams worldwide" inline), while the source stacks them (measured on a stats strip).
+			$leaves = array();
+			foreach ( $k->getElementsByTagName( '*' ) as $lf ) { if ( in_array( strtolower( $lf->tagName ), array( 'svg', 'path', 'i', 'iconify-icon' ), true ) ) { continue; } if ( '' !== trim( self::text( $lf ) ) && 0 === count( self::el_children( $lf ) ) && preg_match( '/(?:^|;)\s*display:\s*block/i', (string) $lf->getAttribute( 'data-sc-cs' ) ) ) { $leaves[] = $lf; } }
+			if ( 2 === count( $leaves ) ) {
+				$f0 = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $leaves[0]->getAttribute( 'data-sc-cs' ), $m0 ) ? (float) $m0[1] : 0.0;
+				$f1 = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $leaves[1]->getAttribute( 'data-sc-cs' ), $m1 ) ? (float) $m1[1] : 0.0;
+				if ( $f0 > 0 && $f1 > 0 && $f0 >= 1.3 * $f1 ) {
+					$row['text'] = trim( self::text( $leaves[0] ) ); $row['sub'] = trim( self::text( $leaves[1] ) );
+					$row['value_cs'] = (string) $leaves[0]->getAttribute( 'data-sc-cs' ); $row['sub_cs'] = (string) $leaves[1]->getAttribute( 'data-sc-cs' );
+					if ( '' === $span_cls && '' === $span_cs ) { $span_cls = self::cls( $leaves[0] ); $span_cs = $row['value_cs']; }
+				}
+			}
 			// Per-item ICON — the exact inline <svg> (or lucide/iconify element), reproduced verbatim as the
 			// item's Icon option, plus its class + computed style so the mapper can resolve the marker colour.
 			$svg = $k->getElementsByTagName( 'svg' )->item( 0 );
@@ -13440,7 +15943,10 @@ class FW_Site_Converter_Stitch {
 		if ( (float) $num >= 10000 ) { return null; }                  // $18,240,000 = a stat/metric, not a plan price
 		$period = '';
 		if ( preg_match( '#/\s*(mo|month|yr|year|wk|week|day|user|seat)s?\b#i', $txt, $pm ) ) { $period = '/' . strtolower( $pm[1] ); }
-		return array( 'currency' => $cur, 'price' => $num, 'period' => $period );
+		// …or the source's OWN period phrase, verbatim ("/ per program", "/ one-time") — it was read as "/mo" (a finding from the feed)
+		elseif ( preg_match( '#' . preg_quote( $m[0], '#' ) . '\s*(/\s*(?:[Pp]er\s+)?[a-z]+(?:[ -][a-z]+)?)#u', $txt, $pm2 ) ) { $period = trim( preg_replace( '/\s+/', ' ', $pm2[1] ) ); }
+		// the price keeps its thousands separator as the source wrote it ("2,400" — it rendered "2400")
+		return array( 'currency' => $cur, 'price' => ( false !== strpos( $m[2], ',' ) ? $m[2] : $num ), 'period' => $period );
 	}
 
 	/** TIGHT: >=2 plan columns and a price token in MOST columns (so a plain feature grid is not claimed). */
@@ -13501,6 +16007,22 @@ class FW_Site_Converter_Stitch {
 		foreach ( self::widget_children( $el ) as $k ) {
 			$price = self::cell_price_parts( $k );
 			$title = self::item_title_text( $k );
+			// no heading / titled class: the plan NAME is the first SHORT text leaf of the card head (a `p.uppercase` "Essential"
+			// before the price) — every plan was titled "Plan" (a finding from the feed)
+			$subtitle = '';
+			if ( '' === $title || null !== $price ) {
+				$seen_price = false;
+				foreach ( $k->getElementsByTagName( '*' ) as $lf ) {
+					if ( $lf->getElementsByTagName( '*' )->length > 1 || in_array( strtolower( $lf->tagName ), array( 'li', 'ul', 'ol', 'a', 'button', 'svg' ), true ) ) { continue; }
+					if ( preg_match( '/(?:^|;)\s*position:\s*absolute/i', (string) $lf->getAttribute( 'data-sc-cs' ) ) || false !== strpos( ' ' . self::cls( $lf ) . ' ', ' absolute ' ) ) { continue; } // the "Most Popular" badge is not the name
+					$lt = trim( preg_replace( '/\s+/', ' ', self::text( $lf ) ) ); if ( '' === $lt ) { continue; }
+					$is_price = null !== $price && false !== strpos( $lt, $price['currency'] . ( false !== strpos( $lt, ',' ) ? $price['price'] : $price['price'] ) );
+					if ( $is_price ) { $seen_price = true; continue; }
+					if ( ! $seen_price && '' === $title && mb_strlen( $lt ) <= 24 && ! preg_match( '/[.!?]$/', $lt ) ) { $title = $lt; continue; }
+					// the paragraph between the price and the feature list is the plan's SUBTITLE (its description)
+					if ( $seen_price && '' === $subtitle && 'p' === strtolower( $lf->tagName ) && mb_strlen( $lt ) >= 20 && mb_strlen( $lt ) <= 200 ) { $subtitle = $lt; }
+				}
+			}
 			if ( '' === $title && null === $price ) { continue; }
 			$features = array();
 			$ul = $k->getElementsByTagName( 'ul' )->item( 0 );
@@ -13532,6 +16054,7 @@ class FW_Site_Converter_Stitch {
 			if ( 'no' === $featured && preg_match( '/-translate-y-|(?:^|\s)scale-1[01]|\bring-\d|border-(?:brand|primary|accent|emerald|green|blue|indigo|purple)/', $kcls ) ) { $featured = 'yes'; }
 			$plans[] = array(
 				'title'    => $title,
+				'subtitle' => $subtitle,
 				'currency' => $price ? $price['currency'] : '$',
 				'price'    => $price ? $price['price'] : '',
 				'period'   => $price ? $price['period'] : '',
@@ -13831,8 +16354,30 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( $titled < 2 ) { return false; }
 		if ( $class_signal ) { return true; }
+		// The steps shortcode renders marker + title + copy and nothing else: a card carrying MORE text leaves (a "01 / NODE"
+		// label, a "Status: …" footer line) would lose them — such a grid stays a card grid (every leaf kept).
+		foreach ( $kids as $k ) { if ( ! self::step_card_is_lean( $k ) ) { return false; } }
 		if ( $kid_signal && $numbered >= max( 2, (int) ceil( $n * 0.6 ) ) ) { return true; }
 		return $numbered >= $n;
+	}
+
+	/** Every text leaf of a step card is its marker (a bare 1–2 digit number / "Step N"), its title, or body copy — nothing the
+	 *  steps shortcode would drop. */
+	private static function step_card_is_lean( $k ) {
+		if ( ! ( $k instanceof DOMElement ) ) { return false; }
+		$title = trim( preg_replace( '/\s+/', ' ', self::item_title_text( $k ) ) );
+		$extra = 0;
+		foreach ( $k->getElementsByTagName( '*' ) as $c ) {
+			if ( $c->getElementsByTagName( '*' )->length > 0 ) { continue; } // leaves only
+			$t = trim( preg_replace( '/\s+/', ' ', self::text( $c ) ) );
+			if ( '' === $t ) { continue; }
+			$tag = strtolower( $c->tagName );
+			if ( preg_match( '/^(?:step\s*)?0*\d{1,2}$/i', $t ) ) { continue; }                 // the marker
+			if ( '' !== $title && ( $t === $title || false !== strpos( $title, $t ) ) ) { continue; } // the title (or a part of it)
+			if ( 'p' === $tag || mb_strlen( $t ) >= 60 ) { continue; }                                 // body copy
+			$extra++;
+		}
+		return 0 === $extra;
 	}
 
 	/** Build a `{ t:'steps', items:[{title,content,number}] }` block. */
@@ -13932,6 +16477,18 @@ class FW_Site_Converter_Stitch {
 				// ANY descendant with an inline width:% as a bar, so a scroll-progress indicator / a %-width layout
 				// element turned a whole content section into a fake `progress` widget (its cards' text merged).
 				if ( preg_match( '/\b(bar|fill|progress|meter|gauge|track|slider|skill|level|value)\b/', $cc . ' ' . $pc ) ) { return max( 0, min( 100, (int) round( (float) $m[1] ) ) ); }
+			}
+			// A utility-class fill (`w-[96%]` / `w-3/4`) inside a TRACK: a short (<= 16px), rounded / clipped parent whose only child it is
+			// (a `h-2 overflow-hidden rounded-full bg-white/10` track holding a `h-full w-[96%] bg-accent` fill).
+			$ccls = ' ' . strtolower( (string) $c->getAttribute( 'class' ) ) . ' ';
+			$pct = null;
+			if ( preg_match( '/(?:^|\s)w-\[([0-9.]+)%\]/', $ccls, $wm ) ) { $pct = (float) $wm[1]; }
+			elseif ( preg_match( '/(?:^|\s)w-([1-9][0-9]?)\/([1-9][0-9]?)(?:\s|$)/', $ccls, $wm ) && (int) $wm[2] > 0 ) { $pct = (float) $wm[1] / (float) $wm[2] * 100; }
+			if ( null !== $pct && $c->parentNode instanceof DOMElement ) {
+				$pp = $c->parentNode; $pcs = (string) $pp->getAttribute( 'data-sc-cs' );
+				$ph = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $pcs, $hm ) ? (float) $hm[1] : 0.0;
+				$track = $ph > 0 && $ph <= 16 && 1 === count( self::el_children( $pp ) ) && ( preg_match( '/(?:^|;)\s*overflow:\s*hidden/i', $pcs ) || preg_match( '/(?:^|;)\s*border-radius:\s*[1-9]/i', $pcs ) );
+				if ( $track ) { return max( 0, min( 100, (int) round( $pct ) ) ); }
 			}
 		}
 		return null;
@@ -14083,7 +16640,7 @@ class FW_Site_Converter_Stitch {
 			// data-sc-cs attributes.
 			$content = $panel ? trim( self::inner_html( $panel ) ) : '';
 			$active  = ( 'true' === strtolower( (string) $lab->getAttribute( 'aria-selected' ) ) || preg_match( '/\bactive\b/', strtolower( (string) $lab->getAttribute( 'class' ) ) ) ) ? 'yes' : 'no';
-			// A RICH panel (a big verbatim layout — the jukebox menu tab: a catalog of colour-banded category
+			// A RICH panel (a big verbatim layout — the burger source's menu tab: a catalog of colour-banded category
 			// grids) is routed to a SNIPPET: the mapper creates a `snippet` CPT holding this HTML verbatim inside
 			// `.sc-tw` and sets the tab content to `[snippet id="…"]`. A page-builder tab panel (a wp-editor field)
 			// would otherwise mangle 30 KB of grid markup through wpautop/kses and drop the Tailwind classes. A
@@ -14095,7 +16652,7 @@ class FW_Site_Converter_Stitch {
 			$items[] = array( 'title' => $title, 'content' => $content, 'active' => $active, 'snippet' => (bool) $is_rich );
 		}
 		if ( count( $items ) < 2 ) { return null; }
-		// Hoist a SHARED SECTION HEADING repeated at the top of EVERY panel (jukebox's "OUR MENU" title + rule)
+		// Hoist a SHARED SECTION HEADING repeated at the top of EVERY panel (the burger source's "OUR MENU" title + rule)
 		// OUT of the tabs, so it renders ONCE above them as the section heading — not duplicated inside each tab
 		// (and, since each panel is a snippet, not baked into every snippet).
 		$section_heading = self::extract_shared_tab_heading( $items );
@@ -14299,8 +16856,10 @@ class FW_Site_Converter_Stitch {
 		$sig = function ( $node ) {
 			if ( ! ( $node instanceof DOMElement ) ) { return false; }
 			$c = ' ' . strtolower( self::cls( $node ) ) . ' ';
-			if ( preg_match( '/\b(animate-scroll(?:-left|-right)?|animate-marquee|marquee|ticker)\b/', $c ) ) { return true; }
-			$cs = (string) $node->getAttribute( 'data-sc-cs' );
+			// (whole class only: `\b` after `animate-scroll` matched `animate-scroll-fade-up` — a scroll-REVEAL utility — and turned a
+			// section's centred heading block into a full-bleed marquee on three sites in the feed)
+			if ( preg_match( '/(?:^|\s)(animate-scroll(?:-left|-right|-x)?|animate-marquee|marquee|ticker)(?=\s|$)/', $c ) ) { return true; }
+			$cs = (string) $node->getAttribute( 'data-sc-cs' ) . ';' . (string) $node->getAttribute( 'data-sc-anim' ); // a running animation is stamped as data-sc-anim
 			return (bool) preg_match( '/animation[^;"\']*\binfinite\b/i', $cs );
 		};
 		if ( $sig( $el ) ) { return true; }
@@ -14315,8 +16874,8 @@ class FW_Site_Converter_Stitch {
 		$sig = function ( $node ) {
 			if ( ! ( $node instanceof DOMElement ) ) { return false; }
 			$c = ' ' . strtolower( self::cls( $node ) ) . ' ';
-			return (bool) preg_match( '/\b(animate-scroll(?:-left|-right)?|animate-marquee|marquee|ticker)\b/', $c )
-				|| (bool) preg_match( '/animation[^;"\']*\binfinite\b/i', (string) $node->getAttribute( 'data-sc-cs' ) );
+			return (bool) preg_match( '/(?:^|\s)(animate-scroll(?:-left|-right|-x)?|animate-marquee|marquee|ticker)(?=\s|$)/', $c )
+				|| (bool) preg_match( '/animation[^;"\']*\binfinite\b/i', (string) $node->getAttribute( 'data-sc-cs' ) . ';' . (string) $node->getAttribute( 'data-sc-anim' ) );
 		};
 		if ( $sig( $el ) ) { return $el; }
 		foreach ( $el->childNodes as $k ) { if ( $k instanceof DOMElement && $sig( $k ) ) { return $k; } }
@@ -14342,7 +16901,7 @@ class FW_Site_Converter_Stitch {
 		if ( 0.0 === $gap ) { $cg = self::sc_css( $el, 'column-gap' ); if ( '' === $cg ) { $cg = self::sc_css( $el, 'gap' ); } if ( preg_match( '/^([0-9.]+)px/', (string) $cg, $cm ) ) { $gap = (float) $cm[1]; } }
 		if ( 0.0 === $gap ) { $gap = 40.0; }
 		// loop duration → speed preset (a longer loop reads slower). From the computed animation shorthand.
-		$cs  = (string) $el->getAttribute( 'data-sc-cs' );
+		$cs  = (string) $el->getAttribute( 'data-sc-cs' ) . ';' . (string) $el->getAttribute( 'data-sc-anim' );
 		$dur = 0.0;
 		if ( preg_match( '/animation[^;"\']*?([0-9.]+)s/i', $cs, $dm ) ) { $dur = (float) $dm[1]; }
 		$speed = $dur > 0 ? ( $dur >= 40 ? 'slow' : ( $dur >= 20 ? 'normal' : 'fast' ) ) : 'normal';
@@ -14397,7 +16956,7 @@ class FW_Site_Converter_Stitch {
 			|| preg_match( '/overflow-x-(?:auto|scroll)|\bsnap-x\b/', $hay ) ) {
 			$out['design'] = 'horizontal';
 		}
-		// CARD COLOURS — a dark-themed source (openhero `.project-card` = a DARK oklch(0.15) fill + near-white
+		// CARD COLOURS — a dark-themed source (AI-page `.project-card` = a DARK oklch(0.15) fill + near-white
 		// title) renders a DARK card. The timeline shortcode defaults to a LIGHT card, so on the converted
 		// dark-theme site the near-white heading colour lands on a white card → the title is invisible
 		// (white-on-white; the-line's "Selected Works" cards). When the source entry card carries its OWN dark
@@ -14660,14 +17219,70 @@ class FW_Site_Converter_Stitch {
 	 * of text) — as opposed to a bare button, link, spacer, or empty decorative div. Used to tell a genuine
 	 * multi-column layout band from a button/pill row (whose children are NOT substantial).
 	 */
+	/** A flex ROW (computed) of 2–5 children that are each a SHORT label (≤ 40 chars, no heading / media / prose) or a
+	 *  cluster of EMPTY painted dots, spread by justify-content (space-between / space-around) or with a gap — a title
+	 *  bar / meta strip, never a content band (is_layout_row owns those). */
+	private static function is_toolbar_row( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		if ( self::is_badge( $el ) ) { return false; } // a status PILL (a pulsing dot + a label in a rounded, padded inline-flex) is a badge → the heading's overline, not a toolbar
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( ! preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $cs ) || preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $cs ) ) { return false; }
+		$kids = self::el_children( $el );
+		if ( count( $kids ) < 2 || count( $kids ) > 5 ) { return false; }
+		$labels = 0; $dots = 0;
+		foreach ( $kids as $k ) {
+			if ( in_array( strtolower( $k->tagName ), array( 'a', 'button', 'input', 'ul', 'ol' ), true ) || self::is_painted_panel( $k ) || self::is_panel( $k ) ) { return false; }
+			foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'svg', 'a', 'button', 'i', 'iconify-icon' ) as $t ) { if ( $k->getElementsByTagName( $t )->length > 0 ) { return false; } }
+			foreach ( $k->getElementsByTagName( '*' ) as $d ) { if ( false !== strpos( $d->tagName, '-' ) ) { return false; } } // a web-component icon (a brand strip) is not a label
+			$txt = trim( preg_replace( '/\s+/', ' ', self::text( $k ) ) );
+			if ( '' !== $txt ) {
+				if ( mb_strlen( $txt ) > 40 ) { return false; }
+				if ( 0 !== $k->getElementsByTagName( '*' )->length ) {
+					// a MIXED CLUSTER: a flex row of empty painted dots + ONE leaf label (a terminal title bar's three window dots
+					// beside the filename) counts as a label; a cell of tag spans (a chip row) does not
+					$kcs2 = (string) $k->getAttribute( 'data-sc-cs' );
+					if ( ! preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $kcs2 ) ) { return false; }
+					$cl = 0; $cd = 0;
+					foreach ( self::el_children( $k ) as $d ) {
+						if ( 0 !== $d->getElementsByTagName( '*' )->length ) { return false; }
+						$dt = trim( self::text( $d ) ); $dcs = (string) $d->getAttribute( 'data-sc-cs' );
+						if ( '' !== $dt ) { $cl++; continue; }
+						if ( preg_match( '/background-color:\s*(?!rgba\([^)]*,\s*0\s*\))(?!transparent)/i', $dcs ) && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $dcs, $hm ) && (float) $hm[1] <= 24 ) { $cd++; continue; }
+						return false;
+					}
+					if ( 1 !== $cl || $cd < 1 ) { return false; }
+					$labels++; $dots++; continue;
+				}
+				$labels++; continue; // a LEAF label only — a cell of tag spans is a chip row
+			}
+			// an empty cluster: every element child is an empty painted box ≤ 24px (a window dot)
+			$sub = self::el_children( $k );
+			if ( ! $sub ) { // a LEAF dot: the kid itself is a small painted box (a `w-1 h-1 rounded-full` separator between labels)
+				$kcs = (string) $k->getAttribute( 'data-sc-cs' );
+				if ( preg_match( '/background-color:\s*(?!rgba\([^)]*,\s*0\s*\))(?!transparent)/i', $kcs ) && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $kcs, $hm ) && (float) $hm[1] <= 24 ) { $dots++; continue; }
+				return false;
+			}
+			foreach ( $sub as $d ) {
+				$dcs = (string) $d->getAttribute( 'data-sc-cs' );
+				if ( '' !== trim( self::text( $d ) ) || ! preg_match( '/background-color:\s*(?!rgba\([^)]*,\s*0\s*\))(?!transparent)/i', $dcs ) || ! preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $dcs, $hm ) || (float) $hm[1] > 24 ) { return false; }
+			}
+			$dots++;
+		}
+		if ( $labels < 1 ) { return false; }
+		$spread = preg_match( '/(?:^|;)\s*justify-content:\s*(?:space-between|space-around|space-evenly)/i', $cs ) || preg_match( '/(?:^|;)\s*gap:\s*([1-9][0-9.]*)px/i', $cs );
+		return (bool) $spread;
+	}
+
 	private static function is_substantial_cell( $k ) {
 		if ( ! ( $k instanceof DOMElement ) ) { return false; }
 		$tag = strtolower( $k->tagName );
 		if ( in_array( $tag, array( 'button', 'a', 'input', 'br', 'hr', 'script', 'style' ), true ) ) { return false; }
+		if ( preg_match( '/^h[1-6]$/', $tag ) && '' !== trim( self::text( $k ) ) ) { return true; } // the cell IS a heading (a short `h3` beside an arrow in an accordion-style row)
 		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'svg', 'video', 'iframe', 'picture', 'ul', 'ol' ) as $t ) {
 			if ( $k->getElementsByTagName( $t )->length > 0 ) { return true; }
 		}
 		if ( mb_strlen( self::text( $k ) ) >= 20 ) { return true; }
+		if ( '' !== self::bg_photo_url( $k ) ) { return true; } // a CSS-painted photo half (`bg-cover` + url) is content — it was dropped (a fixture from the feed)
 		return self::is_painted_panel( $k ) || self::is_panel( $k );
 	}
 
@@ -14685,6 +17300,30 @@ class FW_Site_Converter_Stitch {
 		if ( '' === $p['bgi'] && '' === $p['bg'] ) { return false; }
 		$h = self::sc_css( $el, 'height' ); if ( '' === $h ) { $h = self::sc_css( $el, 'min-height' ); }
 		return preg_match( '/^([0-9.]+)px$/', $h, $m ) && (float) $m[1] >= 80;
+	}
+
+	/** A PHOTO CELL painted with CSS (`bg-cover bg-center` + `background-image:url(…)`, no <img>, no text): the photo's url, or ''.
+	 *  A data: / gradient / svg-pattern background is not a photo. The cell needs a real box (height ≥ 120). */
+	private static function bg_photo_url( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		if ( '' !== trim( self::text( $el ) ) ) { return ''; }
+		foreach ( array( 'img', 'video', 'iframe', 'picture', 'canvas' ) as $t ) { if ( $el->getElementsByTagName( $t )->length > 0 ) { return ''; } }
+		$bgi = html_entity_decode( trim( (string) self::sc_css( $el, 'background-image' ) ) );
+		if ( '' === $bgi || ! preg_match( '/url\(\s*["\']?([^"\')\s]+)["\']?\s*\)/i', $bgi, $um ) ) { return ''; }
+		$u = trim( $um[1] );
+		if ( '' === $u || 0 === stripos( $u, 'data:' ) || preg_match( '/\.svg(?:$|\?)/i', $u ) || preg_match( '/gradient\(/i', $bgi ) ) { return ''; }
+		$h = self::sc_css( $el, 'height' ); if ( '' === $h ) { $h = self::sc_css( $el, 'min-height' ); }
+		if ( ! preg_match( '/^([0-9.]+)px$/', $h, $hm ) || (float) $hm[1] < 120 ) { return ''; }
+		return $u;
+	}
+
+	/** The photo cell's block: a native media_image covering the cell's measured box (the source's background-position kept). */
+	private static function bg_photo_block( $el, $url ) {
+		$h = self::sc_css( $el, 'height' ); if ( '' === $h ) { $h = self::sc_css( $el, 'min-height' ); }
+		$pos = trim( (string) self::sc_css( $el, 'background-position' ) ); if ( '' === $pos || ! preg_match( '/^[a-z0-9.%\s-]+$/i', $pos ) ) { $pos = 'center'; }
+		$hpx = preg_match( '/^([0-9.]+)px$/', $h, $hm ) ? (float) $hm[1] : 0.0;
+		$skin = 'selector{height:100%;min-height:' . ( $hpx > 0 ? $hpx : 240 ) . 'px;}selector .image,selector figure{height:100%;margin:0;}selector img{width:100%;height:100%;object-fit:cover;object-position:' . $pos . ';display:block;}';
+		return array( 't' => 'image', 'role' => 'image', 'html' => '<img src="' . esc_url( $url ) . '" alt="">', 'skinCss' => $skin, 'bgPhoto' => true );
 	}
 
 	/** The panel's own paint: { bgi: gradient layers (no url()), bg: solid colour } — '' when none. */
@@ -14745,7 +17384,7 @@ class FW_Site_Converter_Stitch {
 	/**
 	 * The crop box an <img> was rendered into, recovered from its ANCESTORS -> scoped skin CSS, or ''.
 	 *
-	 * A Wegic image is almost never sized by its own attributes: the `<img>` carries
+	 * A a second AI-page generator image is almost never sized by its own attributes: the `<img>` carries
 	 * `w-full h-full object-cover` and the frame lives on a wrapper (`aspect-[4/3] overflow-hidden`,
 	 * `h-64`). The `image` recognizer serialises the <img> alone, so without this the photo renders at
 	 * natural size and inflates the section several-fold.
@@ -14831,16 +17470,27 @@ class FW_Site_Converter_Stitch {
 			$txt   = trim( preg_replace( '/\s+/', ' ', self::text( $c ) ) );
 			$media = $c->getElementsByTagName( 'img' )->length
 				+ $c->getElementsByTagName( 'video' )->length
-				+ $c->getElementsByTagName( 'svg' )->length;
+				+ $c->getElementsByTagName( 'svg' )->length
+				+ ( '' !== self::bg_photo_url( $c ) ? 1 : 0 ); // a CSS-painted photo half
 			if ( mb_strlen( $txt ) >= 25 || $media > 0 ) { $subs++; }
 		}
 		if ( $subs < 2 ) { return null; }
 		if ( ! self::is_layout_row( $node ) ) { return null; }
+		// The root IS a CARD GRID (a segmented band = the `grid md:grid-cols-3` of feature cards itself): build it exactly as
+		// the card_grid recognizer would (cells → cards → icon_boxes wearing Box Presets), not as generic layout columns
+		// whose cells then fell to the panel path (a nested flexbox with the skin as inline CSS and the icon dropped).
+		// The root's own margin is the SECTION's rhythm (Pass #5 folds it into the native padding), not the row's.
+		$root_disp = strtolower( self::sc_css( $node, 'display' ) ); $root_dir = strtolower( self::sc_css( $node, 'flex-direction' ) );
+		$root_grid = ( 'grid' === $root_disp ) || ( false !== strpos( $root_disp, 'flex' ) && 0 !== strpos( $root_dir, 'column' ) ); // a horizontal grid / flex ROW of cells — never a flex column (a shell stacking its rows)
+		if ( $root_grid && self::is_card_grid( $node ) ) { $recs = self::recognizers(); if ( isset( $recs['card_grid']['build'] ) ) { $cg = call_user_func( $recs['card_grid']['build'], $node ); if ( is_array( $cg ) ) { $cg['mt'] = 0.0; $cg['mb'] = 0.0; return $cg; } } }
 
+		self::$row_decor = array();
 		$cols = self::layout_cols( $node );
+		$root_decor = self::$row_decor; self::$row_decor = array();
 		if ( ! is_array( $cols ) || count( $cols ) < 2 ) { return null; }
 
 		return array(
+			'rootDecor' => $root_decor, // the root grid's absolute decor cells (a bottom-edge hairline) — emitted beside the row by the caller
 			't'       => 'row',
 			'role'    => 'columns',
 			'valign'  => self::row_valign( $node ),
@@ -14849,8 +17499,8 @@ class FW_Site_Converter_Stitch {
 			'stackBp' => self::grid_stack_bp( $node ),
 			'tracksMd' => self::tracks_count_at( $node, 'data-sc-cs-md' ), // TABLET / PHONE PASS: the measured track counts (mapper: col_resp)
 			'tracksSm' => self::tracks_count_at( $node, 'data-sc-cs-sm' ),
-			'mb'      => self::el_margin( $node )['bottom'],
-			'mt'      => self::el_margin( $node )['top'],
+			'mb'      => 0.0,
+			'mt'      => 0.0, // the root's own margin is the SECTION's rhythm (Pass #5 folds it into the native padding) — not the row's
 			'cols'    => $cols,
 		);
 	}
@@ -14959,14 +17609,28 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** Build a layout row block (the shared body of the layout_row and scroller recognizers). */
+	/** Absolute decor cells layout_cols set aside (a row's glow / hairline layers) — layout_row_build returns them beside the row. */
+	private static $row_decor = array();
+
 	private static function layout_row_build( $el ) {
+		self::$row_decor = array();
 		$cols = self::layout_cols( $el ); if ( ! $cols ) { return null; }
+		$decor = self::$row_decor; self::$row_decor = array();
+		$built = self::layout_row_build_inner( $el, $cols );
+		if ( ! $decor || ! is_array( $built ) ) { return $built; }
+		return array_merge( isset( $built['t'] ) ? array( $built ) : $built, $decor ); // the row, then its decor layers (a list is a valid recognizer output)
+	}
+
+	private static function layout_row_build_inner( $el, $cols ) {
 		$row = array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols );
 		// The ROW itself is a CARD (a band: `.band{border-radius:38px; background:…; box-shadow:…; overflow:hidden;
 		// min-height:300px; display:grid; grid-template-columns:.8fr 1.2fr}`) → its skin + min-height ride on the
 		// row so the mapper wraps the flex row in the card's Box Preset (clipped) at the card's height.
 		$rskin = self::read_card_skin( $el );
 		if ( ! $rskin ) { $rskin = self::read_edge_skin( $el ); } // a footer row's hairline top rule (one side, no radius)
+		// …or the hairline of the WRAPPER that holds only this row (`div.border-b > div.container.flex`): the wrapper is flattened,
+		// so its divider rode nothing and five accordion-style rows lost their rules (a finding from the feed)
+		if ( ! $rskin ) { $pw = $el->parentNode; if ( $pw instanceof DOMElement && 1 === count( self::el_children( $pw ) ) && ! in_array( strtolower( $pw->tagName ), array( 'section', 'main', 'body', 'header', 'footer' ), true ) ) { $rskin = self::read_edge_skin( $pw ); if ( ! $rskin ) { $rskin = self::read_card_skin( $pw ); } } }
 		// The row's own main-axis placement (space-between / center / end) and inset ride along so a footer row keeps
 		// its brand-left / tags-right spread and its 26px top inset (the nested-row path rebuilds the row from cells).
 		$rjc = self::css_or_decl( $el, 'justify-content' );
@@ -14990,7 +17654,132 @@ class FW_Site_Converter_Stitch {
 		// tablets too; the theme's grid only collapses below 768) → the mapper adds a tier rule. JS twin: tracksMd / tracksSm.
 		$row['tracksMd'] = self::tracks_count_at( $el, 'data-sc-cs-md' );
 		$row['tracksSm'] = self::tracks_count_at( $el, 'data-sc-cs-sm' );
-		return $row;
+		return self::bento_split( $el, $row );
+	}
+
+	/**
+	 * A BENTO grid → a stack of rows. A 12-track grid whose items span 8 / 4 tracks through a stylesheet class (`.wide`)
+	 * across several visual rows carries no per-item class or computed grid-column the engines could read, so it was
+	 * built as ONE even N-column row (six 1/12 slivers). The capture stamps every grid child's measured DESKTOP
+	 * geometry (`track-frac` = width / grid width, `track-y` = top offset in the grid): cells that share a y form a row, and each
+	 * cell's width is its span (frac × grid width → tracks, on the grid's own px tracks + gap) on the 12-grid. A single
+	 * row with uniform fractions is left as built. A multi-row bento becomes a `stack` of `row` blocks (the stack builder
+	 * keeps each row's own layout). Row-spanning items are not modelled (their row keeps them at their own width). JS
+	 * twin: bentoRowsOf. Requires one column per element child (a grid with skipped / merged cells is left alone).
+	 */
+	private static function bento_split( $el, array $row ) {
+		if ( ! ( $el instanceof DOMElement ) || empty( $row['cols'] ) || ! is_array( $row['cols'] ) ) { return $row; }
+		$kids = self::el_children( $el ); $cols = array_values( $row['cols'] );
+		if ( count( $kids ) !== count( $cols ) || count( $cols ) < 2 ) { return $row; }
+		$fr = array(); $ty = array(); $th = array(); $tx = array();
+		foreach ( $kids as $i => $k ) {
+			$cs = (string) $k->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/', $cs, $m ) ) { return $row; } // no desktop geometry stamped (an older capture)
+			$fr[ $i ] = (float) $m[1];
+			$ty[ $i ] = preg_match( '/(?:^|;)\s*track-y:\s*(-?[0-9.]+)/', $cs, $m2 ) ? (float) $m2[1] : 0.0;
+			$th[ $i ] = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/', $cs, $m3 ) ? (float) $m3[1] : 0.0;
+			if ( $th[ $i ] <= 0 && preg_match( '/(?:^|;)\s*track-h:\s*([0-9.]+)/', $cs, $m4 ) ) { $th[ $i ] = (float) $m4[1]; }
+			$tx[ $i ] = preg_match( '/(?:^|;)\s*track-x:\s*(-?[0-9.]+)/', $cs, $m5 ) ? (float) $m5[1] : null;
+		}
+		// rows by VERTICAL OVERLAP, not by top: an items-center / items-end grid offsets a shorter cell's top (a 348px copy
+		// column beside a 487px card grid sits 69px down) — same row when the cell's vertical span overlaps the row's by
+		// at least half the shorter one. Tops within 6px (sub-pixel track rounding) are always one row.
+		$groups = array();
+		foreach ( $kids as $i => $k ) {
+			$placed = false;
+			foreach ( $groups as &$g ) {
+				$same = abs( $g['y'] - $ty[ $i ] ) <= 6;
+				if ( ! $same && $th[ $i ] > 0 && $g['h'] > 0 ) {
+					$ov = min( $g['y'] + $g['h'], $ty[ $i ] + $th[ $i ] ) - max( $g['y'], $ty[ $i ] );
+					$same = $ov >= 0.5 * min( $g['h'], $th[ $i ] );
+				}
+				if ( $same ) { $g['i'][] = $i; $g['y'] = min( $g['y'], $ty[ $i ] ); $g['h'] = max( $g['h'], $th[ $i ] ); $placed = true; break; }
+			}
+			unset( $g );
+			if ( ! $placed ) { $groups[] = array( 'y' => $ty[ $i ], 'h' => $th[ $i ], 'i' => array( $i ) ); }
+		}
+		usort( $groups, function ( $a, $b ) { return $a['y'] <=> $b['y']; } );
+		$uniform = ( max( $fr ) - min( $fr ) ) <= 0.02;
+		if ( 1 === count( $groups ) && $uniform ) { return $row; } // a regular row: nothing to rebuild
+		// frac → span on the grid's OWN tracks (px template + gap), then onto the 12-grid; a non-px template falls back to frac × 12
+		$tpl = trim( (string) self::sc_css( $el, 'grid-template-columns' ) ); $toks = ( '' !== $tpl ) ? preg_split( '/\s+/', $tpl ) : array();
+		$track = 0.0; $ntr = 0; $tmin = 0.0; $tmax = 0.0; foreach ( $toks as $t ) { if ( preg_match( '/^([0-9.]+)px$/', $t, $tm ) ) { $track = (float) $tm[1]; $ntr++; $tmin = ( 0.0 === $tmin ) ? $track : min( $tmin, $track ); $tmax = max( $tmax, $track ); } }
+		$gap = (float) self::grid_gap_px( $el );
+		$gridw = ( $ntr > 0 ) ? $track * $ntr + $gap * max( 0, $ntr - 1 ) : 0.0;
+		// the span arithmetic assumes UNIFORM tracks; an unequal template (`[1.2fr_.8fr]` → 796px / 531px) reads each cell's
+		// measured fraction straight onto the 12-grid (7 / 5) — the uniform path counted the wide cell as one 531px track (6 / 6)
+		$uneq = ( $ntr >= 2 && $tmin > 0 && $tmax / $tmin >= 1.15 );
+		$desk_of = function ( $f ) use ( $track, $ntr, $gap, $gridw, $uneq ) {
+			if ( $ntr >= 2 && $track > 0 && ! $uneq ) { $span = (int) round( ( $f * $gridw + $gap ) / ( $track + $gap ) ); return max( 1, min( 12, (int) round( $span * 12 / $ntr ) ) ); }
+			return max( 1, min( 12, (int) round( $f * 12 ) ) );
+		};
+		// A ROW-SPANNING tile (a `row-span-2` scan panel beside two small cards over a wide one): it overlaps cells that start on DIFFERENT
+		// rows, so the y-overlap grouping would fold everything into one row. Split by X instead: the spanner's column | the
+		// rest as their own stack of rows (built by the same rules, widths re-measured inside that column). Needs the capture's
+		// track-x (every cell); a capture without it keeps the y grouping. JS twin: bentoRowsOf.
+		$have_x = true; foreach ( $kids as $i => $k ) { if ( null === $tx[ $i ] ) { $have_x = false; break; } }
+		// (…a spanner exists only where the y-overlap grouping found ≥ 2 ROWS: one centred row of a 52px disc, a 76px text and a
+		// 33px pill has staggered tops too, and the X-split folded its third cell under the second — a fixture from the feed)
+		// a CENTRED single row (`align-items:center`: every cell's vertical centre on one line) has staggered tops but no spanner
+		$centred = true; $cy0 = null; foreach ( $kids as $i => $k ) { if ( $th[ $i ] <= 0 ) { continue; } $cy = $ty[ $i ] + $th[ $i ] / 2; if ( null === $cy0 ) { $cy0 = $cy; } elseif ( abs( $cy - $cy0 ) > 8 ) { $centred = false; break; } }
+		if ( $have_x && count( $kids ) >= 3 && ! $centred ) {
+			$tops = array(); foreach ( $kids as $i => $k ) { $tops[ (string) round( $ty[ $i ] / 8 ) ] = true; }
+			$span_i = null;
+			foreach ( $kids as $i => $k ) {
+				if ( $th[ $i ] <= 0 ) { continue; }
+				$below = 0; foreach ( $kids as $j => $kk ) { if ( $j !== $i && $ty[ $j ] > $ty[ $i ] + 8 && $ty[ $j ] < $ty[ $i ] + $th[ $i ] - 8 ) { $below++; } }
+				if ( $below > 0 ) { $span_i = $i; break; } // a cell that starts BELOW this one's top but inside its height
+			}
+			if ( null !== $span_i && count( $tops ) >= 2 ) {
+				$sx0 = $tx[ $span_i ]; $sx1 = $sx0 + $fr[ $span_i ] * max( 1.0, $gridw > 0 ? $gridw : 1200 );
+				$grid_w = $gridw > 0 ? $gridw : ( function () use ( $tx, $fr, $kids ) { $mx = 0; foreach ( $kids as $i => $k ) { $mx = max( $mx, $tx[ $i ] ); } return $mx > 0 ? $mx / max( 0.01, 1 - $fr[ array_key_last( $tx ) ] ) : 1200; } )();
+				$sx1 = $sx0 + $fr[ $span_i ] * $grid_w;
+				$in = array(); $rest = array();
+				foreach ( $kids as $i => $k ) { $cx0 = $tx[ $i ]; $cx1 = $cx0 + $fr[ $i ] * $grid_w; $ov = min( $sx1, $cx1 ) - max( $sx0, $cx0 ); if ( $ov > 0.5 * min( $sx1 - $sx0, $cx1 - $cx0 ) ) { $in[] = $i; } else { $rest[] = $i; } }
+				if ( count( $in ) >= 1 && count( $rest ) >= 1 ) {
+					$mk_cell = function ( $i ) use ( $cols, $kids, $fr, $desk_of ) { $c = $cols[ $i ]; $c['wResp'] = array( 'desktop' => $desk_of( $fr[ $i ] ) ); unset( $c['track'] ); if ( empty( $c['minh'] ) && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $kids[ $i ]->getAttribute( 'data-sc-cs' ), $hm ) && (float) $hm[1] >= 120 ) { $c['minh'] = (int) round( (float) $hm[1] ); } return $c; };
+					// the REST column: rows by y among the remaining cells, each cell's width re-measured inside that column
+					$rest_fr = 0.0; foreach ( $rest as $i ) { $rest_fr = max( $rest_fr, $fr[ $i ] ); } $rest_w = max( 0.05, 1 - $fr[ $span_i ] );
+					$rgroups = array();
+					foreach ( $rest as $i ) { $placed = false; foreach ( $rgroups as &$g ) { if ( abs( $g['y'] - $ty[ $i ] ) <= 8 ) { $g['i'][] = $i; $placed = true; break; } } unset( $g ); if ( ! $placed ) { $rgroups[] = array( 'y' => $ty[ $i ], 'i' => array( $i ) ); } }
+					usort( $rgroups, function ( $a, $b ) { return $a['y'] <=> $b['y']; } );
+					$rrows = array();
+					foreach ( $rgroups as $g ) {
+						$r = $row; $r['cols'] = array();
+						foreach ( $g['i'] as $i ) { $c = $mk_cell( $i ); $c['wResp'] = array( 'desktop' => max( 1, min( 12, (int) round( $fr[ $i ] / $rest_w * 12 ) ) ) ); $r['cols'][] = $c; }
+						$r['nowrap'] = true; $r['mt'] = 0; $r['mb'] = 0; $rrows[] = $r;
+					}
+					$rest_blk = ( 1 === count( $rrows ) ) ? $rrows[0] : array( 't' => 'stack', 'role' => 'stack', 'gap' => (int) ( $row['gap'] ?? 0 ), 'mt' => 0, 'mb' => 0, 'items' => $rrows, 'bento' => true );
+					$span_cells = array(); foreach ( $in as $i ) { $span_cells[] = $mk_cell( $i ); }
+					$left_col = ( 1 === count( $span_cells ) ) ? $span_cells[0] : array( 'cls' => '', 'blocks' => array( array( 't' => 'stack', 'role' => 'stack', 'gap' => (int) ( $row['gap'] ?? 0 ), 'mt' => 0, 'mb' => 0, 'items' => array_map( function ( $c ) use ( $row ) { $r = $row; $r['cols'] = array( $c ); $r['nowrap'] = true; $r['mt'] = 0; $r['mb'] = 0; return $r; }, $span_cells ), 'bento' => true ) ) );
+					$left_col['wResp'] = array( 'desktop' => $desk_of( $fr[ $span_i ] ) );
+					$right_col = array( 'cls' => '', 'wResp' => array( 'desktop' => max( 1, 12 - $desk_of( $fr[ $span_i ] ) ) ), 'blocks' => array( $rest_blk ) );
+					$out = $row; $out['cols'] = ( $tx[ $span_i ] <= min( array_map( function ( $i ) use ( $tx ) { return $tx[ $i ]; }, $rest ) ) ) ? array( $left_col, $right_col ) : array( $right_col, $left_col );
+					$out['nowrap'] = true;
+					return $out;
+				}
+			}
+		}
+		$rows = array();
+		foreach ( $groups as $g ) {
+			$r = $row; $r['cols'] = array();
+			// UNEQUAL tracks: the group's fractions exclude the gaps (589 + 707 of 1376 → .43 + .51), so they are normalised to
+			// the group and balanced to 12 by largest remainder (5 / 7) — rounding each alone summed to 11 and left a hole.
+			$g_share = null;
+			if ( $uneq && count( $g['i'] ) >= 2 ) { $gf = array(); foreach ( $g['i'] as $i ) { $gf[] = (float) $fr[ $i ]; } $g_share = self::track_shares( $gf, count( $gf ) ); if ( null === $g_share ) { $g_share = array(); foreach ( $gf as $v ) { $g_share[] = max( 1, min( 11, (int) round( $v / max( 1e-6, array_sum( $gf ) ) * 12 ) ) ); } } }
+			$gi = 0;
+			foreach ( $g['i'] as $i ) {
+				$c = $cols[ $i ]; $c['wResp'] = array( 'desktop' => ( null !== $g_share && isset( $g_share[ $gi ] ) ) ? $g_share[ $gi ] : $desk_of( $fr[ $i ] ) ); $gi++;
+				if ( ! $uneq ) { unset( $c['track'] ); } // unequal tracks keep their exact px (589 / 707): the 12-grid share alone re-wrapped a 2-line title to 3
+				// the tile's measured height is its design height (a bento's rows differ: 320 / 246) → the cell's min-height
+				if ( empty( $c['minh'] ) && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $kids[ $i ]->getAttribute( 'data-sc-cs' ), $hm ) && (float) $hm[1] >= 120 ) { $c['minh'] = (int) round( (float) $hm[1] ); }
+				$r['cols'][] = $c;
+			}
+			$r['nowrap'] = true; $r['mt'] = 0; $r['mb'] = 0;
+			$rows[] = $r;
+		}
+		if ( 1 === count( $rows ) ) { return $rows[0]; } // one row, unequal cells (a 2/3 + 1/3 pair) — widths from the measure
+		return array( 't' => 'stack', 'role' => 'stack', 'gap' => (int) ( $row['gap'] ?? 0 ), 'mt' => (float) ( $row['mt'] ?? 0 ), 'mb' => (float) ( $row['mb'] ?? 0 ), 'items' => $rows, 'bento' => true );
 	}
 
 	/** The number of grid tracks in a pass stamp's `grid-template-columns` (0 when the pass recorded no change / not a grid). */
@@ -15000,16 +17789,60 @@ class FW_Site_Converter_Stitch {
 		return count( preg_split( '/\s+/', $v ) );
 	}
 
+	/** An absolutely / fixed-positioned element with no text, image, svg, video or iframe — a painted backdrop layer. */
+	private static function is_empty_positioned_layer( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		$cs = (string) $el->getAttribute( 'data-sc-cs' ); $cl = ' ' . self::cls( $el ) . ' ';
+		if ( ! preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', $cs ) && false === strpos( $cl, ' absolute ' ) && false === strpos( $cl, ' fixed ' ) ) { return false; }
+		if ( '' !== trim( self::text( $el ) ) ) { return false; }
+		foreach ( array( 'img', 'svg', 'video', 'iframe', 'canvas', 'picture' ) as $t ) { if ( $el->getElementsByTagName( $t )->length > 0 ) { return false; } }
+		return true;
+	}
+
 	private static function is_layout_row( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		if ( self::is_toolbar_row( $el ) ) { return false; } // a flex row of short labels (+ dot separators) is a toolbar line, not columns — a 24-char label counted as a "substantial cell"
+		if ( self::is_badge( $el ) ) { return false; }       // a PILL (an icon + a short label in a rounded, bordered inline-flex) is the heading's eyebrow, never two columns (measured: a hero badge split into an icon cell + a text cell)
 		$kids = self::el_children( $el );
+		// an EMPTY, absolutely-positioned child (a gradient / glow / pattern layer over the band) is a DECOR layer, never a
+		// column: a hero whose first child was such a layer became a 3-column row (a fixture from the feed)
+		$kids = array_values( array_filter( $kids, function ( $k ) { return ! self::is_empty_positioned_layer( $k ); } ) );
 		if ( count( $kids ) < 2 ) { return false; }
-		$subs = 0;
-		foreach ( $kids as $k ) { if ( self::is_substantial_cell( $k ) ) { $subs++; } }
-		if ( $subs < 2 ) { return false; }
-
 		$cls = self::cls( $el );
 		$cs  = (string) $el->getAttribute( 'data-sc-cs' );
+		// A MEASURED grid (≥ 2 px tracks in the computed grid-template-columns) declares its columns itself: any cell with
+		// visible text, a control, or media is a column — a label + value stat cell (15 chars, no <p>) or a lone-button
+		// cell used to fail the "substantial" test, so the 3-up stats and the quote + orb bands lost their row wrapper
+		// and stacked (a RECURRING finding: "stats grid emitted without its row wrapper").
+		$measured_tracks = 0;
+		if ( preg_match( '/grid-template-columns:\s*([^;]+)/i', $cs, $gm ) ) { foreach ( preg_split( '/\s+/', trim( $gm[1] ) ) as $tk ) { if ( preg_match( '/^[0-9.]+px$/', $tk ) && (float) $tk >= 40 ) { $measured_tracks++; } } }
+		$subs = 0;
+		foreach ( $kids as $k ) {
+			if ( self::is_substantial_cell( $k ) ) { $subs++; continue; }
+			if ( $measured_tracks >= 2 && ( '' !== trim( self::text( $k ) ) || $k->getElementsByTagName( 'a' )->length || $k->getElementsByTagName( 'button' )->length || $k->getElementsByTagName( 'img' )->length || $k->getElementsByTagName( 'svg' )->length ) ) { $subs++; }
+		}
+		// A MARKER ROW: a horizontal flex pair whose FIRST cell is a marker (a short ordinal "01", a lone icon) beside a
+		// substantial text cell (a benefits / steps list's `span.01 + div(h3 + p)`, `svg + div(h4 + p)`) is a 2-column row —
+		// the marker cell never counted as substantial, so the row lost its wrapper and its parts stacked as siblings
+		// (RECURS in the feed: "icon, title, text arrive as three siblings"). The mapper keeps the marker's measured track.
+		// (…the marker may also TRAIL the text: an accordion-style row `h3 + svg.chevron` with `justify-between` — its arrow dropped
+		// under the title as a stacked sibling and the row's hairline went with it; a finding from the feed)
+		if ( $subs === 1 && 2 === count( $kids ) && preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $cs ) && ! preg_match( '/flex-direction:\s*column/i', $cs ) && ( self::is_substantial_cell( $kids[1] ) || self::is_substantial_cell( $kids[0] ) ) ) {
+			$mk = self::is_substantial_cell( $kids[1] ) ? $kids[0] : $kids[1]; $mt = trim( preg_replace( '/\s+/u', ' ', self::text( $mk ) ) );
+			$is_marker = (bool) preg_match( '/^(?:\d{1,3}\.?|[①-⑳])$/u', $mt )
+				|| ( '' === $mt && ( $mk->getElementsByTagName( 'svg' )->length > 0 || 'svg' === strtolower( $mk->tagName ) || $mk->getElementsByTagName( 'i' )->length > 0 ) );
+			if ( $is_marker ) { $subs = 2; }
+		}
+		// A FILLED HEADER ROW: a horizontal flex with its OWN fill and a fixed height (a card's `h-24 bg-teal flex justify-between`
+		// band holding a tag pill and an icon disc) is a row whatever its cells hold — flattened, its fill vanished and its pill
+		// and disc stacked (a fixture from the feed). The row's skin rides as its rowBox.
+		if ( $subs < 2 && count( $kids ) >= 2 && preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $cs ) && ! preg_match( '/flex-direction:\s*column/i', $cs )
+			&& preg_match( '/(?:^|;)\s*background-color:\s*(?!rgba\([^)]*,\s*0\s*\)|transparent)[^;]+/i', $cs ) && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $fhm ) && (float) $fhm[1] >= 40 && (float) $fhm[1] <= 200 ) {
+			$filled = 0; foreach ( $kids as $k ) { if ( '' !== trim( self::text( $k ) ) || $k->getElementsByTagName( 'svg' )->length || $k->getElementsByTagName( 'img' )->length || self::is_painted_panel( $k ) || preg_match( '/(?:^|;)\s*background-color:\s*(?!rgba\([^)]*,\s*0\s*\)|transparent)[^;]+/i', (string) $k->getAttribute( 'data-sc-cs' ) ) ) { $filled++; } } // (+ a painted disc / tile)
+			if ( $filled >= 2 ) { $subs = 2; }
+		}
+		if ( $subs < 2 ) { return false; }
+
 		$pad = ' ' . $cls . ' ';
 
 		// (A) Tailwind grid. A DESKTOP column count >=2 (explicit `grid-cols-N` or a responsive
@@ -15076,16 +17909,60 @@ class FW_Site_Converter_Stitch {
 	 * `flex-1`. Returns [childIndex => desk(1-12)] or [] when no px width is present (then even division runs).
 	 * px-only rows are normalised to sum 12; a px + flex mix gives the flex column(s) the remainder. (P3 fix.)
 	 */
+	/**
+	 * Is this flex row CONTENT-SIZED — no cell declares a width (`w-*` / `basis-*` / `flex-1` / `grow` / `col-span-*`),
+	 * the row is a flex row (not a declared grid), and the cells' measured tracks (`track-frac`) sum to well under
+	 * the row (≤ .75)? Then the source laid its cells out at their content width with a gap, and the converter must
+	 * not split the row into equal 12-grid spans. Needs the desktop geometry stamp on every content cell.
+	 */
+	private static function row_is_content_sized( $grid, array $children ) {
+		if ( ! ( $grid instanceof DOMElement ) ) { return false; }
+		if ( self::grid_col_count( $grid ) >= 2 ) { return false; }
+		$disp = strtolower( (string) self::sc_css( $grid, 'display' ) );
+		$dir  = strtolower( (string) self::sc_css( $grid, 'flex-direction' ) );
+		if ( false === strpos( $disp, 'flex' ) || 0 === strpos( $dir, 'column' ) ) { return false; }
+		$sum = 0.0; $n = 0;
+		foreach ( $children as $cell ) {
+			if ( ! ( $cell instanceof DOMElement ) ) { continue; }
+			$cls = ' ' . self::cls( $cell ) . ' ';
+			if ( preg_match( '/(?:\s|:)(?:w-(?!px\s)[\w\[\]\/.%-]+|basis-[\w\[\]\/.%-]+|flex-1|flex-auto|grow|col-span-\d+|min-w-(?!0\s)[\w\[\]-]+)\s/', $cls ) ) { return false; }
+			if ( '' === self::text( $cell ) && ! $cell->getElementsByTagName( 'img' )->length && ! $cell->getElementsByTagName( 'svg' )->length ) { continue; } // a divider takes no share
+			if ( ! preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/', (string) $cell->getAttribute( 'data-sc-cs' ), $m ) ) { return false; }
+			$sum += (float) $m[1]; $n++;
+		}
+		return $n >= 1 && $sum > 0 && $sum <= 0.75;
+	}
+
+	/** A divider cell's fixed size ({ w, h } px) — an empty painted cell at most 4px on one axis — or null. */
+	private static function divider_cell_size( $cell ) {
+		$p = self::panel_paint( $cell );
+		if ( '' === $p['bg'] && '' === $p['bgi'] ) { return null; }
+		$w = self::sc_css( $cell, 'width' ); $h = self::sc_css( $cell, 'height' );
+		if ( ! preg_match( '/^([0-9.]+)px$/', $w, $mw ) || ! preg_match( '/^([0-9.]+)px$/', $h, $mh ) ) { return null; }
+		$w = (float) $mw[1]; $h = (float) $mh[1];
+		if ( $w <= 0 || $h <= 0 || ( $w > 4 && $h > 4 ) || max( $w, $h ) > 400 ) { return null; }
+		return array( 'w' => round( $w, 2 ), 'h' => round( $h, 2 ) );
+	}
+
 	private static function layout_px_fractions( $children ) {
 		$px = array(); $flex = array(); $has_px = false;
 		foreach ( $children as $i => $cell ) {
 			if ( ! ( $cell instanceof DOMElement ) ) { continue; }
 			$cls = ' ' . self::cls( $cell ) . ' ';
 			if ( self::col_span( $cls ) >= 1 ) { continue; }
-			if ( preg_match( '/(?:\s|:)w-\[(\d+(?:\.\d+)?)px\]/', $cls, $m ) ) { $px[ $i ] = (float) $m[1]; $has_px = true; }
+			if ( preg_match( '/(?:\s|:)w-\[(\d+(?:\.\d+)?)(px|rem|em)\]/', $cls, $m ) ) { $px[ $i ] = (float) $m[1] * ( 'px' === $m[2] ? 1 : 16 ); $has_px = true; } // an arbitrary px / rem width (`md:w-[32rem]`)
 			elseif ( preg_match( '/\s(?:flex-1|flex-auto|grow)\s/', $cls ) ) { $flex[ $i ] = true; }
 		}
 		if ( ! $has_px ) { return array(); }
+		// The MEASURED fractions (the capture's track-frac on every cell) beat any estimate of the row width: a `flex-1` card
+		// beside a `w-[32rem]` one measured .62 / .36 — the 12-grid spans follow that (8 / 4), not a 1200px guess.
+		$fr_all = true; $fr = array();
+		foreach ( $children as $i => $cell ) { if ( ! ( $cell instanceof DOMElement ) ) { continue; } if ( preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/', (string) $cell->getAttribute( 'data-sc-cs' ), $fm ) && (float) $fm[1] > 0 ) { $fr[ $i ] = (float) $fm[1]; } else { $fr_all = false; } }
+		if ( $fr_all && count( $fr ) >= 2 && array_sum( $fr ) <= 1.05 ) {
+			$out = array(); $acc = 0; $keys = array_keys( $fr ); $last = end( $keys );
+			foreach ( $fr as $i => $f ) { $out[ $i ] = ( $i === $last ) ? max( 1, 12 - $acc ) : max( 1, min( 11, (int) round( $f * 12 ) ) ); $acc += $out[ $i ]; }
+			return $out;
+		}
 		$sumpx = array_sum( $px );
 		if ( $sumpx <= 0 ) { return array(); }
 		$ref = $flex ? max( 1200.0, $sumpx * 1.3 ) : $sumpx;
@@ -15115,7 +17992,12 @@ class FW_Site_Converter_Stitch {
 		$toks = preg_split( '/\s+/', $tpl );
 		$out  = array();
 		foreach ( $toks as $t ) { if ( ! preg_match( '/^([0-9.]+)px$/', $t, $m ) ) { return array(); } $out[] = (float) $m[1]; }
-		if ( count( $out ) < 2 || count( $out ) !== (int) $n_children ) { return array(); }
+		if ( count( $out ) < 2 ) { return array(); }
+		if ( count( $out ) !== (int) $n_children ) {
+			// an out-of-flow decor child (an absolute hairline "light river" under the hero) takes no track: count the IN-FLOW children
+			$flow = 0; foreach ( self::el_children( $grid ) as $k ) { if ( ! preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', (string) $k->getAttribute( 'data-sc-cs' ) ) ) { $flow++; } }
+			if ( count( $out ) !== $flow ) { return array(); }
+		}
 		return $out;
 	}
 
@@ -15133,7 +18015,11 @@ class FW_Site_Converter_Stitch {
 		$cm = self::el_margin( $cell );
 		if ( $cm['top'] > 0 )    { $out['mt'] = (int) round( $cm['top'] ); }
 		if ( $cm['bottom'] > 0 ) { $out['mb'] = (int) round( $cm['bottom'] ); }
+		if ( preg_match( '/(?:^|;)\s*margin-left:\s*([0-9.]+)(px|%)/i', (string) $cell->getAttribute( 'data-sc-cs' ), $mlm ) && (float) $mlm[1] > 0 ) { $out['ml'] = round( (float) $mlm[1], 2 ) . $mlm[2]; } // a column offset on a grid canvas (group_canvas_rows): px, or % of the row
 		$mh = self::sc_css( $cell, 'min-height' );
+		// a FIXED height the source declared (an `h-24` / `h-[96px]` utility, a computed `height` with the class) is a minimum too —
+		// a card's 96px filled header band collapsed to its content (a fixture from the feed); a fixed height ≥ 40 counts
+		if ( ! preg_match( '/^([0-9.]+)px$/', $mh ) && preg_match( '/(?:^|\s)(?:sm:|md:|lg:|xl:)?h-(?:\d{1,3}|\[[0-9.]+px\])(?=\s|$)/', ' ' . self::cls( $cell ) . ' ' ) && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $cell->getAttribute( 'data-sc-cs' ), $fhm2 ) && (float) $fhm2[1] >= 40 && (float) $fhm2[1] < 120 ) { $out['minh'] = (int) round( (float) $fhm2[1] ); }
 		if ( preg_match( '/^([0-9.]+)px$/', $mh, $m ) && (float) $m[1] >= 120 ) {
 			$out['minh'] = (int) round( (float) $m[1] );
 			// PHONE PASS (data-sc-cs-sm): the cell's 390px min-height when it differs — a smaller px → the base tier; auto / 0 /
@@ -15159,16 +18045,39 @@ class FW_Site_Converter_Stitch {
 		{
 			$disp_at = function ( $attr, $inherit ) use ( $cell ) { $v = (string) $cell->getAttribute( $attr ); if ( preg_match( '/(?:^|;)\s*display:\s*([a-z-]+)/i', $v, $dm ) ) { return 'none' === strtolower( $dm[1] ); } return $inherit; };
 			$lg_none = $disp_at( 'data-sc-cs', false ); $md_none = $disp_at( 'data-sc-cs-md', $lg_none ); $sm_none = $disp_at( 'data-sc-cs-sm', $lg_none );
-			if ( $lg_none || $md_none || $sm_none ) { $out['hide'] = array( 'hide-xs' => $sm_none, 'hide-sm' => $sm_none, 'hide-md' => $md_none, 'hide-lg' => $lg_none ); }
+			// the theme's tiers: hide-xs < 768 (the 390 pass), hide-sm 768–991 (the 820 pass), hide-md ≥ 992 (the 1440 stamp) — the
+			// old keys were one tier off (`hide-md` = the TABLET pass), so a `hidden lg:block` desktop panel vanished on desktop (measured)
+			if ( $lg_none || $md_none || $sm_none ) { $out['hide'] = array( 'hide-xs' => $sm_none, 'hide-sm' => $md_none, 'hide-md' => $lg_none ); }
 		}
 		// TABLET / PHONE PASS (capture >= 1.10.98 `track-frac`): the cell's measured width as a fraction of its row at 820px / 390px → its md /
 		// base device span (a `md:col-span-2` card = the whole two-track tablet grid). Mapper: the col_resp tiers. JS twin: fracMd / fracSm.
 		foreach ( array( 'data-sc-cs-md' => 'fracMd', 'data-sc-cs-sm' => 'fracSm' ) as $fattr => $fk ) {
 			if ( preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/i', (string) $cell->getAttribute( $fattr ), $fm ) ) { $fr = (float) $fm[1]; if ( $fr > 0 && $fr <= 1.001 ) { $out[ $fk ] = min( 1.0, $fr ); } }
 		}
+		// The cell's own CSS-class reveal (a staggered card: delay 0 / .1 / .2s) → the column's Scroll Motion. JS twin: rowCols reveal.
+		$rv = self::reveal_of( $cell ); if ( $rv ) { $out['reveal'] = $rv; }
+		$la = self::loop_anim_of( $cell ); if ( $la ) { $out['loopAnim'] = $la; } // the cell's own running animation (a drifting shell)
 		$ccss = array();
 		$mw = trim( (string) self::sc_css( $cell, 'min-width' ) ); if ( preg_match( '/^[0-9.]+(?:px|%|rem|em|vw|ch)$/', $mw ) && '0px' !== $mw ) { $ccss[] = 'min-width:' . $mw; }
 		if ( 'sticky' === strtolower( trim( (string) self::sc_css( $cell, 'position' ) ) ) ) { $ccss[] = 'position:sticky'; $tp = trim( (string) self::sc_css( $cell, 'top' ) ); if ( preg_match( '/^-?[0-9.]+px$/', $tp ) ) { $ccss[] = 'top:' . $tp; } $ccss[] = 'align-self:flex-start'; }
+		// A ONE-SIDED accent rule on the cell (a stat's `border-l-2 border-accent pl-4`, a quote's left bar) with the inset beside it —
+		// no card skin owns a lone edge, so it rides the cell (JS: cellCss edge). A full border is the card skin's.
+		$ecs = (string) $cell->getAttribute( 'data-sc-cs' );
+		$eg  = function ( $pr ) use ( $ecs ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $pr, '/' ) . ':\s*([^;]+)/i', $ecs, $m ) ? trim( $m[1] ) : ''; };
+		$ew  = array(); foreach ( array( 'top', 'right', 'bottom', 'left' ) as $sd ) { $w = $eg( 'border-' . $sd . '-width' ); $ew[ $sd ] = ( preg_match( '/^([0-9.]+)px$/', $w, $wm ) && (float) $wm[1] > 0 && 'none' !== strtolower( $eg( 'border-' . $sd . '-style' ) ) ) ? $w : ''; }
+		$edges = array_filter( $ew );
+		if ( 1 === count( $edges ) && ! self::read_card_skin( $cell ) ) { // (a card skin owns its border — read_card_skin reads the top edge as the whole frame)
+			$sd = key( $edges ); $ec = $eg( 'border-' . $sd . '-color' );
+			if ( '' !== $ec && preg_match( '/^[a-z0-9(),.\s#%\/]+$/i', $ec ) && ! preg_match( '/rgba?\([^)]*,\s*0\s*\)/i', $ec ) ) {
+				$ccss[] = 'border-' . $sd . ':' . $ew[ $sd ] . ' solid ' . $ec;
+				$ep = $eg( 'padding-' . $sd );
+				if ( '' === $ep && preg_match( '/^([0-9.]+px)(?:\s+([0-9.]+px))?(?:\s+([0-9.]+px))?(?:\s+([0-9.]+px))?$/', $eg( 'padding' ), $pm ) ) { // the shorthand
+					$pt = $pm[1]; $pr = isset( $pm[2] ) ? $pm[2] : $pt; $pb = isset( $pm[3] ) ? $pm[3] : $pt; $pl = isset( $pm[4] ) ? $pm[4] : $pr;
+					$ep = array( 'top' => $pt, 'right' => $pr, 'bottom' => $pb, 'left' => $pl )[ $sd ];
+				}
+				if ( preg_match( '/^[0-9.]+px$/', $ep ) && '0px' !== $ep ) { $ccss[] = 'padding-' . $sd . ':' . $ep; }
+			}
+		}
 		if ( $ccss ) { $out['cell_css'] = implode( ';', $ccss ); }
 		// The cell is itself a single-track STACK with a gap (a column of two glass stat cards, gap 16) → the gap rides as
 		// the column's own content gap (a flex column with a native Gap), so the cards keep their spacing.
@@ -15233,6 +18142,20 @@ class FW_Site_Converter_Stitch {
 		return ( isset( $out['width'], $out['height'] ) && ( isset( $out['background'] ) || isset( $out['border'] ) || isset( $out['shadow'] ) ) ) ? $out : null;
 	}
 
+	/** UNEQUAL MEASURED tracks (`grid-cols-[1.2fr_.8fr]` → 796px / 531px) → each cell's 12-grid share (7 / 5) by largest
+	 *  remainder, or null for equal tracks / an unmeasured grid. Shared by layout_cols and grid_cols. */
+	private static function track_shares( $tracks, $n ) {
+		if ( ! is_array( $tracks ) || $n < 2 || count( $tracks ) !== $n ) { return null; }
+		$tsum = array_sum( $tracks );
+		if ( $tsum <= 0 || max( $tracks ) / max( 1e-6, min( $tracks ) ) < 1.15 ) { return null; }
+		$raw = array(); foreach ( $tracks as $tv ) { $raw[] = $tv / $tsum * 12; }
+		$fl = array_map( 'floor', $raw ); $rem = 12 - array_sum( $fl );
+		$order = array_keys( $raw ); usort( $order, function ( $x, $y ) use ( $raw, $fl ) { return ( $raw[ $y ] - $fl[ $y ] ) <=> ( $raw[ $x ] - $fl[ $x ] ); } );
+		foreach ( $order as $oi ) { if ( $rem <= 0 ) { break; } $fl[ $oi ]++; $rem--; }
+		$out = array(); foreach ( $fl as $v ) { $out[] = max( 1, min( 11, (int) $v ) ); }
+		return $out;
+	}
+
 	private static function layout_cols( $grid ) {
 		$children = self::el_children( $grid );
 		$n        = count( $children );
@@ -15245,11 +18168,25 @@ class FW_Site_Converter_Stitch {
 		// `w-[506px]`+`flex-1`). Without this layout_cols forces EVEN division (both 6/12), so a fixed-width
 		// visual + body band renders 50/50 (or an empty-looking half). Map each column to its share. (P3 fix.)
 		$px_fracs = self::layout_px_fractions( $children );
+		// A CONTENT-SIZED flex row (a stat pair with a hairline between, a label + value lockup): no cell declares a
+		// width and the measured tracks fill well under the row → the cells are AUTO width (the source's `flex`
+		// with no `w-*`), not an even 12-grid split that a nowrap label then overflows. JS twin: rowCols autoRow.
+		$content_sized = self::row_is_content_sized( $grid, $children );
 		foreach ( $children as $ci => $cell ) {
 			if ( ! ( $cell instanceof DOMElement ) ) { continue; }
 			// Drop a truly empty / decorative cell (no text AND no media).
 			$has_media = $cell->getElementsByTagName( 'img' )->length || $cell->getElementsByTagName( 'svg' )->length
-				|| $cell->getElementsByTagName( 'video' )->length || $cell->getElementsByTagName( 'iframe' )->length;
+				|| $cell->getElementsByTagName( 'video' )->length || $cell->getElementsByTagName( 'iframe' )->length
+				|| in_array( strtolower( $cell->tagName ), array( 'img', 'svg', 'video', 'iframe', 'picture' ), true ); // (the cell IS the media: a bare arrow svg beside a title)
+			// a DIVIDER cell in a content-sized row (an empty painted `w-px h-10` hairline between two stats) → an empty auto
+			// cell carrying the paint at its fixed size
+			if ( $content_sized && '' === self::text( $cell ) && ! $has_media ) {
+				$dv = self::divider_cell_size( $cell );
+				if ( $dv ) { $out[] = array( 'cls' => '', 'wResp' => null, 'paint' => self::panel_paint( $cell ), 'auto' => true, 'divider' => $dv ); continue; }
+			}
+			// an ABSOLUTE painted decor cell (a 1px "light river" hairline along the grid's bottom edge, a glow blob) takes no track:
+			// stashed for the row builder, which returns it beside the row as its own decor layer (the `paint` builder)
+			if ( '' === self::text( $cell ) && ! $has_media && self::is_decor_layer_block( $cell, strtolower( $cell->tagName ) ) ) { self::$row_decor[] = self::decor_layer_block( $cell ); continue; }
 			if ( '' === self::text( $cell ) && ! $has_media && self::is_painted_panel( $cell ) ) {
 				// A PAINTED EMPTY PANEL (the gradient "visual" half of a band card) → an empty column carrying the paint;
 				// the mapper renders it as an empty flexbox cell with that background. Geometry (track / min-height) rides too.
@@ -15258,7 +18195,23 @@ class FW_Site_Converter_Stitch {
 				$out[] = array_merge( array( 'cls' => '', 'wResp' => ( $pdesk >= 1 && $pdesk <= 12 ) ? array( 'desktop' => $pdesk ) : null, 'paint' => self::panel_paint( $cell ) ), $pgeo );
 				continue;
 			}
-			if ( '' === self::text( $cell ) && ! $has_media ) { continue; }
+			// a CSS-painted PHOTO cell (`bg-cover bg-center` + a url, a split band's image half) → a native media image covering
+			// the cell's box — it has no <img>, so it read as empty and the half vanished (a fixture from the feed)
+			$bgp = ( '' === self::text( $cell ) && ! $has_media ) ? self::bg_photo_url( $cell ) : '';
+			if ( '' !== $bgp ) { $out[] = array_merge( array( 'cls' => '', 'wResp' => $wResp, 'blocks' => array( self::bg_photo_block( $cell, $bgp ) ), 'stretch' => true ), self::cell_geometry( $cell ) ); continue; }
+			// a small PAINTED DISC / TILE (a 48px `rounded-full bg-white/15` icon holder whose glyph the capture did not keep) is a
+			// content-sized paint cell, like the divider — dropped, the header band lost its right side and the row collapsed
+			if ( '' === self::text( $cell ) && ! $has_media ) {
+				$dcs = (string) $cell->getAttribute( 'data-sc-cs' );
+				$dw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $dcs, $dwm ) ? (float) $dwm[1] : 0.0; $dh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $dcs, $dhm ) ? (float) $dhm[1] : 0.0;
+				$dsz = max( $dw, $dh );
+				if ( $dsz >= 20 && $dsz <= 96 && preg_match( '/(?:^|;)\s*background-color:\s*(?!rgba\([^)]*,\s*0\s*\)|transparent)[^;]+/i', $dcs ) ) {
+					$pp = self::panel_paint( $cell ); if ( '' === $pp['bg'] && '' === $pp['bgi'] ) { $pp['bg'] = preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $dcs, $pbm ) ? trim( $pbm[1] ) : ''; }
+					$out[] = array( 'cls' => '', 'wResp' => null, 'paint' => $pp, 'auto' => true, 'divider' => array( 'w' => $dw > 0 ? $dw : $dsz, 'h' => $dh > 0 ? $dh : $dsz, 'radius' => (string) self::sc_css( $cell, 'border-radius' ) ) );
+					continue;
+				}
+				continue;
+			}
 
 			// The cell's OWN padding (`px-8 md:px-16 lg:px-24 pt-32 pb-20`) — carried onto the decomposed
 			// column so the gutter that positions the hero text / media inside its track survives. Was dropped
@@ -15272,11 +18225,15 @@ class FW_Site_Converter_Stitch {
 			$desk     = self::col_span( self::cls( $cell ) );
 			if ( $desk >= 1 && $declared >= 2 ) { $desk = max( 1, min( 12, (int) round( $desk * 12 / $declared ) ) ); }
 			if ( $desk < 1 && isset( $px_fracs[ $ci ] ) ) { $desk = $px_fracs[ $ci ]; } // arbitrary w-[Npx] share
+			// UNEQUAL MEASURED tracks (`grid-cols-[1.2fr_.8fr]` → 796px / 531px) → each cell's 12-grid share from its track
+			// (7 / 5), never an even split; the shares are balanced to 12 by largest remainder.
+			if ( $desk < 1 ) { $ts = self::track_shares( $tracks, $n ); if ( isset( $ts[ $ci ] ) ) { $desk = $ts[ $ci ]; } }
 			if ( $desk < 1 ) { $desk = $grid_n > 0 ? (int) round( 12 / $grid_n ) : 0; }
 			$wResp = ( $desk >= 1 && $desk <= 12 ) ? array( 'desktop' => $desk ) : null;
 			// The cell's exact grid TRACK (px) + its own min-height / vertical centring — carried on every
 			// column shape below so the mapper can keep an unequal split and a fixed-height centred card.
 			$geo = self::cell_geometry( $cell );
+			if ( $content_sized ) { $wResp = null; $geo['auto'] = true; unset( $geo['track'] ); } // an auto-width cell in a content-sized row
 			if ( isset( $tracks[ $ci ] ) ) { $geo['track'] = $tracks[ $ci ]; }
 			// The cell's OWN card skin (the cell element itself — a rounded box with a fill / gradient / border),
 			// carried on EVERY cell shape below, not only a decomposed content column: an image tile column
@@ -15307,9 +18264,20 @@ class FW_Site_Converter_Stitch {
 				else { self::collect_blocks( $cell, $cblocks, $rules ); }
 				$cblocks = array_values( array_filter( $cblocks ) );
 				// A TEXT-LEAF cell (a footer's brand line: a div holding only text) has no children to walk — it IS the block.
-				if ( ! $cblocks && ! self::el_children( $cell ) && '' !== trim( self::text( $cell ) ) ) {
-					$ltxt = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $cell ) ) );
-					$cblocks[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $cell ), 'cs' => (string) $cell->getAttribute( 'data-sc-cs' ), 'text' => $ltxt, 'html' => '<p>' . esc_html( $ltxt ) . '</p>' );
+				if ( ! $cblocks && '' !== trim( self::text( $cell ) ) ) {
+					// …or a cell whose only child is an INLINE leaf (a `div > span.pill` tag in a card's header band): the walk skipped the
+					// span, the cell came out empty and the whole band fell to a code block (a fixture from the feed) — the leaf is the block
+					$leaf = $cell; $lk = self::el_children( $cell );
+					while ( 1 === count( $lk ) && '' === trim( preg_replace( '/\s+/u', ' ', implode( '', array_map( function ( $tn ) { return XML_TEXT_NODE === $tn->nodeType ? $tn->nodeValue : ''; }, iterator_to_array( $leaf->childNodes ) ) ) ) ) ) { $leaf = $lk[0]; $lk = self::el_children( $leaf ); }
+					$lb = ( $leaf !== $cell && self::is_badge( $leaf ) ) ? self::claim_element( $leaf, $rules ) : null;
+					// the cell IS a heading (an accordion-style row's `h3` beside its arrow) → the heading block, never a text leaf
+					if ( ! is_array( $lb ) && preg_match( '/^h[1-6]$/', strtolower( $leaf->tagName ) ) ) { foreach ( self::recognizers() as $lr ) { if ( 'heading' === $lr['id'] && call_user_func( $lr['match'], $leaf, strtolower( $leaf->tagName ), $rules ) ) { $lb = call_user_func( $lr['build'], $leaf, strtolower( $leaf->tagName ), $rules ); break; } } }
+					if ( ! is_array( $lb ) ) { foreach ( self::recognizers() as $lr ) { if ( in_array( $lr['id'], array( 'badge', 'pill' ), true ) && call_user_func( $lr['match'], $leaf, strtolower( $leaf->tagName ), $rules ) ) { $lb = call_user_func( $lr['build'], $leaf, strtolower( $leaf->tagName ), $rules ); break; } } }
+					if ( is_array( $lb ) ) { $cblocks = isset( $lb['t'] ) ? array( $lb ) : $lb; }
+					else {
+						$ltxt = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $leaf ) ) );
+						$cblocks[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $leaf ), 'cs' => (string) $leaf->getAttribute( 'data-sc-cs' ), 'text' => $ltxt, 'html' => self::leaf_text_html( $leaf, $ltxt ), 'linkCs' => self::leaf_link_cs( $leaf ) );
+					}
 				}
 				if ( $cblocks ) {
 					$col = array_merge( array( 'cls' => '', 'wResp' => $wResp, 'maxw' => $cell_maxw, 'blocks' => $cblocks ), $geo );
@@ -15324,7 +18292,36 @@ class FW_Site_Converter_Stitch {
 					// (rowBox) — not on the cell too. Its padding lives on the row's cells as well.
 					$as_row = ( 1 === count( $cblocks ) && ( $cblocks[0]['t'] ?? '' ) === 'row' && isset( $cblocks[0]['cols'] ) );
 					if ( $as_row ) { unset( $col['pad'] ); }
-					if ( $ccard && ! $as_row ) { $col['cardBox'] = $ccard; }
+					// A skin read one wrapper DOWN (the cell is a bare grid item holding one sculpted card) that the cell's single
+					// block already reproduces (a panel with its own box, a mirrored card) is not the cell's: painting it on the
+					// column too doubled the fill / inset shadow.
+					// (…and a BUTTON's own skin — the orb read one wrapper down is the button, which wears it itself: painting it on the
+					// column drew a 531px circle behind a 224px orb)
+					$skin_below = ( $ccard && ! self::read_card_skin( $cell ) && 1 === count( $cblocks ) && in_array( (string) ( $cblocks[0]['t'] ?? '' ), array( 'panel', 'code', 'card', 'mirror', 'button' ), true ) );
+					if ( $ccard && ! $as_row && ! $skin_below ) {
+						$col['cardBox'] = $ccard;
+						// the cell IS the text leaf (a pill, a numeral disc): the column wears the skin — the leaf's own copy of the stamp
+						// would paint it AGAIN as the text block's box (two nested pills, 32px of inset, the label wrapped)
+						if ( 1 === count( $cblocks ) && 'text' === (string) ( $cblocks[0]['t'] ?? '' ) && (string) ( $cblocks[0]['cs'] ?? '' ) === (string) $cell->getAttribute( 'data-sc-cs' ) ) {
+							$col['blocks'][0]['cs'] = preg_replace( '/(?:^|;)\s*(?:background[^;]*|border[^;]*|padding[^;]*|box-shadow[^;]*|width:[^;]*|height:[^;]*)(?=;|$)/i', '', (string) $cblocks[0]['cs'] );
+							$col['blocks'][0]['cls'] = '';
+							// a ONE-LINE leaf (the stamp's height fits one line of its leading) stays one line: the fallback font is a touch
+							// wider than the source's and wrapped "60 min" inside its 73px pill
+							$lcs = (string) $cell->getAttribute( 'data-sc-cs' );
+							$llh = preg_match( '/(?:^|;)\s*line-height:\s*([0-9.]+)px/i', $lcs, $lhm ) ? (float) $lhm[1] : 0.0; $lh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $lcs, $hhm ) ? (float) $hhm[1] : 0.0;
+							$lpt = preg_match( '/(?:^|;)\s*padding(?:-top)?:\s*([0-9.]+)px/i', $lcs, $ptm ) ? (float) $ptm[1] : 0.0;
+							if ( $llh > 0 && $lh > 0 && $lh - 2 * $lpt < 1.6 * $llh && mb_strlen( trim( self::text( $cell ) ) ) <= 24 ) { $col['nowrapText'] = true; }
+						}
+					}
+					// a FIXED SMALL BOX cell (a 52×52 `rounded-full` numeral disc at the head of a process row): the skin is the disc's
+					// own box, not the 80px track's — painted on the column it became an 83×25 ellipse (a fixture from the feed)
+					if ( $ccard && ! $as_row && ! $skin_below && mb_strlen( trim( self::text( $cell ) ) ) <= 4 ) {
+						$fcs = (string) $cell->getAttribute( 'data-sc-cs' );
+						$fw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $fcs, $fwm ) ? (float) $fwm[1] : 0.0; $fh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $fcs, $fhm ) ? (float) $fhm[1] : 0.0;
+						// a ROUND box (`rounded-full`: radius 50% / ≥ half its height) with no stamped width is as wide as it is tall
+						if ( $fw <= 0 && $fh > 0 && preg_match( '/(?:^|;)\s*border-radius:\s*(50%|9999px|[0-9.]+px)/i', $fcs, $frm ) && ( '50%' === $frm[1] || '9999px' === $frm[1] || (float) $frm[1] >= $fh / 2 ) ) { $fw = $fh; }
+						if ( $fw >= 20 && $fw <= 96 && $fh >= 20 && $fh <= 96 ) { $col['fixedBox'] = array( 'w' => $fw, 'h' => $fh ); }
+					}
 					$out[] = $col;
 					continue;
 				}
@@ -15389,8 +18386,11 @@ class FW_Site_Converter_Stitch {
 				}
 			}
 
+			// a MEDIA cell that a native recognizer owns (an overlapping avatar stack, a caption tile) → its native block, never the
+			// verbatim mirror (the faces came out as four code blocks — a finding from the feed)
+			if ( self::is_avatar_group( $cell ) ) { $ab = self::avatar_group_build( $cell ); if ( is_array( $ab ) && $ab ) { $out[] = array_merge( array( 'cls' => '', 'wResp' => $wResp, 'blocks' => isset( $ab['t'] ) ? array( $ab ) : $ab ), $geo ); continue; } }
 			$doc = $cell->ownerDocument;
-			$v   = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $cell ) ) ) : '';
+			$v   = $doc ? trim( (string) $doc->saveHTML( $cell ) ) : ''; // the stamps STAY: the mapper's structural mirror reads the measured facts (a row's hairline, a value's ink); n_code strips them from anything stored verbatim
 			if ( '' === $v ) { continue; }
 			$vcell = array_merge( array( 'cls' => '', 'wResp' => $wResp, 'html' => '<div class="sc-tw">' . $v . '</div>' ), $geo );
 			if ( $own_card ) { $vcell['cardBox'] = $own_card; }
@@ -15447,6 +18447,9 @@ class FW_Site_Converter_Stitch {
 				if ( $len > $bestLen ) { $bestLen = $len; $best = $k; }
 			}
 			if ( ! ( $best instanceof DOMElement ) ) { break; }
+			// only a WRAPPER is descended (the child holds nearly all the text) — never one card of a grid of siblings (its skin
+			// would box the whole grid)
+			if ( $bestLen < 0.8 * mb_strlen( self::text( $node ) ) ) { break; }
 			$node = $best;
 		}
 		return null;
@@ -15470,6 +18473,65 @@ class FW_Site_Converter_Stitch {
 		return array( 'bg' => '', 'gradient' => '', 'radius' => '', 'borderW' => $get( 'border-' . $side . '-width' ), 'borderColor' => $get( 'border-' . $side . '-color' ), 'padding' => '', 'backdrop' => '', 'shadow' => '', 'hover' => array(), 'clip' => false, 'sides' => $side );
 	}
 
+	/**
+	 * EVERY captured state of an element → the preset's Custom CSS ({{SELECTOR}}-scoped): its ::before / ::after layers
+	 * (a glow, a sheen, a hairline), the state of each on hover, its :hover / :active / :focus / :focus-visible /
+	 * :focus-within rules, a DESCENDANT revealed on hover (`.card:hover .cta`) and the @keyframes a layer animates
+	 * with. Read from the capture's data-sc-hover stamp (`state{decls}|state{decls}…`). The native fields keep what they
+	 * can (the hover fill / border / shadow), so those channels are skipped for the self-hover; everything else rides
+	 * verbatim, sanitised. A preset owns the whole look, so every element wearing it renders the same on every page.
+	 * $skip_pseudo: the element's ::before / ::after already ride another carrier (data-sc-decor-pseudo). JS: stateCss.
+	 */
+	private static function state_css( $hov, $kf = '', $skip_pseudo = false, $skip_self = array() ) {
+		$hov = (string) $hov; if ( '' === trim( $hov ) ) { return ''; }
+		$rules = array(); $needs_rel = false;
+		$clean = function ( $body, $drop ) {
+			$pd = array();
+			foreach ( explode( ';', (string) $body ) as $decl ) {
+				$cp = strpos( $decl, ':' ); if ( false === $cp ) { continue; }
+				$k = strtolower( trim( substr( $decl, 0, $cp ) ) ); $v = trim( substr( $decl, $cp + 1 ) );
+				if ( '' === $v || 'initial' === $v || 0 === strpos( $k, '--' ) || in_array( $k, $drop, true ) ) { continue; }
+				if ( ! preg_match( '/^[a-z0-9()%.,\s#\/"\'-]+$/i', $v ) || preg_match( '/expression\(|javascript:|url\(/i', $v ) ) { continue; }
+				if ( 'content' === $k ) { $v = '""'; }
+				$pd[ $k ] = $v;
+			}
+			return $pd;
+		};
+		$sel_of = array(
+			'before' => '{{SELECTOR}}::before', 'after' => '{{SELECTOR}}::after',
+			'hover-self' => '{{SELECTOR}}:hover', 'hover-before' => '{{SELECTOR}}:hover::before', 'hover-after' => '{{SELECTOR}}:hover::after',
+			'active' => '{{SELECTOR}}:active', 'focus' => '{{SELECTOR}}:focus', 'focus-visible' => '{{SELECTOR}}:focus-visible', 'focus-within' => '{{SELECTOR}}:focus-within',
+			'active-before' => '{{SELECTOR}}:active::before', 'active-after' => '{{SELECTOR}}:active::after',
+		);
+		$tr_drop = array( 'transition-property', 'transition-duration', 'transition-timing-function' );
+		foreach ( explode( '|', $hov ) as $chunk ) {
+			if ( ! preg_match( '/^([a-z-]+)(?:\{([^{}]*)\})?\{([^{}]*)\}$/i', trim( $chunk ), $m ) ) { continue; }
+			$state = strtolower( $m[1] ); $desc = trim( (string) $m[2] ); $body = $m[3];
+			if ( 'hover-child' === $state ) {
+				// a descendant rule: `hover-child{<relative selector>}{decls}` → {{SELECTOR}}:hover <relative>
+				if ( '' === $desc || ! preg_match( '/^[a-z0-9_.#>+~:\[\]="\'\s,-]{1,120}$/i', $desc ) ) { continue; }
+				$pd = $clean( $body, $tr_drop ); if ( ! $pd ) { continue; }
+				$rules[] = '{{SELECTOR}}:hover ' . $desc . ' { ' . implode( '; ', array_map( function ( $k, $v ) { return $k . ':' . $v; }, array_keys( $pd ), $pd ) ) . '; }';
+				continue;
+			}
+			if ( ! isset( $sel_of[ $state ] ) ) { continue; }
+			if ( $skip_pseudo && in_array( $state, array( 'before', 'after', 'hover-before', 'hover-after', 'active-before', 'active-after' ), true ) ) { continue; }
+			$drop = $tr_drop;
+			if ( 'hover-self' === $state ) { $drop = array_merge( $drop, (array) $skip_self ); }
+			$pd = $clean( $body, $drop ); if ( ! $pd ) { continue; }
+			if ( in_array( $state, array( 'before', 'after' ), true ) ) {
+				if ( isset( $pd['position'] ) && 'absolute' === strtolower( $pd['position'] ) ) { $needs_rel = true; }
+				if ( ! isset( $pd['pointer-events'] ) ) { $pd['pointer-events'] = 'none'; }
+			}
+			$rules[] = $sel_of[ $state ] . ' { ' . implode( '; ', array_map( function ( $k, $v ) { return $k . ':' . $v; }, array_keys( $pd ), $pd ) ) . '; }';
+		}
+		if ( ! $rules ) { return ''; }
+		if ( $needs_rel ) { array_unshift( $rules, '{{SELECTOR}} { position: relative; overflow: hidden; isolation: isolate; }' ); }
+		$kf = trim( (string) $kf );
+		if ( '' !== $kf && false !== stripos( $kf, '@keyframes' ) && ! preg_match( '/<\/|expression\(|javascript:|url\(/i', $kf ) ) { $rules[] = $kf; }
+		return implode( "\n", $rules );
+	}
+
 	private static function read_card_skin( $node ) {
 		if ( ! ( $node instanceof DOMElement ) ) { return null; }
 		$cs  = (string) $node->getAttribute( 'data-sc-cs' );
@@ -15483,6 +18545,17 @@ class FW_Site_Converter_Stitch {
 		if ( preg_match( '/^[0-9.]+px(?:\s+[0-9.]+px){0,3}$/', (string) $ps ) ) { $pad = trim( $ps ); }
 		if ( '' === $pad ) { $pad = $get( 'padding-top' ); }
 		if ( ! preg_match( '/^[0-9.]+px(?:\s+[0-9.]+px){0,3}$/', (string) $pad ) ) { if ( preg_match( '/^([0-9.]+px)/', (string) $ps, $pm ) ) { $pad = $pm[1]; } }
+		// A card whose inset lives on a SOLE unskinned inner wrapper (`<article class="project"><div class="inner">`, padding 22px on
+		// .inner): that padding IS the card's inset (the wrapper is flattened away). Only a lone child with no skin of its own.
+		if ( '' === (string) $pad || '0px' === (string) $pad ) {
+			// (absolutely positioned decor children — a blurred glow blob — do not count: the in-flow wrapper is the sole one)
+			$ik = array_values( array_filter( self::el_children( $node ), function ( $k ) { return ! preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', (string) $k->getAttribute( 'data-sc-cs' ) ); } ) );
+			if ( 1 === count( $ik ) ) {
+				$ics = (string) $ik[0]->getAttribute( 'data-sc-cs' );
+				$ihas = preg_match( '/(?:^|;)\s*background-color:\s*(?!rgba\([^)]*,\s*0\s*\))(?!transparent)/i', $ics ) || preg_match( '/(?:^|;)\s*border-top-width:\s*[1-9]/i', $ics ) || preg_match( '/(?:^|;)\s*box-shadow:\s*(?!none)/i', $ics );
+				if ( ! $ihas && preg_match( '/(?:^|;)\s*padding:\s*([0-9.]+px(?:\s+[0-9.]+px){0,3})\s*(?:;|$)/i', $ics, $ipm ) && preg_match( '/[1-9]/', $ipm[1] ) ) { $pad = $ipm[1]; }
+			}
+		}
 		if ( ! preg_match( '/^[0-9.]+px(?:\s+[0-9.]+px){0,3}$/', (string) $pad ) && preg_match( '/(?:^|\s)p-(\d{1,2})(?:\s|$)/', $cls, $pc ) ) { $pad = ( (int) $pc[1] * 4 ) . 'px'; }
 		$has_fill   = $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*,\s*0\s*\)/', $bg );
 		// GRADIENT FILL — an AI card is frequently filled with a `linear/radial-gradient()` (a debossed/glass panel:
@@ -15493,7 +18566,13 @@ class FW_Site_Converter_Stitch {
 		$grad = ( '' !== $bgi && false !== stripos( $bgi, 'gradient' ) && false === stripos( $bgi, 'url(' ) ) ? trim( $bgi ) : '';
 		$has_border = $bw !== '' && ! in_array( $bw, array( '0', '0px' ), true ) && $bc !== '' && ! preg_match( '/rgba?\([^)]*,\s*0\s*\)/', $bc );
 		$rounded    = ( $radius !== '' && $radius !== '0px' ) || (bool) preg_match( '/\brounded(?:-[a-z0-9]+)?\b/', $cls );
-		if ( ! $rounded || ( ! $has_fill && '' === $grad && ! $has_border ) ) { return null; }
+		// a SQUARE card (radius 0) with a fill / border AND a real inset is a card too (a sharp-cornered console design). JS: cardSkinOf / boxSkinOf
+		$padded = preg_match( '/^([0-9.]+)px/', (string) $pad, $ppm ) && (float) $ppm[1] >= 8;
+		if ( ! $padded ) { $pd4 = self::el_padding( $node ); foreach ( array( 'top', 'right', 'bottom', 'left' ) as $side ) { if ( (float) ( $pd4['base'][ $side ] ?? 0 ) >= 8 ) { $padded = true; break; } } } // (`px-6` = "0px 24px": a side inset is an inset — a card's filled header band lost its fill)
+		$bbw = $get( 'border-bottom-width' );
+		$sq_box = ( $has_border && '' !== $bbw && ! in_array( $bbw, array( '0', '0px' ), true ) ) || ( '' !== $get( 'box-shadow' ) && 'none' !== strtolower( $get( 'box-shadow' ) ) ); // a square box with a FULL border (top + bottom — a one-sided hairline is an edge skin) or a shadow is a box even unpadded (a terminal window whose inset lives on its bars)
+		$sq_ok = $sq_box || ( $padded && ( $has_fill || "" !== $grad ) ); // square: a padded FILL, a full border, or a shadow — a lone one-sided hairline + inset is an edge skin, not a card
+		if ( ( ! $has_fill && "" === $grad && ! $has_border ) || ( ! $rounded && ! $sq_ok ) ) { return null; }
 		// HOVER state — the card's `hover:bg-*` / `hover:border-*` / `hover:shadow-*` (e.g. a glass card's
 		// `hover:bg-slate-800/80`) compiled via the Tailwind engine, so the source's card hover survives onto
 		// the Box Preset's hover state (the register path previously dropped it). Mirrors build_box_presets().
@@ -15563,6 +18642,11 @@ class FW_Site_Converter_Stitch {
 			'shadow'      => $shadow,
 			'hover'       => $hover,
 			'clip'        => ( (bool) preg_match( '/^(hidden|clip)$/i', self::css_or_decl( $node, 'overflow' ) ) ), // the card clips its content (stamped by capture >= 1.10.82)
+			// EVERY captured state (data-sc-hover: before / after / hover / active / focus / a hover-revealed descendant) + its
+			// @keyframes → the preset's Custom CSS (state_css); a decor carrier already owning the ::before / ::after is respected.
+			'hov'         => (string) $node->getAttribute( 'data-sc-hover' ),
+			'kf'          => (string) $node->getAttribute( 'data-sc-keyframes' ),
+			'pseudoOwned' => $node->hasAttribute( 'data-sc-decor-pseudo' ),
 		);
 	}
 
@@ -15675,10 +18759,18 @@ class FW_Site_Converter_Stitch {
 		if ( '' !== $mk && 'none' !== strtolower( $mk ) && false === stripos( $mk, 'url(' ) && preg_match( $safe, $mk ) ) { $d[] = '-webkit-mask-image:' . $mk; $d[] = 'mask-image:' . $mk; }
 		$os = $get( 'outline-style' ); $ow = $get( 'outline-width' ); $oc = $get( 'outline-color' );
 		if ( '' !== $os && 'none' !== strtolower( $os ) && '' !== $ow && '0px' !== $ow && preg_match( $safe, $ow . $oc ) ) { $d[] = 'outline:' . $ow . ' ' . $os . ( '' !== $oc ? ' ' . $oc : '' ); $oo = $get( 'outline-offset' ); if ( '' !== $oo && '0px' !== $oo && preg_match( '/^-?[0-9.]+px$/', $oo ) ) { $d[] = 'outline-offset:' . $oo; } }
-		$tw = $get( 'border-top-width' );
+		$tw = $get( 'border-top-width' ); $tc = $get( 'border-top-color' );
 		foreach ( array( 'left', 'right' ) as $side ) {
 			$w = $get( 'border-' . $side . '-width' ); $st = $get( 'border-' . $side . '-style' ); $c = $get( 'border-' . $side . '-color' );
 			if ( '' !== $w && '0px' !== $w && $w !== $tw && '' !== $st && 'none' !== strtolower( $st ) && preg_match( $safe, $w . $st . $c ) ) { $d[] = 'border-' . $side . ':' . $w . ' ' . $st . ( '' !== $c ? ' ' . $c : '' ); }
+		}
+		// an ACCENT edge (`border-2 border-t-[accent]`: one side in another colour than the rest) — the preset's one colour is the
+		// top's, so the other sides carry their own; the whole card had gone red (a fixture from the feed)
+		if ( '' !== $tw && '0px' !== $tw && '' !== $tc ) {
+			foreach ( array( 'right', 'bottom', 'left' ) as $side ) {
+				$w = $get( 'border-' . $side . '-width' ); $c = $get( 'border-' . $side . '-color' );
+				if ( '' !== $w && '0px' !== $w && $w === $tw && '' !== $c && strtolower( preg_replace( '/\s+/', '', $c ) ) !== strtolower( preg_replace( '/\s+/', '', $tc ) ) && preg_match( $safe, $c ) ) { $d[] = 'border-' . $side . '-color:' . $c . ' !important'; }
+			}
 		}
 		$bi = $get( 'border-image-source' );
 		if ( '' !== $bi && 'none' !== strtolower( $bi ) && false === stripos( $bi, 'url(' ) && preg_match( $safe, $bi ) ) { $bs = $get( 'border-image-slice' ); $d[] = 'border-image:' . $bi . ' ' . ( '' !== $bs && preg_match( '/^[0-9.%\s]+(?:fill)?$/', $bs ) ? $bs : '1' ); }
@@ -15706,7 +18798,25 @@ class FW_Site_Converter_Stitch {
 		$claims = function ( $el ) { return null !== self::claim_element( $el, self::rules_get() ); };
 		// Only the cell ITSELF being claimable counts: a cell whose children are merely claimable one by one (a label span +
 		// a value span) is kept whole by the verbatim mirror — walking it would salvage the unclaimed spans as strays.
-		return $claims( $cell );
+		if ( $claims( $cell ) ) { return true; }
+		// …or a cell that IS one (wrapped) BUTTON — a `flex items-center justify-center` cell around a CTA orb: the button
+		// recognizer builds it natively (its stacked label, its box); the verbatim mirror split it into two stray text lines.
+		$sole = $cell; $sk = self::el_children( $sole );
+		while ( 1 === count( $sk ) && ! in_array( strtolower( $sk[0]->tagName ), array( 'a', 'button' ), true ) && '' !== trim( self::text( $sk[0] ) ) ) { $sole = $sk[0]; $sk = self::el_children( $sole ); }
+		if ( 1 === count( $sk ) && in_array( strtolower( $sk[0]->tagName ), array( 'a', 'button' ), true ) && trim( self::text( $sk[0] ) ) === trim( self::text( $cell ) ) && ( self::is_button( $sk[0] ) || self::cs_is_button( $sk[0] ) ) ) { return true; }
+		// …or a cell that is ONLY buttons (a CTA card's `flex flex-col gap-4` stack of two skinned links): every element child a
+		// button-styled <a>/<button> and all the cell's text theirs — the verbatim mirror turned them into two bare text lines
+		if ( count( $sk ) >= 1 && count( $sk ) <= 4 ) {
+			$all_btn = true; $btxt = '';
+			foreach ( $sk as $bk ) { if ( ! in_array( strtolower( $bk->tagName ), array( 'a', 'button' ), true ) || ! ( self::is_button( $bk ) || self::cs_is_button( $bk ) ) ) { $all_btn = false; break; } $btxt .= ' ' . trim( self::text( $bk ) ); }
+			if ( $all_btn && preg_replace( '/\s+/', '', $btxt ) === preg_replace( '/\s+/', '', self::text( $cell ) ) ) { return true; }
+		}
+		// …or a cell whose ONLY child is a PILL / badge (a card header band's `div > span.rounded-full` tag): the badge recognizer
+		// builds it natively — the verbatim mirror left the band's left cell as raw markup and the panel fell to a code block
+		if ( 1 === count( $kids ) && self::is_badge( $kids[0] ) && trim( self::text( $kids[0] ) ) === trim( self::text( $cell ) ) ) { return true; }
+		// …or a skinned PANEL (a glass card of a label + a bank of progress bars, no heading / long prose): the panel recognizer
+		// builds it natively (its bars → the progress widget); the verbatim mirror rendered the bars as raw markup.
+		return self::is_panel( $cell ) && mb_strlen( trim( self::text( $cell ) ) ) >= 12;
 	}
 
 	/**
@@ -15771,6 +18881,22 @@ class FW_Site_Converter_Stitch {
 			$node = $node->parentNode instanceof DOMElement ? $node->parentNode : null;
 		}
 		$decls = array();
+		// The shell's SIZE: a `w-full max-w-[880px] aspect-[.95]` shell fills its track at its aspect — the media_video's default
+		// 600px cap and the clip's own ratio shrank a 700×733 organic shell to 578×325. Read from the video's wrapper chain.
+		$size_w = ''; $size_ar = ''; $ar_rule = '';
+		for ( $sn = $video instanceof DOMElement ? $video->parentNode : null, $sg = 0; $sn instanceof DOMElement && $sg < 4; $sn = $sn->parentNode, $sg++ ) {
+			$scs = (string) $sn->getAttribute( 'data-sc-cs' ); $scl = ' ' . strtolower( self::cls( $sn ) ) . ' ';
+			if ( '' === $size_ar && preg_match( '/(?:^|;)\s*aspect-ratio:\s*([0-9.]+(?:\s*\/\s*[0-9.]+)?)/i', $scs, $am ) ) { $size_ar = trim( $am[1] ); }
+			if ( '' === $size_ar && preg_match( '/\saspect-\[([0-9.]+)(?:\/([0-9.]+))?\]/', $scl, $am ) ) { $size_ar = $am[1] . ( isset( $am[2] ) && '' !== $am[2] ? ' / ' . $am[2] : '' ); }
+			if ( '' === $size_w && preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/i', $scs, $wm ) && (float) $wm[1] >= 200 ) { $size_w = (int) round( (float) $wm[1] ) . 'px'; }
+			if ( $sn === $cell ) { break; }
+		}
+		if ( '' !== $size_ar ) {
+			// the media_video sizes its box by a padding-top spacer (--vid-aspect = height / width); the inline 600px cap yields to the shell's
+			$parts = array_map( 'floatval', preg_split( '/\s*\/\s*/', $size_ar ) ); $arw = $parts[0] > 0 ? $parts[0] : 1; $arh = isset( $parts[1] ) && $parts[1] > 0 ? $parts[1] : 1;
+			$ar_rule = 'selector.video-ratiobox[data-ratio],selector .video-ratiobox[data-ratio]{--vid-aspect:' . round( $arh / $arw * 100, 2 ) . '%;}'; // (outranks the box's own [data-ratio] rule)
+			$decls[] = 'width:100%'; $decls[] = 'max-width:' . ( '' !== $size_w ? $size_w : '100%' ) . ' !important';
+		} elseif ( '' !== $size_w ) { $decls[] = 'width:100%'; $decls[] = 'max-width:' . $size_w . ' !important'; }
 		if ( '' !== $radius ) { $decls[] = 'border-radius:' . $radius; $decls[] = 'overflow:hidden'; }
 		if ( '' !== $clip )   { $decls[] = 'clip-path:' . $clip; }
 		if ( '' !== $mask )   { $decls[] = '-webkit-mask-image:' . $mask; $decls[] = 'mask-image:' . $mask; }
@@ -15807,7 +18933,14 @@ class FW_Site_Converter_Stitch {
 			$fcomposed = self::tw_filter_from_classes( $video instanceof DOMElement ? self::cls( $video ) : '' );
 			if ( '' !== $fcomposed ) { $decls[] = 'filter:' . $fcomposed; }
 		}
-		return $decls ? 'selector{' . implode( ';', $decls ) . ';}' : '';
+		// the shell's own RUNNING animation (a drifting / scroll-grown hero shell: data-sc-anim + its keyframes) rides the shape
+		$anim = '';
+		for ( $w = $video instanceof DOMElement ? $video : null, $g = 0; $w instanceof DOMElement && $g < 4; $w = $w->parentNode, $g++ ) {
+			$la = self::loop_anim_of( $w ); if ( $la ) { $anim = 'selector{' . trim( $la['css'], '; ' ) . ';}' . ( '' !== $la['kf'] ? "
+" . $la['kf'] : '' ); break; }
+			if ( $w === $cell ) { break; }
+		}
+		return ( $decls ? 'selector{' . implode( ';', $decls ) . ';}' : '' ) . $ar_rule . $anim;
 	}
 
 	/** Compose a resolved CSS `filter` value from Tailwind filter UTILITY classes (`contrast-125` → contrast(1.25),
@@ -16048,20 +19181,39 @@ class FW_Site_Converter_Stitch {
 	 */
 	private static function is_marquee_strip( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
-		$has_anim = function ( $c ) { return (bool) preg_match( '/\banimate-(marquee|scroll(?:-left|-right)?)\b/', $c ); };
+		// whole class only: `\b` after `animate-scroll` matched `animate-scroll-fade-up` (a scroll-REVEAL utility) and a section's
+		// centred heading block became a full-bleed marquee code block on three sites in the feed
+		$has_anim = function ( $c ) { return (bool) preg_match( '/(?:^|\s)animate-(marquee|scroll(?:-left|-right|-x)?)(?=\s|$)/', $c ); };
 		$cls = ' ' . strtolower( self::cls( $el ) ) . ' ';
 		if ( $has_anim( $cls ) ) { return true; }
 		$kids_all = array();
 		foreach ( $el->childNodes as $k ) { if ( $k instanceof DOMElement ) { $kids_all[] = $k; } }
 		if ( 1 === count( $kids_all ) && $has_anim( ' ' . strtolower( self::cls( $kids_all[0] ) ) . ' ' ) ) { return true; }
+		// MEASURED (class-agnostic): a nowrap flex ROW track (or its sole child) whose RUNNING animation slides it on X —
+		// `.marquee{animation:marquee 20s linear infinite}` with `@keyframes marquee{to{transform:translateX(-50%)}}` — is a
+		// marquee whatever the class is called. It fell to a wrapping row of giant text blocks before (a finding filed on
+		// a "data strip" that was a non-section wrapper, and here on a `<section>` band).
+		$slides_x = function ( $n ) {
+			if ( ! ( $n instanceof DOMElement ) ) { return false; }
+			$an = (string) $n->getAttribute( 'data-sc-anim' ); $kf = (string) $n->getAttribute( 'data-sc-keyframes' );
+			if ( ! preg_match( '/animation:\s*[a-z0-9_-]+\s+[0-9.]+m?s[^;]*infinite/i', $an ) ) { return false; }
+			if ( '' !== $kf && ! preg_match( '/translate(?:X|3d)?\(\s*-?[0-9.]+(?:%|px|vw)/i', $kf ) ) { return false; }
+			$ncs = (string) $n->getAttribute( 'data-sc-cs' );
+			return (bool) preg_match( '/(?:^|;)\s*white-space:\s*nowrap/i', $ncs ) && (bool) preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $ncs ) && ! preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $ncs );
+		};
+		if ( count( $kids_all ) >= 2 && $slides_x( $el ) ) { return true; }
+		if ( 1 === count( $kids_all ) && $kids_all[0]->getElementsByTagName( '*' )->length >= 2 && $slides_x( $kids_all[0] ) ) { return true; }
 		$ox = self::sc_css( $el, 'overflow-x' );
 		if ( 'auto' === $ox || 'scroll' === $ox || strpos( $cls, 'overflow-x-auto' ) !== false || strpos( $cls, 'overflow-x-scroll' ) !== false ) {
 			$kids = array();
 			foreach ( $el->childNodes as $k ) {
 				if ( $k instanceof DOMElement && ! in_array( strtolower( $k->tagName ), array( 'script', 'style', 'template' ), true ) ) { $kids[] = $k; }
 			}
-			$shrink0 = 0;
-			foreach ( $kids as $k ) { if ( preg_match( '/\b(?:flex-)?shrink-0\b/', strtolower( self::cls( $k ) ) ) ) { $shrink0++; } }
+			$shrink0 = 0; $carded = 0;
+			foreach ( $kids as $k ) { if ( preg_match( '/\b(?:flex-)?shrink-0\b/', strtolower( self::cls( $k ) ) ) ) { $shrink0++; } foreach ( array( 'h2', 'h3', 'h4', 'h5', 'p' ) as $ht ) { if ( $k->getElementsByTagName( $ht )->length ) { $carded++; break; } } }
+			// a scroller of CARDS (each with a heading / copy: a product reel with names and prices) is a content row that scrolls,
+			// not a marquee of glyphs — it was frozen as a marquee code block (a finding from the feed); the scroller recognizer takes it
+			if ( $carded >= (int) ceil( count( $kids ) / 2 ) ) { return false; }
 			if ( count( $kids ) >= 4 && $shrink0 >= (int) ceil( count( $kids ) / 2 ) ) { return true; }
 		}
 		return false;
@@ -16140,7 +19292,7 @@ class FW_Site_Converter_Stitch {
 		foreach ( $kids as $k ) { if ( ! in_array( strtolower( $k->tagName ), array( 'span', 'svg', 'i', 'em', 'strong', 'b', 'a', 'small', 'br' ), true ) ) { $inline_only = false; break; } }
 		if ( $inline_only ) { return false; }
 		$content = false;
-		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video', 'iframe', 'picture', 'ul', 'ol' ) as $t ) { if ( $el->getElementsByTagName( $t )->length > 0 ) { $content = true; break; } }
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'img', 'video', 'iframe', 'picture', 'ul', 'ol', 'form', 'textarea', 'table' ) as $t ) { if ( $el->getElementsByTagName( $t )->length > 0 ) { $content = true; break; } } // (+ a FORM card: a white rounded contact-form card lost its skin — a fixture from the feed)
 		if ( ! $content ) {
 			// No prose tags: BLOCK children that carry text (a stat card's label div + value div) still make content.
 			$txt_blocks = 0;
@@ -16149,7 +19301,7 @@ class FW_Site_Converter_Stitch {
 		}
 		// Not a shape another path already owns: a skinned ROW (layout_row carries rowBox), a chip row, the legacy
 		// opaque content card (verbatim), an absolutely-placed collage card (absolute_collage owns its parent).
-		if ( self::is_layout_row( $el ) || self::is_chip_row( $el ) || self::is_content_card( $el ) ) { return false; }
+		if ( self::is_layout_row( $el ) || self::is_chip_row( $el ) || self::is_content_card( $el ) || self::is_toolbar_row( $el ) ) { return false; } // (a filled, padded TITLE BAR of dots + labels is a toolbar row, not a panel)
 		$cs = (string) $el->getAttribute( 'data-sc-cs' );
 		if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', $cs ) ) { return false; }
 		return true;
@@ -16166,6 +19318,20 @@ class FW_Site_Converter_Stitch {
 		$skin['padding'] = ''; // the panel's inset is carried as its own padding (apply_cell_pad), not in the preset
 		$decl = function ( $prop ) use ( $el ) { $v = self::stylesheet_decl( null, $el, $prop ); return preg_match( '/^[a-z0-9()%.,\s+*\/-]+$/i', $v ) ? $v : ''; };
 		$width = $decl( 'width' ); $maxw = $decl( 'max-width' ); $aspect = $decl( 'aspect-ratio' );
+		// A DESIGNED height: the sheet declares one (`.data-monolith{height:720px}`), or the panel's sole wrapper is a
+		// `h-full flex-col justify-between` column (its content is pinned to the top and bottom of a box taller than it) —
+		// the measured height is then the design, carried as min-height, with the space-between as the column's justify.
+		// Without it a 720px telemetry panel collapsed to its content (measured: 880 → 561 section height).
+		$height = $decl( 'height' ); $between = false;
+		$pk1 = self::el_children( $el ); $pk_content = array(); foreach ( $pk1 as $pk ) { if ( ! preg_match( '/(?:^|;)\s*position:\s*absolute/i', (string) $pk->getAttribute( 'data-sc-cs' ) ) ) { $pk_content[] = $pk; } }
+		if ( 1 === count( $pk_content ) ) {
+			$wcs = (string) $pk_content[0]->getAttribute( 'data-sc-cs' );
+			if ( preg_match( '/(?:^|;)\s*display:\s*flex/i', $wcs ) && preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $wcs ) && preg_match( '/(?:^|;)\s*justify-content:\s*space-between/i', $wcs ) ) {
+				$between = true;
+				if ( '' === $height && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $phm ) && (float) $phm[1] >= 200 ) { $height = round( (float) $phm[1] ) . 'px'; }
+			}
+		}
+		if ( '' !== $height && ! preg_match( '/^[0-9.]+(?:px|vh|rem|em|svh|dvh)$/', $height ) ) { $height = ''; }
 		if ( '' === $width && preg_match( '/(?:^|;)\s*width:\s*([0-9.]+px)/i', $cs, $wm ) ) { $width = $wm[1]; }
 		if ( '' === $maxw && '' === $width && preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+px)/i', $cs, $wm ) ) { $maxw = $wm[1]; }
 		if ( 'auto' === $width || 'none' === $maxw ) { $width = ( 'auto' === $width ) ? '' : $width; $maxw = ( 'none' === $maxw ) ? '' : $maxw; }
@@ -16173,13 +19339,26 @@ class FW_Site_Converter_Stitch {
 		// A SHELL expression — the site's own container cap (min(1440px, calc(100% - 48px)) / min(100% - 32px, 1440px)) —
 		// means the panel IS the section's container: the section already provides that measure, so the panel fills it
 		// (a nested cap would subtract the gutter twice → 1344 instead of 1392).
+		$self_center_cap = false;
 		$shell = (bool) preg_match( '/^min\(\s*(?:\d+px\s*,\s*calc\(100%\s*-\s*\d+px\)|100%\s*-\s*\d+px\s*,\s*\d+px|calc\(100%\s*-\s*\d+px\)\s*,\s*\d+px)\s*\)$/i', $width );
+		// …but only when the cap IS the site's container measure. A NARROWER min() cap inside the container (a code window's
+		// `width: min(1080px, 100% - 32px); margin: 0 auto` under a 1600px .wrap) is the panel's own centred measure — wiping it
+		// stretched the window edge to edge. The cap counts as the shell only when it reaches the captured content width.
+		if ( $shell ) {
+			$cap_px = preg_match( '/(\d+)px\s*,|,\s*(\d+)px/', $width, $cm ) ? (float) ( '' !== ( $cm[1] ?? '' ) ? $cm[1] : ( $cm[2] ?? 0 ) ) : 0.0;
+			$doc_w  = 0.0;
+			$root   = $el->ownerDocument ? $el->ownerDocument->documentElement : null;
+			if ( $root instanceof DOMElement && preg_match( '/^\d+$/', (string) $root->getAttribute( 'data-sc-content-width' ) ) ) { $doc_w = (float) $root->getAttribute( 'data-sc-content-width' ); }
+			if ( $cap_px > 0 && $doc_w > 0 && $cap_px < 0.9 * $doc_w ) { $shell = false; $self_center_cap = true; }
+		}
 		if ( $shell ) { $width = ''; $maxw = ''; }
 		// Self-centred: the parent centres its items (grid justify-items / place-items, a flex row justify-content, a flex
 		// column align-items) or the panel carries auto side margins.
 		$par  = $el->parentNode instanceof DOMElement ? $el->parentNode : null;
 		$pcs  = $par ? (string) $par->getAttribute( 'data-sc-cs' ) : '';
-		$self_center = (bool) preg_match( '/(?:^|;)\s*margin(?:-left)?:\s*(?:[0-9.]+px\s+)?auto/i', $cs );
+		$self_center = (bool) preg_match( '/(?:^|;)\s*margin(?:-left)?:\s*(?:[0-9.]+px\s+)?auto/i', $cs ) || ! empty( $self_center_cap )
+			// the computed stamp resolves `margin: 0 auto` to equal px side margins — symmetric non-zero side margins on a capped block are auto
+			|| ( ( '' !== $width || '' !== $maxw ) && preg_match( '/(?:^|;)\s*margin:\s*[0-9.]+px\s+([0-9.]+)px(?:\s+[0-9.]+px\s+\1px)?\s*(?:;|$)/i', $cs, $mm ) && (float) $mm[1] > 0 );
 		if ( ! $self_center && '' !== $pcs ) {
 			$pdisp = self::css_or_decl( $par, 'display' );
 			$pji   = self::css_or_decl( $par, 'justify-items' ); $ppi = self::css_or_decl( $par, 'place-items' );
@@ -16217,7 +19396,7 @@ class FW_Site_Converter_Stitch {
 		}
 		return array(
 			't' => 'panel', 'role' => 'panel', 'box' => $skin, 'pad' => $pad,
-			'width' => $width, 'maxw' => $maxw, 'aspect' => $aspect, 'align' => $align,
+			'width' => $width, 'maxw' => $maxw, 'aspect' => $aspect, 'align' => $align, 'height' => $height, 'between' => $between,
 			'self_center' => $self_center, 'center_h' => $ch, 'center_v' => $cv, 'shell' => $shell,
 			'decor' => self::parse_decor_pseudos( (string) $el->getAttribute( 'data-sc-decor-pseudo' ), (string) $el->getAttribute( 'data-sc-keyframes' ) ),
 			'mt' => $m['top'], 'mb' => $m['bottom'], 'blocks' => $blocks,
@@ -16231,6 +19410,26 @@ class FW_Site_Converter_Stitch {
 		return ( '' !== $v && 'normal' !== $v ) ? $v : trim( (string) self::stylesheet_decl( null, $el, $prop ) );
 	}
 
+	/** True when any block (recursively: blocks / cols / items) is a verbatim `code` / `html` block. */
+	private static function blocks_have_code( array $blocks ) {
+		foreach ( $blocks as $b ) {
+			if ( ! is_array( $b ) ) { continue; }
+			if ( in_array( (string) ( $b['t'] ?? '' ), array( 'code', 'html' ), true ) ) { return true; }
+			if ( ! empty( $b['blocks'] ) && is_array( $b['blocks'] ) && self::blocks_have_code( $b['blocks'] ) ) { return true; }
+			if ( ! empty( $b['cols'] ) && is_array( $b['cols'] ) ) { foreach ( $b['cols'] as $c ) { if ( isset( $c['html'] ) ) { return true; } if ( ! empty( $c['blocks'] ) && self::blocks_have_code( $c['blocks'] ) ) { return true; } } }
+		}
+		return false;
+	}
+	/** True when a heading / title / text block sits anywhere in the tree (the card holds real copy). */
+	private static function blocks_have_text( array $blocks ) {
+		foreach ( $blocks as $b ) {
+			if ( ! is_array( $b ) ) { continue; }
+			if ( in_array( (string) ( $b['t'] ?? '' ), array( 'heading', 'text' ), true ) ) { return true; }
+			if ( ! empty( $b['blocks'] ) && is_array( $b['blocks'] ) && self::blocks_have_text( $b['blocks'] ) ) { return true; }
+		}
+		return false;
+	}
+
 	private static function is_content_card( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		$cs = (string) $el->getAttribute( 'data-sc-cs' );
@@ -16240,9 +19439,11 @@ class FW_Site_Converter_Stitch {
 		if ( preg_match( '/(?<![\w-])background-color:\s*(?:transparent|rgba?\([^)]*[,\/]\s*(?:0|0?\.[0-7]\d*)\s*\))/i', $cs ) ) { return false; }
 		// ROUNDING ≥ 8px.
 		if ( ! preg_match( '/(?<![\w-])border-radius:\s*([0-9.]+)px/', $cs, $rm ) || (float) $rm[1] < 8 ) { return false; }
-		// BORDER or SHADOW.
-		$has_border = preg_match( '/(?<![\w-])border-top-width:\s*([1-9])/', $cs );
-		$has_shadow = preg_match( '/(?<![\w-])box-shadow:\s*(?!none)[^;"]+/', $cs );
+		// BORDER or SHADOW — a PAINTED one: a `border-4 border-transparent` (a hover-only ring) and an all-zero shadow
+		// (`rgba(0, 0, 0, 0) 0px 0px`) are not a skin (a feature card with only a fill + radius fell to the verbatim card path
+		// and rendered as a code_block — a fixture from the findings feed).
+		$has_border = preg_match( '/(?<![\w-])border-top-width:\s*([1-9])/', $cs ) && ! preg_match( '/(?<![\w-])border-top-color:\s*(?:rgba\([^)]*,\s*0\s*\)|transparent)/i', $cs );
+		$has_shadow = preg_match( '/(?<![\w-])box-shadow:\s*(?!none)([^;"]+)/', $cs, $shm ) && ! preg_match( '/^rgba\([^)]*,\s*0\s*\)\s+0px\s+0px(?:\s+0px)*\s*$/', trim( $shm[1] ) );
 		if ( ! $has_border && ! $has_shadow ) { return false; }
 		// Contains a HEADING (a content card, not a bare decorative box / image tile).
 		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) { if ( $el->getElementsByTagName( $h )->length > 0 ) { return true; } }
@@ -16256,7 +19457,10 @@ class FW_Site_Converter_Stitch {
 		foreach ( self::recognizers() as $r ) {
 			// Only the CONTENT-ROW shapes: a stack, a chip / tag row, a counter grid, an icon-text list, a link strip, a text list.
 			// The media / collage / card recognizers keep their own cell paths (verbatim or fill) — claiming them here salvaged strays.
-			if ( ! in_array( $r['id'] ?? '', array( 'scroller', 'layout_row', 'stack', 'chip_row', 'counter_grid', 'icon_text_list', 'inline_links', 'text_list', 'newsletter' ), true ) ) { continue; }
+			// (+ a CARD GRID: a cell that IS a grid of icon / title / copy cards — a 7-col half holding a 2×2 of console tiles — was
+			// otherwise claimed by layout_row and decomposed to heading + text per cell, its icons and box skins lost)
+			// (+ the MARQUEE strip, ahead of chip_row / toolbar_row: a sliding nowrap track of short labels is a chip row by shape)
+			if ( ! in_array( $r['id'] ?? '', array( 'marquee_strip', 'scroller', 'card_grid', 'layout_row', 'stack', 'chip_row', 'counter_grid', 'icon_text_list', 'inline_links', 'text_list', 'newsletter', 'contact_form', 'avatar_group' ), true ) ) { continue; } // (+ an avatar stack as a row cell)
 			if ( ! call_user_func( $r['match'], $el, $tag, $rules ) ) { continue; }
 			$out = call_user_func( $r['build'], $el, $tag, $rules );
 			return is_array( $out ) ? $out : null;
@@ -16271,7 +19475,7 @@ class FW_Site_Converter_Stitch {
 			$tag     = strtolower( $child->tagName );
 			// SKIP a RESPONSIVE-HIDDEN twin — a child that is `display:none` at the capture (desktop) viewport AND
 			// carries a Tailwind breakpoint-hide class (`sm:hidden` / `md:hidden` / `lg:hidden` …). It's the MOBILE
-			// version of a block whose DESKTOP twin lives elsewhere in the DOM (jukebox's stacked hours LIST vs the
+			// version of a block whose DESKTOP twin lives elsewhere in the DOM (the burger source's stacked hours LIST vs the
 			// desktop hours GRID, a mobile reel vs the desktop marquee) — decomposing it DUPLICATES the content.
 			// JS-revealed panels (tabs/accordions) are un-hidden by the capture before this, so only genuine
 			// responsive duplicates are dropped.
@@ -16288,11 +19492,17 @@ class FW_Site_Converter_Stitch {
 			foreach ( $recognizers as $r ) {
 				if ( ! call_user_func( $r['match'], $child, $tag, $rules ) ) { continue; }
 				$out = call_user_func( $r['build'], $child, $tag, $rules );
+				// a recognizer that MATCHED but built NOTHING (a row whose cells all fell away) has not claimed the element: the next
+				// recognizer — or the descent into its children — gets it, instead of the subtree vanishing (an accordion-style band of
+				// five `h3 + arrow` rows disappeared whole)
+				if ( ! is_array( $out ) || ( ! isset( $out['t'] ) && ! count( $out ) ) ) { continue; }
 				$ai  = self::anim_intent( $child ); // source reveal/scroll-animation intent (AOS / animate.css / hooks)
+				$rvl = self::reveal_of( $child );   // a measured CSS-class reveal (capture data-sc-reveal) → Scroll Motion
+				$lpa = self::loop_anim_of( $child ); // the element's own running class animation (a pulse, a drift) → the block's CSS
 				$tfx = self::text_split_intent( $child ); // word/line/char split-reveal → Text Effects split_reveal
 				if ( is_array( $out ) ) {
-					if ( isset( $out['t'] ) ) { if ( '' !== $ai && empty( $out['anim'] ) ) { $out['anim'] = $ai; } if ( '' !== $tfx && empty( $out['text_fx'] ) ) { $out['text_fx'] = $tfx; } $blocks[] = $out; } // one block
-					else { foreach ( $out as $blk ) { if ( is_array( $blk ) && isset( $blk['t'] ) ) { if ( '' !== $ai && empty( $blk['anim'] ) ) { $blk['anim'] = $ai; } if ( '' !== $tfx && empty( $blk['text_fx'] ) ) { $blk['text_fx'] = $tfx; } $blocks[] = $blk; } } } // a list
+					if ( isset( $out['t'] ) ) { if ( '' !== $ai && empty( $out['anim'] ) ) { $out['anim'] = $ai; } if ( $rvl && empty( $out['reveal'] ) ) { $out['reveal'] = $rvl; } if ( $lpa && empty( $out['loopAnim'] ) ) { $out['loopAnim'] = $lpa; } if ( '' !== $tfx && empty( $out['text_fx'] ) ) { $out['text_fx'] = $tfx; } $blocks[] = $out; } // one block
+					else { foreach ( $out as $blk ) { if ( is_array( $blk ) && isset( $blk['t'] ) ) { if ( '' !== $ai && empty( $blk['anim'] ) ) { $blk['anim'] = $ai; } if ( $rvl && empty( $blk['reveal'] ) ) { $blk['reveal'] = $rvl; } if ( '' !== $tfx && empty( $blk['text_fx'] ) ) { $blk['text_fx'] = $tfx; } $blocks[] = $blk; } } } // a list
 				}
 				$claimed = true;
 				break;
@@ -16306,12 +19516,17 @@ class FW_Site_Converter_Stitch {
 				continue;
 			}
 			// STYLED CONTENT CARD — an opaque rounded panel (border/shadow) wrapping a heading + content (the
-			// jukebox location card `rounded-2xl border bg-background shadow`). Decomposing its children flat
+			// the burger source location card `rounded-2xl border bg-background shadow`). Decomposing its children flat
 			// drops the white panel, so the content reads faintly on the section band. Emit it as a `code` block
 			// → the mapper's structural mirror rebuilds it as a NESTED FLEXBOX carrying the card's box skin (an
 			// editable panel). Tightly gated (opaque fill + rounding + border/shadow + a heading) so it fires
 			// only on a genuine card, never a plain layout wrapper or an image tile.
 			if ( ! $claimed && self::is_content_card( $child ) ) {
+				// NATIVE FIRST: when the card's content decomposes cleanly (a heading / text / icon tile / button — no block that
+				// would itself fall to code), emit it as a PANEL (a flexbox wearing the card's Box Preset, editable blocks inside)
+				// instead of the verbatim mirror — a single feature card rendered as a code_block (a fixture from the feed).
+				$pb = self::panel_build( $child, $tag, $rules );
+				if ( is_array( $pb ) && ! empty( $pb['blocks'] ) && ! self::blocks_have_code( $pb['blocks'] ) && self::blocks_have_text( $pb['blocks'] ) ) { $blocks[] = $pb; continue; }
 				$doc  = $child->ownerDocument;
 				// If the card sits in a bare MAX-WIDTH cap wrapper (`max-w-3xl mx-auto`), emit THAT wrapper so the
 				// card keeps its measure + centering (else it fills the section band — the source card is capped
@@ -16437,6 +19652,17 @@ class FW_Site_Converter_Stitch {
 	 * @param string  $tag
 	 * @param array   $blocks by-ref
 	 */
+	/** The FIRST element child of a horizontal flex row whose other children carry a heading — a numbered row's marker slot. */
+	private static function is_row_marker( $el ) {
+		$p = $el->parentNode; if ( ! ( $p instanceof DOMElement ) ) { return false; }
+		$pcs = (string) $p->getAttribute( 'data-sc-cs' ); $pcl = ' ' . self::cls( $p ) . ' ';
+		$row = ( preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $pcs ) && ! preg_match( '/flex-direction:\s*column/i', $pcs ) ) || ( false !== strpos( $pcl, ' flex ' ) && false === strpos( $pcl, ' flex-col ' ) );
+		if ( ! $row ) { return false; }
+		$kids = self::el_children( $p ); if ( count( $kids ) < 2 || $kids[0] !== $el ) { return false; }
+		foreach ( array( 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) { if ( $p->getElementsByTagName( $h )->length > 0 ) { return true; } }
+		return false;
+	}
+
 	private static function salvage_dropped( $child, $tag, array &$blocks ) {
 		if ( ! ( $child instanceof DOMElement ) ) { return; }
 
@@ -16458,7 +19684,14 @@ class FW_Site_Converter_Stitch {
 			if ( XML_TEXT_NODE === $cn->nodeType ) { $direct .= $cn->nodeValue; }
 		}
 		$txt     = trim( preg_replace( '/\s+/', ' ', $direct ) );
-		$hasWord = (bool) preg_match( '/[\p{L}]{2,}/u', $txt );
+		$hasWord = (bool) preg_match( '/[\p{L}]{2,}/u', $txt )
+			|| ( (bool) preg_match( '/\d/', $txt ) && mb_strlen( $txt ) <= 24 && (bool) preg_match( '/[$€£¥%°+×]|\d\s*\p{L}{1,3}$/u', $txt ) ) // a priced / unit-bearing value ("$2,450", "94%", "20°C", "500+") — never a bare number / index
+			// …except a GHOST NUMERAL: a bare index ("01", "02") set DISPLAY-SIZE (≥ 40px) is a design element (a "how it works" step
+			// number at 96px / 8 % ink) — it was dropped as a bare number (a fixture from the findings feed)
+			|| ( (bool) preg_match( '/^\d{1,3}$/', $txt ) && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $child->getAttribute( 'data-sc-cs' ), $nfs ) && (float) $nfs[1] >= 40 )
+			// …or a ROW MARKER: a short ordinal ("01", "02.", "①") that LEADS a flex row beside a heading (a benefits / steps list's
+			// `span.01 + div(h3 + p)`) is the row's number, not decoration — every row lost its number (a fixture from the feed)
+			|| ( (bool) preg_match( '/^(?:\d{1,3}\.?|[①-⑳])$/u', $txt ) && self::is_row_marker( $child ) );
 
 		$kind = 'decorative';
 		if ( $img ) {
@@ -16468,7 +19701,7 @@ class FW_Site_Converter_Stitch {
 				$blocks[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $child ), 'text' => $txt, 'html' => '<p>' . esc_html( $txt ) . '</p>' );
 			}
 		} elseif ( $hasWord ) {
-			$blocks[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $child ), 'cs' => (string) $child->getAttribute( 'data-sc-cs' ), 'text' => $txt, 'html' => '<p>' . esc_html( $txt ) . '</p>' );
+			$blocks[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $child ), 'cs' => (string) $child->getAttribute( 'data-sc-cs' ), 'text' => $txt, 'html' => self::leaf_text_html( $child, $txt ), 'linkCs' => self::leaf_link_cs( $child ) );
 			$kind = 'salvaged-text';
 		}
 
@@ -16639,6 +19872,7 @@ class FW_Site_Converter_Stitch {
 		foreach ( array( 'h1', 'h2', 'h3' ) as $h ) {
 			foreach ( $cell->getElementsByTagName( $h ) as $hd ) {
 				if ( preg_match( '/(?:^|\s)(?:sm:|md:|lg:|xl:|2xl:)?text-(?:4xl|5xl|6xl|7xl|8xl|9xl)(?:\s|$)/', self::cls( $hd ) ) ) { return true; }
+				if ( 'h3' !== $h && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $hd->getAttribute( 'data-sc-cs' ), $fm ) && (float) $fm[1] >= 36 ) { return true; } // measured, not named: a 36px+ h1 / h2 is a display heading whatever its classes (a tile's big h3 stat is not)
 			}
 		}
 		return false;
@@ -16652,6 +19886,15 @@ class FW_Site_Converter_Stitch {
 		if ( strpos( $cls, 'grid' ) === false && strpos( $cls, 'flex' ) === false && self::sc_css( $el, 'display' ) !== 'grid' ) { return false; }
 		$kids = self::el_children( $el );
 		if ( count( $kids ) < 2 ) { return false; }
+		// A grid of CAPTION TILES (a photo + an absolute caption each) is not a card grid: its cells are the image box's overlay
+		// family (caption_tile_block via the image_overlay recognizer, cell by cell in the layout row) — as cards they became
+		// stacked image boxes with the caption UNDER the photo (a fixture from the feed)
+		$n_ct = 0; foreach ( $kids as $k ) { if ( self::caption_tile_block( $k ) ) { $n_ct++; } }
+		if ( $n_ct >= (int) ceil( count( $kids ) / 2 ) ) { return false; }
+		// …nor a grid of cards whose PHOTO carries a floating BADGE (an event card's two-line date chip pinned over the image): the
+		// image box has no layer for it — the chip was dropped; the cells decompose (photo + pinned badge, then the body leaves)
+		$n_bd = 0; foreach ( $kids as $k ) { if ( self::card_photo_badge( $k ) ) { $n_bd++; } }
+		if ( $n_bd >= (int) ceil( count( $kids ) / 2 ) ) { return false; }
 		// A SINGLE-TRACK grid (`grid-template-columns: 1fr` → one computed px track) is a vertical STACK of cards,
 		// not a card GRID: the children sit one under another, full width. Claiming it here split three full-width
 		// band cards into 278px thirds. The `stack` recognizer (below) carries the gap; each child converts alone.
@@ -16874,7 +20117,7 @@ class FW_Site_Converter_Stitch {
 		$find_handle = function ( $scope ) {
 			if ( ! ( $scope instanceof DOMElement ) ) { return ''; }
 			foreach ( $scope->getElementsByTagName( 'a' ) as $a ) {
-				if ( preg_match( '#instagram\.com/([A-Za-z0-9._]+)/?(?:[?#]|$)#i', (string) $a->getAttribute( 'href' ), $m ) ) {
+				if ( preg_match( '~instagram\.com/([A-Za-z0-9._]+)/?(?:[?#]|$)~i', (string) $a->getAttribute( 'href' ), $m ) ) {
 					$h = strtolower( $m[1] );
 					if ( ! in_array( $h, array( 'p', 'reel', 'reels', 'explore', 'accounts', 'stories', 'tv', 'about', 'legal' ), true ) ) { return $m[1]; }
 				}
@@ -16935,6 +20178,10 @@ class FW_Site_Converter_Stitch {
 		$is_flex = strpos( $c, ' flex ' ) !== false || strpos( $c, ':flex-row' ) !== false || 'flex' === self::sc_css( $el, 'display' );
 		$between = strpos( $c, 'justify-between' ) !== false || false !== strpos( (string) self::sc_css( $el, 'justify-content' ), 'space-between' );
 		if ( ! $is_flex || ! $between ) { return false; }
+		// a flex COLUMN (`flex-col justify-between`: a card body whose meta row is pushed to the bottom) is a stack, not a
+		// heading | link row — claimed as one, its build came back null and the whole body vanished (a fixture from the feed)
+		$fd0 = (string) self::sc_css( $el, 'flex-direction' );
+		if ( '' !== $fd0 ? (bool) preg_match( '/^column/i', $fd0 ) : ( strpos( $c, ' flex-col ' ) !== false && ! preg_match( '/(?:sm|md|lg|xl):flex-row/', $c ) ) ) { return false; }
 		// A heading beside a "View All ->" link is TEXT. A card that pairs a photo with a title and a
 		// "Read more" link is not this widget -- and heading_cta_row_build() emits only the heading + link,
 		// so claiming it drops the photo (personal_blog_writer's article cards). Same no-image-surface rule
@@ -16987,6 +20234,19 @@ class FW_Site_Converter_Stitch {
 			$h['title']       = self::clean_inline_html( $hn );
 			$h['title_class'] = self::cls( $hn );
 			$h['title_cs']    = (string) $hn->getAttribute( 'data-sc-cs' );
+			// a KICKER right before the heading (a short uppercase / small block span — `text-xs uppercase tracking-widest
+			// block mb-2`) is the heading's overline; the heading+link row kept only the h2 (a fixture from the feed)
+			for ( $pv = $hn->previousSibling; $pv instanceof DOMNode; $pv = $pv->previousSibling ) {
+				if ( XML_TEXT_NODE === $pv->nodeType && '' === trim( $pv->nodeValue ) ) { continue; }
+				if ( ! ( $pv instanceof DOMElement ) ) { break; }
+				$kt = trim( preg_replace( '/\s+/u', ' ', self::text( $pv ) ) ); $kcs = (string) $pv->getAttribute( 'data-sc-cs' );
+				$small = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', $kcs, $kf ) && (float) $kf[1] <= 16;
+				$upper = (bool) preg_match( '/text-transform:\s*uppercase/i', $kcs ) || (bool) preg_match( '/\buppercase\b/', self::cls( $pv ) );
+				if ( '' !== $kt && mb_strlen( $kt ) <= 60 && in_array( strtolower( $pv->tagName ), array( 'span', 'p', 'div', 'small' ), true ) && ( $small || $upper ) && 0 === $pv->getElementsByTagName( 'img' )->length ) {
+					$h['overline'] = $kt; $h['overline_class'] = self::cls( $pv ); $h['overline_cs'] = $kcs;
+				}
+				break;
+			}
 		}
 		$p = $head_el->getElementsByTagName( 'p' )->item( 0 );
 		if ( $p instanceof DOMElement ) {
@@ -17124,7 +20384,10 @@ class FW_Site_Converter_Stitch {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		$c = ' ' . self::cls( $el ) . ' ';
 		$is_grid = strpos( $c, ' grid ' ) !== false || strpos( $c, 'grid-cols' ) !== false
-			|| preg_match( '/\bflex\b/', $c ) || in_array( self::sc_css( $el, 'display' ), array( 'grid', 'flex' ), true );
+			|| preg_match( '/\bflex\b/', $c ) || in_array( self::sc_css( $el, 'display' ), array( 'grid', 'flex' ), true )
+			// a CSS multi-column WALL (`columns-3` / computed column-count ≥ 2): a masonry of tiles is an image grid too
+			// (detect_gallery_design reads it as the masonry design) — it fell to per-tile code blocks (a fixture from the feed)
+			|| (bool) preg_match( '/(?:^|\s)(?:sm:|md:|lg:|xl:)?columns-[2-6](?:\s|$)/', $c ) || (bool) preg_match( '/(?:^|;)\s*column-count:\s*[2-6]/i', (string) $el->getAttribute( 'data-sc-cs' ) );
 		if ( ! $is_grid ) { return false; }
 		$tiles = self::image_grid_tiles( $el );
 		if ( count( $tiles ) < 3 ) { return false; }
@@ -17137,6 +20400,35 @@ class FW_Site_Converter_Stitch {
 		// that tile-flattening catches nested images it would otherwise greedily claim those first — so bow
 		// out when they match, letting each land on its correct shortcode. (Regression guard.)
 		if ( self::is_logo_strip( $el ) || self::is_avatar_group( $el ) ) { return false; }
+		// IMAGE-LED CARDS are not a gallery: a product / article tile carries IN-FLOW text leaves beside its image (a category
+		// line, a name link, a price — none of them headings, so the heading gate below never saw them) and a gallery of them
+		// lost every name and price (RECURS: three shops in the feed). A tile whose card (the container's child holding the
+		// image) has ≥ 2 in-flow text leaves — outside any absolute overlay, not a figcaption — or a priced leaf, is a card;
+		// when half the tiles are cards the grid routes to card_grid → image_box per card. A hover caption inside an
+		// `absolute` layer, or one figcaption under the photo, keeps the gallery. Parity in JS isImageGrid.
+		$n_cards = 0; $n_cells = 0;
+		foreach ( self::el_children( $el ) as $cell ) {
+			if ( 0 === $cell->getElementsByTagName( 'img' )->length ) { continue; }
+			$n_cells++;
+			$leaves = 0; $priced = false;
+			foreach ( $cell->getElementsByTagName( '*' ) as $leaf ) {
+				if ( ! ( $leaf instanceof DOMElement ) ) { continue; }
+				$lt = strtolower( $leaf->tagName );
+				if ( in_array( $lt, array( 'img', 'svg', 'path', 'figcaption', 'picture', 'source', 'br' ), true ) ) { continue; }
+				$own = ''; foreach ( $leaf->childNodes as $tn ) { if ( XML_TEXT_NODE === $tn->nodeType ) { $own .= $tn->nodeValue; } }
+				$own = trim( preg_replace( '/\s+/u', ' ', $own ) );
+				if ( '' === $own ) { continue; }
+				$abs = false;
+				for ( $an = $leaf; $an instanceof DOMElement && $an !== $cell; $an = $an->parentNode ) {
+					if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', (string) $an->getAttribute( 'data-sc-cs' ) ) || preg_match( '/(?:^|\s)(?:absolute|fixed)(?:\s|$)/', self::cls( $an ) ) ) { $abs = true; break; }
+				}
+				if ( $abs ) { continue; }
+				$leaves++;
+				if ( preg_match( '/[$€£¥]\s?\d|\d\s?(?:€|USD|EUR|GBP)\b/u', $own ) ) { $priced = true; }
+			}
+			if ( $leaves >= 2 || $priced ) { $n_cards++; }
+		}
+		if ( $n_cells >= 3 && $n_cards >= (int) ceil( $n_cells * 0.5 ) ) { return false; }
 		// A grid with headings is USUALLY a content-card grid (icon/heading/text) — NOT a gallery, so reject
 		// it. The ONE exception is a captioned PHOTO gallery, where each caption is a HOVER-REVEALED overlay
 		// (`absolute inset-0 … opacity-0 group-hover:opacity-100`) sitting over a cover image — a signature a
@@ -17158,7 +20450,7 @@ class FW_Site_Converter_Stitch {
 			}
 			// Every heading must sit inside an OVERLAY on the tile — an `absolute`/`fixed` layer over the cover
 			// image. This covers BOTH a hover-revealed caption (`opacity-0 group-hover:opacity-100`) AND an
-			// always-visible gradient caption (`absolute inset-0 bg-gradient-to-t …`, the openhero "Discovered
+			// always-visible gradient caption (`absolute inset-0 bg-gradient-to-t …`, the AI-page "Discovered
 			// Worlds" pattern). A content card never absolute-positions its heading over the image, and the
 			// cover-dominant + no-body guards below keep a real card grid out — so the overlay signal alone is
 			// enough (the earlier opacity-0/group-hover requirement wrongly rejected always-on captions).
@@ -17218,9 +20510,10 @@ class FW_Site_Converter_Stitch {
 		$out      = array();
 		$cap_mode = ''; // how the tile captions sat: 'overlay' (always-visible over a scrim) | 'hover' | '' (none)
 		foreach ( self::image_grid_tiles( $el ) as $t ) {
-			$span = 1;
+			$span = 1; $rspan = 1;
 			$tc   = ' ' . self::cls( $t['el'] ) . ' ';
 			if ( preg_match( '/(?:^|\s)(?:[a-z]{2}:)?col-span-([2-6])(?:\s|$)/', $tc, $m ) ) { $span = (int) $m[1]; }
+			if ( preg_match( '/(?:^|\s)(?:[a-z]{2}:)?row-span-([2-6])(?:\s|$)/', $tc, $m ) ) { $rspan = (int) $m[1]; } // a bento's tall tile
 			// PER-TILE CAPTION: an image tile's only text IS its caption (a title overlaid on the photo). Read
 			// the tile's text and note HOW it sat — a HOVER-revealed overlay (opacity-0 + group-hover) vs an
 			// ALWAYS-visible one (a bottom gradient caption). Fed to the gallery's overlay caption mode so the
@@ -17242,21 +20535,43 @@ class FW_Site_Converter_Stitch {
 			$row = array(
 				'url'  => $t['src'],
 				'alt'  => trim( (string) $t['img']->getAttribute( 'alt' ) ),
-				'span' => $span,
+				'span' => $span, 'rspan' => $rspan,
 			);
 			if ( '' !== $cap ) { $row['caption'] = $cap; }
 			$out[] = $row;
 		}
 		if ( count( $out ) < 3 ) { return null; } // let it fall through / be salvaged
+		// the grid's MEASURED row height (`auto-rows-[300px]`) and gap — a bento's geometry is exact, not the design's pattern
+		$gcs = (string) $el->getAttribute( 'data-sc-cs' ); $grid_geo = array();
+		if ( preg_match( '/(?:^|\s)auto-rows-\[([0-9.]+)px\]/', self::cls( $el ), $arm ) ) { $grid_geo['rowH'] = (float) $arm[1]; }
+		elseif ( preg_match( '/(?:^|;)\s*grid-auto-rows:\s*([0-9.]+)px/i', $gcs, $arm ) ) { $grid_geo['rowH'] = (float) $arm[1]; }
+		if ( preg_match( '/(?:^|;)\s*(?:gap|row-gap):\s*([0-9.]+)px/i', $gcs, $gm ) ) { $grid_geo['gap'] = (float) $gm[1]; } elseif ( preg_match( '/(?:^|\s)gap-0(?:\s|$)/', self::cls( $el ) ) ) { $grid_geo['gap'] = 0.0; }
 		// TILE ASPECT RATIO — the source crops each tile to a fixed ratio (`aspect-[3/4]` = tall portrait, the
-		// jukebox food grid). Read it so the gallery reproduces the crop instead of defaulting to Landscape 4:3
+		// the burger source food grid). Read it so the gallery reproduces the crop instead of defaulting to Landscape 4:3
 		// (which squashed the tall photos). Sampled from the first tile (a uniform grid shares one ratio).
 		$ratio_slug = '';
 		$tiles0 = self::image_grid_tiles( $el );
 		if ( $tiles0 ) { $ratio_slug = self::image_tile_ratio_slug( $tiles0[0]['el'], $tiles0[0]['img'] ); }
 		$doc  = $el->ownerDocument;
 		$html = $doc ? self::strip_cs( trim( (string) $doc->saveHTML( $el ) ) ) : '';
-		return array( 't' => 'gallery', 'role' => 'gallery', 'images' => $out, 'html' => $html, 'captions' => $cap_mode, 'ratio' => $ratio_slug, 'design' => self::detect_gallery_design( $el, count( $out ) ) );
+		return array( 't' => 'gallery', 'role' => 'gallery', 'images' => $out, 'html' => $html, 'captions' => $cap_mode, 'ratio' => $ratio_slug, 'design' => self::detect_gallery_design( $el, count( $out ) ), 'gridGeo' => $grid_geo );
+	}
+
+	/**
+	 * The DESKTOP column count of a CSS multi-column wall. A responsive ladder (`columns-1 md:columns-2
+	 * lg:columns-3`) lists the phone tier FIRST, so the first `columns-N` match is the narrowest — the
+	 * largest tier (the measured `column-count` when stamped) is the one the desktop wall renders.
+	 */
+	private static function wall_columns( $el, $fallback ) {
+		if ( $el instanceof DOMElement ) {
+			if ( preg_match( '/(?:^|;)\s*column-count:\s*([1-6])\b/i', (string) $el->getAttribute( 'data-sc-cs' ), $cc ) ) { return (string) $cc[1]; }
+			if ( preg_match_all( '/(?:^|\s)(?:(sm|md|lg|xl|2xl):)?columns-([1-6])(?=\s|$)/', self::cls( $el ), $all, PREG_SET_ORDER ) ) {
+				$rank = array( '' => 0, 'sm' => 1, 'md' => 2, 'lg' => 3, 'xl' => 4, '2xl' => 5 ); $best = -1; $n = $fallback;
+				foreach ( $all as $m ) { $r = $rank[ $m[1] ] ?? 0; if ( $r > $best ) { $best = $r; $n = $m[2]; } }
+				return (string) $n;
+			}
+		}
+		return (string) $fallback;
 	}
 
 	/**
@@ -17276,7 +20591,7 @@ class FW_Site_Converter_Stitch {
 		$cls = strtolower( self::cls( $el ) );
 
 		// MARQUEE — a continuously auto-scrolling strip of images (CSS marquee animation / duplicated track).
-		if ( preg_match( '/\bmarquee\b|animate-marquee|animate-scroll|animation:[^;"\']*(?:marquee|scroll)/', $hay ) ) {
+		if ( preg_match( '/\bmarquee\b|animate-marquee|animate-scroll(?:-left|-right|-x)?(?=[\s"\'])|animation:[^;"\']*(?:marquee|scroll)/', $hay ) ) {
 			return array( 'design' => 'marquee' );
 		}
 		// CAROUSEL / SLIDER — a JS slider lib, an ARIA carousel, or a snap / overflow-x scroll track.
@@ -17285,7 +20600,7 @@ class FW_Site_Converter_Stitch {
 		}
 		// MASONRY — a CSS multi-column wall (`columns-N` / a `masonry` class): tiles of uneven heights.
 		if ( preg_match( '/\b(?:columns-([1-6])|masonry)\b/', $cls . ' ' . $hay, $mm ) ) {
-			return array( 'design' => 'masonry', 'columns' => ! empty( $mm[1] ) ? $mm[1] : '3' );
+			return array( 'design' => 'masonry', 'columns' => self::wall_columns( $el, ! empty( $mm[1] ) ? $mm[1] : '3' ) );
 		}
 		// METRO — a bento mosaic: tiles carry VERTICAL spans (`row-span-2`), which a plain grid col-ratio can't
 		// reproduce. (A grid with only horizontal col-spans stays 'grid' + col_ratio.)
@@ -17475,7 +20790,7 @@ class FW_Site_Converter_Stitch {
 		// ≥2 BRAND icons (iconify simple-icons/logos, or fa-brands/si-/cib- classes) → a "trusted by" logo row.
 		if ( self::logo_strip_brand_icons( $el ) >= 2 ) { return true; }
 		// Inline-SVG / icon-font brand strip: ≥3 sibling items, each an icon + a short brand LABEL
-		// (`<span><svg/> Unity</span>` ×5 — the openhero/Tailwind "Trusted by" pattern). The label
+		// (`<span><svg/> Unity</span>` ×5 — the AI-page/Tailwind "Trusted by" pattern). The label
 		// requirement separates a real logo row from a label-less social-icon row; the ≥3 count keeps a
 		// 1-2-icon accent from matching. Was image-only, so these strips were dropped (only the labels
 		// survived, via the safety net) instead of becoming a native logo_grid.
@@ -17790,6 +21105,9 @@ class FW_Site_Converter_Stitch {
 		for ( $i = 1; $i <= 6; $i++ ) { if ( $el->getElementsByTagName( 'h' . $i )->length > 0 ) { return false; } }
 		$t = trim( (string) preg_replace( '/\s+/', ' ', self::text( $el ) ) );
 		if ( mb_strlen( $t ) > 160 ) { return false; } // a rating caption is short; a content column is long
+		// a SKINNED STRIP of ≥ 3 groups (a trust card: faces + copy | divider | stars + score) is a layout row wearing its skin — the
+		// avatar group claims only the faces' own cell inside it; claimed whole it became an avatar + a verbatim blob (a finding)
+		if ( count( self::el_children( $el ) ) >= 3 && self::read_card_skin( $el ) ) { return false; }
 		return true;
 	}
 
@@ -17847,11 +21165,20 @@ class FW_Site_Converter_Stitch {
 		// A "+N / 500+ / 2K+" social-proof counter for the stack, from the adjacent caption.
 		if ( preg_match( '/(\d[\d,.]*\s*[kKmM]?\s*\+)/', $label, $m ) ) { $extra = (string) preg_replace( '/\s+/', '', $m[1] ); }
 		$blocks   = array();
-		$blocks[] = array( 't' => 'avatar', 'role' => 'avatar', 'avatars' => $urls, 'extra_count' => $extra, 'label' => $label );
+		$av = array( 't' => 'avatar', 'role' => 'avatar', 'avatars' => $urls, 'extra_count' => $extra, 'label' => $label );
 		$rating = self::avatar_group_rating_html( $el );
-		if ( '' !== $rating ) {
-			$blocks[] = array( 't' => 'html', 'role' => 'code', 'verbatim' => true, 'html' => '<div class="sc-tw">' . $rating . '</div>' ); // verbatim: a star glyph row + score is an inline cluster, not a layout to mirror
+		if ( '' === $rating ) { return array( $av ); }
+		$rt = array( 't' => 'html', 'role' => 'code', 'verbatim' => true, 'html' => '<div class="sc-tw">' . $rating . '</div>' ); // verbatim: a star glyph row + score is an inline cluster, not a layout to mirror
+		// The stack and its caption SIDE BY SIDE when the source lays them so (`flex items-center gap-4` around the `-space-x-3`
+		// faces + the stars / text) → ONE nowrap row with the source gap and vertical centring — they were emitted as two stacked
+		// block rows, the text beneath the faces (a fixture from the feed)
+		$ecs = (string) $el->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $ecs ) && ! preg_match( '/flex-direction:\s*column/i', $ecs ) ) {
+			$gap = preg_match( '/(?:^|;)\s*(?:gap|column-gap):\s*([0-9.]+)px/i', $ecs, $gm ) ? (int) round( (float) $gm[1] ) : 16;
+			$m = self::el_margin( $el );
+			return array( array( 't' => 'row', 'role' => 'columns', 'valign' => 'middle', 'gap' => $gap, 'mt' => (float) ( $m['top'] ?? 0 ), 'mb' => (float) ( $m['bottom'] ?? 0 ), 'nowrap' => true, 'contentSized' => true, 'cols' => array( array( 'cls' => '', 'blocks' => array( $av ) ), array( 'cls' => '', 'blocks' => array( $rt ) ) ) ) );
 		}
+		$blocks[] = $av; $blocks[] = $rt;
 		return $blocks;
 	}
 
@@ -17954,8 +21281,47 @@ class FW_Site_Converter_Stitch {
 		foreach ( array( 'svg', 'i' ) as $tg ) {
 			foreach ( $k->getElementsByTagName( $tg ) as $g ) { if ( strpos( self::cls( $g ), 'star' ) !== false ) { $n++; } }
 		}
-		return $n > 0 ? min( 5, $n ) : null;
+		// a RATING is a row of stars (≥ 3): a lone `lucide-star` inside a card's 64px icon tile is the card's ICON — it made a
+		// 3-up service-card grid a testimonials block (a fixture from the feed)
+		return $n >= 3 ? min( 5, $n ) : null;
 	}
+	/** The author CANDIDATE texts of a testimonial card, the name first: short leaves, minus quote glyphs and an initials disc,
+	 *  the heavier / uppercase line promoted to the front (the name), the rest in DOM order (the role, a location). */
+	private static function author_candidates( $k, $quote, $tags = array( 'h3', 'h4', 'h5', 'h6', 'cite', 'strong', 'span', 'p', 'div' ) ) {
+		$cands = array();
+		$cand_w = array(); // text => [weight, uppercase] of the leaf, for the name / role choice below
+		foreach ( $tags as $tg ) {
+			foreach ( $k->getElementsByTagName( $tg ) as $e ) {
+				$t = trim( self::text( $e ) );
+				if ( $t === '' || $t === $quote || mb_strlen( $t ) > 40 || $e->getElementsByTagName( '*' )->length > 1 ) { continue; }
+				// a lone QUOTE GLYPH (“ ” ❝ ") is decoration, never the author (it became author_name — a fixture from the feed)
+				if ( ! preg_match( '/\p{L}/u', $t ) ) { continue; }
+				// 2–3 uppercase letters inside a small rounded disc are an INITIALS avatar, not the name (a fixture from the feed)
+				if ( preg_match( '/^\p{Lu}{2,3}$/u', $t ) ) {
+					$disc = $e; $is_disc = false;
+					for ( $i = 0; $i < 2 && $disc instanceof DOMElement; $i++, $disc = $disc->parentNode ) {
+						$dcs = (string) $disc->getAttribute( 'data-sc-cs' );
+						if ( preg_match( '/border-radius:\s*(?:9999px|50%)/i', $dcs ) && preg_match( '/(?:^|;)\s*(?:width|height):\s*([0-9.]+)px/i', $dcs, $dw ) && (float) $dw[1] <= 72 ) { $is_disc = true; break; }
+					}
+					if ( $is_disc ) { continue; }
+				}
+				$ecs = (string) $e->getAttribute( 'data-sc-cs' );
+				$w = preg_match( '/(?:^|;)\s*font-weight:\s*([0-9]+)/i', $ecs, $wm ) ? (int) $wm[1] : 400;
+				$up = (bool) preg_match( '/text-transform:\s*uppercase/i', $ecs ) || (bool) preg_match( '/\buppercase\b/', self::cls( $e ) );
+				$cands[] = $t; if ( ! isset( $cand_w[ $t ] ) ) { $cand_w[ $t ] = array( $w, $up ); }
+			}
+		}
+		$cands    = array_values( array_unique( $cands ) );
+		// the NAME is the heavier / uppercase line, whatever the DOM order (a `div.font-bold + div.text-sm` author block, a
+		// role set above the name) — the first candidate was taken blindly (three author-mapping defects in the feed)
+		if ( count( $cands ) >= 2 ) {
+			$best = 0; $bs = -1;
+			foreach ( $cands as $ci => $ct ) { $sc = ( ( $cand_w[ $ct ][0] ?? 400 ) >= 600 ? 2 : 0 ) + ( ! empty( $cand_w[ $ct ][1] ) ? 1 : 0 ); if ( $sc > $bs ) { $bs = $sc; $best = $ci; } }
+			if ( $best > 0 && $bs > 0 ) { $nm = $cands[ $best ]; unset( $cands[ $best ] ); array_unshift( $cands, $nm ); $cands = array_values( $cands ); }
+		}
+		return $cands;
+	}
+
 	/** Extract testimonial rows {quote,image,name,position,rating} from a grid's quote-cards. */
 	private static function testimonials_items( $el ) {
 		$rows = array();
@@ -17967,13 +21333,7 @@ class FW_Site_Converter_Stitch {
 			}
 			$image = ''; $imgs = $k->getElementsByTagName( 'img' ); if ( $imgs->length ) { $image = (string) $imgs->item( 0 )->getAttribute( 'src' ); }
 			$cands = array();
-			foreach ( array( 'h3', 'h4', 'h5', 'h6', 'cite', 'strong', 'span', 'p', 'div' ) as $tg ) {
-				foreach ( $k->getElementsByTagName( $tg ) as $e ) {
-					$t = trim( self::text( $e ) );
-					if ( $t !== '' && $t !== $quote && mb_strlen( $t ) <= 40 && $e->getElementsByTagName( '*' )->length <= 1 ) { $cands[] = $t; }
-				}
-			}
-			$cands    = array_values( array_unique( $cands ) );
+			$cands = self::author_candidates( $k, $quote );
 			// POSITION = role, plus a LOCATION line ("Portland, OR") and any FOOTER STAT ("Total savings
 			// $14,200") folded in — the native testimonial has no field for those, so appending them here
 			// keeps the content instead of dropping it. Location = a short "City, ST"-ish 3rd candidate.
@@ -18103,14 +21463,9 @@ class FW_Site_Converter_Stitch {
 		}
 		// Fallback attribution when there's no span-split author: reuse the grid's short-text candidate scan.
 		if ( $name === '' ) {
-			$cands = array();
-			foreach ( array( 'h4', 'h5', 'h6', 'cite', 'strong', 'span' ) as $tg ) {
-				foreach ( $el->getElementsByTagName( $tg ) as $e ) {
-					$t = trim( self::text( $e ) );
-					if ( $t !== '' && $t !== $quote && mb_strlen( $t ) <= 40 && $e->getElementsByTagName( '*' )->length <= 1 ) { $cands[] = $t; }
-				}
-			}
-			$cands = array_values( array_unique( $cands ) );
+			// (the grid's scan, DIV lines included: a `div.font-bold + div.text-sm.text-muted` author block beside the avatar left
+			// both fields empty — a fixture from the feed)
+			$cands = self::author_candidates( $el, $quote );
 			if ( isset( $cands[0] ) ) { $name = $cands[0]; }
 			if ( isset( $cands[1] ) ) { $position = $cands[1]; }
 		}
@@ -18150,7 +21505,7 @@ class FW_Site_Converter_Stitch {
 		$cls = strtolower( self::cls( $el ) );
 
 		// MARQUEE — a horizontally auto-scrolling wall (CSS marquee animation / duplicated track).
-		if ( preg_match( '/\bmarquee\b|animate-marquee|animate-scroll|animation:[^;"\']*(?:marquee|scroll)/', $hay ) ) {
+		if ( preg_match( '/\bmarquee\b|animate-marquee|animate-scroll(?:-left|-right|-x)?(?=[\s"\'])|animation:[^;"\']*(?:marquee|scroll)/', $hay ) ) {
 			return array( 'design' => 'marquee', 'layout_choice' => '', 'grid_columns' => '', 'sub' => array() );
 		}
 		// SLIDER / CAROUSEL — a JS slider lib, an ARIA carousel, or a snap / overflow-x scroll track.
@@ -18159,7 +21514,7 @@ class FW_Site_Converter_Stitch {
 		}
 		// MASONRY — a CSS multi-column wall (`columns-N` / a `masonry` class): many cards, uneven heights.
 		if ( $count >= 3 && preg_match( '/\b(?:columns-([1-4])|masonry)\b/', $cls . ' ' . $hay, $mm ) ) {
-			$mc = ! empty( $mm[1] ) ? $mm[1] : '3';
+			$mc = (string) min( 4, (int) self::wall_columns( $el, ! empty( $mm[1] ) ? $mm[1] : '3' ) );
 			return array( 'design' => 'masonry', 'layout_choice' => '', 'grid_columns' => '', 'sub' => array( 'masonry_columns' => $mc ) );
 		}
 		// BENTO — an asymmetric grid whose FIRST tile spans 2 cols/rows (a featured hero quote + smaller ones).
@@ -18388,7 +21743,11 @@ class FW_Site_Converter_Stitch {
 	private static function grid_cols( $grid ) {
 		$grid_cols = self::grid_col_count( $grid );
 		$out = array();
-		foreach ( self::el_children( $grid ) as $cell ) {
+		$g_children = self::el_children( $grid );
+		$g_shares   = self::track_shares( self::grid_px_tracks( $grid, count( $g_children ) ), count( $g_children ) ); // unequal measured tracks → 7 / 5, not 6 / 6
+		$g_ci = -1;
+		foreach ( $g_children as $cell ) {
+			$g_ci++;
 			$cls   = self::cls( $cell );
 			// Tailwind's `col-span-N` is N of the PARENT's OWN `grid-cols-M` tracks — it is NOT N/12.
 			// Treating it as a 12-grid span (which this did) shrank every cell of a non-12 grid: a
@@ -18400,10 +21759,51 @@ class FW_Site_Converter_Stitch {
 				$desk = ( $grid_cols >= 2 )
 					? max( 1, min( 12, (int) round( $span * 12 / $grid_cols ) ) )
 					: min( 12, $span ); // track count unknown → assume the source already used 12 tracks
+			} elseif ( isset( $g_shares[ $g_ci ] ) ) {
+				$desk = $g_shares[ $g_ci ];
 			} else {
 				$desk = $grid_cols > 0 ? (int) round( 12 / $grid_cols ) : 0;
 			}
 			$wResp = $desk >= 1 && $desk <= 12 ? array( 'desktop' => $desk ) : null;
+
+			// A CAPTION TILE cell (a photo + an absolute caption) → the image box's overlay family, never a stacked card
+			// (card_from_cell put the caption UNDER the photo — a fixture from the feed)
+			$ct = self::caption_tile_block( $cell );
+			if ( $ct ) { $out[] = array_merge( array( 'cls' => '', 'wResp' => $wResp, 'blocks' => array( $ct ) ), self::cell_geometry( $cell ) ); continue; }
+
+			// A card whose PHOTO carries a floating BADGE (an event card: a two-line date chip pinned bottom-left over the image, then
+			// a category chip / title / copy / a time | link row) — the image box has no layer for the chip, and it was dropped
+			// (a fixture from the feed, recurring on two sites). The cell decomposes: the photo composite (media image + the pinned
+			// chip, natively positioned) then the body's leaves inside a padded stack; the card's skin rides the column.
+			$bfr = self::card_photo_badge( $cell );
+			if ( $bfr instanceof DOMElement ) {
+				$blocks = array();
+				$comp = self::image_composite_decompose( $bfr );
+				$cbl = array(); if ( is_array( $comp ) ) { foreach ( $comp as $cb ) { if ( is_array( $cb ) && isset( $cb['t'] ) ) { $cbl[] = $cb; } } }
+				if ( $cbl ) { $frame = array( 't' => 'stack', 'role' => 'stack', 'gap' => 0, 'mt' => 0, 'mb' => 0, 'items' => $cbl, 'rel' => true ); if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $bfr->getAttribute( 'data-sc-cs' ), $fhm ) && (float) $fhm[1] >= 80 ) { $frame['frameH'] = (float) $fhm[1]; } $blocks[] = $frame; }
+				foreach ( self::el_children( $cell ) as $kid ) {
+					if ( $kid === $bfr || self::is_ancestor( $kid, $bfr ) ) { continue; }
+					if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', (string) $kid->getAttribute( 'data-sc-cs' ) ) ) { continue; }
+					if ( '' === trim( self::text( $kid ) ) && ! self::holds_icon_or_media( $kid ) ) { continue; }
+					$hb = self::body_stack_blocks( $kid );
+					if ( ! $hb ) { continue; }
+					$kpad = self::el_padding( $kid ); $kp = is_array( $kpad['base'] ?? null ) ? $kpad['base'] : array();
+					$has_pad = false; foreach ( array( 'top', 'right', 'bottom', 'left' ) as $ps ) { if ( (float) ( $kp[ $ps ] ?? 0 ) > 0 ) { $has_pad = true; } }
+					if ( $has_pad || count( $hb ) >= 2 ) {
+						$st = array( 't' => 'stack', 'role' => 'stack', 'gap' => (int) self::grid_gap_px( $kid ), 'mt' => 0, 'mb' => 0, 'items' => $hb );
+						if ( $has_pad ) { $st['pad'] = $kp; }
+						$kcs = (string) $kid->getAttribute( 'data-sc-cs' );
+						if ( preg_match( '/(?:^|;)\s*justify-content:\s*space-between/i', $kcs ) && preg_match( '/flex-direction:\s*column/i', $kcs ) ) { $st['grow'] = true; }
+						$blocks[] = $st;
+					} else { $blocks[] = $hb[0]; }
+				}
+				if ( count( $blocks ) >= 2 ) {
+					$pcol = array_merge( array( 'cls' => '', 'wResp' => $wResp, 'blocks' => $blocks ), self::cell_geometry( $cell ) );
+					$pskin = self::cell_card_skin( $cell ); if ( $pskin ) { $pcol['cardBox'] = $pskin; }
+					$out[] = $pcol;
+					continue;
+				}
+			}
 
 			// A cell that WRAPS a counter/stat grid (a "stats panel" = a section heading + a grid of
 			// number+label cells, e.g. modfii's glassmorphic hero panel) must NOT collapse into one
@@ -18420,9 +21820,34 @@ class FW_Site_Converter_Stitch {
 					// captured -- so without this a card that pairs a photo with a stat row lost the photo
 					// entirely (urban_living_ams: 3 property photos, silently gone).
 					$blocks = self::cell_photo_block( $cell, $cgrid );
+					// the panel's HEADER ROW(S) before its heading (an icon + a "SCAN_01" chip in a justify-between row) — walked as
+					// blocks so a scan panel keeps its chrome; only rows that hold neither the heading nor the stat grid
+					$lead_h = null; foreach ( array( 'h1', 'h2', 'h3', 'h4' ) as $ht ) { foreach ( $cell->getElementsByTagName( $ht ) as $hd ) { $lead_h = $hd; break 2; } }
+					foreach ( self::el_children( $cell ) as $kid ) {
+						if ( $kid === $cgrid || self::is_ancestor( $kid, $cgrid ) || $kid === $lead_h || ( $lead_h && self::is_ancestor( $kid, $lead_h ) ) ) { break; }
+						if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', (string) $kid->getAttribute( 'data-sc-cs' ) ) ) { continue; } // a decor layer
+						if ( '' === trim( self::text( $kid ) ) && ! self::holds_icon_or_media( $kid ) ) { continue; }
+						$hb = array(); self::collect_blocks_of( $kid, $hb, self::rules_get() );
+						$hb = array_values( array_filter( $hb, function ( $b ) { return is_array( $b ) && isset( $b['t'] ); } ) );
+						$kcs = (string) $kid->getAttribute( 'data-sc-cs' );
+						if ( count( $hb ) >= 2 && preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $kcs ) && ! preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $kcs ) ) {
+							// a flex HEADER ROW (a mark | a chip, justify-between) stays a row: one content-sized cell per block, the source's justify
+							$jc = preg_match( '/(?:^|;)\s*justify-content:\s*([a-z-]+)/i', $kcs, $jm ) ? strtolower( $jm[1] ) : '';
+							$hrow = array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $kid ), 'gap' => (int) self::grid_gap_px( $kid ), 'mt' => 0, 'mb' => 0, 'nowrap' => true, 'cols' => array() );
+							if ( preg_match( '/^(space-between|space-around|space-evenly|center|flex-end|end)$/', $jc ) ) { $hrow['justify'] = $jc; } // the raw value — the row builder maps it (native Justify + content-sized cells)
+							$hm = self::el_margin( $kid ); if ( ! empty( $hm['bottom'] ) ) { $hrow['mb'] = (float) $hm['bottom']; }
+							foreach ( $hb as $b ) { if ( 'text' === ( $b['t'] ?? '' ) ) { $b['contentSized'] = true; } $hrow['cols'][] = array( 'cls' => '', 'blocks' => array( $b ) ); } // a flex item is content-sized (a boxed chip keeps its own width)
+							$blocks[] = $hrow;
+						} else {
+							foreach ( $hb as $b ) { $blocks[] = $b; }
+						}
+					}
 					$blocks = array_merge( $blocks, self::cell_lead_heading_block( $cell, $cgrid ) );
 					$blocks[] = $cg;
-					$out[] = array( 'cls' => '', 'wResp' => $wResp, 'blocks' => $blocks );
+					$pcol = array_merge( array( 'cls' => '', 'wResp' => $wResp, 'blocks' => $blocks ), self::cell_geometry( $cell ) );
+					// …and the panel's OWN skin (a glass stone panel: fill / border / radius / blur / shadow) → the column's Box Preset
+					$pskin = self::cell_card_skin( $cell ); if ( $pskin ) { $pcol['cardBox'] = $pskin; }
+					$out[] = $pcol;
 					continue;
 				}
 			}
@@ -18610,6 +22035,40 @@ class FW_Site_Converter_Stitch {
 		return '';
 	}
 
+	/** A card's eyebrow label: the nearest SHORT text element before the heading (document order) that is small or
+	 *  uppercase and not the heading's own text — { text, cs } or null. JS: cardEyebrowOf. */
+	private static function card_eyebrow( $cell, $heading ) {
+		if ( ! ( $cell instanceof DOMElement ) || ! ( $heading instanceof DOMElement ) ) { return null; }
+		$best = null;
+		foreach ( $cell->getElementsByTagName( '*' ) as $e ) {
+			if ( $e === $heading ) { break; }
+			if ( ! in_array( strtolower( $e->tagName ), array( 'div', 'span', 'small', 'p', 'em', 'strong' ), true ) ) { continue; }
+			if ( 0 !== $e->getElementsByTagName( '*' )->length ) { continue; } // a leaf only
+			if ( self::is_ancestor( $e, $heading ) ) { continue; }
+			$t = trim( preg_replace( '/\s+/', ' ', self::text( $e ) ) );
+			if ( '' === $t || mb_strlen( $t ) > 40 || preg_match( '/[.!?]$/', $t ) ) { continue; }
+			$cs = (string) $e->getAttribute( 'data-sc-cs' );
+			$fs = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', $cs, $fm ) ? (float) $fm[1] : 16.0;
+			$upper = (bool) preg_match( '/text-transform:\s*uppercase/i', $cs ) || ( preg_match( '/[a-z]/i', $t ) && $t === mb_strtoupper( $t ) );
+			if ( $fs > 13 && ! $upper ) { continue; }
+			$best = array( 'text' => $t, 'cs' => $cs );
+		}
+		return $best;
+	}
+
+	/** TRUE when $a comes before $b in document order (both under $scope). */
+	private static function dom_precedes( $a, $b, $scope ) {
+		if ( ! ( $scope instanceof DOMElement ) ) { return false; }
+		foreach ( $scope->getElementsByTagName( '*' ) as $e ) { if ( $e === $a ) { return true; } if ( $e === $b ) { return false; } }
+		return false;
+	}
+
+	/** TRUE when $a is an ancestor of $b. */
+	private static function is_ancestor( $a, $b ) {
+		for ( $n = $b->parentNode; $n instanceof DOMNode; $n = $n->parentNode ) { if ( $n === $a ) { return true; } }
+		return false;
+	}
+
 	private static function card_from_cell( $cell ) {
 		// Heading.
 		$heading = null; $htag = 'h3';
@@ -18618,6 +22077,18 @@ class FW_Site_Converter_Stitch {
 			if ( $n ) { $heading = $n; $htag = $h; break; }
 		}
 		if ( ! $heading ) { return null; } // no title → not an icon-card
+		$stat_eyebrow = null;
+		// A STAT CARD (`h4.text-sm label + div.text-5xl "80+" + p.text-xs`): the DISPLAY-SIZE number leaf (≥ 2× the heading's
+		// size) is the card's TITLE and the small heading its overline — the number was folded into the content paragraph where
+		// the description's 12px won (a fixture from the feed). The h-tag stays the eyebrow via card_eyebrow (it precedes).
+		$h_fs = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $heading->getAttribute( 'data-sc-cs' ), $hfm ) ? (float) $hfm[1] : 16.0;
+		foreach ( $cell->getElementsByTagName( '*' ) as $nl ) {
+			if ( ! in_array( strtolower( $nl->tagName ), array( 'div', 'span', 'p', 'strong', 'b' ), true ) || $nl->getElementsByTagName( '*' )->length > 0 ) { continue; }
+			$nt = trim( preg_replace( '/\s+/', ' ', self::text( $nl ) ) );
+			if ( ! preg_match( '/^[$€£¥]?\d[\d,.]*\s*(?:%|\+|×|x|k|K|M|\/\d{1,3})?$/u', $nt ) ) { continue; }
+			$n_fs = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $nl->getAttribute( 'data-sc-cs' ), $nfm ) ? (float) $nfm[1] : 0.0;
+			if ( $n_fs >= 24 && $n_fs >= 2 * $h_fs && self::dom_precedes( $heading, $nl, $cell ) ) { $stat_eyebrow = $heading; $heading = $nl; $htag = 'h3'; break; }
+		}
 
 		// Icon: first material-symbol span, else first <svg>.
 		$icon = ''; $custom_icon = ''; $icon_box_cls = ''; $icon_box_cs = ''; $icon_cls = ''; $icon_chip_cls = ''; $icon_badge = ''; $icon_badge_color = ''; $icon_chip_cs = ''; $icon_color = '';
@@ -18653,7 +22124,7 @@ class FW_Site_Converter_Stitch {
 				$sp = ( $icon_el->parentNode instanceof DOMElement ) ? $icon_el->parentNode : null;
 				if ( $sp && $sp !== $cell && '' === $icon_chip_cls ) {
 					$pcls = self::cls( $sp );
-					if ( strpos( $pcls, 'bg-' ) !== false && preg_match( '/(?:^|\s)(?:w-\d|h-\d|min-h-|aspect-|p-\d|rounded)/', $pcls ) ) {
+					if ( ( strpos( $pcls, 'bg-' ) !== false && preg_match( '/(?:^|\s)(?:w-\d|h-\d|min-h-|aspect-|p-\d|rounded)/', $pcls ) ) || self::el_is_icon_tile( $sp ) ) {
 						$icon_chip_cls = $pcls;
 						$icon_chip_cs  = (string) $sp->getAttribute( 'data-sc-cs' );
 						$cbg = self::sc_css( $sp, 'background-color' );
@@ -18675,10 +22146,16 @@ class FW_Site_Converter_Stitch {
 				// n_icon_box resolves the icon color from the source token instead of leaving it inherit-dark
 				// — the golden fixture feature chips are green / amber / green per card, not the card's body color.
 				if ( '' === $icon_cls ) { $icon_cls = self::cls( $svg ); }
+				// The icon's COMPUTED ink: an <svg> is never stamped, so a currentColor glyph inherits from the nearest stamped ancestor
+				// (its <iconify-icon> host / the chip: `text-white` on the tile) — else the icon fell back to the theme's default colour.
+				if ( '' === $icon_color && ! preg_match( '/(?:^|\s)text-[a-z]/', self::cls( $svg ) ) ) { for ( $ap = $svg->parentNode, $ai = 0; $ap instanceof DOMElement && $ap !== $cell && $ai < 3; $ap = $ap->parentNode, $ai++ ) { $ac = self::sc_css( $ap, 'color' ); if ( '' !== $ac ) { $icon_color = $ac; break; } } }
 				// Capture the icon's CHIP wrapper — a filled, fixed-size container (`bg-*` + a w/h/aspect/pad
 				// sizing step, e.g. `w-16 h-16 bg-white rounded-2xl`) — as iconChipCls, so n_icon_box reproduces
 				// the badge/bg behind the icon (icon_badge shape + fill) rather than an unstyled bare icon.
 				$sp = ( $svg->parentNode instanceof DOMElement ) ? $svg->parentNode : null;
+				// An icon HOST (an <iconify-icon> the capture filled with its shadow svg, a bare <i>/<span> glyph wrapper with no skin of its own)
+				// is not the chip — the chip is the host's parent (`w-12 h-12 rounded-2xl bg-gray-600` around the web component).
+				if ( $sp instanceof DOMElement && $sp->parentNode instanceof DOMElement && ( 'iconify-icon' === strtolower( $sp->tagName ) || ( in_array( strtolower( $sp->tagName ), array( 'i', 'span' ), true ) && false === strpos( self::cls( $sp ), 'bg-' ) && '' === self::sc_css( $sp, 'background-color' ) ) ) ) { $sp = $sp->parentNode; }
 				// A real icon CHIP is a SMALL wrapper around ONLY the icon — never the CARD/CELL itself. The
 				// card carries `bg-secondary p-8`, which matches the chip heuristic (bg + padding), so without
 				// this guard the whole card was read as the icon's chip: its dark background got painted behind
@@ -18693,7 +22170,7 @@ class FW_Site_Converter_Stitch {
 				}
 				if ( $chip_ok ) {
 					$pcls = self::cls( $sp );
-					if ( strpos( $pcls, 'bg-' ) !== false && preg_match( '/(?:^|\s)(?:w-\d|h-\d|min-h-|aspect-|p-\d)/', $pcls ) ) {
+					if ( ( strpos( $pcls, 'bg-' ) !== false && preg_match( '/(?:^|\s)(?:w-\d|h-\d|min-h-|aspect-|p-\d)/', $pcls ) ) || self::el_is_icon_tile( $sp ) ) {
 						$icon_chip_cls = $pcls;
 						$icon_chip_cs  = (string) $sp->getAttribute( 'data-sc-cs' ); // full computed chip skin (fill/radius/shadow) → badge design
 						// Prefer the chip's CAPTURED computed background + radius (authoritative) over compiling
@@ -18728,6 +22205,7 @@ class FW_Site_Converter_Stitch {
 		// as a bold line so the value renders above its label. (P4 audit fix.)
 		foreach ( $cell->getElementsByTagName( '*' ) as $bel ) {
 			$btag = strtolower( $bel->tagName );
+			if ( $bel === $heading ) { continue; } // (a stat card's number leaf IS the title — never also a bold body line)
 			if ( 'p' === $btag ) {
 				$body .= '<p>' . self::clean_inline_html( $bel ) . '</p>';
 				// CHILD RHYTHM (measured on the SECOND paragraph): its top margin (a `space-y-4` = 16px) and top border + padding
@@ -18746,8 +22224,27 @@ class FW_Site_Converter_Stitch {
 			elseif ( 'div' === $btag && self::is_stat_number( $bel, 'div' ) ) { $body .= '<p><strong>' . self::clean_inline_html( $bel ) . '</strong></p>'; }
 			// A STRAY INLINE child of the card (a `<span class="label">` side label outside any <p>) → its own paragraph, keeping the
 			// span's inline treatment (writing-mode / tracking / case, from its stamp vs the card's). JS: rawHtmlOf inline bits.
-			elseif ( in_array( $btag, array( 'span', 'small', 'em', 'strong' ), true ) && $bel->parentNode === $cell && '' !== trim( self::text( $bel ) ) && mb_strlen( trim( self::text( $bel ) ) ) <= 80 && 0 === $bel->getElementsByTagName( 'svg' )->length ) {
+			elseif ( in_array( $btag, array( 'span', 'small', 'em', 'strong' ), true ) && $bel->parentNode === $cell && '' !== trim( self::text( $bel ) ) && mb_strlen( trim( self::text( $bel ) ) ) <= 80 && 0 === $bel->getElementsByTagName( 'svg' )->length
+				// …unless the span IS the card's eyebrow (already the native Overline — it was doubling as the first body line)
+				&& trim( preg_replace( '/\s+/', ' ', self::text( $bel ) ) ) !== trim( preg_replace( '/\s+/', ' ', (string) ( ( $eb2_ = self::card_eyebrow( $cell, $heading ) ) ? ( is_array( $eb2_ ) ? ( $eb2_['text'] ?? '' ) : $eb2_ ) : '' ) ) ) ) {
 				$body .= '<p>' . self::clean_block_html( $bel, (string) $cell->getAttribute( 'data-sc-cs' ) ) . '</p>';
+			}
+			// A LEAF <div> LINE of the card outside any <p> — a "Status: Active Isolation" footer, a meta line — is card copy the
+			// sweep above never collected (it only took <p>, stat lockups and inline strays), so it vanished. Its own paragraph,
+			// keeping its treatment vs the card's. The title, the eyebrow (already the overline) and a bare step marker are not lines.
+			elseif ( 'div' === $btag && $bel !== $cell && 0 === $bel->getElementsByTagName( '*' )->length && '' !== trim( self::text( $bel ) ) && mb_strlen( trim( self::text( $bel ) ) ) <= 120
+				&& ! self::is_stat_number( $bel, 'div' ) && ! self::is_ancestor( $heading, $bel ) && $bel !== $heading
+				&& trim( preg_replace( '/\s+/', ' ', self::text( $bel ) ) ) !== trim( preg_replace( '/\s+/', ' ', (string) ( ( $eb_ = self::card_eyebrow( $cell, $heading ) ) ? ( is_array( $eb_ ) ? ( $eb_['text'] ?? '' ) : $eb_ ) : '' ) ) )
+				&& ! preg_match( '/^(?:step\s*)?0*\d{1,2}$/i', trim( self::text( $bel ) ) ) ) {
+				// its treatment vs the card's (mono / 11px / tracked uppercase / a muted tone) as an inline run, the same way a stray span keeps its own
+				$lcs = (string) $bel->getAttribute( 'data-sc-cs' ); $pcs = (string) $cell->getAttribute( 'data-sc-cs' ); $lst = array();
+				$lg = function ( $cs, $pr ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $pr, '/' ) . ':\s*([^;]+)/i', $cs, $m ) ? trim( $m[1] ) : ''; };
+				foreach ( array( 'letter-spacing', 'text-transform', 'font-size', 'font-weight', 'font-family', 'color' ) as $pr ) {
+					$v = $lg( $lcs, $pr ); if ( '' === $v || $v === $lg( $pcs, $pr ) || in_array( strtolower( $v ), array( 'none', 'normal', '0px' ), true ) ) { continue; }
+					if ( ! preg_match( '/^[a-z0-9.%(),\s#"\'-]+$/i', $v ) ) { continue; }
+					$lst[] = $pr . ':' . str_replace( '"', "'", $v );
+				}
+				$body .= '<p>' . ( $lst ? '<span style="' . esc_attr( implode( ';', $lst ) ) . '">' : '' ) . self::clean_inline_html( $bel ) . ( $lst ? '</span>' : '' ) . '</p>';
 			}
 			// An EMPTY PAINTED BOX (no text, no media): an aspect-ratio placeholder, a pattern tile, a colour swatch — dropped
 			// as decoration before. Carried as a class-hooked <div> in the description (document order) whose paint / ratio /
@@ -18788,8 +22285,10 @@ class FW_Site_Converter_Stitch {
 			foreach ( $a->getElementsByTagName( 'span' ) as $sp ) {
 				if ( strpos( self::cls( $sp ), 'material-symbols' ) !== false ) { $bicon = self::material_to_fa( trim( $sp->textContent ) ); break; }
 			}
+			// a trailing lucide arrow / chevron svg inside the link ("Learn more →") → the arrow link style (n_image_box / n_icon_box read `iconSvg`)
+			$bsvg = ''; foreach ( $a->getElementsByTagName( 'svg' ) as $asv ) { if ( preg_match( '/lucide-(?:arrow|chevron|move)-(?:right|up-right)/', self::cls( $asv ) ) ) { $bsvg = 'arrow lucide-' . self::cls( $asv ); break; } }
 			$href = $a->getAttribute( 'href' );
-			$button = array( 'label' => $label, 'href' => $href !== '' ? $href : '#', 'icon' => $bicon, 'cls' => self::cls( $a ), 'cs' => $a->getAttribute( 'data-sc-cs' ) );
+			$button = array( 'label' => $label, 'href' => $href !== '' ? $href : '#', 'icon' => $bicon, 'iconSvg' => $bsvg, 'cls' => self::cls( $a ), 'cs' => $a->getAttribute( 'data-sc-cs' ) );
 			break;
 		}
 
@@ -18819,6 +22318,13 @@ class FW_Site_Converter_Stitch {
 				continue;
 			}
 			$image = array( 'src' => $isrc, 'alt' => trim( (string) $im->getAttribute( 'alt' ) ), 'cls' => self::cls( $im ), 'aspect' => self::img_frame_aspect( $im, $cell ), 'extra' => self::img_extra_css( $im ) );
+			// a FIXED-HEIGHT media frame (`h-64 overflow-hidden` → 256px; a `w-full h-full object-cover` image filling it): the
+			// box's crop is a height, not a ratio — it fell back to 4:3 (a fixture from the feed). Measured on the frame.
+			$fr = ( $im->parentNode instanceof DOMElement ) ? $im->parentNode : null;
+			if ( $fr instanceof DOMElement && $fr !== $cell && '' === $image['aspect'] && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $fr->getAttribute( 'data-sc-cs' ), $fhm ) && (float) $fhm[1] >= 80
+				&& ( preg_match( '/(?:^|\s)(?:sm:|md:|lg:|xl:)?h-(?:\d{1,3}|\[[0-9.]+px\])(?=\s|$)/', ' ' . self::cls( $fr ) . ' ' ) || preg_match( '/(?:^|\s)h-full(?=\s|$)/', ' ' . self::cls( $im ) . ' ' ) ) ) {
+				$image['frameHeight'] = (float) $fhm[1];
+			}
 			break;
 		}
 		if ( $img_icon !== '' ) { $custom_icon = ''; $icon = ''; $lucide = ''; } // the SVG illustration is the icon → drop a decorative arrow svg
@@ -18870,6 +22376,9 @@ class FW_Site_Converter_Stitch {
 			'image'      => $image, // { src, alt } when the card is an image/product/collection card → IMAGE card
 			'title'      => self::text( $heading ),
 			'titleTag'   => $htag,
+			// The card's EYEBROW — a short label (≤ 40 chars, ≤ 13px or uppercase) that precedes the heading inside the card
+			// ("Digital Architecture" over a project tile title) → the icon_box's native Overline (+ its type as scoped CSS).
+			'overline'   => ( $stat_eyebrow instanceof DOMElement ) ? array( 'text' => trim( preg_replace( '/\s+/', ' ', self::text( $stat_eyebrow ) ) ), 'cs' => (string) $stat_eyebrow->getAttribute( 'data-sc-cs' ) ) : self::card_eyebrow( $cell, $heading ), // a stat card's small label rides as the overline
 			// The card title's COMPUTED font-weight (data-sc-cs). A source card heading (`text-lg font-serif`,
 			// no weight utility) carries its real weight ONLY in the computed style, so without this the imgbox
 			// title falls to the theme default (500) even when the source is 400. n_image_box re-asserts it.
@@ -19096,15 +22605,54 @@ class FW_Site_Converter_Stitch {
 			// and reading its `mx-auto` as "centre the button" WRONGLY centred left-aligned CTAs (the hero
 			// "Get Pre-Approved" was left in the source but rendered centred). Honour `mx-auto` ONLY on the
 			// button's IMMEDIATE wrapper, and only when that wrapper isn't a wide layout container.
-			if ( strpos( $pc, 'text-center' ) !== false || strpos( $pc, 'justify-center' ) !== false ) { $btn_align = 'center'; break; }
+			// (…in a flex COLUMN `justify-center` centres VERTICALLY — `items-center` is its horizontal centring; a `flex-col
+			// justify-center` text panel centred its left-aligned link — a fixture from the feed)
+			$p_col = strpos( $pc, ' flex-col ' ) !== false || preg_match( '/^column/i', (string) self::sc_css( $p, 'flex-direction' ) );
+			if ( strpos( $pc, 'text-center' ) !== false || ( ! $p_col && strpos( $pc, 'justify-center' ) !== false ) || ( $p_col && strpos( $pc, 'items-center' ) !== false ) ) { $btn_align = 'center'; break; }
 			if ( 0 === $lvl && strpos( $pc, 'mx-auto' ) !== false && ! preg_match( '/\b(container|max-w-(?:4xl|5xl|6xl|7xl|full|screen|prose))\b/', $pc ) ) { $btn_align = 'center'; break; }
-			if ( strpos( $pc, 'text-right' ) !== false || strpos( $pc, 'justify-end' ) !== false ) { $btn_align = 'end'; break; }
+			if ( strpos( $pc, 'text-right' ) !== false || ( ! $p_col && strpos( $pc, 'justify-end' ) !== false ) || ( $p_col && strpos( $pc, 'items-end' ) !== false ) ) { $btn_align = 'end'; break; }
 			if ( 'section' === strtolower( $p->tagName ) ) { break; }
+		}
+		// A STACKED label — the button's text is ≥ 2 block-level lines with their own type (an eyebrow "Access" over a serif
+		// "Prism" inside a 224px orb): each line becomes a `<span style="display:block;…">` carrying only what differs from the
+		// button's own stamp, and a square / fixed box (display grid|flex, width ≈ height, radius) keeps its measured size. It
+		// was flattened to "Access Prism" in a one-line pill before.
+		$label_html = ''; $box_css = '';
+		$lines = array(); $host = $el; $hk = self::el_children( $el );
+		if ( 1 === count( $hk ) && ! in_array( strtolower( $hk[0]->tagName ), array( 'svg', 'i', 'span', 'img' ), true ) && count( self::el_children( $hk[0] ) ) >= 2 ) { $host = $hk[0]; $hk = self::el_children( $hk[0] ); }
+		foreach ( $hk as $k ) {
+			$kt = strtolower( $k->tagName ); if ( in_array( $kt, array( 'svg', 'i', 'img', 'iconify-icon' ), true ) ) { continue; }
+			$ktxt = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $k ) ) );
+			if ( '' === $ktxt || $k->getElementsByTagName( '*' )->length > 1 ) { $lines = array(); break; }
+			if ( ! preg_match( '/(?:^|;)\s*display:\s*block/i', (string) $k->getAttribute( 'data-sc-cs' ) ) ) { $lines = array(); break; }
+			$lines[] = $k;
+		}
+		if ( count( $lines ) >= 2 ) {
+			$bcs = (string) $el->getAttribute( 'data-sc-cs' );
+			$bd  = FW_Site_Converter_Mapper::cs_decls( $bcs, array( 'font-family', 'font-size', 'font-weight', 'letter-spacing', 'text-transform', 'color', 'line-height' ) );
+			$parts = array();
+			foreach ( $lines as $li => $k ) {
+				$kd = FW_Site_Converter_Mapper::cs_decls( (string) $k->getAttribute( 'data-sc-cs' ), array( 'font-family', 'font-size', 'font-weight', 'letter-spacing', 'text-transform', 'color', 'line-height', 'margin' ) );
+				$st = array( 'display:block' );
+				foreach ( array( 'font-family', 'font-size', 'font-weight', 'letter-spacing', 'text-transform', 'color', 'line-height' ) as $pk ) {
+					if ( isset( $kd[ $pk ] ) && '' !== $kd[ $pk ] && ( ! isset( $bd[ $pk ] ) || strtolower( trim( $kd[ $pk ] ) ) !== strtolower( trim( $bd[ $pk ] ) ) ) ) { $v = $kd[ $pk ]; if ( 'color' === $pk ) { $v = self::hexify_colors( $v ); } $st[] = $pk . ':' . $v; }
+				}
+				if ( $li > 0 && isset( $kd['margin'] ) && preg_match( '/^([0-9.]+)px/', $kd['margin'], $mm ) && (float) $mm[1] > 0 ) { $st[] = 'margin-top:' . $mm[1] . 'px'; }
+				$parts[] = '<span style="' . esc_attr( implode( ';', $st ) ) . '">' . esc_html( trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $k ) ) ) ) . '</span>';
+			}
+			$label_html = implode( '', $parts );
+			$bw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $bcs, $wm ) ? (float) $wm[1] : 0.0;
+			$bh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $bcs, $hm ) ? (float) $hm[1] : 0.0;
+			if ( $bw <= 0 && preg_match( '/(?:^|;)\s*grid-template-columns:\s*([0-9.]+)px/i', $bcs, $gm ) ) { $bw = (float) $gm[1]; }
+			if ( $bh >= 60 && $bw >= 60 && abs( $bw - $bh ) <= 8 ) { $box_css = 'width:' . round( $bh ) . 'px;height:' . round( $bh ) . 'px;padding:0;display:inline-flex;flex-direction:column;justify-content:center;align-items:center;'; }
+			elseif ( $bh >= 60 ) { $box_css = 'height:' . round( $bh ) . 'px;display:inline-flex;flex-direction:column;justify-content:center;align-items:center;'; }
 		}
 		return array(
 			't'      => 'button',
 			'role'   => self::rule_role( $rules, $el, 'button' ),
 			'label'  => $label !== '' ? $label : 'Button',
+			'labelHtml' => $label_html, // a stacked two-line label (see above); '' for a plain label
+			'boxCss'    => $box_css,    // a fixed square / tall box for it
 			'href'   => $href,
 			'align'  => $btn_align,
 			'cls'    => $cls,
@@ -19219,7 +22767,7 @@ class FW_Site_Converter_Stitch {
 				if ( $label === '' || str_word_count( $label ) > 4 ) { continue; }
 				$url = '#';
 			} else {
-				if ( self::is_button( $el ) ) { continue; }
+				if ( self::is_button( $el ) && ! self::nav_pill_sibling( $el ) ) { continue; }
 				$label = trim( preg_replace( '/\s+/', ' ', $el->textContent ) );
 				if ( $label === '' ) { continue; }
 				$url = $el->getAttribute( 'href' ); if ( $url === '' ) { $url = '#'; }
@@ -19520,6 +23068,11 @@ class FW_Site_Converter_Stitch {
 		if ( $needs && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {
 			$files['theme-design.json']['needs_extensions'] = array_values( array_unique( $needs ) );
 		}
+		// The SOURCE URL rides the design file: the bundle importer keys "same site vs. a new site" (menu / media purge) on it
+		// rather than on the brand word, which two different sources can share.
+		if ( '' !== $eff_source_url && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) && empty( $files['theme-design.json']['source_url'] ) ) {
+			$files['theme-design.json']['source_url'] = $eff_source_url;
+		}
 		// Attach the conversion debug map to the theme-design so the generated child theme carries a
 		// conversion-map.json (served same-origin for the dashboard inspector). Best-effort.
 		if ( $conv_map && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {
@@ -19784,6 +23337,23 @@ class FW_Site_Converter_Stitch {
 
 	/** The tightest footer element holding the copyright line (a year / "copyright" / the (c) glyph),
 	 *  preferring the wrapper with the FEWEST child elements so social icons etc. stay out of it. */
+	/** A footer whose © line, brand (a logo image / a wordmark link to the root) and ≥ 3 links all sit in ONE horizontal flex row. */
+	private static function footer_is_single_row( $footer ) {
+		if ( ! ( $footer instanceof DOMElement ) ) { return false; }
+		$cp = self::footer_copyright_el( $footer ); if ( ! ( $cp instanceof DOMElement ) ) { return false; }
+		$row = null;
+		for ( $a = $cp->parentNode, $i = 0; $a instanceof DOMElement && $a !== $footer && $i < 3; $a = $a->parentNode, $i++ ) {
+			$acs = (string) $a->getAttribute( 'data-sc-cs' );
+			if ( preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $acs ) && ! preg_match( '/flex-direction:\s*column/i', $acs ) ) { $row = $a; break; }
+		}
+		if ( ! ( $row instanceof DOMElement ) ) { return false; }
+		$links = 0; $brand = $row->getElementsByTagName( 'img' )->length > 0 || $row->getElementsByTagName( 'svg' )->length > 0;
+		// …or a TEXT wordmark / monogram: a round mark holding 1–2 characters, or a ≥ 18px semibold span
+		foreach ( $row->getElementsByTagName( '*' ) as $bw ) { $bt = trim( self::text( $bw ) ); $bcs = (string) $bw->getAttribute( 'data-sc-cs' ); if ( '' === $bt || $bw->getElementsByTagName( '*' )->length > 1 ) { continue; } if ( ( mb_strlen( $bt ) <= 2 && preg_match( '/border-radius:\s*(?:50%|9999px)/i', $bcs ) ) || ( mb_strlen( $bt ) <= 24 && preg_match( '/(?:^|;)\s*font-size:\s*(1[8-9]|[2-9][0-9])px/i', $bcs ) && preg_match( '/(?:^|;)\s*font-weight:\s*[5-9]00/i', $bcs ) ) ) { $brand = true; break; } }
+		foreach ( $row->getElementsByTagName( 'a' ) as $l ) { $h = trim( (string) $l->getAttribute( 'href' ) ); if ( '/' === $h || '' === $h || preg_match( '#^https?://[^/]+/?$#', $h ) ) { $brand = $brand || '' !== trim( self::text( $l ) ); } if ( '' !== trim( self::text_no_icons( $l ) ) ) { $links++; } }
+		return $brand && $links >= 3;
+	}
+
 	private static function footer_copyright_el( $footer ) {
 		$best = null; $best_kids = PHP_INT_MAX; $copy = chr( 0xC2 ) . chr( 0xA9 );
 		foreach ( array( 'div', 'p', 'span' ) as $tag ) {
@@ -19929,6 +23499,14 @@ class FW_Site_Converter_Stitch {
 			$ink = '';
 			if ( preg_match( '/<body\b[^>]*\bdata-sc-cs\s*=\s*"([^"]*)"/i', $html, $bm ) && preg_match( '/(?:^|;)\s*color:\s*([^;]+)/i', html_entity_decode( $bm[1] ), $cm ) ) { $ink = self::color_to_hex( trim( $cm[1] ) ); }
 			FW_Site_Converter_Mapper::set_page_ink( $ink );
+		}
+		// …and the page's body FACE (the body stamp's first family): a nested text block whose own face differs (a mono
+		// chip / value inside a sans card) carries its family on the block, since no section-level styler reaches it.
+		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_body_face' ) ) {
+			$bface = '';
+			if ( preg_match( '/<body\b[^>]*\bdata-sc-cs\s*=\s*"([^"]*)"/i', $html, $bm2 ) && preg_match( '/(?:^|;)\s*font-family:\s*([^;]+)/i', html_entity_decode( $bm2[1] ), $fm2 ) ) { $bface = trim( $fm2[1] ); }
+			if ( '' === $bface ) { $cf = self::detect_computed_fonts( (string) $html ); $bface = (string) ( $cf[1] ?? '' ); } // (a body stamp that carries no family: the measured body face)
+			FW_Site_Converter_Mapper::set_body_face( $bface );
 		}
 		// Faithful base on/off for this build (only meaningful on the faithful path, like the seeders below).
 		if ( method_exists( 'FW_Site_Converter_Mapper', 'set_hifi_css' ) ) { FW_Site_Converter_Mapper::set_hifi_css( $hifi ); }
@@ -20399,9 +23977,13 @@ class FW_Site_Converter_Stitch {
 	/** Element children (skip text/comment nodes). */
 	private static function el_children( $el ) {
 		$out = array();
-		foreach ( $el->childNodes as $c ) { if ( $c->nodeType === XML_ELEMENT_NODE ) { $out[] = $c; } }
+		// a <style> / <script> / <template> / <noscript> child is never CONTENT: an inline `<style>@media…</style>` a page
+		// author dropped as a section's last child counted as a third COLUMN and rendered its CSS as a text block (a
+		// fixture from the feed). Its rules still reach the converter — they are read from the document, not the tree.
+		foreach ( $el->childNodes as $c ) { if ( $c->nodeType === XML_ELEMENT_NODE && ! isset( self::$non_content_tags[ strtolower( $c->tagName ) ] ) ) { $out[] = $c; } }
 		return $out;
 	}
+	private static $non_content_tags = array( 'style' => 1, 'script' => 1, 'template' => 1, 'noscript' => 1, 'link' => 1, 'meta' => 1 );
 
 	private static function cls( $el ) {
 		return ( $el instanceof DOMElement ) ? strtolower( (string) $el->getAttribute( 'class' ) ) : '';
@@ -20521,14 +24103,67 @@ class FW_Site_Converter_Stitch {
 	private static function is_badge( $el ) {
 		$tag = strtolower( $el->tagName );
 		if ( ! in_array( $tag, array( 'div', 'span', 'a' ), true ) ) { return false; }
-		if ( 'a' === $tag && self::is_button( $el ) ) { return false; }
+		if ( 'a' === $tag && ( self::is_button( $el ) || self::cs_is_button( $el ) ) ) { return false; }
 		$cls = self::cls( $el );
-		if ( strpos( $cls, 'rounded-full' ) === false ) { return false; }
-		if ( strpos( $cls, 'inline-flex' ) === false && strpos( $cls, 'inline-block' ) === false && strpos( $cls, 'inline' ) === false ) { return false; }
-		if ( strpos( $cls, 'border' ) === false && strpos( $cls, 'bg-' ) === false ) { return false; }
+		$ecs = (string) $el->getAttribute( 'data-sc-cs' );
+		// a PILL-SHAPED CTA is a button, not a badge: an anchor ≥ 40px tall with ≥ 14px text and a real inset (≥ 12/24), or one
+		// sitting in a flex row of anchors — a `btn-coral rounded-full px-7 py-3.5` pair under the hero heading became badge ×2
+		// (a fixture from the feed). A badge is small: ≤ 32px tall / ≤ 12px text.
+		if ( 'a' === $tag ) {
+			$ah = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $ecs, $ahm ) ? (float) $ahm[1] : 0.0;
+			$af = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', $ecs, $afm ) ? (float) $afm[1] : 0.0;
+			$ap = preg_match( '/(?:^|;)\s*padding:\s*([0-9.]+)px(?:\s+([0-9.]+)px)?/i', $ecs, $apm ) ? array( (float) $apm[1], isset( $apm[2] ) ? (float) $apm[2] : (float) $apm[1] ) : array( 0.0, 0.0 );
+			if ( $ah >= 40 && $af >= 14 && $ap[0] >= 12 && $ap[1] >= 24 ) { return false; }
+			$pp = $el->parentNode;
+			if ( $pp instanceof DOMElement && preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', (string) $pp->getAttribute( 'data-sc-cs' ) ) ) {
+				$n_a = 0; foreach ( self::el_children( $pp ) as $sib ) { if ( 'a' === strtolower( $sib->tagName ) && '' !== trim( self::text( $sib ) ) ) { $n_a++; } }
+				if ( $n_a >= 2 && $ah >= 40 ) { return false; }
+			}
+		}
+		// The pill SKIN is measured, not only classed: a `.glass` sheet class paints the same translucent fill + hairline a
+		// `bg-white/5 border` does — the classed test alone dropped that pill's skin AND its dot (measured on a real conversion).
+		$cs_pill  = (bool) preg_match( '/(?:^|;)\s*border-radius:\s*(?:9999px|999px|50%|[2-9][0-9]px|[1-9][0-9]{2,}px)/i', $ecs );
+		$cs_skin  = ( preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $ecs, $bgm ) && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent|\/\s*0\s*\)/i', $bgm[1] ) )
+			|| ( preg_match( '/(?:^|;)\s*border-top-width:\s*([0-9.]+)px/i', $ecs, $bwm ) && (float) $bwm[1] > 0 && preg_match( '/(?:^|;)\s*border-top-style:\s*(?!none)/i', $ecs ) );
+		$cs_inline = (bool) preg_match( '/(?:^|;)\s*display:\s*inline/i', $ecs );
+		$has_pill_cls = strpos( $cls, 'rounded-full' ) !== false && ( strpos( $cls, 'border' ) !== false || strpos( $cls, 'bg-' ) !== false );
+		// A STATUS LOCKUP with no pill skin — a flex row of exactly a painted DOT (≤ 12px, rounded, filled) and ONE short label, placed
+		// right before a heading — is an eyebrow badge too (its dot the overline's mark, its pulse carried); it used to be mirrored as a
+		// "toolbar row" (a code_block dot + a text cell, the pulse and glow dropped — a finding filed on three conversions).
+		if ( ! $has_pill_cls && ! ( $cs_pill && $cs_skin ) ) {
+			$kids = self::el_children( $el );
+			$own_txt = ''; foreach ( $el->childNodes as $tn ) { if ( XML_TEXT_NODE === $tn->nodeType ) { $own_txt .= $tn->textContent; } } $own_txt = trim( preg_replace( '/\s+/', ' ', $own_txt ) );
+			if ( 1 === count( $kids ) && '' !== $own_txt && mb_strlen( $own_txt ) <= 48 && '' === trim( self::text( $kids[0] ) ) ) { $kids[] = null; } // the label is a bare TEXT node beside the dot
+			if ( 2 === count( $kids ) && in_array( $tag, array( 'div', 'span' ), true ) && preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $ecs ) ) {
+				$dot = null; $lab = null;
+				// the dot LEADS the label (a status lockup); a label with a dot pushed to the far edge (`justify-between`) is a toolbar row
+				if ( preg_match( '/justify-content:\s*space-(?:between|around|evenly)/i', $ecs ) ) { return false; }
+				if ( null === $kids[1] ) { $dot = $kids[0]; $lab = $el; }
+				else foreach ( $kids as $k ) { if ( '' === trim( self::text( $k ) ) && ! $k->getElementsByTagName( '*' )->length && null === $lab ) { $dot = $k; } elseif ( '' !== trim( self::text( $k ) ) && mb_strlen( trim( self::text( $k ) ) ) <= 48 && ! $k->getElementsByTagName( '*' )->length ) { $lab = $k; } }
+				if ( $dot && $lab ) {
+					$dcs = (string) $dot->getAttribute( 'data-sc-cs' );
+					$dh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $dcs, $hm ) ? (float) $hm[1] : 0.0;
+					$painted = preg_match( '/background-color:\s*(?!rgba\([^)]*,\s*0\s*\))(?!transparent)/i', $dcs ) && preg_match( '/border-radius:\s*(?:9999px|50%|[1-9][0-9]*px)/i', $dcs );
+					$next = $el->nextSibling; while ( $next && ! ( $next instanceof DOMElement ) ) { $next = $next->nextSibling; }
+					if ( $dh > 0 && $dh <= 12 && $painted && $next instanceof DOMElement && preg_match( '/^h[1-6]$/i', $next->tagName ) ) { return true; }
+				}
+			}
+			return false;
+		}
+		if ( strpos( $cls, 'inline-flex' ) === false && strpos( $cls, 'inline-block' ) === false && strpos( $cls, 'inline' ) === false && ! $cs_inline ) { return false; }
 		if ( $el->getElementsByTagName( 'img' )->length > 0 ) { return false; }
 		$txt = self::text( $el );
 		if ( $txt === '' || mb_strlen( $txt ) > 70 ) { return false; }
+		// a measured pill (skin + radius from the stamp, a `.glass` sheet class) is a badge whatever its classes — when it is an
+		// EYEBROW (right before a heading) or carries a mark (a dot / svg); a lone chip elsewhere keeps the chip / text paths
+		// (they carry its responsive hide + placement)
+		if ( ! $has_pill_cls && $cs_pill && $cs_skin && preg_match( '/(?:^|;)\s*padding:\s*[1-9]/i', $ecs ) ) {
+			$nx = $el->nextSibling; while ( $nx && ! ( $nx instanceof DOMElement ) ) { $nx = $nx->nextSibling; }
+			$before_h = ( $nx instanceof DOMElement && preg_match( '/^h[1-6]$/i', $nx->tagName ) );
+			$has_mark = $el->getElementsByTagName( 'svg' )->length > 0;
+			foreach ( self::el_children( $el ) as $mk ) { if ( '' === trim( self::text( $mk ) ) && ! $mk->getElementsByTagName( '*' )->length && preg_match( '/(?:^|;)\s*border-radius:\s*(?:9999px|50%)/i', (string) $mk->getAttribute( 'data-sc-cs' ) ) ) { $has_mark = true; } }
+			if ( $before_h || $has_mark ) { return true; }
+		}
 		// A structured badge is EITHER a COMPOUND pill (an inner sub-tag <span>, e.g. "New · v2.0 is live")
 		// OR a SINGLE-MESSAGE padded pill whose message is a bare text node and whose icon is an inline <svg>
 		// — e.g. the hero `<div class="… rounded-full px-4 py-2 border"><svg/>The #1 …</div>`. pill_parts()
@@ -20625,8 +24260,22 @@ class FW_Site_Converter_Stitch {
 			if ( $message !== '' && $tag_text !== '' && strpos( $message, $tag_text ) === 0 ) { $message = trim( substr( $message, strlen( $tag_text ) ) ); }
 		}
 		if ( $message === '' && $tag_text !== '' ) { $message = $tag_text; $tag_text = ''; }
+		// a PAINTED DOT beside the label (a status LED: an empty, small, rounded, filled child) → the pill's leading mark
+		$dot = null;
+		foreach ( self::el_children( $el ) as $k ) {
+			if ( '' !== trim( self::text( $k ) ) || $k->getElementsByTagName( '*' )->length ) { continue; }
+			$kcs = (string) $k->getAttribute( 'data-sc-cs' );
+			$kh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $kcs, $hm ) ? (float) $hm[1] : 0.0;
+			$kbg = preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $kcs, $bm ) ? trim( $bm[1] ) : '';
+			if ( $kh >= 4 && $kh <= 20 && '' !== $kbg && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent/i', $kbg ) && preg_match( '/(?:^|;)\s*border-radius:\s*(?:9999px|50%|[1-9][0-9]*px)/i', $kcs ) ) {
+				$dot = array( 'size' => (int) round( $kh ), 'color' => $kbg );
+				$la = self::loop_anim_of( $k ); if ( $la ) { $dot['anim'] = $la; } // the dot's pulse rides the overline mark
+				if ( preg_match( '/(?:^|;)\s*box-shadow:\s*([^;]+)/i', $kcs, $shm ) && 'none' !== strtolower( trim( $shm[1] ) ) ) { $dot['shadow'] = trim( $shm[1] ); } // …and its glow
+				break;
+			}
+		}
 		return array( 'tag_text' => $tag_text, 'message' => $message, 'icon' => $icon, 'link' => $link,
-			'pillCls' => $pill_cls, 'tagCls' => $tag_cls, 'msgCls' => $msg_cls, 'pillCs' => $pill_cs, 'leadingSvg' => $lead_svg );
+			'pillCls' => $pill_cls, 'tagCls' => $tag_cls, 'msgCls' => $msg_cls, 'pillCs' => $pill_cs, 'leadingSvg' => $lead_svg, 'pillDot' => $dot );
 	}
 
 	/** A button or a button-styled link. */
@@ -20659,7 +24308,8 @@ class FW_Site_Converter_Stitch {
 		if ( 'a' !== $tag ) { return false; }
 		$cs = $el->getAttribute( 'data-sc-cs' );
 		if ( '' === $cs || strpos( $cs, 'padding:' ) === false ) { return false; } // capture omits 0 padding → a link has none
-		return ( strpos( $cs, 'background-color:' ) !== false || strpos( $cs, 'border-top-width:' ) !== false || strpos( $cs, 'border-radius:' ) !== false );
+		return ( strpos( $cs, 'background-color:' ) !== false || strpos( $cs, 'border-top-width:' ) !== false || strpos( $cs, 'border-radius:' ) !== false
+			|| (bool) preg_match( '/(?:^|;)\s*border-bottom-width:\s*[1-9]/i', $cs ) ); // an underline drawn as a bottom border (`border-b pb-1`) is a CTA link
 	}
 
 	/** A thin wrapper whose only meaningful content is one image. */
@@ -20682,6 +24332,131 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** One image with an absolute-positioned OVERLAY on top (a player/caption/controls layer over a frame). */
+	/**
+	 * A CAPTION TILE: exactly one <img> (cover), an ABSOLUTE caption layer holding text (a heading and/or a short line and/or a
+	 * link — no icon-only badge, no skinned floating card), optionally an empty absolute scrim layer (a gradient / a tinted
+	 * fill), and nothing outside the layers. → `{ t:'image_box', card:{…}, overlay:{ reveal, scrim, place, align } }` for the
+	 * image box's OVERLAY family. Returns null when the tile is not that shape (the composite / verbatim paths follow).
+	 */
+	/** A salvaged text leaf's html: a bare `<a href>` leaf (a card's uppercase "Learn More" link that no recognizer claims)
+	 *  keeps its link — it was flattened to a dead label (a fixture from the feed). */
+	private static function leaf_link_cs( $el ) {
+		return ( $el instanceof DOMElement && 'a' === strtolower( $el->tagName ) ) ? (string) $el->getAttribute( 'data-sc-cs' ) : '';
+	}
+
+	private static function leaf_text_html( $el, $txt ) {
+		if ( $el instanceof DOMElement && 'a' === strtolower( $el->tagName ) ) {
+			$href = trim( (string) $el->getAttribute( 'href' ) );
+			if ( '' !== $href && ! preg_match( '/^\s*javascript:/i', $href ) ) { return '<p><a href="' . esc_attr( $href ) . '">' . esc_html( $txt ) . '</a></p>'; }
+		}
+		return '<p>' . esc_html( $txt ) . '</p>';
+	}
+
+	/** A card BODY's blocks: each child walked on its own; a flex ROW child of ≥ 2 blocks (a `time | link` meta row, an
+	 *  `avatar | name` line) stays a content-sized row carrying the source's justify — the flat walk stacked its leaves. */
+	private static function body_stack_blocks( $body ) {
+		$out = array(); $rules = self::rules_get();
+		$kids = self::el_children( $body );
+		$bcs = (string) $body->getAttribute( 'data-sc-cs' );
+		$body_row = preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $bcs ) && ! preg_match( '/flex-direction:\s*column/i', $bcs );
+		if ( ! $kids || $body_row ) { $hb = array(); self::collect_blocks_of( $body, $hb, $rules ); return array_values( array_filter( $hb, function ( $b ) { return is_array( $b ) && isset( $b['t'] ); } ) ); }
+		foreach ( $kids as $kid ) {
+			if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', (string) $kid->getAttribute( 'data-sc-cs' ) ) ) { continue; }
+			if ( '' === trim( self::text( $kid ) ) && ! self::holds_icon_or_media( $kid ) ) { continue; }
+			$hb = array(); self::collect_blocks_of( $kid, $hb, $rules );
+			$hb = array_values( array_filter( $hb, function ( $b ) { return is_array( $b ) && isset( $b['t'] ); } ) );
+			if ( ! $hb ) { continue; }
+			$kcs = (string) $kid->getAttribute( 'data-sc-cs' );
+			if ( count( $hb ) >= 2 && preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $kcs ) && ! preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $kcs ) && count( self::el_children( $kid ) ) === count( $hb ) ) {
+				$jc = preg_match( '/(?:^|;)\s*justify-content:\s*([a-z-]+)/i', $kcs, $jm ) ? strtolower( $jm[1] ) : '';
+				$hrow = array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $kid ), 'gap' => (int) self::grid_gap_px( $kid ), 'mt' => 0, 'mb' => 0, 'nowrap' => true, 'cols' => array() );
+				if ( preg_match( '/^(space-between|space-around|space-evenly|center|flex-end|end)$/', $jc ) ) { $hrow['justify'] = $jc; }
+				$hm = self::el_margin( $kid ); if ( ! empty( $hm['bottom'] ) ) { $hrow['mb'] = (float) $hm['bottom']; } if ( ! empty( $hm['top'] ) ) { $hrow['mt'] = (float) $hm['top']; }
+				foreach ( $hb as $b ) { if ( 'text' === ( $b['t'] ?? '' ) ) { $b['contentSized'] = true; } $hrow['cols'][] = array( 'cls' => '', 'blocks' => array( $b ) ); }
+				$out[] = $hrow;
+			} else { foreach ( $hb as $b ) { $out[] = $b; } }
+		}
+		return $out;
+	}
+
+	/** The floating BADGE over a card's photo: the image's frame (a `relative` wrapper holding one img) has an absolute skinned
+	 *  child with text (image_composite_overlays cards) that is not a full-bleed layer. Returns the frame element or null. */
+	private static function card_photo_badge( $card ) {
+		if ( ! ( $card instanceof DOMElement ) || 1 !== $card->getElementsByTagName( 'img' )->length ) { return null; }
+		$img = $card->getElementsByTagName( 'img' )->item( 0 );
+		for ( $fr = $img->parentNode, $i = 0; $fr instanceof DOMElement && $fr !== $card && $i < 3; $fr = $fr->parentNode, $i++ ) {
+			$ov = self::image_composite_overlays( $fr );
+			if ( empty( $ov['cards'] ) ) { continue; }
+			foreach ( $ov['cards'] as $c ) {
+				$ccls = ' ' . strtolower( self::cls( $c ) ) . ' ';
+				if ( strpos( $ccls, ' inset-0 ' ) !== false || preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $c->getAttribute( 'data-sc-cs' ), $hm ) && (float) $hm[1] >= 160 ) { continue; }
+				if ( mb_strlen( trim( self::text( $c ) ) ) <= 40 ) { return $fr; }
+			}
+		}
+		return null;
+	}
+
+	private static function caption_tile_block( $el ) {
+		if ( ! ( $el instanceof DOMElement ) || 1 !== $el->getElementsByTagName( 'img' )->length ) { return null; }
+		$img = $el->getElementsByTagName( 'img' )->item( 0 );
+		$src = trim( (string) $img->getAttribute( 'src' ) ); if ( '' === $src ) { $src = trim( (string) $img->getAttribute( 'data-src' ) ); }
+		if ( '' === $src ) { return null; }
+		$caption = null; $scrim = null;
+		foreach ( self::el_children( $el ) as $k ) {
+			if ( $k === $img || $k->getElementsByTagName( 'img' )->length ) { // the image, or its (relative) frame
+				if ( $k !== $img ) { foreach ( self::el_children( $k ) as $kk ) { if ( $kk === $img ) { continue; } $kc = (string) $kk->getAttribute( 'data-sc-cs' ); if ( ! preg_match( '/position:\s*absolute/i', $kc ) && false === strpos( ' ' . self::cls( $kk ) . ' ', ' absolute ' ) ) { return null; } if ( '' !== trim( self::text( $kk ) ) ) { if ( $caption ) { return null; } $caption = $kk; } elseif ( ! $scrim ) { $scrim = $kk; } } }
+				continue;
+			}
+			$kc = (string) $k->getAttribute( 'data-sc-cs' );
+			$abs = (bool) preg_match( '/position:\s*absolute/i', $kc ) || false !== strpos( ' ' . self::cls( $k ) . ' ', ' absolute ' );
+			if ( ! $abs ) { return null; } // in-flow content beside the photo = a card, not a tile
+			if ( '' !== trim( self::text( $k ) ) ) { if ( $caption ) { return null; } $caption = $k; }
+			elseif ( ! $scrim && 0 === $k->getElementsByTagName( 'svg' )->length ) { $scrim = $k; }
+		}
+		if ( ! ( $caption instanceof DOMElement ) ) { return null; }
+		// a SKINNED floating card (its own fill + radius) is the composite path's badge, not a caption
+		$ccs = (string) $caption->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*background-color:\s*(?!rgba\([^)]*,\s*0\s*\)|transparent)[^;]+/i', $ccs ) && preg_match( '/(?:^|;)\s*border-radius:\s*[1-9]/i', $ccs ) ) { return null; }
+		$lines = array(); $title = ''; $title_cs = ''; $link = null;
+		foreach ( $caption->getElementsByTagName( '*' ) as $ln ) {
+			$lt = strtolower( $ln->tagName );
+			if ( in_array( $lt, array( 'a', 'button' ), true ) ) { $t = trim( self::text_no_icons( $ln ) ); if ( '' !== $t && ! $link ) { $link = array( 'label' => $t, 'href' => (string) $ln->getAttribute( 'href' ), 'cs' => (string) $ln->getAttribute( 'data-sc-cs' ), 'cls' => self::cls( $ln ) ); } continue; }
+			if ( ! in_array( $lt, array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'div', 'small' ), true ) ) { continue; }
+			if ( self::within_absolute( $ln, $caption ) ) { continue; }
+			$own = ''; foreach ( $ln->childNodes as $tn ) { if ( XML_TEXT_NODE === $tn->nodeType ) { $own .= $tn->nodeValue; } }
+			$own = trim( preg_replace( '/\s+/u', ' ', $own ) ); if ( '' === $own ) { continue; }
+			$in_link = false; for ( $ap = $ln->parentNode; $ap instanceof DOMElement && $ap !== $caption; $ap = $ap->parentNode ) { if ( in_array( strtolower( $ap->tagName ), array( 'a', 'button' ), true ) ) { $in_link = true; break; } }
+			if ( $in_link ) { continue; }
+			$lcs = (string) $ln->getAttribute( 'data-sc-cs' );
+			if ( '' === $title && ( preg_match( '/^h[1-6]$/', $lt ) || ( preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', $lcs, $lf ) && (float) $lf[1] >= 18 ) ) ) { $title = $own; $title_cs = $lcs; continue; }
+			$lines[] = array( 'text' => $own, 'cs' => $lcs );
+		}
+		if ( '' === $title && $lines ) { $first = array_shift( $lines ); $title = $first['text']; $title_cs = $first['cs']; }
+		if ( '' === $title && ! $link ) { return null; }
+		// hover-revealed (`opacity-0 group-hover:opacity-100` on the caption / its layer) → the Fade reveal; else the scrim
+		$hover = (bool) preg_match( '/(?:^|;)\s*opacity:\s*0(?:\.0+)?(?:;|$)/', $ccs ) || (bool) preg_match( '/\bopacity-0\b/', self::cls( $caption ) );
+		$scrim_bg = ''; if ( $scrim instanceof DOMElement ) { $scs = (string) $scrim->getAttribute( 'data-sc-cs' ); if ( preg_match( '/(?:^|;)\s*background-image:\s*((?:linear|radial)-gradient\([^;]*\))/i', $scs, $gm ) ) { $scrim_bg = $gm[1]; } elseif ( preg_match( '/(?:^|;)\s*background-color:\s*(rgba?\([^)]*\))/i', $scs, $bm ) && ! preg_match( '/,\s*0\s*\)$/', $bm[1] ) ) { $scrim_bg = $bm[1]; } }
+		if ( '' === $scrim_bg && preg_match( '/(?:^|;)\s*background-image:\s*((?:linear|radial)-gradient\([^;]*\))/i', $ccs, $gm2 ) ) { $scrim_bg = $gm2[1]; }
+		$place = 'bottom'; if ( preg_match( '/(?:^|;)\s*justify-content:\s*center/i', $ccs ) || preg_match( '/\b(?:items-center|justify-center|inset-0)\b/', self::cls( $caption ) ) && preg_match( '/(?:^|;)\s*align-items:\s*center/i', $ccs ) ) { $place = 'center'; } elseif ( preg_match( '/(?:^|\s)top-\d/', self::cls( $caption ) ) || preg_match( '/(?:^|;)\s*justify-content:\s*flex-start/i', $ccs ) && preg_match( '/inset-0/', self::cls( $caption ) ) ) { $place = 'top'; }
+		$align = ( preg_match( '/text-align:\s*center/i', $ccs ) || preg_match( '/\btext-center\b/', self::cls( $caption ) ) ) ? 'center' : 'left';
+		$pad = self::el_padding( $caption ); $inset = (float) ( $pad['base']['left'] ?? 0 );
+		if ( $inset <= 0 && preg_match( '/(?:^|\s)(?:left|bottom)-(\d{1,2})(?=\s|$)/', self::cls( $caption ), $lm ) ) { $inset = (int) $lm[1] * 4; }
+		if ( $inset <= 0 && preg_match( '/(?:^|;)\s*left:\s*([0-9.]+)px/i', $ccs, $lpx ) ) { $inset = (float) $lpx[1]; }
+		$icls = ' ' . strtolower( self::cls( $img ) ) . ' '; $ar = '';
+		if ( strpos( $icls, ' aspect-square ' ) !== false || preg_match( '/\baspect-square\b/', self::cls( $el ) ) ) { $ar = '1/1'; } elseif ( preg_match( '/\baspect-\[([0-9.]+)\/([0-9.]+)\]/', self::cls( $el ) . ' ' . $icls, $am ) ) { $ar = $am[1] . '/' . $am[2]; } elseif ( preg_match( '/aspect-video/', self::cls( $el ) . $icls ) ) { $ar = '16/9'; }
+		$fh = 0.0; if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $el->getAttribute( 'data-sc-cs' ), $fhm ) ) { $fh = (float) $fhm[1]; }
+		$card = array(
+			'image' => array( 'src' => $src, 'alt' => trim( (string) $img->getAttribute( 'alt' ) ), 'cls' => self::cls( $img ), 'aspect' => $ar, 'extra' => self::img_extra_css( $img ) ),
+			'title' => $title, 'titleTag' => 'h3', 'titleCs' => $title_cs, 'titleFontSize' => ( preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+px)/i', $title_cs, $tfm ) ? $tfm[1] : '' ), 'titleWeight' => ( preg_match( '/(?:^|;)\s*font-weight:\s*([0-9]+)/i', $title_cs, $twm ) ? $twm[1] : '' ),
+			'text' => implode( '', array_map( function ( $l ) { return '<p>' . esc_html( $l['text'] ) . '</p>'; }, $lines ) ),
+			'bodyCs' => isset( $lines[0]['cs'] ) ? $lines[0]['cs'] : '', 'bodyFontSize' => ( isset( $lines[0]['cs'] ) && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+px)/i', $lines[0]['cs'], $bfm ) ) ? $bfm[1] : '',
+			'button' => $link, 'link' => ( 'a' === strtolower( $el->tagName ) ) ? array( 'href' => (string) $el->getAttribute( 'href' ), 'label' => '' ) : null,
+			'cls' => self::cls( $el ), 'cs' => (string) $el->getAttribute( 'data-sc-cs' ), 'cardCs' => (string) $el->getAttribute( 'data-sc-cs' ),
+		);
+		if ( '' === $ar && $fh >= 80 ) { $card['image']['frameHeight'] = $fh; }
+		return array( 't' => 'image_box', 'role' => 'image_box', 'card' => $card, 'overlay' => array( 'reveal' => $hover ? 'fade' : 'scrim', 'scrim' => $scrim_bg, 'place' => $place, 'align' => $align, 'inset' => $inset, 'captionCs' => $ccs ) );
+	}
+
 	private static function is_image_with_overlay( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		if ( $el->getElementsByTagName( 'img' )->length !== 1 ) { return false; }
@@ -20933,23 +24708,56 @@ class FW_Site_Converter_Stitch {
 	 */
 	private static function floating_card_block( $card ) {
 		if ( ! ( $card instanceof DOMElement ) ) { return null; }
-		$title = '';
-		$text  = '';
-		foreach ( $card->getElementsByTagName( 'p' ) as $p ) {
-			$t = trim( self::text( $p ) );
-			if ( '' === $t ) { continue; }
-			if ( '' === $title ) { $title = $t; }
-			elseif ( '' === $text ) { $text = $t; }
+		// The card's TEXT LINES (p / div / span / h-tag leaves, in DOM order) with their stamps. The TITLE is the heaviest /
+		// largest line, not the first (a `p.text-sm.text-slate-500 label` over a `p.font-bold` value made the label the
+		// title); a small FIRST line is the overline; the rest is content; two block lines are two lines, never one
+		// concatenated title ("15+Years of Excellence"). Three fixtures from the feed.
+		$lines = array();
+		foreach ( $card->getElementsByTagName( '*' ) as $ln ) {
+			if ( ! in_array( strtolower( $ln->tagName ), array( 'p', 'div', 'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'b', 'small' ), true ) ) { continue; }
+			$own = ''; foreach ( $ln->childNodes as $tn ) { if ( XML_TEXT_NODE === $tn->nodeType ) { $own .= $tn->nodeValue; } elseif ( $tn instanceof DOMElement && in_array( strtolower( $tn->tagName ), array( 'strong', 'b', 'em', 'i', 'span' ), true ) && 0 === $tn->getElementsByTagName( '*' )->length && ! preg_match( '/\p{L}|\d/u', $own ) ) { $own .= ''; } }
+			$own = trim( preg_replace( '/\s+/u', ' ', $own ) );
+			if ( '' === $own || ! preg_match( '/\p{L}|\d/u', $own ) ) { continue; }
+			$lcs = (string) $ln->getAttribute( 'data-sc-cs' );
+			$lines[] = array(
+				'text' => $own, 'cs' => $lcs, 'tag' => strtolower( $ln->tagName ),
+				'fs'   => preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', $lcs, $lf ) ? (float) $lf[1] : 16.0,
+				'w'    => preg_match( '/(?:^|;)\s*font-weight:\s*([0-9]+)/i', $lcs, $lw ) ? (int) $lw[1] : 400,
+			);
+		}
+		$title = ''; $title_cs = ''; $text = ''; $ov = null;
+		if ( $lines ) {
+			$ti = 0; $best = -1.0;
+			foreach ( $lines as $i => $l ) { $sc = $l['fs'] * ( $l['w'] >= 600 ? 1.5 : 1.0 ) + ( preg_match( '/^h[1-6]$/', $l['tag'] ) ? 4 : 0 ); if ( $sc > $best ) { $best = $sc; $ti = $i; } }
+			$title = $lines[ $ti ]['text']; $title_cs = $lines[ $ti ]['cs'];
+			$rest = array();
+			foreach ( $lines as $i => $l ) {
+				if ( $i === $ti ) { continue; }
+				if ( null === $ov && $i < $ti && $l['fs'] <= 14 ) { $ov = array( 'text' => $l['text'], 'cs' => $l['cs'] ); continue; } // a small line ABOVE the title = the overline
+				$rest[] = $l;
+			}
+			foreach ( $rest as $l ) { $text .= '<p>' . esc_html( $l['text'] ) . '</p>'; }
 		}
 		if ( '' === $title ) { $title = trim( self::text( $card ) ); }
 
 		$data = array(
 			'title'      => $title,
 			'titleTag'   => 'h4',
-			'text'       => '' !== $text ? '<p>' . esc_html( $text ) . '</p>' : '',
+			'titleCs'    => $title_cs,
+			'text'       => $text,
+			'bodyCs'     => ( isset( $rest[0]['cs'] ) ) ? (string) $rest[0]['cs'] : '',
+			'bodyFontSize' => ( isset( $rest[0]['fs'] ) ) ? $rest[0]['fs'] . 'px' : '',
+			'overline'   => $ov,
 			'iconLayout' => 'inline-left', // icon beside the text (source flex items-center gap-*)
 			'center'     => false,
 		);
+		// a STACKED badge (`flex-col items-center`: a date chip's month OVER its day, centred) keeps its column — the inline
+		// layout put the two lines side by side (a fixture from the feed, recurring on two sites)
+		$ccs0 = (string) $card->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $ccs0 ) || preg_match( '/(?:^|\s)flex-col(?:\s|$)/', self::cls( $card ) ) ) {
+			$data['iconLayout'] = 'top-title';
+			if ( preg_match( '/(?:^|;)\s*align-items:\s*center/i', $ccs0 ) || preg_match( '/(?:^|;)\s*text-align:\s*center/i', $ccs0 ) || preg_match( '/(?:^|\s)(?:items-center|text-center)(?:\s|$)/', self::cls( $card ) ) ) { $data['center'] = true; }
+		}
 		// Icon: a Lucide glyph (library icon) when detectable, else the inline SVG verbatim.
 		$lucide = self::detect_lucide_in( $card );
 		$svg    = $card->getElementsByTagName( 'svg' )->item( 0 );
@@ -21007,17 +24815,82 @@ class FW_Site_Converter_Stitch {
 		if ( '' !== $sh && 'none' !== $sh ) { $decl[] = 'box-shadow:' . $sh; }
 		$pad = self::sc_css( $card, 'padding' );
 		if ( '' !== $pad && ! preg_match( '/^(?:0px)(?:\s+0px)*$/', trim( $pad ) ) ) { $decl[] = 'padding:' . $pad; }
-		return 'selector{' . implode( ';', $decl ) . ';}';
+		// the chip's own measure (`min-w-16`) and — a STACKED chip — the gap between its lines is the source's (none when the stamp
+		// has none: the theme's 12px between overline and title made a 50px date chip 62px; a fixture from the feed)
+		$mw = self::sc_css( $card, 'min-width' ); if ( preg_match( '/^[0-9.]+px$/', $mw ) && (float) $mw > 0 ) { $decl[] = 'min-width:' . $mw; }
+		$out = 'selector{' . implode( ';', $decl ) . ';}';
+		$ccs = (string) $card->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $ccs ) ) { $gp = self::sc_css( $card, 'gap' ); $gp = preg_match( '/^([0-9.]+px)/', $gp, $gm ) ? $gm[1] : '0'; $out .= 'selector .icon-box__inner{gap:' . $gp . ';}'; }
+		return $out;
 	}
 
 	/** Inner HTML with class/style attrs and material-symbol spans stripped (clean DOM). */
 	/** A `<form>` that reads as an email-signup: has a text/email input (a submit button is typical but not
 	 *  required — a lone email field still signals a newsletter). Search / login / filter forms are excluded
 	 *  by requiring an email-ish field and no password input. */
-	private static function is_newsletter_form( $el, $tag ) {
+	/** A contact form: a <form> / form-named container holding a message <textarea> (or ≥ 3 text-like inputs) and a submit. */
+	private static function is_contact_form( $el, $tag ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		$tag = strtolower( (string) $tag );
-		// A real <form>, OR a NON-form container that is clearly a signup/contact form. AI builders (openhero) build
+		if ( 'form' !== $tag ) {
+			$cls = ' ' . strtolower( (string) $el->getAttribute( 'class' ) ) . ' ';
+			if ( ! preg_match( '/\b(?:contact-form|contact_form|enquiry-form|inquiry-form|message-form)\b/', $cls ) ) { return false; }
+		}
+		if ( $el->getElementsByTagName( 'form' )->length && 'form' !== $tag ) { return false; } // the inner <form> is the one
+		$ta = $el->getElementsByTagName( 'textarea' )->length;
+		$texty = 0;
+		foreach ( $el->getElementsByTagName( 'input' ) as $in ) { $t = strtolower( trim( (string) $in->getAttribute( 'type' ) ) ); if ( in_array( $t, array( '', 'text', 'email', 'tel', 'url', 'number' ), true ) ) { $texty++; } if ( 'search' === $t || 'password' === $t ) { return false; } }
+		$has_submit = false;
+		foreach ( $el->getElementsByTagName( 'button' ) as $b ) { $bt = strtolower( (string) $b->getAttribute( 'type' ) ); if ( 'submit' === $bt || '' === $bt ) { $has_submit = true; break; } }
+		if ( ! $has_submit ) { foreach ( $el->getElementsByTagName( 'input' ) as $in ) { if ( 'submit' === strtolower( (string) $in->getAttribute( 'type' ) ) ) { $has_submit = true; break; } } }
+		return $has_submit && ( $ta >= 1 || $texty >= 3 );
+	}
+
+	/** The contact form block: its fields in order (type / label / placeholder / required / half-width), the submit label, the form's measure. */
+	private static function contact_form_build( $el ) {
+		$fields = array();
+		$label_of = function ( $ctrl ) use ( $el ) {
+			$id = trim( (string) $ctrl->getAttribute( 'id' ) );
+			if ( '' !== $id ) { foreach ( $el->getElementsByTagName( 'label' ) as $lb ) { if ( trim( (string) $lb->getAttribute( 'for' ) ) === $id ) { return trim( self::text( $lb ) ); } } }
+			for ( $a = $ctrl->parentNode; $a instanceof DOMElement && $a !== $el; $a = $a->parentNode ) { if ( 'label' === strtolower( $a->tagName ) ) { return trim( self::text( $a ) ); } foreach ( self::el_children( $a ) as $k ) { if ( 'label' === strtolower( $k->tagName ) ) { return trim( self::text( $k ) ); } } }
+			return '';
+		};
+		$form_w = 0; if ( preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $el, 'width' ), $wm ) ) { $form_w = (float) $wm[1]; }
+		foreach ( $el->getElementsByTagName( '*' ) as $ctrl ) {
+			$ct = strtolower( $ctrl->tagName );
+			if ( 'input' !== $ct && 'textarea' !== $ct && 'select' !== $ct ) { continue; }
+			$t = strtolower( trim( (string) $ctrl->getAttribute( 'type' ) ) );
+			if ( 'input' === $ct && in_array( $t, array( 'submit', 'button', 'hidden', 'checkbox', 'radio', 'file', 'search', 'password' ), true ) ) { continue; }
+			$type = 'textarea' === $ct ? 'textarea' : ( 'email' === $t ? 'email' : ( 'url' === $t ? 'website' : ( 'number' === $t ? 'number' : 'text' ) ) );
+			if ( 'select' === $ct ) { $type = 'select'; }
+			$ph = trim( (string) $ctrl->getAttribute( 'placeholder' ) );
+			$lb = $label_of( $ctrl ); if ( '' === $lb ) { $lb = '' !== $ph ? $ph : ucfirst( $type ); }
+			$star = (bool) preg_match( '/\s*\*\s*$/u', $lb ); if ( $star ) { $lb = trim( preg_replace( '/\s*\*\s*$/u', '', $lb ) ); } // "Full name *" = required (the form item renders its own sup)
+			$half = false; if ( $form_w > 0 && preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $ctrl, 'width' ), $cw ) ) { $half = (float) $cw[1] < $form_w * 0.7; }
+			$choices = array(); if ( 'select' === $ct ) { foreach ( $ctrl->getElementsByTagName( 'option' ) as $op ) { $ov = trim( self::text( $op ) ); if ( '' !== $ov ) { $choices[] = $ov; } } }
+			$fields[] = array( 'type' => $type, 'label' => $lb, 'placeholder' => $ph, 'required' => $ctrl->hasAttribute( 'required' ) || $star, 'half' => $half, 'choices' => $choices );
+		}
+		if ( ! $fields ) { return null; }
+		$submit = ''; foreach ( $el->getElementsByTagName( 'button' ) as $b ) { $submit = trim( self::text( $b ) ); if ( '' !== $submit ) { break; } }
+		if ( '' === $submit ) { foreach ( $el->getElementsByTagName( 'input' ) as $in ) { if ( 'submit' === strtolower( (string) $in->getAttribute( 'type' ) ) ) { $submit = trim( (string) $in->getAttribute( 'value' ) ); break; } } }
+		$m = self::el_margin( $el );
+		$maxw = self::sc_css( $el, 'max-width' ); if ( ! preg_match( '/^[0-9.]+px$/', $maxw ) ) { $maxw = ''; }
+		// the field skin (a `border-b`-only underline input, a filled box) rides as measured decls for the mapper's scoped CSS
+		$first = null; foreach ( $el->getElementsByTagName( 'input' ) as $in ) { $t = strtolower( trim( (string) $in->getAttribute( 'type' ) ) ); if ( in_array( $t, array( '', 'text', 'email' ), true ) ) { $first = $in; break; } }
+		$btn = null; foreach ( $el->getElementsByTagName( 'button' ) as $b ) { $btn = $b; break; }
+		return array( 't' => 'contact_form', 'role' => 'contact_form', 'fields' => $fields, 'submit' => $submit, 'max_width' => $maxw, 'mt' => (float) ( $m['top'] ?? 0 ), 'mb' => (float) ( $m['bottom'] ?? 0 ),
+			'field_cs' => $first ? (string) $first->getAttribute( 'data-sc-cs' ) : '', 'button_cs' => $btn ? (string) $btn->getAttribute( 'data-sc-cs' ) : '', 'button_cls' => $btn ? self::cls( $btn ) : '' );
+	}
+
+	private static function is_newsletter_form( $el, $tag ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		if ( self::is_contact_form( $el, $tag ) ) { return false; } // a message textarea / ≥ 3 fields = a CONTACT form (contact_form), not a signup
+		$tag = strtolower( (string) $tag );
+		// a NON-form container that holds a real <form> is CONTENT AROUND the form (a two-column contact band: the form card + a
+		// details column) — the inner <form> is the one; claiming the container swallowed the whole grid into one newsletter node
+		// and turned a name / email / message contact form into a signup (a fixture from the feed)
+		if ( 'form' !== $tag && $el->getElementsByTagName( 'form' )->length > 0 ) { return false; }
+		// A real <form>, OR a NON-form container that is clearly a signup/contact form. AI builders (AI-page) build
 		// the contact form as a `<div class="contact-form">` holding <input>/<textarea> controls + a submit button,
 		// with NO <form> wrapper — so the whole form was being dropped and only its submit BUTTON kept (the-line's
 		// contact section rendered as a lone "Transmit Inquiry" button). Accept such a container when it is
@@ -21041,6 +24914,9 @@ class FW_Site_Converter_Stitch {
 				$lockup = in_array( $t0, array( '', 'email', 'text' ), true ) && '' !== $btn_txt && 0 === $prose && ! preg_match( '/search/i', (string) $in0->getAttribute( 'placeholder' ) );
 			}
 			if ( ! $lockup && ! ( ( $named && $ctrls >= 1 ) || ( $ctrls >= 2 && $has_submit ) ) ) { return false; }
+			// a NON-form container that also holds a HEADING (a CTA column: emblem + h2 + the form + a note) is content around a form,
+			// not the form — claiming it whole swallowed the column's heading / copy into one newsletter node (a reported finding)
+			if ( ! $named ) { foreach ( array( 'h1', 'h2', 'h3', 'h4' ) as $ht ) { if ( $el->getElementsByTagName( $ht )->length ) { return false; } } }
 		}
 		$has_field = false;
 		foreach ( $el->getElementsByTagName( 'input' ) as $in ) {
@@ -21140,20 +25016,39 @@ class FW_Site_Converter_Stitch {
 			$bcs2 = (string) $btn_el->getAttribute( 'data-sc-cs' );
 			$edisp = self::css_or_decl( $el, 'display' ); $edir = self::css_or_decl( $el, 'flex-direction' );
 			$row_box = ( false !== strpos( $edisp, 'flex' ) && 0 !== strpos( $edir, 'column' ) && $btn_el->parentNode === $el && $first_in && $first_in->parentNode === $el );
-			if ( strpos( $bcls, ' w-full ' ) !== false || preg_match( '/(?:^|;)\s*width:\s*100%/', $bcs2 ) || ( ! $row_box && $btn_el->parentNode === $el ) ) { $design = 'stacked'; }
-			if ( false !== strpos( $edisp, 'grid' ) ) { $design = 'stacked'; }
+			// (a phone-only `w-full` that a breakpoint restores to auto — `w-full sm:w-auto` — is still a row beside the field on desktop)
+			$full_w = ( strpos( $bcls, ' w-full ' ) !== false && ! preg_match( '/\b(?:sm|md|lg|xl):w-(?:auto|fit|max|min|\d+)\b/', $bcls ) ) || preg_match( '/(?:^|;)\s*width:\s*100%/', $bcs2 );
+			if ( $full_w || ( ! $row_box && $btn_el->parentNode === $el ) ) { $design = 'stacked'; }
+			// a GRID form stacks only when it lays out as ONE track; a `grid-cols-3` with the field spanning two beside the button is a
+			// row — and its `w-full` button fills its own TRACK, not the form
+			if ( false !== strpos( $edisp, 'grid' ) ) { $gtpl = trim( (string) self::sc_css( $el, 'grid-template-columns' ) ); $gtracks = ( '' !== $gtpl && 'none' !== $gtpl ) ? count( preg_split( '/\s+/', $gtpl ) ) : 1; $design = ( $gtracks < 2 ) ? 'stacked' : 'inline'; }
 		}
 		// The stack gap between the field and the button (a 'space-y-3' = the button's margin-top, or the container gap).
 		$gap = 0.0;
 		if ( $btn_el instanceof DOMElement ) { $bm = self::el_margin( $btn_el ); $gap = (float) ( $bm['top'] ?? 0 ); }
 		if ( $gap <= 0 ) { $gap = (float) self::grid_gap_px( $el ); }
+		// CAPSULE — the skinned field wrapper holds the BUTTON as well (one pill: a transparent input + the submit inside it at
+		// the right edge) → the newsletter's Capsule design; the wrapper's skin rides on the field row, not the input.
+		$capsule = ( $wrap instanceof DOMElement && $btn_el instanceof DOMElement && self::is_ancestor( $wrap, $btn_el ) && 'stacked' !== $design );
+		if ( $capsule ) { $design = 'capsule'; }
+		$wrap_mw = ''; $wrap_mt = 0.0;
+		if ( $wrap instanceof DOMElement ) { $wmw = self::sc_css( $wrap, 'max-width' ); if ( preg_match( '/^[0-9.]+px$/', $wmw ) ) { $wrap_mw = $wmw; } $wmg = self::el_margin( $wrap ); $wrap_mt = (float) ( $wmg['top'] ?? 0 ); }
+		// no field wrapper cap: the FORM's own measure (`max-w-md mx-auto` on the <form>) caps the whole signup the same way
+		if ( '' === $wrap_mw ) { $fmw = self::sc_css( $el, 'max-width' ); if ( preg_match( '/^[0-9.]+px$/', $fmw ) ) { $wrap_mw = $fmw; } }
+		// The placeholder tint from a Tailwind opacity utility (placeholder-white/90, placeholder:text-white/70).
+		if ( '' === $ph_color && $first_in instanceof DOMElement && preg_match( '/placeholder(?::text)?-(white|black)(?:\/(\d{1,3}))?/i', self::cls( $first_in ), $pm2 ) ) {
+			$a = isset( $pm2[2] ) && '' !== $pm2[2] ? max( 0, min( 100, (int) $pm2[2] ) ) / 100 : 1;
+			$ph_color = 'rgba(' . ( 'white' === strtolower( $pm2[1] ) ? '255, 255, 255' : '0, 0, 0' ) . ', ' . $a . ')';
+		}
 		return array(
-			't' => 'newsletter', 'role' => 'newsletter',
+			't' => 'newsletter', 'role' => 'newsletter', 'capsule' => $capsule, 'wrap_max_width' => $wrap_mw, 'wrap_mt' => $wrap_mt,
+			'mt' => (float) ( self::el_margin( $el )['top'] ?? 0 ), 'mb' => (float) ( self::el_margin( $el )['bottom'] ?? 0 ), // the form's own space above / below (a hero's mt-10)
 			'placeholder' => $email_ph, 'name_placeholder' => $name_ph, 'show_name' => $show_name,
 			'button_label' => $btn_label, 'align' => $align, 'rounded' => $rounded, 'design' => $design, 'gap' => $gap,
 			'button_bg' => $btn_bg, 'button_fg' => $btn_fg, 'field_bg' => $field_bg,
 			'button_cls' => $btn_el instanceof DOMElement ? self::cls( $btn_el ) : '', 'button_cs' => $btn_el instanceof DOMElement ? (string) $btn_el->getAttribute( 'data-sc-cs' ) : '',
 			'field_cs' => $wrap_cs, 'input_cs' => $first_in instanceof DOMElement ? (string) $first_in->getAttribute( 'data-sc-cs' ) : '', 'placeholder_color' => $ph_color,
+			'field_hover' => ( $wrap instanceof DOMElement && preg_match( '/hover-self\{([^}]*)\}/', (string) $wrap->getAttribute( 'data-sc-hover' ), $fhm ) ) ? $fhm[1] : '', // the wrapper's OWN :hover (a glass pill that brightens under the pointer)
 			'field_focus' => $first_in instanceof DOMElement ? (string) $first_in->getAttribute( 'data-sc-focus' ) : '', // the field's :focus skin (capture >= 1.10.99 stamp: box-shadow / border-color / outline)
 			'icon' => $icon, 'icon_color' => $icon_color,
 			'cs' => (string) $el->getAttribute( 'data-sc-cs' ),
@@ -21313,12 +25208,20 @@ class FW_Site_Converter_Stitch {
 		if ( $node->hasAttribute( 'class' ) && preg_match( '/(?:^|\s)italic(?:\s|$)/', (string) $node->getAttribute( 'class' ) ) ) { $want_italic = true; }
 		if ( ! $want_italic && $node->hasAttribute( 'data-sc-cs' ) && preg_match( '/font-style\s*:\s*italic/i', (string) $node->getAttribute( 'data-sc-cs' ) ) ) { $want_italic = true; }
 		if ( ! $want_italic && $node->hasAttribute( 'style' ) && preg_match( '/font-style\s*:\s*italic/i', (string) $node->getAttribute( 'style' ) ) ) { $want_italic = true; }
+		// The reverse: an <i> / <em> the source RESET to roman (`not-italic`, a computed font-style:normal) — the
+		// tag would re-italicise it once the class is gone, so the reset is re-expressed inline (a finding filed twice).
+		$want_roman = false;
+		if ( in_array( strtolower( $node->tagName ), array( 'i', 'em' ), true ) && ! $want_italic && $node->hasAttribute( 'data-sc-cs' ) && preg_match( '/font-style\s*:\s*normal/i', (string) $node->getAttribute( 'data-sc-cs' ) ) ) { $want_roman = true; }
+		// A `<span class="block">` line of a heading ("Synthetic" / "Light" / "Architectures" stacked) — the LINE BREAK is the
+		// computed display:block, lost with the class; re-express it inline so the title keeps its three lines (measured: 2 vs 3).
+		$want_block = false;
+		if ( 'span' === strtolower( $node->tagName ) && $node->hasAttribute( 'data-sc-cs' ) && preg_match( '/(?:^|;)\s*display:\s*block/i', (string) $node->getAttribute( 'data-sc-cs' ) ) && '' !== trim( $node->textContent ) ) { $want_block = true; }
 		// A shadcn colour token OUTSIDE the small palette kept below (e.g. `text-muted-foreground` on the hero
 		// heading's muted `DARKNESS` span). map_accent_classes only resolves the palette tokens, so this class
 		// is dead on the body and the span would inherit the heading's ink. Capture its REAL computed colour
 		// from data-sc-cs NOW (before both are scrubbed) and re-express it as a concrete inline colour.
 		// Also an ARBITRARY colour-FUNCTION bracket class — `text-[hsl(var(--brand-red))]`, `text-[oklch(…)]`,
-		// `text-[rgb(…)]`, `text-[var(--x)]` — a two-tone heading's accent (jukebox's red "For Itself"). Dead in
+		// `text-[rgb(…)]`, `text-[var(--x)]` — a two-tone heading's accent (the burger source's red "For Itself"). Dead in
 		// the builder (no Tailwind runtime; the source var isn't defined on the body), so it inherits the ink.
 		// A bare `text-[#hex]` is left for the Mapper's map_accent_classes(), which inlines that form.
 		$cls_attr   = (string) $node->getAttribute( 'class' );
@@ -21336,6 +25239,17 @@ class FW_Site_Converter_Stitch {
 				if ( $hx !== '' ) { $color_inline = 'color:' . $hx; }
 			}
 		}
+		// …and ANY inline run whose measured ink differs from its parent's (an accent "mirror" inside a heading, a keyword in a
+		// code line) — measured, not named: the token vocabulary above is only the shortcut. Skipped for a transparent /
+		// gradient-clipped run (the gradient path below owns it).
+		if ( '' === $color_inline && '' !== $parent_cs && '' !== $own_cs && in_array( strtolower( $node->tagName ), array( 'span', 'em', 'strong', 'b', 'i', 'small', 'mark', 'code' ), true ) ) {
+			$oc = preg_match( '/(?<![\w-])color:\s*([^;]+)/i', $own_cs, $ocm ) ? trim( $ocm[1] ) : '';
+			$pc = preg_match( '/(?<![\w-])color:\s*([^;]+)/i', $parent_cs, $pcm ) ? trim( $pcm[1] ) : '';
+			if ( '' !== $oc && strtolower( $oc ) !== strtolower( $pc ) && stripos( $oc, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $oc ) && ! preg_match( '/background-clip:\s*text/i', $own_cs ) ) {
+				$hx = self::color_to_hex( $oc ); $keep = self::color_keep_alpha( $oc );
+				if ( '' !== $keep ) { $color_inline = 'color:' . $keep; } elseif ( '' !== $hx ) { $color_inline = 'color:' . $hx; }
+			}
+		}
 		// A GRADIENT-TEXT span (`<span class="text-gradient">worlds.</span>` → `background-image:linear-gradient
 		// (...);background-clip:text;-webkit-text-fill-color:transparent`). The class is dead on the body, so
 		// capture the computed gradient NOW (before class + data-sc-cs are scrubbed) and re-express it inline,
@@ -21350,6 +25264,21 @@ class FW_Site_Converter_Stitch {
 			if ( preg_match( '/background-clip:\s*text/i', $gcs )
 				&& preg_match( '/background-image:\s*((?:linear|radial|conic)-gradient\([^;]+\))/i', $gcs, $gm ) ) {
 				$grad_bg = trim( $gm[1] );
+			}
+		}
+		// An OUTLINED run (`<span class="text-stroke">` → `-webkit-text-stroke:1px …; color:transparent`): the stroke is a
+		// design fact no class carries to the body. Tagged `sc-outline` with the stroke + fill inline (a carrier only —
+		// kses would strip the stroke; the mapper's extract_outline_css hoists it into the heading's scoped CSS).
+		$stroke = ''; $stroke_fill = '';
+		if ( $node->hasAttribute( 'data-sc-cs' ) ) {
+			$ocs = (string) $node->getAttribute( 'data-sc-cs' );
+			if ( preg_match( '/-webkit-text-stroke-width:\s*([0-9.]+px)/i', $ocs, $swm ) && (float) $swm[1] > 0 ) {
+				$scol = preg_match( '/-webkit-text-stroke-color:\s*([^;]+)/i', $ocs, $scm ) ? trim( $scm[1] ) : 'currentColor';
+				if ( preg_match( '/^[a-z0-9#(),.%\s]+$/i', $scol ) ) {
+					$stroke = $swm[1] . ' ' . $scol;
+					$fc = preg_match( '/(?<![\w-])color:\s*([^;]+)/i', $ocs, $fcm ) ? trim( $fcm[1] ) : '';
+					if ( '' !== $fc && preg_match( '/^[a-z0-9#(),.%\s]+$/i', $fc ) ) { $stroke_fill = ( stripos( $fc, 'transparent' ) !== false || preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $fc ) ) ? 'transparent' : $fc; }
+				}
 			}
 		}
 		if ( $node->hasAttribute( 'class' ) ) {
@@ -21372,17 +25301,29 @@ class FW_Site_Converter_Stitch {
 			$cur_cls = trim( (string) $node->getAttribute( 'class' ) );
 			$node->setAttribute( 'class', trim( $cur_cls . ' sc-gradtext' ) );
 		}
+		if ( '' !== $stroke ) {
+			$cur_cls = trim( (string) $node->getAttribute( 'class' ) );
+			$node->setAttribute( 'class', trim( $cur_cls . ' sc-outline' ) );
+		}
 		if ( $node->hasAttribute( 'style' ) ) { $node->removeAttribute( 'style' ); }
 		// Drop the capture-only computed-style attribute at the DOM level — it must NEVER reach stored
 		// content. (strip_cs's serialized-HTML regex missed SINGLE-quoted values, which occur when the value
 		// contains a double quote, e.g. font-family:"Playfair Display" — that leaked data-sc-cs into the DB.)
 		if ( $node->hasAttribute( 'data-sc-cs' ) ) { $node->removeAttribute( 'data-sc-cs' ); }
+		// …and EVERY other capture-only stamp (`data-sc-anim` with its keyframes, `data-sc-reveal`, `data-sc-col`,
+		// `data-sc-pattern-*`) — a heading's stored title once carried a whole `data-sc-anim` block.
+		$sc_attrs = array();
+		foreach ( $node->attributes as $at ) { if ( 0 === strpos( strtolower( $at->name ), 'data-sc-' ) ) { $sc_attrs[] = $at->name; } }
+		foreach ( $sc_attrs as $an ) { $node->removeAttribute( $an ); }
 		// Re-express detected emphasis (italic) + a captured out-of-palette colour as real inline styles
 		// (the Tailwind `italic` / `text-muted-foreground` classes won't work on WP).
 		$style_bits = array();
 		if ( $want_italic )        { $style_bits[] = 'font-style:italic'; }
+		if ( $want_roman )         { $style_bits[] = 'font-style:normal'; }
+		if ( $want_block )         { $style_bits[] = 'display:block'; }
 		if ( $color_inline !== '' ) { $style_bits[] = $color_inline; }
 		if ( $grad_bg !== '' )      { $style_bits[] = 'background-image:' . $grad_bg; } // .sc-gradtext class clips it to text
+		if ( '' !== $stroke )       { $style_bits[] = '-webkit-text-stroke:' . $stroke; if ( '' !== $stroke_fill ) { $style_bits[] = 'color:' . $stroke_fill; } } // carrier → the mapper's scoped .sc-outline rule
 		// An INLINE element's own text treatment (a vertical `writing-mode` label, a tracked uppercase span, a smaller / bolder
 		// run) — the props of its stamp that DIFFER from its parent's — re-expressed as kses-safe inline style, so a styled
 		// span inside prose keeps its look instead of flattening to the parent's text. JS twin: inlineStyleOf (rawHtmlOf).
@@ -21395,14 +25336,22 @@ class FW_Site_Converter_Stitch {
 				$style_bits[] = ( 'text-decoration-line' === $pr ? 'text-decoration' : $pr ) . ':' . $v;
 				if ( 'writing-mode' === $pr ) { $style_bits[] = 'display:inline-block'; } // a vertical run needs a box
 			}
+			// …and the run's OWN font FAMILY (a mono span inside a grotesk heading) — the family is a design fact the scrub would lose
+			$ff = $get( $own_cs, 'font-family' ); $pf = $get( $parent_cs, 'font-family' );
+			if ( '' !== $ff && strtolower( $ff ) !== strtolower( $pf ) && stripos( $ff, 'inherit' ) === false && preg_match( '/^[a-z0-9"\',\s-]+$/i', $ff ) ) { $style_bits[] = 'font-family:' . str_replace( '"', "'", $ff ); }
 			if ( $style_bits ) { $node->setAttribute( 'style', implode( ';', array_unique( $style_bits ) ) ); }
-		}
+		} elseif ( '' !== $stroke && $style_bits ) { $node->setAttribute( 'style', implode( ';', array_unique( $style_bits ) ) ); }
 		foreach ( self::el_children( $node ) as $c ) { self::scrub( $c, $own_cs ); }
 	}
 
 	/** col-span-N → N (desktop span on a 12-grid); 0 when absent. */
 	private static function col_span( $cls ) {
-		if ( preg_match( '/(?:^|\s|:)col-span-(\d{1,2})/', $cls, $m ) ) { return (int) $m[1]; }
+		// The DESKTOP span is the LARGEST breakpoint variant present (`col-span-12 md:col-span-7` = 7 on desktop, 12 only on
+		// phones); the bare class only when no variant overrides it.
+		foreach ( array( '2xl', 'xl', 'lg', 'md', 'sm' ) as $bp ) {
+			if ( preg_match( '/(?:^|\s)' . $bp . ':col-span-(\d{1,2})/', $cls, $m ) ) { return (int) $m[1]; }
+		}
+		if ( preg_match( '/(?:^|\s)col-span-(\d{1,2})/', $cls, $m ) ) { return (int) $m[1]; }
 		return 0;
 	}
 

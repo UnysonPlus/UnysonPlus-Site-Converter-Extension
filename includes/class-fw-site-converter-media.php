@@ -496,6 +496,13 @@ class FW_Site_Converter_Media {
 				continue;
 			}
 			$seen[ $url ] = true;
+			// a PAGE URL (the source itself, a route with no file extension and a query / no path) is not an asset — skip it
+			// instead of a failed "not allowed file type" sideload on every conversion of a preview URL
+			$upath = (string) wp_parse_url( $url, PHP_URL_PATH );
+			if ( ! preg_match( '/\.[a-z0-9]{2,5}(?:$|[?#])/i', $upath ) && ( '' === trim( $upath, '/' ) || preg_match( '#/(?:api|preview)(?:/|$)#i', $upath ) ) ) { // (an extension-less CDN image with a query — an Unsplash photo — still passes)
+				$out[] = array( 'source' => $url, 'ok' => false, 'message' => 'skipped: not an asset URL (a page)' );
+				continue;
+			}
 
 			$id = self::sideload( $url, $post_id );
 
@@ -821,10 +828,15 @@ class FW_Site_Converter_Media {
 			if ( $u === '' || stripos( $u, 'data:' ) === 0 ) {
 				continue;
 			}
+			if ( '#' === $u[0] || '?' === $u[0] ) { continue; } // a fragment / query-only ref resolves to the page itself
 			$abs = self::absolutize( $u, $base );
 			if ( $abs === '' || ! self::accept_image_url( $abs, $declared ) ) {
 				continue;
 			}
+			// the PAGE URL itself (an empty-ish src / a self-referencing srcset candidate absolutized to the base) is not an asset —
+			// sideloading it failed with "not allowed file type" on every conversion of a preview URL
+			if ( '' !== (string) $base && rtrim( (string) $abs, '/' ) === rtrim( (string) $base, '/' ) ) { continue; }
+			if ( '' === trim( (string) wp_parse_url( $abs, PHP_URL_PATH ), '/' ) && '' === (string) wp_parse_url( $abs, PHP_URL_QUERY ) ) { continue; } // a bare origin
 			$out[ $abs ] = true;
 		}
 
