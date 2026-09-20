@@ -310,6 +310,7 @@ class FW_Site_Converter_Mapper {
 		self::$style_on    = class_exists( 'FW_Site_Converter_Tailwind' );
 		self::$style_key   = array();
 		self::$style_css   = array();
+		self::$main_is_container = false;
 		self::$style_count = array();
 	}
 
@@ -407,7 +408,7 @@ class FW_Site_Converter_Mapper {
 		if ( preg_match( '/rgba?\(\s*(\d{1,3})[,\s]+(\d{1,3})[,\s]+(\d{1,3})(?:[,\s\/]+([0-9.]+%?))?/', $c, $m ) ) {
 			$a = 1.0;
 			if ( isset( $m[4] ) && $m[4] !== '' ) { $a = (float) $m[4]; if ( substr( $m[4], -1 ) === '%' ) { $a /= 100; } }
-			if ( $a <= 0.02 ) { return null; }
+			if ( $a <= 0.0 ) { return null; }
 			return array( (int) $m[1], (int) $m[2], (int) $m[3], min( 1.0, $a ) );
 		}
 		if ( preg_match( '/^#([0-9a-f]{3}|[0-9a-f]{6})$/', $c, $m ) ) {
@@ -419,7 +420,7 @@ class FW_Site_Converter_Mapper {
 		// the preset stored the same colour as rgba, so the match needs the quad — Stitch's converter for the triplet, the alpha read here.
 		if ( class_exists( 'FW_Site_Converter_Stitch' ) && preg_match( '/^(?:oklch|oklab|hsla?)\(/', $c ) ) {
 			$a = 1.0; if ( preg_match( '/\/\s*([0-9.]+%?)\s*\)$/', $c, $am ) ) { $a = (float) $am[1]; if ( substr( $am[1], -1 ) === '%' ) { $a /= 100; } }
-			if ( $a <= 0.02 ) { return null; }
+			if ( $a <= 0.0 ) { return null; }
 			$hx = FW_Site_Converter_Stitch::color_to_hex( $c );
 			if ( preg_match( '/^#([0-9a-f]{6})$/i', (string) $hx, $hm ) ) { $h = strtolower( $hm[1] ); return array( hexdec( substr( $h, 0, 2 ) ), hexdec( substr( $h, 2, 2 ) ), hexdec( substr( $h, 4, 2 ) ), min( 1.0, $a ) ); }
 		}
@@ -838,7 +839,7 @@ class FW_Site_Converter_Mapper {
 			// shorthand only from a non-zero border-top-width, so a plain link's default border-*-color
 			// (no width) never registers as an outline.
 			$bd = '';
-			if ( isset( $props['border'] ) && preg_match( '/(rgba?\([^)]*\)|#[0-9a-fA-F]{3,8})/', $props['border'], $bm ) ) { $bd = $bm[1]; }
+			if ( isset( $props['border'] ) && preg_match( '/(rgba?\([^)]*\)|#[0-9a-fA-F]{3,8}|(?:oklch|oklab|hsla?)\([^)]*\))/i', $props['border'], $bm ) ) { $bd = $bm[1]; } // (an oklch hairline matched no preset → the transplant fallback — a feed finding)
 			$bd = self::rgba_quad( $bd );
 			// A GRADIENT-filled button (transparent bg-color, linear-gradient bg-image) matches the preset whose
 			// gradient starts with the same colour — a solid-colour match can't see it.
@@ -1038,7 +1039,10 @@ class FW_Site_Converter_Mapper {
 		$declared = false;
 		// (1) the classes — exact sides + units
 		$cm = class_exists( 'FW_Site_Converter_Tailwind' ) ? FW_Site_Converter_Tailwind::compile_class_set( (string) $cls ) : array();
+		$dc = self::cs_decls( (string) $cs, array( 'top', 'right', 'bottom', 'left' ) );
 		foreach ( array( 'top', 'right', 'bottom', 'left' ) as $side ) {
+			// a side with a RESPONSIVE variant (`left-6 md:left-12`) resolves to the desktop value — the computed px, not the phone tier's class
+			if ( preg_match( '/(?:^|\s)(?:sm|md|lg|xl|2xl):-?' . $side . '-/', ' ' . (string) $cls . ' ' ) && isset( $dc[ $side ] ) && preg_match( '/^-?[0-9.]+px$/', trim( $dc[ $side ] ) ) ) { $off[ $side ] = array( 'value' => (string) round( (float) $dc[ $side ] ), 'unit' => 'px' ); $declared = true; continue; }
 			if ( isset( $cm['base'][ $side ] ) && ( $u = $len( $cm['base'][ $side ] ) ) ) { $off[ $side ] = $u; $declared = true; }
 			// a FRACTION utility the compile doesn't map (`left-1/2`, `top-1/3`, `-bottom-1/2`) → its percentage (a centred scroll cue)
 			elseif ( preg_match( '/(?:^|\s)(-?)' . $side . '-(\d+)\/(\d+)(?:\s|$)/', ' ' . (string) $cls . ' ', $fm ) && (int) $fm[3] > 0 ) { $off[ $side ] = array( 'value' => (string) round( ( '-' === $fm[1] ? -1 : 1 ) * (int) $fm[2] / (int) $fm[3] * 100, 3 ), 'unit' => '%' ); $declared = true; }
@@ -1799,7 +1803,12 @@ class FW_Site_Converter_Mapper {
 	public static function registered_css() {
 		$rules = array_values( array_filter( self::$style_css ) );
 		if ( ! $rules ) { return ''; }
-		return "/* ---- mapped box containers (clean semantic CSS from the source) ---- */\n" . implode( "\n", $rules );
+		// The PHONE tiers (`@media (max-width:…)`) go LAST: they were registered before their desktop rule (the section styler
+		// keys the phone rule first), and at equal specificity + !important the later rule wins — a 72px phone title lost
+		// to the 128px desktop rule that followed it, and the one-word line pushed the page past the viewport.
+		$base = array(); $phone = array();
+		foreach ( $rules as $r ) { if ( 0 === strpos( ltrim( (string) $r ), '@media (max-width' ) ) { $phone[] = $r; } else { $base[] = $r; } }
+		return "/* ---- mapped box containers (clean semantic CSS from the source) ---- */\n" . implode( "\n", array_merge( $base, $phone ) );
 	}
 
 	/** Roles selectable in the editor (value => human label). */
@@ -2301,6 +2310,11 @@ class FW_Site_Converter_Mapper {
 		if ( '' !== (string) $valign ) {
 			$vmap = array( 'top' => 'top', 'middle' => 'center', 'bottom' => 'bottom' );
 			$node['atts']['column_valign'] = isset( $vmap[ (string) $valign ] ) ? $vmap[ (string) $valign ] : 'center';
+			// the centring makes the band a flex column (align-items:center), which SHRINKS its content flexbox to its content
+			// width (the hero's copy | stats row measured 1093px, its title 45px off the source's left edge — a real-site audit):
+			// the band's direct flexboxes keep their full width (their own max-width cap + auto margins still centre them)
+			$cur0 = (string) ( $node['atts']['custom_css'] ?? '' );
+			if ( false === strpos( $cur0, '.fw-flexbox{width:100%' ) ) { $node['atts']['custom_css'] = trim( $cur0 . ' selector > .fw-flexbox,selector > .fw-container > .fw-flexbox{width:100%;}' ); }
 		}
 		// NEVER-DROP hero horizontal alignment: a LEFT-aligned viewport-tall SINGLE-COLUMN hero should sit
 		// LEFT-FLUSH like the source, not in the theme's auto-centered max-width container. Skipped for a CENTERED
@@ -2666,6 +2680,10 @@ class FW_Site_Converter_Mapper {
 			$direct_heading = false; $nested_box = false;
 			foreach ( (array) ( $col['_items'] ?? array() ) as $ci ) { if ( ( $ci['shortcode'] ?? '' ) === 'special_heading' ) { $direct_heading = true; } if ( ( $ci['type'] ?? '' ) === 'flexbox' ) { $nested_box = true; } }
 			if ( ! $direct_heading || $nested_box ) { continue; }
+			// a column that wears a CARD skin (a Box Preset / a box inner wrapper) is a card whose content folded into one heading
+			// (a glass stat tile: label + number + line) — never a bare section heading; two such tiles are a row, not a stack
+			// (a bento's four tiles had spread down the page as full-width blocks — a real-site audit)
+			if ( '' !== (string) ( $col['atts']['border_preset'] ?? '' ) || preg_match( '/\bsc-cb-|\bsc-box|\bboxp-/', (string) ( $col['atts']['inner_class'] ?? '' ) ) ) { continue; }
 			$js = (string) ( function_exists( 'wp_json_encode' ) ? wp_json_encode( $col ) : json_encode( $col ) );
 			if ( false !== strpos( $js, '"special_heading"' )
 				&& false === strpos( $js, '"media_image"' ) && false === strpos( $js, '"media_video"' )
@@ -2904,7 +2922,27 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 	 */
 	private static function split_col_css( $css, array $inner_classes ) {
 		$css   = (string) $css;
-		$inner = array();
+		$inner = array(); $inner_media = array(); // (media tiers go AFTER the base rules — same specificity, source order decides)
+		// A rule inside an `@media (…){ … }` block (the card box's responsive inset tiers) moves to the inner wrapper WITH its
+		// media wrapper; a media block emptied by the move is dropped (it had left an empty `@media (min-width:768px){}` on
+		// the track while the tier rules landed on the inner unwrapped — every tier then painted the desktop inset).
+		$css = preg_replace_callback(
+			'/@media\s*([^{]+)\{((?:[^{}]*\{[^}]*\})*)\s*\}/',
+			function ( $mm ) use ( &$inner_media, $inner_classes ) {
+				$q = trim( $mm[1] ); $kept = array();
+				preg_replace_callback(
+					'/selector\s+\.([A-Za-z0-9_-]+)\s*\{([^}]*)\}|selector\s*\{[^}]*\}|[^{]+\{[^}]*\}/',
+					function ( $m ) use ( &$inner_media, &$kept, $inner_classes, $q ) {
+						if ( isset( $m[1] ) && '' !== $m[1] && in_array( $m[1], $inner_classes, true ) ) { $inner_media[] = '@media ' . $q . '{selector{' . trim( $m[2] ) . '}}'; }
+						else { $kept[] = $m[0]; }
+						return '';
+					},
+					$mm[2]
+				);
+				return $kept ? '@media ' . $q . '{' . implode( '', $kept ) . '}' : '';
+			},
+			$css
+		);
 		$rest  = preg_replace_callback(
 			'/selector\s+\.([A-Za-z0-9_-]+)\s*\{([^}]*)\}/',
 			function ( $m ) use ( &$inner, $inner_classes ) {
@@ -2916,7 +2954,8 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			},
 			$css
 		);
-		return array( trim( (string) $rest ), trim( implode( "\n", $inner ) ) );
+		$rest = preg_replace( '/\n{2,}/', "\n", (string) $rest );
+		return array( trim( (string) $rest ), trim( implode( "\n", array_merge( $inner, $inner_media ) ) ) );
 	}
 	/**
 	 * Recursively flex NESTED column runs: given a list of builder child nodes, replace every run of
@@ -2966,6 +3005,14 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 					$over['grid_columns'] = (string) $ncol;
 					foreach ( $cells as &$gc ) { unset( $gc['atts']['width'] ); }
 					unset( $gc );
+				} elseif ( self::cells_span_lines( $cells ) ) {
+					// A MIXED-SPAN row whose desktop spans tile lines of exactly 12 (a `grid-cols-12` bento: 8|4 then 5|7) →
+					// a native 12-TRACK GRID (`fw-grid-12`; the cells' own fw-span-N → grid-column:span N, responsive tiers
+					// included, phones collapse to one column). As a wrapping flex row every cell shed the full gap
+					// (`calc(pct - gap)`), so each line ran one gap short and the tiles sat 16px narrower than the
+					// source's tracks (a real-site audit).
+					$over['display']      = 'grid';
+					$over['grid_columns'] = '12';
 				} elseif ( self::cells_uniform_grid( $cells ) ) {
 					foreach ( $cells as &$uc ) { $uc['atts']['flex_grow'] = array( 'base' => 'yes', 'md' => '', 'lg' => '' ); }
 					unset( $uc );
@@ -2985,6 +3032,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 					if ( ! empty( $rl['gap'] ) )    { $gs = self::gap_slug( (string) $rl['gap'] ); if ( '' !== $gs ) { $over['gap'] = array( 'base' => $gs, 'md' => '', 'lg' => '' ); } }
 					if ( ! empty( $rl['valign'] ) ) { $over['align_items'] = array( 'base' => $rl['valign'], 'md' => '', 'lg' => '' ); }
 					if ( ! empty( $rl['nowrap'] ) && 'grid' !== ( $over['display'] ?? '' ) ) { $over['wrap'] = array( 'base' => 'no', 'md' => '', 'lg' => '' ); }
+					if ( ! empty( $rl['fx'] ) ) { $over['custom_css'] = trim( (string) ( $over['custom_css'] ?? '' ) . "\n" . $rl['fx'] ); }
 					if ( ! empty( $rl['justify'] ) ) {
 						$jmap = array( 'space-between' => 'between', 'space-around' => 'around', 'space-evenly' => 'around', 'center' => 'center', 'flex-end' => 'end', 'end' => 'end' );
 						if ( isset( $jmap[ $rl['justify'] ] ) ) {
@@ -3035,7 +3083,11 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				// A cell from a DIFFERENT source row than the run so far → the run ends here (two stacked rows stay two rows).
 				$rid = (string) ( $it['atts']['_row_id'] ?? '' );
 				if ( $run && $rid !== (string) ( $run[0]['atts']['_row_id'] ?? '' ) ) { $flush(); }
+				// an `mt-auto` PUSHED column (a hero's bottom-pinned strip) is a stacked group, never a cell beside the copy: it ends
+				// the run and stands alone (joined into a wrapping flex row its auto margin had nothing to push against)
+				if ( $run && false !== strpos( (string) ( $it['atts']['custom_css'] ?? '' ), 'margin-top:auto' ) ) { $flush(); }
 				$run[] = $it;
+				if ( false !== strpos( (string) ( $it['atts']['custom_css'] ?? '' ), 'margin-top:auto' ) ) { $flush(); }
 			} else {
 				$flush();
 				$out[] = $it;
@@ -3088,6 +3140,27 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			if ( null === $base ) { $base = $span; } elseif ( $span !== $base ) { return 0; } // all cells equal
 		}
 		return $n;
+	}
+
+	/** True when a run of ≥ 2 cells with mixed desktop spans (lg, else md, else base — digits 1–12) tiles LINES of exactly
+	 *  12: the cumulative span hits 12 at every line break and the last line closes on 12 (8|4 / 5|7; 6|6|12). A uniform
+	 *  run (all equal) is not this — cells_uniform_grid handles it; a positioned cell vetoes. */
+	private static function cells_span_lines( array $cells ) {
+		if ( count( $cells ) < 2 ) { return false; }
+		$spans = array();
+		foreach ( $cells as $c ) {
+			if ( ! is_array( $c ) || ! empty( $c['atts']['element_position'] ) ) { return false; }
+			$w = ( isset( $c['atts']['width'] ) && is_array( $c['atts']['width'] ) ) ? $c['atts']['width'] : null;
+			if ( ! $w ) { return false; }
+			$d = '';
+			foreach ( array( 'lg', 'md', 'base' ) as $tier ) { $v = (string) ( $w[ $tier ]['preset'] ?? '' ); if ( ctype_digit( $v ) ) { $d = $v; break; } }
+			if ( '' === $d || (int) $d < 1 || (int) $d > 12 ) { return false; }
+			$spans[] = (int) $d;
+		}
+		if ( count( array_unique( $spans ) ) < 2 ) { return false; }
+		$acc = 0;
+		foreach ( $spans as $sp ) { $acc += $sp; if ( $acc > 12 ) { return false; } if ( 12 === $acc ) { $acc = 0; } }
+		return 0 === $acc;
 	}
 
 	private static function cells_uniform_grid( array $cells ) {
@@ -3332,6 +3405,9 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 	 *  section-level column loop; shared here for nested rows. */
 	private static function apply_cell_pad( array $col, $cc ) {
 		if ( ! is_array( $cc ) || empty( $cc['pad'] ) || ! is_array( $cc['pad'] ) ) { return $col; }
+		// the cell's BOX PRESET carries its inset (cardBox padding): padding the column too doubled it once the preset moved to
+		// the column's inner wrapper (a 401px bento tile rendered 596 — a real-site audit)
+		if ( ! empty( $cc['cardBox']['padding'] ) && '' !== trim( (string) $cc['cardBox']['padding'] ) ) { return $col; }
 		$pad_decl = function ( $tier ) use ( $cc ) {
 			if ( empty( $cc['pad'][ $tier ] ) || ! is_array( $cc['pad'][ $tier ] ) ) { return ''; }
 			$t = $cc['pad'][ $tier ]; $parts = array();
@@ -3398,6 +3474,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		if ( ! empty( $b['pad'] ) && is_array( $b['pad'] ) ) { $lay['pad'] = $b['pad']; }
 		if ( ! empty( $b['scroll'] ) && is_array( $b['scroll'] ) ) { $lay['scroll'] = $b['scroll']; }
 		if ( ! empty( $b['nowrap'] ) ) { $lay['nowrap'] = true; }
+		if ( ! empty( $b['fx'] ) ) { $lay['fx'] = (string) $b['fx']; } // the row's own opacity / filter (+ hover restore)
 		if ( ! empty( $b['mxAdd'] ) && is_array( $b['mxAdd'] ) ) { $lay['mx'] = $b['mxAdd']; }
 		if ( ! empty( $b['tracksMd'] ) ) { $lay['tracksMd'] = (int) $b['tracksMd']; }
 		if ( ! empty( $b['tracksSm'] ) ) { $lay['tracksSm'] = (int) $b['tracksSm']; }
@@ -3847,6 +3924,10 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				if ( in_array( $k, $owned, true ) || in_array( $k, array( 'color', 'text-align' ), true ) ) { continue; }
 				$left[] = $k . ':' . $v;
 			}
+			// a leaf beside its siblings in a FLEX ROW (a logo chip's `<icon/> Name`, a key / value pair): its paragraph carries no
+			// flow rhythm — the theme's `* + p` top margin had dropped the label 8px under its icon (a real-site report)
+			$pcs = ( $el->parentNode instanceof DOMElement ) ? (string) $el->parentNode->getAttribute( 'data-sc-cs' ) : '';
+			if ( preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $pcs ) && ! preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $pcs ) && ! isset( $td['margin'] ) && ! isset( $td['margin-top'] ) ) { $left[] = 'margin:0'; }
 			if ( $left ) { $node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "\n" . 'selector ' . $wrap . '{' . implode( ';', $left ) . ';}' ); }
 			return $node;
 		}
@@ -3906,11 +3987,28 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		if ( '' !== $gslug ) { $over['gap'] = array( 'base' => $gslug, 'md' => '', 'lg' => '' ); }
 
 		$items = array();
-		if ( '' !== $own_text ) { $items[] = self::n_text( '<p>' . htmlspecialchars( $own_text, ENT_QUOTES ) . '</p>' ); }
-		foreach ( $kids as $k ) {
-			$child = self::mirror_el( $k, $depth + 1 );
+		// The element's own text runs and its element children in DOCUMENT ORDER — a `<span><iconify-icon/> Unreal Engine</span>`
+		// logo chip is icon THEN label; emitting the text first put every logo's mark after its name (a real-site report).
+		// Text runs between elements flush as their own text block each.
+		$run = '';
+		// (a text run that is a FLEX-ROW item — the label beside a logo chip's icon — carries no flow rhythm: the theme's `* + p`
+		// top margin had dropped it 8px under the icon)
+		$el_cs = (string) $el->getAttribute( 'data-sc-cs' );
+		$run_in_row = preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $el_cs ) && ! preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $el_cs );
+		// …and the run wears the element's OWN type (a 20px bold chip label — the theme's body size drew it small): the same facts
+		// the leaf path reads (mirror_text_decls), scoped to the paragraph
+		$run_td = self::mirror_text_decls( $el ); $run_css = array();
+		foreach ( $run_td as $k => $v ) { if ( in_array( $k, array( 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'text-transform', 'color' ), true ) && '' !== trim( (string) $v ) ) { $run_css[] = $k . ':' . $v; } }
+		$flush_run = function () use ( &$run, &$items, $run_in_row, $run_css ) { $t = trim( preg_replace( '/\s+/', ' ', (string) $run ) ); if ( '' !== $t ) { $tn = self::n_text( '<p>' . htmlspecialchars( $t, ENT_QUOTES ) . '</p>' ); if ( is_array( $tn ) ) { $decl = $run_css; if ( $run_in_row ) { $decl[] = 'margin:0'; } if ( $decl ) { $tn['atts']['custom_css'] = trim( (string) ( $tn['atts']['custom_css'] ?? '' ) . "\n" . 'selector,selector p{' . implode( ';', $decl ) . ';}' ); } } $items[] = $tn; } $run = ''; };
+		$kid_set = array(); foreach ( $kids as $k ) { $kid_set[] = $k; }
+		foreach ( $el->childNodes as $c ) {
+			if ( XML_TEXT_NODE === $c->nodeType ) { $run .= $c->nodeValue; continue; }
+			if ( XML_ELEMENT_NODE !== $c->nodeType || ! in_array( $c, $kid_set, true ) ) { continue; }
+			$flush_run();
+			$child = self::mirror_el( $c, $depth + 1 );
 			if ( is_array( $child ) ) { $items[] = $child; }
 		}
+		$flush_run();
 		if ( empty( $items ) ) {
 			// An EMPTY PAINTED container (a 64px ring holding a blurred 32px dot — a card's emblem; a swatch inside a frame): its
 			// raw markup carries only unresolvable utility classes and renders nothing. Rebuild it as a painted box: the
@@ -3937,6 +4035,17 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		}
 		if ( '' !== $balign ) { $boxcss = trim( $boxcss . ( '' !== $boxcss ? ';' : '' ) . 'text-align:' . $balign ); }
 		if ( '' !== $boxcss ) { $over['custom_css'] = trim( ( isset( $over['custom_css'] ) ? $over['custom_css'] . ' ' : '' ) . 'selector{' . $boxcss . '}' ); }
+		// A LABEL ROW (a flex row of short leaves — a kicker and a status dot, a key and its value; the source keeps it on one
+		// line at every width) never collapses on phones: the theme's collapse stretched each item to the full width and drew
+		// the 8px dot as a full-width bar (a real-site audit)
+		if ( 'flex' === ( $over['display'] ?? '' ) && 'row' === (string) ( $over['direction']['base'] ?? '' ) && count( $items ) <= 3 ) {
+			$short = true;
+			foreach ( $items as $it ) {
+				$sc = (string) ( $it['shortcode'] ?? '' ); $txt = trim( wp_strip_all_tags( (string) ( $it['atts']['text'] ?? $it['atts']['code'] ?? '' ) ) );
+				if ( ! in_array( $sc, array( 'text_block', 'code_block' ), true ) || mb_strlen( $txt ) > 40 || ! empty( $it['_items'] ) ) { $short = false; break; }
+			}
+			if ( $short ) { $over['responsive_collapse'] = 'no'; }
+		}
 		return self::n_flexbox( $items, $over );
 	}
 
@@ -5765,7 +5874,8 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 					$has_span = false; foreach ( $imgs as $im ) { if ( (int) ( $im['span'] ?? 1 ) > 1 || (int) ( $im['rspan'] ?? 1 ) > 1 ) { $has_span = true; break; } }
 					if ( $has_span ) {
 						$mcss .= 'selector .fw-gallery__item{grid-column:span 1 !important;grid-row:span 1 !important;}';
-						foreach ( $imgs as $i => $im ) { $cs_ = (int) ( $im['span'] ?? 1 ); $rs_ = (int) ( $im['rspan'] ?? 1 ); if ( $cs_ > 1 || $rs_ > 1 ) { $mcss .= 'selector .fw-gallery__item:nth-child(' . ( $i + 1 ) . '){grid-column:span ' . $cs_ . ' !important;grid-row:span ' . $rs_ . ' !important;}'; } }
+						$sdiv = max( 1, (int) ( $gd['spanDiv'] ?? 1 ) ); // a 12-track mosaic reduced to its gcd columns (Stitch detect_gallery_design)
+						foreach ( $imgs as $i => $im ) { $cs_ = max( 1, (int) round( (int) ( $im['span'] ?? 1 ) / $sdiv ) ); $rs_ = (int) ( $im['rspan'] ?? 1 ); if ( $cs_ > 1 || $rs_ > 1 ) { $mcss .= 'selector .fw-gallery__item:nth-child(' . ( $i + 1 ) . '){grid-column:span ' . $cs_ . ' !important;grid-row:span ' . $rs_ . ' !important;}'; } }
 					}
 					if ( '' !== $mcss ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\n" . $mcss ); }
 				}
@@ -7987,10 +8097,12 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		// the theme's 20px / 26px inflated a 50px date chip to 82px — a fixture from the feed)
 		$tcs0 = (string) ( $card['titleCs'] ?? '' );
 		if ( '' === $tfs && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+px)/i', $tcs0, $tfm0 ) ) { $tfs = $tfm0[1]; }
-		if ( preg_match( '/^([0-9.]+)px$/', $tfs, $tm ) && abs( (float) $tm[1] - 20 ) > 0.5 && (float) $tm[1] >= 10 && (float) $tm[1] <= 48 ) { $title_decls[] = 'font-size:' . $tfs; }
+		if ( preg_match( '/^([0-9.]+)px$/', $tfs, $tm ) && abs( (float) $tm[1] - 20 ) > 0.5 && (float) $tm[1] >= 8 && (float) $tm[1] <= 48 ) { $title_decls[] = 'font-size:' . $tfs; } // (≥ 8: a 9px chip label)
 		if ( '' !== $tfs && preg_match( '/(?:^|;)\s*line-height:\s*([0-9.]+px)/i', $tcs0, $tlh0 ) && (float) $tlh0[1] <= (float) $tfs * 1.15 ) { $title_decls[] = 'line-height:' . $tlh0[1]; } // a `leading-none` title keeps its tight leading
 		$tmb = isset( $card['titleMarginBottom'] ) ? trim( (string) $card['titleMarginBottom'] ) : '';
 		if ( '' === $tmb && preg_match( '/(?:^|;)\s*margin(?:-bottom)?:\s*(?:[0-9.]+px\s+){0,2}([0-9.]+px)(?:\s+[0-9.]+px)?(?:;|$)/i', $tcs0, $tmb0 ) && preg_match( '/(?:^|;)\s*margin(?:-bottom)?:/i', $tcs0 ) ) { $mm = self::cs_decls( $tcs0, array( 'margin-bottom', 'margin' ) ); if ( '' !== (string) ( $mm['margin-bottom'] ?? '' ) ) { $tmb = (string) $mm['margin-bottom']; } elseif ( preg_match( '/^([0-9.]+px)(?:\s+[0-9.]+px)?$/', (string) ( $mm['margin'] ?? '' ), $mm1 ) ) { $tmb = $mm1[1]; } elseif ( preg_match( '/^[0-9.]+px\s+[0-9.]+px\s+([0-9.]+px)/', (string) ( $mm['margin'] ?? '' ), $mm2 ) ) { $tmb = $mm2[1]; } }
+		// a title with NOTHING under it (a one-line chip) carries no trailing margin — the theme's 8px made a 30px chip 38px
+		if ( '' === trim( (string) ( $card['text'] ?? '' ) ) && empty( $card['button'] ) && '' === $tmb ) { $tmb = '0px'; }
 		if ( preg_match( '/^([0-9.]+)px$/', $tmb, $tmm ) && abs( (float) $tmm[1] - 8 ) > 0.5 && (float) $tmm[1] <= 40 ) { $title_decls[] = 'margin-bottom:' . $tmb; }
 		// …and the title's MEASURED weight: the theme heading default (700) won over a `font-semibold` (600) / serif `font-normal`
 		// (400) card title — reported on nine sites in the feed. !important: the shortcode's own hN rule outranks a scoped rule.
@@ -8528,6 +8640,35 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		return $out;
 	}
 
+	/**
+	 * A GLOWING run in a heading part (Stitch scrub: `<span class="sc-glow" style="text-shadow:…">`): kses strips `text-shadow`
+	 * from inline styles, so the shadow moves into the heading's own scoped CSS (`selector .sc-glow{text-shadow:…}`), the markup
+	 * keeping the class. Mirrors extract_outline_css; distinct glows in one heading → `sc-glow-N` each. (A feed finding.)
+	 */
+	private static function extract_glow_css( &$html ) {
+		$html = (string) $html;
+		if ( '' === $html || false === stripos( $html, 'sc-glow' ) ) { return ''; }
+		$rules = array(); $n = 0;
+		$html = preg_replace_callback( '/<span\b[^>]*\bsc-glow\b[^>]*>/i', function ( $m ) use ( &$rules, &$n ) {
+			$tag = $m[0];
+			if ( ! preg_match( '/\bstyle="([^"]*)"/i', $tag, $sm ) ) { return $tag; }
+			$keep = array(); $glow = '';
+			foreach ( array_filter( array_map( 'trim', explode( ';', $sm[1] ) ) ) as $d ) {
+				if ( preg_match( '/^text-shadow\s*:\s*(.+)$/i', $d, $dm ) ) { $glow = trim( $dm[1] ); } else { $keep[] = $d; }
+			}
+			if ( '' === $glow ) { return $tag; }
+			$css = 'text-shadow:' . $glow . ';';
+			$key = array_search( $css, $rules, true );
+			if ( false === $key ) { $key = 'sc-glow' . ( $n ? '-' . $n : '' ); $n++; $rules[ $key ] = $css; }
+			$tag = preg_replace( '/\s*\bstyle="[^"]*"/i', $keep ? ' style="' . implode( ';', $keep ) . '"' : '', $tag );
+			if ( 'sc-glow' !== $key ) { $tag = preg_replace( '/\bsc-glow\b/', $key, $tag, 1 ); }
+			return $tag;
+		}, $html );
+		$out = '';
+		foreach ( $rules as $cls => $css ) { $out .= 'selector .' . $cls . '{' . $css . '}'; }
+		return $out;
+	}
+
 	private static function extract_gradtext_css( &$html ) {
 		$html = (string) $html;
 		if ( '' === $html || false === stripos( $html, 'sc-gradtext' ) ) { return ''; }
@@ -8864,6 +9005,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 							$hn['atts']['spacing']['margin']['top'] = self::spacing_token( 'mt', (float) $head['mtAdd'] );
 						}
 						self::apply_inset_x( $hn, $head );
+						self::apply_mt_auto( $hn, $head );
 						if ( ! empty( $head['reveal'] ) ) { self::apply_reveal( $hn, $head['reveal'] ); }
 						$items[] = $hn;
 					}
@@ -8900,6 +9042,11 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				$items[] = self::n_watermark_heading( $b, $wm );
 				continue;
 			}
+			// A label set APART by the cell's flex distribution (Stitch mark_apart_label: its own flex item ahead of the title's
+			// box in a space-between column) is a standalone kicker: an overline-only heading, flushed at once, never the next
+			// title's overline (folded in, it sat on the title instead of at the card's top — a real-site audit).
+			$apart = ( 'overline' === $role && ! empty( $b['apart'] ) );
+			if ( $apart ) { $flush_head(); }
 			if ( in_array( $role, array( 'overline', 'title', 'subtitle' ), true ) ) {
 				// title + subtitle keep INLINE html (links / <strong> / <em>); a subtitle's outer <p> is stripped.
 				$val   = in_array( $role, array( 'title', 'subtitle' ), true )
@@ -8914,6 +9061,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				// carry the largest onto $head so flush_head can put it on the special_heading's Spacing.
 				if ( ! empty( $b['mbAdd'] ) ) { $head['mbAdd'] = max( (float) ( $head['mbAdd'] ?? 0 ), (float) $b['mbAdd'] ); }
 				if ( ! empty( $b['mtAdd'] ) && empty( $head['mtAdd'] ) ) { $head['mtAdd'] = (float) $b['mtAdd']; } // the wrapper's mt-* / pt-* lands on the FIRST part
+				if ( ! empty( $b['mtAuto'] ) ) { $head['mtAuto'] = true; if ( ! empty( $b['mtAutoPad'] ) ) { $head['mtAutoPad'] = (float) $b['mtAutoPad']; } }
 				if ( ! empty( $b['reveal'] ) && empty( $head['reveal'] ) ) { $head['reveal'] = $b['reveal']; } // the first part's measured CSS-class reveal rides the group (JS parity)
 				if ( ! empty( $b['mxAdd'] ) && is_array( $b['mxAdd'] ) && empty( $head['mxAdd'] ) ) { $head['mxAdd'] = $b['mxAdd']; } // the flattened wrapper's side inset rides the group's special_heading
 				// Carry chip-before-heading pill metadata onto the head so n_heading emits the filled-pill overline.
@@ -8963,6 +9111,9 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 					if ( ! empty( $b['csSm'] ) && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $b['csSm'], $sfs ) ) { $head['subtitle_fs_sm'] = (float) $sfs[1]; if ( preg_match( '/(?:^|;)\s*line-height:\s*([0-9.]+)px/i', (string) $b['csSm'], $slh2 ) ) { $head['subtitle_lh_sm'] = (float) $slh2[1]; } } // PHONE PASS (parity with the section-level fold)
 				}
 				if ( $role === 'title' && ! empty( $b['fs_decl'] ) ) { $head['title_fs_decl'] = (string) $b['fs_decl']; $head['title_lh_decl'] = (string) ( $b['lh_decl'] ?? '' ); $head['title_ls_decl'] = (string) ( $b['ls_decl'] ?? '' ); } // a fluid clamp()/vw size the source declared (+ its relative metrics)
+				// PHONE PASS for the TITLE too (`text-7xl md:text-9xl` → 72px at 390): the desktop 128px pinned at every width made a
+				// one-word line wider than the phone and, #main being a flex item, pushed the whole page past the viewport
+				if ( $role === 'title' && ! empty( $b['csSm'] ) && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $b['csSm'], $tfs ) ) { $head['title_fs_sm'] = (float) $tfs[1]; if ( preg_match( '/(?:^|;)\s*line-height:\s*([0-9.]+)px/i', (string) $b['csSm'], $tlh2 ) ) { $head['title_lh_sm'] = (float) $tlh2[1]; } if ( preg_match( '/(?:^|;)\s*letter-spacing:\s*(-?[0-9.]+)px/i', (string) $b['csSm'], $tls2 ) ) { $head['title_ls_sm'] = (float) $tls2[1]; } }
 				if ( $role === 'title' && isset( $b['cs'] ) && '' !== (string) $b['cs'] ) {
 					// TITLE computed bottom margin → the title→subtitle gap (never-drop). `mb-8` is stripped
 					// from title_class, so read the resolved px from the computed style; n_heading carries it
@@ -8977,6 +9128,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 					if ( ! empty( $b['wrapCls'] ) ) { $head['css_class'] = (string) $b['wrapCls']; }
 					if ( ! empty( $b['wrapMaxW'] ) ) { $head['wrapMaxW'] = (string) $b['wrapMaxW']; }
 				}
+				if ( $apart ) { $flush_head(); } // the apart kicker stands alone (overline-only heading)
 				continue;
 			}
 			$flush_head();
@@ -9203,7 +9355,18 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 	 */
 	/** A flattened grouping wrapper's own vertical margin + padding (Stitch collect_blocks mtAdd / mbAdd on the boundary
 	 *  blocks it produced) → the node's Spacing when nothing more specific set it. JS twin: carryWrapMargins. */
+	/** A flattened `mt-auto` wrapper (Stitch mtAuto on its first block): the node takes `margin-top:auto` — in the cell's
+	 *  flex column it pushes itself (and what follows) to the bottom, as the source's group did. */
+	private static function apply_mt_auto( array &$node, $b ) {
+		if ( ! is_array( $b ) || empty( $b['mtAuto'] ) || ! isset( $node['atts'] ) ) { return; }
+		$cur = (string) ( $node['atts']['custom_css'] ?? '' );
+		if ( false !== strpos( $cur, 'margin-top:auto' ) ) { return; }
+		$pad = (float) ( $b['mtAutoPad'] ?? 0 );
+		$node['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . 'selector{margin-top:auto !important;' . ( $pad > 0 ? 'padding-top:' . (int) round( $pad ) . 'px;' : '' ) . '}' );
+	}
+
 	private static function carry_wrap_margins( array &$node, $b ) {
+		self::apply_mt_auto( $node, $b );
 		if ( ! is_array( $b ) || ! isset( $node['atts']['spacing']['margin'] ) || ! is_array( $node['atts']['spacing']['margin'] ) ) { return; }
 		if ( ! empty( $b['mtAdd'] ) && in_array( (string) $node['atts']['spacing']['margin']['top'], array( '', 'mt-0' ), true ) )    { $node['atts']['spacing']['margin']['top']    = self::spacing_token( 'mt', (float) $b['mtAdd'] ); }
 		if ( ! empty( $b['mbAdd'] ) && in_array( (string) $node['atts']['spacing']['margin']['bottom'], array( '', 'mb-0' ), true ) ) { $node['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', (float) $b['mbAdd'] ); }
@@ -9486,6 +9649,25 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		if ( ! empty( $d['line-height'] ) && preg_match( '/^[0-9.]+px$/', $d['line-height'] ) )       { $out[] = 'line-height:' . $d['line-height'] . ' !important'; }
 		if ( ! empty( $d['letter-spacing'] ) && preg_match( '/^-?[0-9.]+px$/', $d['letter-spacing'] ) ) { $out[] = 'letter-spacing:' . $d['letter-spacing'] . ' !important'; }
 		return $out ? 'selector .heading-title{' . implode( ';', $out ) . ';}' : '';
+	}
+
+	/** NEVER-DROP text effects on a heading part: a `text-shadow` glow (`.glow-text`) and a resting 2-D transform (a `skew-x-2`
+	 *  lead) live only in the computed style — nothing native carries them — so they ride as scoped CSS on the part (a feed
+	 *  finding: the accent glow and the skew were dropped on every heading). The identity matrix carries nothing. */
+	private static function heading_text_fx_css( $h ) {
+		$parts = array( 'title' => '.heading-title', 'subtitle' => '.heading-subtitle', 'overline' => '.heading-overline' );
+		$css = '';
+		foreach ( $parts as $part => $sel ) {
+			if ( '' === trim( (string) ( $h[ $part ] ?? '' ) ) ) { continue; }
+			$cs = (string) ( $h[ $part . '_cs' ] ?? '' ); if ( '' === $cs ) { continue; }
+			$fx = self::cs_decls( $cs, array( 'text-shadow', 'transform' ) ); $d = array();
+			$ts = trim( (string) ( $fx['text-shadow'] ?? '' ) );
+			if ( '' !== $ts && 'none' !== strtolower( $ts ) && preg_match( '/^[a-z0-9()%.,\s#\/+-]+$/i', $ts ) ) { $d[] = 'text-shadow:' . $ts; }
+			$tf = trim( (string) ( $fx['transform'] ?? '' ) );
+			if ( preg_match( '/^matrix\(([^)]+)\)$/', $tf, $tm ) && preg_replace( '/\s+/', '', $tm[1] ) !== '1,0,0,1,0,0' ) { $d[] = 'transform:' . $tf; }
+			if ( $d ) { $css .= 'selector ' . $sel . '{' . implode( ';', $d ) . ';}'; }
+		}
+		return $css;
 	}
 
 	private static function heading_family_css( $h ) {
@@ -9838,7 +10020,10 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			}
 			// An EXPLICIT zero (computed `margin-bottom:0px`, or a shorthand ending in 0) → mb-0: the source puts the gap on
 			// the NEXT block's margin-top, so the theme's default block margin would double it (a 28px row gap read 46px).
-			if ( ( $sub_mb_px === null || $sub_mb_px <= 0 ) && '' !== (string) ( $h['subtitle_cs'] ?? '' ) && preg_match( '/(?:^|;)\s*margin(?:-bottom)?:\s*(?:[0-9.]+px\s+){0,3}0px\s*(?:;|$)|(?:^|;)\s*margin-bottom:\s*0px/i', (string) $h['subtitle_cs'] ) ) {
+			// (…and a captured stamp OMITS a zero: a non-empty subtitle stamp with no margin-bottom at all and no `mb-*`
+			// utility is a zero too — like the lone-title rule below — else the theme's 18px block margin leaked under a
+			// hero intro whose gap lives on the NEXT block's `mt-14` — a real-site audit)
+			if ( ( $sub_mb_px === null || $sub_mb_px <= 0 ) && '' !== (string) ( $h['subtitle_cs'] ?? '' ) && ( preg_match( '/(?:^|;)\s*margin(?:-bottom)?:\s*(?:[0-9.]+px\s+){0,3}0px\s*(?:;|$)|(?:^|;)\s*margin-bottom:\s*0px/i', (string) $h['subtitle_cs'] ) || ( ! preg_match( '/(?:^|;)\s*margin(?:-bottom)?:/i', (string) $h['subtitle_cs'] ) && ! preg_match( '/\bmb-/', (string) ( $h['subtitle_class'] ?? '' ) ) ) ) ) {
 				$layout['spacing'] = self::empty_spacing();
 				$layout['spacing']['margin']['bottom'] = 'mb-0';
 			}
@@ -9945,7 +10130,8 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		$title_html    = self::map_accent_classes( (string) ( $h['title'] ?? '' ) );
 		$subtitle_html = self::map_accent_classes( (string) ( $h['subtitle'] ?? '' ) );
 		$gradtext_css  = self::extract_gradtext_css( $title_html ) . self::extract_gradtext_css( $subtitle_html )
-			. self::extract_outline_css( $title_html ) . self::extract_outline_css( $subtitle_html ); // an outlined run (text-stroke) → scoped `.sc-outline` rule
+			. self::extract_outline_css( $title_html ) . self::extract_outline_css( $subtitle_html ) // an outlined run (text-stroke) → scoped `.sc-outline` rule
+			. self::extract_glow_css( $title_html ) . self::extract_glow_css( $subtitle_html ); // a glowing run (text-shadow) → scoped `.sc-glow` rule
 		$sh_node = array(
 			'type' => 'simple', 'shortcode' => 'special_heading', '_items' => array(),
 			'atts' => array(
@@ -9957,6 +10143,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				'custom_css' => self::heading_weight_css( $h )
 				. self::heading_metrics_css( $h ) // NEVER-DROP: the title's computed line-height / letter-spacing (a nested heading has no section-scoped rule)
 				. self::heading_family_css( $h ) // NEVER-DROP: a sub-heading's own secondary font (differs from the global heading font)
+				. self::heading_text_fx_css( $h ) // NEVER-DROP: a glow text-shadow / a resting skew on the title or subtitle
 				. $gradtext_css // gradient-text value → scoped `.sc-gradtext` rule (keeps the Title markup clean)
 				. self::heading_self_gradtext_css( $h ) // heading's OWN gradient text (clip:text on the h1 itself, not a span)
 				. $overline_type_css // NEVER-DROP: overline font-size + letter-spacing (no native option)
@@ -9988,6 +10175,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				. ( ( '' === $subtitle_size && $has_subtitle && ! empty( $h['subtitle_fs'] ) ) ? 'selector .heading-subtitle{font-size:' . (float) $h['subtitle_fs'] . 'px !important;' . ( ! empty( $h['subtitle_lh'] ) ? 'line-height:' . (float) $h['subtitle_lh'] . 'px !important;' : '' ) . '}' : '' )
 				. self::subtitle_case_css( $h ) // NEVER-DROP: a subtitle's uppercase / tracking / weight (a `tracking-widest uppercase` kicker folded under the title)
 				. ( ( $has_subtitle && ! empty( $h['subtitle_fs_sm'] ) ) ? '@media (max-width:767px){selector .heading-subtitle{font-size:' . (float) $h['subtitle_fs_sm'] . 'px !important;' . ( ! empty( $h['subtitle_lh_sm'] ) ? 'line-height:' . (float) $h['subtitle_lh_sm'] . 'px !important;' : '' ) . '}}' : '' ) // PHONE PASS
+				. ( ( ! empty( $h['title_fs_sm'] ) && empty( $h['title_fs_decl'] ) ) ? '@media (max-width:767px){selector.heading .heading-title{font-size:' . (float) $h['title_fs_sm'] . 'px !important;' . ( ! empty( $h['title_lh_sm'] ) ? 'line-height:' . (float) $h['title_lh_sm'] . 'px !important;' : '' ) . ( isset( $h['title_ls_sm'] ) ? 'letter-spacing:' . (float) $h['title_ls_sm'] . 'px !important;' : '' ) . '}}' : '' ) // PHONE PASS: the title's own phone size (a fluid clamp() needs none); `selector.heading` outranks the desktop size rule that follows it
 				. ( ( ! empty( $h['title_fs_decl'] ) && preg_match( '/^[a-z0-9()%.,\s+*\/-]+$/i', (string) $h['title_fs_decl'] ) ) ? 'selector .heading-title{font-size:' . (string) $h['title_fs_decl'] . ' !important;' . ( ! empty( $h['title_lh_decl'] ) ? 'line-height:' . (string) $h['title_lh_decl'] . ' !important;' : '' ) . ( ! empty( $h['title_ls_decl'] ) ? 'letter-spacing:' . (string) $h['title_ls_decl'] . ' !important;' : '' ) . '}' : '' ),
 				'overline' => self::map_accent_classes( $ov_raw ),
 				'overline_uppercase' => $ol_upper ? 'yes' : 'no',
@@ -10491,6 +10679,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		$pages = isset( $mapping['pages'] ) && is_array( $mapping['pages'] ) ? $mapping['pages'] : array();
 		foreach ( $pages as $page ) {
 			$builder = array();
+			if ( ! empty( $page['mainClass'] ) || ! empty( $page['mainCs'] ) ) { self::main_style( (string) ( $page['mainClass'] ?? '' ), (string) ( $page['mainCs'] ?? '' ) ); } // carry the source <main>'s padding + container width — BEFORE the bands map, so build_section sees whether #main is the container
 			$sections = isset( $page['sections'] ) && is_array( $page['sections'] ) ? $page['sections'] : array();
 			foreach ( $sections as $sec ) {
 				$node = self::build_section( $sec );
@@ -10499,7 +10688,6 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			// "Add entrance animations" (Convert panel opt-in): give each section's content a tasteful,
 			// sequential reveal-on-scroll — deterministically, from each element's role.
 			if ( self::$entrance_anim ) { self::apply_entrance_animations( $builder ); }
-			if ( ! empty( $page['mainClass'] ) || ! empty( $page['mainCs'] ) ) { self::main_style( (string) ( $page['mainClass'] ?? '' ), (string) ( $page['mainCs'] ?? '' ) ); } // carry the source <main>'s padding + container width
 			$slug = isset( $page['slug'] ) ? sanitize_title( (string) $page['slug'] ) : '';
 			$out[] = array(
 				'title'      => isset( $page['title'] ) && $page['title'] !== '' ? (string) $page['title'] : ( $slug !== '' ? ucwords( str_replace( '-', ' ', $slug ) ) : 'Home' ),
@@ -10997,6 +11185,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				$node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "\n" . 'selector{opacity:' . ( isset( $hop['opacity'] ) ? (float) $hop['opacity'] : 1 ) . ';pointer-events:none;z-index:0;white-space:nowrap;user-select:none;}' );
 				$node['atts']['custom_attrs'] = array_merge( is_array( $node['atts']['custom_attrs'] ?? null ) ? $node['atts']['custom_attrs'] : array(), array( array( 'name' => 'aria-hidden', 'value' => 'true' ) ) );
 			}
+			self::carry_wrap_margins( $node, $b ); // a flattened wrapper's own margin (mtAdd / mbAdd / an mt-auto push)
 			return $node;
 		} );
 		self::register_builder( 'text', function ( $b ) {
@@ -11076,6 +11265,9 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 				if ( $lcs === $cs ) { $lc = self::cs_decls( $lcs, array( 'color', 'text-decoration-line' ) ); if ( '' !== (string) ( $lc['color'] ?? '' ) && ! preg_grep( '/^color:/', $parts ) ) { $parts[] = 'color:' . $lc['color'] . ' !important'; } if ( ! preg_grep( '/^text-decoration/', $parts ) ) { $parts[] = 'text-decoration-line:' . ( '' !== (string) ( $lc['text-decoration-line'] ?? '' ) ? $lc['text-decoration-line'] : 'none' ); } } // (the capture stamps an underline; none stamped = none — the theme's underline is not the source's)
 				if ( $parts ) { $node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "\nselector a{" . implode( ';', $parts ) . ';}' ); }
 			}
+			// a flattened wrapper's own margin / padding (mtAdd / mbAdd) and an `mt-auto` push — a "trusted by" caption under a
+			// `mt-auto pt-24` strip wrapper sat 150px too close to the hero's button (a real-site report)
+			self::carry_wrap_margins( $node, $b );
 			return $node;
 		} );
 		self::register_builder( 'button', function ( $b ) {
@@ -11113,6 +11305,19 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 			return $node;
 		} );
 		// A LONE ICON (Stitch lone_icon): the native icon shortcode — the inline svg (or an icon-font class), its measured size + ink.
+		// A PINNED ICON ROW (Stitch pinned_icon_row): one row flexbox of the glyphs at the source gap, pinned with the native Position
+		// option from the wrapper's placement (anchor_abs_overlays hoists it to the band).
+		self::register_builder( 'pinned_icon_row', function ( $b ) {
+			$items = array();
+			foreach ( (array) ( $b['icons'] ?? array() ) as $ic ) { $n = self::n_lone_icon( (array) $ic ); if ( is_array( $n ) ) { $items[] = $n; } }
+			if ( count( $items ) < 2 ) { return null; }
+			$over = array( 'display' => 'flex', 'direction' => array( 'base' => 'row', 'md' => '', 'lg' => '' ), 'wrap' => array( 'base' => 'no', 'md' => '', 'lg' => '' ), 'align_items' => array( 'base' => 'center', 'md' => '', 'lg' => '' ) );
+			$gap = (float) ( $b['gap'] ?? 0 ); if ( $gap > 0 ) { $over['gap'] = array( 'base' => self::gap_slug( $gap . 'px' ), 'md' => '', 'lg' => '' ); }
+			$node = self::n_flexbox( $items, $over );
+			$ep = self::element_position_from( (string) ( $b['pinCls'] ?? '' ), (string) ( $b['pinCs'] ?? '' ) );
+			if ( $ep ) { $node['atts']['element_position'] = $ep; $node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "\nselector{margin:0;width:auto;}" ); }
+			return $node;
+		} );
 		self::register_builder( 'lone_icon', function ( $b ) {
 			$node = self::n_lone_icon( $b );
 			if ( is_array( $node ) ) { self::apply_block_margins( $node, $b ); }
@@ -11172,8 +11377,10 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 			// A CONTENT-LESS block — a stray responsive `<style>`/`<script>` the source uses for visibility
 			// toggles — carries nothing to render; drop it rather than surface an opaque code block (responsive
 			// visibility is reproduced natively). Returning null makes the caller skip the block.
+			// (…a DECORATIVE BAR block — Stitch is_decorative_bar / _row, `decorBar` — is content-less by nature and paints
+			// through its classes: it is kept, as a native Divider when it reads as one rule, else verbatim)
 			if ( '' === trim( preg_replace( '/<(style|script)\b[^>]*>.*?<\/\1>|<[^>]+>|\s+/is', '', $html ) )
-				&& ! preg_match( '/<(img|svg|video|iframe|hr|input)\b/i', $html ) ) { return null; }
+				&& ! preg_match( '/<(img|svg|video|iframe|hr|input)\b/i', $html ) && empty( $b['decorBar'] ) ) { return null; }
 			// A TOOLBAR ROW (Stitch is_toolbar_row): the mirror rebuilds it as a flex row from its stamps (placement, dots, label
 			// type) — its short labels would fail the "real multi-child container" gate below, so it is taken as-is.
 			if ( ! empty( $b['toolbar'] ) ) { $tm = self::n_structural_mirror( $html ); if ( is_array( $tm ) ) { self::apply_block_margins( $tm, $b ); return $tm; } }
@@ -11466,6 +11673,11 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 	 *  The max-width is only carried from a genuine computed `max-width` (400–1600px) — the source main then
 	 *  itself capped ALL its sections at that width, so centring #main reproduces that without clipping any
 	 *  intended full-bleed (a full-bleed source has NO max-width on <main>, so nothing is added). */
+	/** True when #main IS the page's content container (the source <main> capped + gutted it — main_style): the bands
+	 *  inside already sit in that gutter, so a band's flexbox takes the full width instead of the site cap (which
+	 *  shaved a second 24px gutter off a bento — a real-site audit). */
+	private static $main_is_container = false;
+
 	private static function main_style( $cls, $cs = '' ) {
 		if ( ! self::$style_on ) { return; }
 		$vs = self::section_vspace( (string) $cls );
@@ -11487,7 +11699,7 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 				$px = '';
 				if ( preg_match( '/(?:^|;)\s*padding:\s*[0-9.]+px\s+([0-9.]+px)/i', $cs, $pm ) ) { $px = $pm[1]; }
 				elseif ( preg_match( '/(?:^|\s)px-(\d{1,2})(?:\s|$)/', ' ' . (string) $cls . ' ', $pc ) ) { $px = ( (int) $pc[1] * 4 ) . 'px'; }
-				if ( '' !== $px ) { $d['padding-left'] = $px; $d['padding-right'] = $px; }
+				if ( '' !== $px ) { $d['padding-left'] = $px; $d['padding-right'] = $px; self::$main_is_container = true; }
 			}
 		}
 		if ( ! $d ) { return; }
@@ -12006,12 +12218,13 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 					// (an inner part's explicit ZERO — mb-0, "this element has no margin" — is not the group's gap; the wrapper's mbAdd is)
 					if ( ! empty( $head['mbAdd'] ) && isset( $hn['atts']['spacing']['margin'] ) && in_array( (string) $hn['atts']['spacing']['margin']['bottom'], array( '', 'mb-0' ), true ) ) { $hn['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', (float) $head['mbAdd'] ); }
 					if ( ! empty( $head['mtAdd'] ) && isset( $hn['atts']['spacing']['margin'] ) && in_array( (string) $hn['atts']['spacing']['margin']['top'], array( '', 'mt-0' ), true ) )    { $hn['atts']['spacing']['margin']['top']    = self::spacing_token( 'mt', (float) $head['mtAdd'] ); }
-					self::apply_inset_x( $hn, $head ); if ( ! empty( $head['reveal'] ) ) { self::apply_reveal( $hn, $head['reveal'] ); } $buf[] = $hn;
+					self::apply_inset_x( $hn, $head ); self::apply_mt_auto( $hn, $head ); if ( ! empty( $head['reveal'] ) ) { self::apply_reveal( $hn, $head['reveal'] ); } $buf[] = $hn; // (+ an `mt-auto` wrapper's push)
 				}
 				$head = null;
 			}
 		};
-		$flush_buf = function () use ( &$buf, &$items, &$flush_head, $col_lay, $inner_wrap, $center ) {
+		$mt_auto_col = false; // the NEXT buffered column is an `mt-auto` group (pushed to the end of the band's flex column)
+		$flush_buf = function () use ( &$buf, &$items, &$flush_head, $col_lay, $inner_wrap, $center, &$mt_auto_col ) {
 			$flush_head();
 			if ( $buf ) {
 				$buf = self::group_buttons( $buf ); // consecutive buttons → one side-by-side flex-row group
@@ -12036,6 +12249,11 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 					}
 				}
 				if ( $inner_wrap !== '' ) { $col['atts']['inner_class'] = $inner_wrap; }
+				// an `mt-auto` GROUP (a hero's bottom-pinned "trusted by" strip, `mt-auto pt-24`) is its own column pushed to the END
+				// of the band's flex column — buffered into the copy column, its margin:auto had nothing to push against and the
+				// strip sat 150px too close to the CTA (a real-site report)
+				if ( $mt_auto_col ) { $col['atts']['custom_css'] = trim( (string) ( $col['atts']['custom_css'] ?? '' ) . "
+" . 'selector{margin-top:auto !important;}' ); $mt_auto_col = false; }
 				if ( $center ) {
 					$col['atts']['content_h'] = 'center';
 					// The centered source wrapper (its `text-center` class) that decomposes into this
@@ -12058,6 +12276,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 			$role = isset( $b['role'] ) ? $b['role'] : 'code';
 			if ( $role === 'skip' ) { continue; }
 			self::collect_section_style( $css_id, $b ); // unified element styler: section-scoped prose styling
+			if ( ! empty( $b['mtAuto'] ) ) { $flush_buf(); $mt_auto_col = true; } // an `mt-auto` wrapper's first block starts its own pushed column
 
 			// A WIDE media widget (image_overlay player / hero graphic — source `w-full max-w-[…]`) → its
 			// OWN full-width column, centered. In the shared intro column of a CENTERED section the flex
@@ -12252,6 +12471,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 				if ( ! empty( $b['mxAdd'] ) && is_array( $b['mxAdd'] ) && empty( $head['mxAdd'] ) ) { $head['mxAdd'] = $b['mxAdd']; } // the flattened wrapper's side inset rides the group's special_heading
 				if ( ! empty( $b['mbAdd'] ) ) { $head['mbAdd'] = max( (float) ( $head['mbAdd'] ?? 0 ), (float) $b['mbAdd'] ); } // …and its vertical margin (the wrapper's mb-* lands on the LAST part, mt-* on the first)
 				if ( ! empty( $b['mtAdd'] ) && empty( $head['mtAdd'] ) ) { $head['mtAdd'] = (float) $b['mtAdd']; }
+				if ( ! empty( $b['mtAuto'] ) ) { $head['mtAuto'] = true; if ( ! empty( $b['mtAutoPad'] ) ) { $head['mtAutoPad'] = (float) $b['mtAutoPad']; } }
 				if ( ! empty( $b['reveal'] ) && empty( $head['reveal'] ) ) { $head['reveal'] = $b['reveal']; } // the first part's measured CSS-class reveal rides the group (JS parity)
 				// Carry chip-before-heading pill metadata onto the head so n_heading emits the filled-pill overline.
 				if ( 'overline' === $role ) {
@@ -12305,6 +12525,9 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 					if ( ! empty( $b['csSm'] ) && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $b['csSm'], $sfs ) ) { $head['subtitle_fs_sm'] = (float) $sfs[1]; if ( preg_match( '/(?:^|;)\s*line-height:\s*([0-9.]+)px/i', (string) $b['csSm'], $slh2 ) ) { $head['subtitle_lh_sm'] = (float) $slh2[1]; } }
 				}
 				if ( $role === 'title' && ! empty( $b['fs_decl'] ) ) { $head['title_fs_decl'] = (string) $b['fs_decl']; $head['title_lh_decl'] = (string) ( $b['lh_decl'] ?? '' ); $head['title_ls_decl'] = (string) ( $b['ls_decl'] ?? '' ); } // a fluid clamp()/vw size the source declared (+ its relative metrics)
+				// PHONE PASS for the TITLE too (`text-7xl md:text-9xl` → 72px at 390): the desktop 128px pinned at every width made a
+				// one-word line wider than the phone and, #main being a flex item, pushed the whole page past the viewport
+				if ( $role === 'title' && ! empty( $b['csSm'] ) && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $b['csSm'], $tfs ) ) { $head['title_fs_sm'] = (float) $tfs[1]; if ( preg_match( '/(?:^|;)\s*line-height:\s*([0-9.]+)px/i', (string) $b['csSm'], $tlh2 ) ) { $head['title_lh_sm'] = (float) $tlh2[1]; } if ( preg_match( '/(?:^|;)\s*letter-spacing:\s*(-?[0-9.]+)px/i', (string) $b['csSm'], $tls2 ) ) { $head['title_ls_sm'] = (float) $tls2[1]; } }
 				// The heading-group wrapper class (source `<div class="heading">`) → the special
 				// heading's own wrapper (css_class). Carried from the title block (the wrapper holds
 				// the whole group). keep_classes runs in n_heading.
@@ -12609,6 +12832,10 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 						foreach ( array( 'fracMd' => 'w_tablet', 'fracSm' => 'w_phone' ) as $fk => $wk ) { if ( ! empty( $c[ $fk ] ) ) { $col_resp[ $wk ] = (string) ( (float) $c[ $fk ] >= 0.94 ? 12 : max( 1, min( 12, (int) round( (float) $c[ $fk ] * 12 ) ) ) ); } } // (a cell scaled .95 by a transform still spans the row)
 					}
 					$col   = self::carry_row_skin( self::apply_panel_paint( self::carry_cell_geometry( self::n_column( $width, $inner_items, '', $col_resp ), $c ), $c ), $b );
+					// a cell whose first block is an `mt-auto` group (a hero's bottom-pinned strip as a cell of the hero's column stack) is
+					// pushed to the END of the stack — the column carries the auto margin (flexify keeps it out of any wrapping row)
+					foreach ( (array) ( $c['blocks'] ?? array() ) as $cb0 ) { if ( is_array( $cb0 ) && ! empty( $cb0['mtAuto'] ) ) { $col['atts']['custom_css'] = trim( (string) ( $col['atts']['custom_css'] ?? '' ) . "
+" . 'selector{margin-top:auto !important;}' ); } break; }
 					// Source cell PADDING (`px-8 md:px-16 lg:px-24 pt-32 pb-20 lg:py-0`) -> a scoped, responsive
 					// padding rule in the column's Custom CSS (the same channel the max-width cap below uses), NOT
 					// the native spacing option: the spacing option's slots hold Bootstrap-scale slugs and can't
@@ -12617,6 +12844,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 					// media queries at the builder's own md/lg breakpoints (768/992 — where fw-span-lg also switches)
 					// reproduce every tier exactly. Was dropped entirely, rendering the column flush to its track
 					// edge (the hero title collided with the neighbouring image).
+					$pad_on_box = ''; // the cell's responsive pad, deferred onto its card box (see below)
 					if ( ! empty( $c['pad'] ) && is_array( $c['pad'] ) ) {
 						$pad_decl = function ( $tier ) use ( $c ) {
 							if ( empty( $c['pad'][ $tier ] ) || ! is_array( $c['pad'][ $tier ] ) ) { return ''; }
@@ -12631,6 +12859,11 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 						if ( '' !== $p_base ) { $pcss .= 'selector{' . $p_base . ';}'; }
 						if ( '' !== $p_md )   { $pcss .= ( '' !== $pcss ? "\n" : '' ) . '@media (min-width:768px){selector{' . $p_md . ';}}'; }
 						if ( '' !== $p_lg )   { $pcss .= ( '' !== $pcss ? "\n" : '' ) . '@media (min-width:992px){selector{' . $p_lg . ';}}'; }
+						// The cell's CARD BOX carries the same inset (`pad` and `cardBox.padding` both read the one element's
+						// padding): the box owns it — the responsive tiers ride the inner box class below (`pad_on_box`), or the
+						// preset's own padding stands. On the column too it doubled (a 401px bento tile rendered 596 —
+						// a real-site audit).
+						if ( '' !== $pcss && ! empty( $c['cardBox']['padding'] ) && ! $box_via_class ) { $pad_on_box = $pcss; $pcss = ''; }
 						if ( '' !== $pcss ) {
 							$pcur = (string) ( $col['atts']['custom_css'] ?? '' );
 							$col['atts']['custom_css'] = trim( $pcur . ( '' !== $pcur ? "\n" : '' ) . $pcss );
@@ -12680,19 +12913,30 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 								if ( ! empty( $cb['borderW'] ) && ! empty( $cb['borderColor'] ) ) { $bdecl[] = 'border:' . $cb['borderW'] . ' solid ' . $cb['borderColor']; }
 								if ( ! empty( $cb['shadow'] ) )   { $bdecl[] = 'box-shadow:' . $cb['shadow']; }
 								if ( ! empty( $cb['backdrop'] ) ) { $bdecl[] = '-webkit-backdrop-filter:' . $cb['backdrop']; $bdecl[] = 'backdrop-filter:' . $cb['backdrop']; }
-								if ( ! empty( $cb['padding'] ) ) { $bdecl[] = 'padding:' . $cb['padding']; }
+								if ( ! empty( $cb['padding'] ) && '' === $pad_on_box ) { $bdecl[] = 'padding:' . $cb['padding']; }
+								// the box's long tail (Stitch box_extra_css: clip-path, an accent border-left, a resting skew, a mask) and its clip —
+								// the preset path carries them, this scoped-class path dropped them (a feed finding: the hex panel lost its
+								// clip-path and accent edge)
+								if ( ! empty( $cb['extra'] ) && preg_match( '/^[a-z0-9()%.,\s#\/:;!+-]+$/i', (string) $cb['extra'] ) ) { $bdecl[] = trim( (string) $cb['extra'], '; ' ); }
+								if ( ! empty( $cb['clip'] ) ) { $bdecl[] = 'overflow:hidden'; }
 								$bhov = self::card_hover_css( $cb );
 								if ( '' !== $bhov ) { $bdecl[] = 'transition:all 0.3s ease'; } // so the card's hover animates
 								if ( $bdecl ) {
-									$bxcls = 'sc-cb-' . substr( md5( implode( ';', $bdecl ) ), 0, 8 );
+									$bxcls = 'sc-cb-' . substr( md5( implode( ';', $bdecl ) . '|' . $pad_on_box ), 0, 8 );
 									$col['atts']['inner_class'] = trim( (string) ( $col['atts']['inner_class'] ?? '' ) . ' ' . $bxcls );
 									$bxcur = (string) ( $col['atts']['custom_css'] ?? '' );
 									$col['atts']['custom_css'] = trim( $bxcur . ( '' !== $bxcur ? "
-" : '' ) . 'selector .' . $bxcls . '{' . implode( ';', $bdecl ) . ';box-sizing:border-box;}'
-										. ( '' !== $bhov ? 'selector .' . $bxcls . ':hover{' . $bhov . ';}' : '' ) );
+" : '' ) . 'selector .' . $bxcls . '{' . implode( ';', $bdecl ) . ';box-sizing:border-box;height:100%;}' // (height:100% — the box fills a stretched track; auto in an auto-height parent)
+										. ( '' !== $bhov ? 'selector .' . $bxcls . ':hover{' . $bhov . ';}' : '' )
+										. ( '' !== $pad_on_box ? "\n" . str_replace( 'selector{', 'selector .' . $bxcls . '{', $pad_on_box ) : '' ) ); // the cell's responsive inset, on the box
+									$pad_on_box = '';
 								}
 							}
 						}
+					if ( '' !== $pad_on_box && empty( $col['atts']['border_preset'] ) ) { // no box took the inset after all → the column keeps it
+						$pcur = (string) ( $col['atts']['custom_css'] ?? '' );
+						$col['atts']['custom_css'] = trim( $pcur . ( '' !== $pcur ? "\n" : '' ) . $pad_on_box );
+					}
 					if ( $col_decl ) {
 						$cur = isset( $col['atts']['custom_css'] ) ? (string) $col['atts']['custom_css'] : '';
 						$col['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . 'selector{' . implode( ';', $col_decl ) . ';}' );
@@ -12774,6 +13018,11 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 						$row_atts['grid_columns'] = (string) $ncol_eq;
 						foreach ( $cells as &$gce ) { unset( $gce['atts']['width'] ); }
 						unset( $gce );
+					} elseif ( self::cells_span_lines( $cells ) ) {
+						// mixed desktop spans tiling lines of 12 (a `grid-cols-12` bento) → a native 12-track grid (see the
+						// nested-row path: cells_span_lines) — the wrapping flex row ran one gap short per line
+						$row_atts['display']      = 'grid';
+						$row_atts['grid_columns'] = '12';
 					} elseif ( self::cells_uniform_grid( $cells ) ) {
 						foreach ( $cells as &$uge ) { $uge['atts']['flex_grow'] = array( 'base' => 'yes', 'md' => '', 'lg' => '' ); }
 						unset( $uge );
@@ -12791,7 +13040,10 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 " . 'selector>*{flex:0 1 auto;min-width:0;}' ); // content-sized cells that still SHRINK
 					}
 					if ( ! empty( $b['nowrap'] ) && 'grid' !== ( $row_atts['display'] ?? '' ) ) { $row_atts['wrap'] = array( 'base' => 'no', 'md' => '', 'lg' => '' ); }
+					if ( ! empty( $b['fx'] ) ) { $row_atts['custom_css'] = trim( (string) ( $row_atts['custom_css'] ?? '' ) . "\n" . (string) $b['fx'] ); } // the row's own opacity / filter (a muted greyscale logo strip)
 					$band = self::n_flexbox( $cells, $row_atts );
+					self::carry_wrap_margins( $band, $b ); // the flattened wrapper's own margin / padding around the row (a strip's `pb-12` → mbAdd) — it kept the
+					                                       // hero's bottom inset and had been dropped, so the pinned strip sat 48px lower (a real-site report)
 					// The ROW is itself a CARD (a dark `rounded-3xl p-16` CTA panel holding a text column + a button stack): its Box
 					// Preset + height ride the band — the nested-row path did this, the top-level band path dropped the skin (measured).
 					if ( ! empty( $b['rowBox'] ) && is_array( $b['rowBox'] ) ) { $rbp = self::register_box_preset( $b['rowBox'] ); if ( '' !== $rbp ) { $band['atts']['border_preset'] = $rbp; } }
@@ -12892,6 +13144,12 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 			&& preg_match( '/backdrop-filter:[^;]*blur\(\s*([0-9.]+)(px|rem)\s*\)/i', $sec_cs, $bfm ) ) {
 			$sec_node['atts']['backdrop_blur'] = array( 'value' => $bfm[1], 'unit' => strtolower( $bfm[2] ) );
 		}
+		// a SHAPED band: the section's own `clip-path` (a diagonal bottom edge — `polygon(0 0, 100% 0, 100% 85%, 0 100%)`, an
+		// inset / ellipse) is the design's silhouette; it was dropped and the hero ended in a straight edge (a real-site audit)
+		if ( $sec_cs !== '' && isset( $sec_node['atts'] ) && preg_match( '/(?:^|;)\s*clip-path:\s*((?:polygon|inset|ellipse|circle)\([^;]*\))/i', $sec_cs, $cpm ) && preg_match( '/^[a-z0-9()%.,\s-]+$/i', $cpm[1] ) ) {
+			$sec_node['atts']['custom_css'] = trim( (string) ( $sec_node['atts']['custom_css'] ?? '' ) . "
+selector{clip-path:" . $cpm[1] . ";}" );
+		}
 		if ( $bg_video !== null ) { self::apply_bg_video( $sec_node, $bg_video ); } // full-screen <video> → section background
 		if ( $bg_image !== null ) { self::apply_bg_image( $sec_node, $bg_image ); } // hero full-bleed <img> → section background image + dark scrim
 		// NOTE: the OVERLAY-HEADER OFFSET (heroTopPad) is applied LATER — AFTER Pass #5 sets the native
@@ -12932,9 +13190,13 @@ selector{max-width:100% !important;}" );
 			} else {
 			$cwpx = self::container_width_px( $sec['sectionBandW'] ?? null );
 			if ( $cwpx <= 0 ) { $cwpx = self::container_width_px( $sec['sectionContainerW'] ?? null ); }
+			$in_main_cap = ( $cwpx <= 0 && self::$main_is_container ); // no cap of its own, and #main is the container → full width
 			if ( $cwpx <= 0 ) { $cwpx = self::$site_container_px; }
+			// a LEFT-ANCHORED root cap (Stitch sectionLeftCap): the band's flexbox takes it as a left-aligned content width
+			$left_cap = (float) ( $sec['sectionLeftCap'] ?? 0 );
+			if ( $left_cap > 0 ) { $cwpx = (int) round( $left_cap ); $in_main_cap = false; }
 			if ( $cwpx > 0 && isset( $sec_node['_items'] ) && is_array( $sec_node['_items'] ) ) {
-				$cw_val = self::content_width_value( $cwpx );
+				$cw_val = $in_main_cap ? array( 'preset' => 'custom', 'custom' => array( 'custom_width' => array( 'value' => '100', 'unit' => '%' ) ) ) : self::content_width_value( $cwpx );
 				foreach ( $sec_node['_items'] as &$child ) {
 					if ( ! is_array( $child ) || ( $child['type'] ?? '' ) !== 'flexbox' || ! isset( $child['atts'] ) ) { continue; }
 					// Already carries a real content-width cap (legacy {value} or the multi-picker's own preset/custom)? Leave it.
@@ -12943,6 +13205,14 @@ selector{max-width:100% !important;}" );
 						|| ( ! empty( $ex['preset'] ) && 'inherit' !== $ex['preset'] ) );
 					if ( $has_cw ) { continue; }
 					$child['atts']['content_width'] = $cw_val;
+					// a CAPPED flexbox centres by auto side margins: an EQUAL side inset carried onto it (a flattened `px-4` wrapper's
+					// mxAdd → `ms-[16px] me-[16px]`) is a gutter the cap's `100% − 2·gutter` already keeps, and as a margin it beat the
+					// auto centring — a centred logo strip sat 16px from the left edge (a real-site report)
+					$sm = $child['atts']['spacing']['margin'] ?? null;
+					if ( is_array( $sm ) && '' !== (string) ( $sm['left'] ?? '' ) && preg_match( '/^ms-(.+)$/', (string) $sm['left'], $ml ) && 'me-' . $ml[1] === (string) ( $sm['right'] ?? '' ) ) { $child['atts']['spacing']['margin']['left'] = ''; $child['atts']['spacing']['margin']['right'] = ''; }
+					if ( $left_cap > 0 ) { $child['atts']['content_align'] = 'left'; } // (the flexbox view: margin-left:0 for a left-aligned cap)
+					if ( $in_main_cap ) { $child['atts']['custom_css'] = trim( (string) ( $child['atts']['custom_css'] ?? '' ) . "
+selector{max-width:100% !important;}" ); } // (#main's gutter is the gutter — none again around the flexbox)
 				}
 				unset( $child );
 			}
@@ -13268,6 +13538,17 @@ selector{max-width:100% !important;}" );
 			$sec_node['atts']['padding_top'] = array( 'base' => 'pt-[0px]', 'md' => '', 'lg' => '' );
 			$hcur = (string) ( $sec_node['atts']['custom_css'] ?? '' );
 			$sec_node['atts']['custom_css'] = trim( $hcur . ' selector[class]{padding-top:0 !important;}' );
+		}
+		// A DECOR-ONLY band (every block a placed decor layer — a page-level `optical-flare` glow that is main's own absolute
+		// child): no band padding at all, so the layer's offsets read from the page top as they did from <main>; the theme's
+		// default section inset would have opened a 96px blank band around a blur (a feed finding).
+		$dec_only = ! empty( $sec['blocks'] ) && is_array( $sec['blocks'] );
+		if ( $dec_only ) { foreach ( $sec['blocks'] as $db ) { if ( ! is_array( $db ) || 'paint' !== (string) ( $db['t'] ?? '' ) || empty( $db['decorLayer'] ) ) { $dec_only = false; break; } } }
+		if ( $dec_only ) {
+			$sec_node['atts']['padding_top']    = array( 'base' => 'pt-[0px]', 'md' => '', 'lg' => '' );
+			$sec_node['atts']['padding_bottom'] = array( 'base' => 'pb-[0px]', 'md' => '', 'lg' => '' );
+			$dcur = (string) ( $sec_node['atts']['custom_css'] ?? '' );
+			$sec_node['atts']['custom_css'] = trim( $dcur . ' selector[class]{padding-top:0 !important;padding-bottom:0 !important;min-height:0;}' );
 		}
 		// OVERLAY-HEADER OFFSET (applied AFTER Pass #5 so the native padding_top is finalized): a fixed/absolute
 		// transparent masthead overlays the hero, so the hero needs top padding >= the header height, or its
