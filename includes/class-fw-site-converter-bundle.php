@@ -316,6 +316,24 @@ class FW_Site_Converter_Bundle {
 					$cv = FW_Site_Converter_Stitch::design_root_vars( $cap['tokens'] );
 					if ( $cv ) { $theme_design['css_vars'] = $cv; }
 				}
+				// SELF-HOSTED @font-face rules live in the source's EXTERNAL stylesheets, which the PHP rebuild (raw_chrome_split
+				// reads only the inline <style>) never sees — the JS capture's chrome.base_css carries them. Carry every face
+				// whose family the PHP design lacks, so the generator's rehost_fonts() downloads the file (an .otf display
+				// face) and the headings render in it instead of the theme's fallback (a real-site audit).
+				$cap_css = isset( $cap['chrome']['base_css'] ) ? (string) $cap['chrome']['base_css'] : '';
+				if ( '' !== $cap_css && false !== stripos( $cap_css, '@font-face' ) && preg_match_all( '/@font-face\s*\{[^}]*\}/i', $cap_css, $fm ) ) {
+					if ( ! isset( $theme_design['raw_chrome'] ) || ! is_array( $theme_design['raw_chrome'] ) ) { $theme_design['raw_chrome'] = array(); }
+					$have = (string) ( $theme_design['raw_chrome']['base_css'] ?? '' ); $add = array();
+					foreach ( $fm[0] as $face ) {
+						if ( ! preg_match( '/font-family\s*:\s*([\'"]?)([^\'";}]+)\1/i', $face, $ff ) ) { continue; }
+						if ( false !== stripos( $have, 'font-family:' . $ff[1] . $ff[2] ) || false !== stripos( $have, 'font-family: ' . $ff[1] . $ff[2] ) ) { continue; }
+						if ( false !== stripos( $face, 'fonts.gstatic.com' ) ) { continue; } // Google faces come through the css2 sheet (rehost_fonts)
+						$add[] = $face;
+					}
+					if ( $add ) { $theme_design['raw_chrome']['base_css'] = trim( $have . "
+" . implode( "
+", $add ) ); }
+				}
 				if ( class_exists( 'FW_Site_Converter_Theme_Generator' ) && empty( $theme_design['fonts']['heading_stack'] )
 					&& isset( $cap['sections'] ) && is_array( $cap['sections'] ) ) {
 					foreach ( $cap['sections'] as $sc ) {
@@ -532,8 +550,19 @@ class FW_Site_Converter_Bundle {
 			// Auto-activate the bundled Mega Menu extension (persists it for front-end renders — its walker
 			// injects on every wp_nav_menu once active).
 			if ( ! function_exists( 'fw_ext' ) || ! fw_ext( 'megamenu' ) ) {
-				if ( function_exists( 'fw' ) && fw()->extensions->manager->can_activate() ) {
-					fw()->extensions->manager->activate_extensions( array( 'megamenu' => array() ) );
+				$mm_res = null;
+				if ( function_exists( 'fw' ) && is_object( fw()->extensions->manager ) && fw()->extensions->manager->can_activate() ) {
+					$mm_res = fw()->extensions->manager->activate_extensions( array( 'megamenu' => array() ) );
+				}
+				// VERIFY the activation persisted (the manager's collect step can refuse in an ajax convert, and the mega
+				// panel then renders as a plain dropdown of blank column rows — a real-site audit): write the bundled
+				// extension straight into the framework's active-extensions option when it did not land.
+				if ( function_exists( 'fw' ) && ! fw()->extensions->_get_db_active_extensions( 'megamenu' ) ) {
+					$act = (array) fw()->extensions->_get_db_active_extensions();
+					$act['megamenu'] = array();
+					if ( method_exists( fw()->extensions, '_set_db_active_extensions' ) ) { fw()->extensions->_set_db_active_extensions( $act ); }
+					else { update_option( 'fw_active_extensions', $act ); }
+					$out['mega_activation'] = is_wp_error( $mm_res ) ? $mm_res->get_error_message() : 'forced';
 				}
 			}
 			// Activation only sets the option — the extension's files don't hot-load THIS request. Manually

@@ -1473,7 +1473,17 @@ $fl_html = '<!DOCTYPE html><html><head><title>T</title></head><body><main><secti
 	. '<div class="container py-6"><p>© 2026 Maison</p></div></footer></body></html>';
 $fl_mc = FW_Site_Converter_Sources::build_from_html( $fl_html, 'FootL', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values']['misc_custom_css']['custom_css'] ?? '';
 ga( "footer link never-drop: .footer-link font-size carried", (bool) preg_match( '/\.footer-column \.footer-link\{[^}]*font-size:14px/', $fl_mc ), $fl_mc );
-ga( "footer link never-drop: hover → var(--color-background)", false !== strpos( $fl_mc, '.footer-column .footer-link:hover{color:var(--color-background)}' ), $fl_mc );
+ga( "footer link never-drop: hover → the theme palette var (`background` aliases the theme's `bg` role; an undefined `--color-background` resolved to the resting colour)", false !== strpos( $fl_mc, '.footer-column .footer-link:hover{color:var(--color-bg)}' ), $fl_mc );
+// The capture MEASURED the hover (`data-sc-footer` link-hover) → it rides the NATIVE footer_link_hover_color option
+// and NO scoped `.footer-link:hover` rule is emitted (its (0,3,0) specificity out-ranked the native `.footer a:hover`,
+// so a `hover:text-brand` link — a token the palette lacks — rendered its hover in the resting colour: a real-site report).
+$fl2_html = str_replace( array( '<footer ', 'hover:text-background' ), array( '<footer data-sc-footer="col-gap:40px;link-hover:rgb(34, 197, 94)" ', 'hover:text-brand' ), $fl_html );
+$fl2_v = FW_Site_Converter_Sources::build_from_html( $fl2_html, 'FootL', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values'] ?? array();
+ga( "footer link hover: a MEASURED hover (stamp) maps to the native footer_link_hover_color", 'rgb(34, 197, 94)' === (string) ( $fl2_v['footer_link_hover_color']['custom'] ?? '' ), $fl2_v['footer_link_hover_color'] ?? null );
+ga( "footer link hover: with a measured hover NO scoped `.footer-link:hover` rule shadows the native option", false === strpos( (string) ( $fl2_v['misc_custom_css']['custom_css'] ?? '' ), '.footer-link:hover' ), $fl2_v['misc_custom_css']['custom_css'] ?? '' );
+// No stamp + a token the palette does not define → nothing (never an undefined var)
+$fl3_mc = FW_Site_Converter_Sources::build_from_html( str_replace( 'hover:text-background', 'hover:text-emerald-400', $fl_html ), 'FootL', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values']['misc_custom_css']['custom_css'] ?? '';
+ga( "footer link hover: an unknown token (`emerald-400`) emits NO `var(--color-emerald-400)`", false === strpos( $fl3_mc, '.footer-link:hover' ), $fl3_mc );
 
 /* FOOTER TAGLINE never-drop: the brand tagline <p>'s size / line-height / muted colour → a scoped
  * `.footer-tagline` rule (the emit tags the paragraph with that class). */
@@ -2253,7 +2263,7 @@ $f_find = function ( $n, $pred ) use ( &$f_find ) { if ( ! is_array( $n ) ) { re
 $f_sh = $f_find( $f_sec, function ( $n ) { return ( $n['shortcode'] ?? '' ) === 'special_heading' && ( $n['atts']['title'] ?? '' ) === 'Staggered layers like terraced fields.'; } );
 ga_eq( "the section heading keeps its own 896px cap (block_max_width)", '896', (string) ( $f_sh['atts']['block_max_width']['value'] ?? '' ) );
 $f_reg = (string) ( $f_bl['files']['theme-design.json']['custom_css'] ?? '' );
-ga( "FLUID section heading: the section-scoped #f h2 rule carries the clamp() + relative metrics (not the 80.64px snapshot that froze it)", strpos( $f_reg, '#f h2{' ) !== false && strpos( $f_reg, 'font-size:clamp(2.9rem,5.6vw,6rem) !important;' ) !== false && strpos( $f_reg, 'line-height:.9 !important;' ) !== false && strpos( $f_reg, 'letter-spacing:-.06em !important;' ) !== false && strpos( $f_reg, 'font-size:80.64px' ) === false, substr( $f_reg, (int) strpos( $f_reg, '#f h2' ), 300 ) );
+ga( "FLUID section heading: the section-scoped #f h2 rule carries the clamp() + relative metrics (not the 80.64px snapshot that froze it)", strpos( $f_reg, '#f h2:not([class*="boxp-"] *){' ) !== false && strpos( $f_reg, 'font-size:clamp(2.9rem,5.6vw,6rem) !important;' ) !== false && strpos( $f_reg, 'line-height:.9 !important;' ) !== false && strpos( $f_reg, 'letter-spacing:-.06em !important;' ) !== false && strpos( $f_reg, 'font-size:80.64px' ) === false, substr( $f_reg, (int) strpos( $f_reg, '#f h2' ), 300 ) );
 $f_stack = $f_find( $f_sec, function ( $n ) { return ( $n['type'] ?? '' ) === 'flexbox' && ( $n['atts']['direction']['base'] ?? '' ) === 'column' && count( $n['_items'] ?? array() ) === 3; } );
 ga( "single-track grid → ONE flexbox column (stack) of three bands", $f_stack !== null );
 ga_eq( "stack gap = the source 22px", '[22px]', $f_stack['atts']['gap']['base'] ?? null );
@@ -4379,7 +4389,7 @@ ga( "[AD] a BLOCK card whose one in-flow child is a full-height `flex-col justif
 ga( "[AD] …its ROW of two decorative bars (`flex gap-4` of `h-1 rounded-full` fills) is ONE kept code block, side by side (it had split into two and fallen to the content-less drop)", is_array( $ad_c3bar ) && false !== strpos( (string) $ad_c3bar['atts']['code'], 'w-1/2' ) && false !== strpos( (string) $ad_c3bar['atts']['code'], 'flex gap-4' ) && false === strpos( (string) $ad_c3bar['atts']['code'], "\n" ), wp_json_encode( $ad_c3bar['atts']['code'] ?? null ) );
 $ad_hcss = $ad_css_of( $ad_h1 ); $ad_hid = (string) ( $ad_sec0['atts']['css_id'] ?? '' );
 ga( "[AD] the hero title's PHONE size (`text-7xl md:text-9xl` → 72px at 390, the -sm stamp) rides the heading as a max-width:767px rule that outranks the desktop size (`selector.heading`) — the 128px one-word line had pushed the page past the phone viewport", false !== strpos( $ad_hcss, '@media (max-width:767px){selector.heading .heading-title{font-size:72px !important;line-height:64.8px !important;}}' ), $ad_hcss );
-ga( "[AD] …and in the section stylesheet the phone tier comes AFTER its desktop rule (equal specificity + !important: the later rule wins)", '' !== $ad_hid && preg_match( '/#' . preg_quote( $ad_hid, '/' ) . ' h1\{[^}]*font-size:128px/', $ad_design, $ad_dm, PREG_OFFSET_CAPTURE ) && preg_match( '/@media \(max-width:767px\)\{#' . preg_quote( $ad_hid, '/' ) . ' h1\{[^}]*font-size:72px/', $ad_design, $ad_pm, PREG_OFFSET_CAPTURE ) && $ad_pm[0][1] > $ad_dm[0][1], wp_json_encode( array( $ad_hid, $ad_dm[0][1] ?? null, $ad_pm[0][1] ?? null ) ) );
+ga( "[AD] …and in the section stylesheet the phone tier comes AFTER its desktop rule (equal specificity + !important: the later rule wins)", '' !== $ad_hid && preg_match( '/#' . preg_quote( $ad_hid, '/' ) . ' h1(?::not\([^)]*\))?\{[^}]*font-size:128px/', $ad_design, $ad_dm, PREG_OFFSET_CAPTURE ) && preg_match( '/@media \(max-width:767px\)\{#' . preg_quote( $ad_hid, '/' ) . ' h1(?::not\([^)]*\))?\{[^}]*font-size:72px/', $ad_design, $ad_pm, PREG_OFFSET_CAPTURE ) && $ad_pm[0][1] > $ad_dm[0][1], wp_json_encode( array( $ad_hid, $ad_dm[0][1] ?? null, $ad_pm[0][1] ?? null ) ) );
 $ad_lrow = $r_find( $ad_c1['_items'] ?? array(), function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && 'row' === (string) ( $n['atts']['direction']['base'] ?? '' ) && count( $n['_items'] ?? array() ) === 2; } );
 ga( "[AD] a LABEL ROW (a kicker + an 8px status dot, `flex justify-between`) keeps its line on phones (responsive_collapse no) — the collapse had stretched the dot into a full-width bar", is_array( $ad_lrow ) && 'no' === (string) ( $ad_lrow['atts']['responsive_collapse'] ?? '' ) && 'between' === (string) ( $ad_lrow['atts']['justify_content']['base'] ?? '' ), wp_json_encode( array( $ad_lrow['atts']['responsive_collapse'] ?? null, $ad_lrow['atts']['justify_content'] ?? null ) ) );
 $ad_c4 = $ad_grid['_items'][3] ?? array();
@@ -4438,9 +4448,239 @@ ga( "[AE] …the footer's `py-12` is the whole inset (body padding 3rem) and the
 ga( "[AE] …and the footer's plain brand glyph (no tile in the source footer) drops the header mark's frame entirely — no fill, no radius, no hairline border", false !== strpos( $ae_misc, '.footer .site-logo__mark{background:transparent !important;border-radius:0 !important;box-shadow:none !important;border:0 !important;padding:0 !important;' ), substr( $ae_misc, strpos( $ae_misc, '.footer .site-logo__mark{' ) ?: 0, 160 ) );
 ga( "[AE] the source's `:root{--x}` token block stays at :root in the carried page CSS (never `.sc-tw :root`) — its CUSTOM PROPERTIES only (an `html{background}` shell rule at the root would paint the body over the z-index:-1 site video), the body rule scoped, a class rule prefixed", false !== strpos( $ae_design, ':root{--deep:oklch(0.15 0.02 280);--glow:oklch(0.65 0.25 45);}' ) && false === strpos( $ae_design, '.sc-tw :root' ) && ! preg_match( '/:root\{[^}]*background/', $ae_design ) && false !== strpos( $ae_design, '.sc-tw{background:var(--deep)}' ) && false !== strpos( $ae_design, '.sc-tw .custom-rule{color:var(--glow)}' ), substr( $ae_design, strpos( $ae_design, ':root{--deep' ) ?: 0, 200 ) );
 
+/* ---------------------------------------------------------------------
+ * [AF] A real-site audit, 2026-09-21: a lender landing page (tests/fixtures/golden-fixture-4-lender.html — the conversion
+ *     test corpus, brand-neutral): a nav with a dropdown trigger <button>; a glass stats card in a bare `relative` wrapper with
+ *     a `-top-4 -right-4` badge; a captioned logo strip of `h-8` images dimmed per item; a `max-w-5xl mx-auto` two-column
+ *     comparison grid with uppercase eyebrows; step cards with a 60px faded corner numeral and a 56px tinted icon tile;
+ *     testimonial cards with 48px portraits, a muted role line and a bold footer stat; a `max-w-3xl` FAQ; a `grid-cols-8`
+ *     footer whose brand column spans two tracks.
+ * --------------------------------------------------------------------- */
+echo "\n[AF] Lender landing: nav gap, single-frame glass card, captioned logo strip, content caps, step numerals, testimonial look, footer tracks\n";
+$af_html = file_get_contents( __DIR__ . '/fixtures/golden-fixture-4-lender.html' );
+$af_bl = FW_Site_Converter_Sources::build_from_html( $af_html, 'Prefabo', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$af_pg = $af_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
+$af_v  = $af_bl['files']['theme-settings.json']['values'] ?? array();
+$af_misc = (string) ( $af_v['misc_custom_css']['custom_css'] ?? '' );
+$af_css_of = function ( $n ) { return (string) ( $n['atts']['custom_css'] ?? '' ); };
+$af_all = function ( $nodes, $pred ) use ( &$af_all ) { $out = array(); foreach ( (array) $nodes as $n ) { if ( ! is_array( $n ) ) { continue; } if ( $pred( $n ) ) { $out[] = $n; } foreach ( $af_all( $n['_items'] ?? array(), $pred ) as $r ) { $out[] = $r; } } return $out; };
+$af_json = function ( $n ) { return wp_json_encode( $n, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ); };
+
+// header: the <nav> holds a dropdown trigger <button> ("More", aria-haspopup) — still the menu group, so its gap:32px rides the nav
+ga( "[AF] a nav whose items include a dropdown-trigger <button> keeps its `gap:32px` (the button no longer disqualifies the <nav>)", false !== strpos( $af_misc, '.site-header .primary-menu{gap:32px;}' ), substr( $af_misc, 0, 300 ) );
+
+// hero: the glass stats card is framed ONCE (the bare `relative` wrapper stays skinless) and anchors the corner badge
+$af_hero = $af_pg[0] ?? array();
+$af_glass = $af_all( array( $af_hero ), function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && ( false !== strpos( (string) ( $n['atts']['custom_css'] ?? '' ), 'backdrop-filter:blur(12px)' ) || preg_match( '/^boxp-/', (string) ( $n['atts']['border_preset'] ?? '' ) ) ); } );
+$af_wrap = $n_find( array( $af_hero ), function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && '302' === (string) ( $n['atts']['min_height']['base']['value'] ?? '' ); } );
+ga( "[AF] hero stats card: the `relative` wrapper (min-height 302) carries NO glass skin of its own — the panel inside wears it once", is_array( $af_wrap ) && false === strpos( $af_css_of( $af_wrap ), 'backdrop-filter' ) && false === strpos( $af_css_of( $af_wrap ), 'background:' ), $af_wrap ? $af_css_of( $af_wrap ) : 'no wrapper' );
+$af_badge_host = $n_find( array( $af_hero ), function ( $n ) { foreach ( (array) ( $n['_items'] ?? array() ) as $c ) { if ( 'code_block' === ( $c['shortcode'] ?? '' ) && false !== strpos( (string) ( $c['atts']['code'] ?? '' ), 'position:absolute' ) ) { return true; } } return false; } );
+ga( "[AF] the `-top-4 -right-4` badge's flexbox host is `position:relative` (native Position) so the chip pins to the card, not the band", is_array( $af_badge_host ) && 'relative' === (string) ( $af_badge_host['atts']['element_position']['position'] ?? '' ), $af_badge_host ? $af_json( $af_badge_host['atts']['element_position'] ?? null ) : 'no host' );
+
+// logo strip: the caption survives as its own text block; the marks are the image's measured 32px; the per-item 80% dim counts
+$af_strip = $af_pg[1] ?? array();
+$af_cap = $n_find( array( $af_strip ), function ( $n ) { return 'text_block' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['text'] ?? '' ), 'Trusted by buyers of leading manufacturers' ); } );
+$af_lg  = $n_find( array( $af_strip ), function ( $n ) { return 'logo_grid' === ( $n['shortcode'] ?? '' ); } );
+ga( "[AF] logo strip: the wrapper's caption <p> is carried as a text block beside the logo_grid (it had been dropped)", is_array( $af_cap ), $af_json( array_map( function ( $i ) { return ( $i['type'] ?? '' ) . '/' . ( $i['shortcode'] ?? '' ); }, $af_strip['_items'][0]['_items'] ?? array() ) ) );
+ga( "[AF] logo strip: `<img class=\"h-8\">` marks render at their measured 32px, not the 48px default", is_array( $af_lg ) && '32' === (string) ( $af_lg['atts']['logo_height'] ?? '' ), $af_lg['atts']['logo_height'] ?? null );
+ga( "[AF] logo strip: the per-ITEM `opacity-80` dim rides the grid (selector{opacity:0.8})", is_array( $af_lg ) && false !== strpos( $af_css_of( $af_lg ), 'opacity:0.8' ), $af_lg ? $af_css_of( $af_lg ) : null );
+
+// comparison grid: `max-w-5xl mx-auto` → the row band's cap (!important, centred); the eyebrow keeps its uppercase tracking
+$af_cmp = null; foreach ( $af_pg as $s ) { if ( false !== strpos( $af_json( $s ), 'Misclassified' ) ) { $af_cmp = $s; break; } }
+$af_row = $n_find( array( $af_cmp ), function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && 'row' === (string) ( $n['atts']['direction']['base'] ?? '' ) && false !== strpos( wp_json_encode( $n ), 'Misclassified' ); } );
+ga( "[AF] a `max-w-5xl mx-auto` two-column grid is capped at 1024px and centred (the recurring \"section container width\" report)", is_array( $af_row ) && false !== strpos( $af_css_of( $af_row ), 'max-width:1024px !important;margin-left:auto !important;margin-right:auto !important' ), $af_row ? $af_css_of( $af_row ) : 'no row' );
+$af_ov = $n_find( array( $af_cmp ), function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && 'The Problem' === trim( (string) ( $n['atts']['overline'] ?? '' ) ); } );
+ga( "[AF] the comparison column's eyebrow keeps its `uppercase tracking-wider` (overline_cs → native transform / letter-spacing)", is_array( $af_ov ) && 'yes' === (string) ( $af_ov['atts']['overline_uppercase'] ?? '' ) && false !== strpos( $af_css_of( $af_ov ), 'letter-spacing:0.7px' ), $af_ov ? $af_json( array( $af_ov['atts']['overline_uppercase'] ?? null, $af_css_of( $af_ov ) ) ) : 'no overline' );
+
+// steps: the corner numeral (60px, faded, pinned top/right ONLY), the 56px tinted icon tile with the glyph's green ink, the `p-8` inset, the 1024 cap
+$af_steps = $n_find( $af_pg, function ( $n ) { return 'steps' === ( $n['shortcode'] ?? '' ); } );
+$af_scss = $af_steps ? $af_css_of( $af_steps ) : '';
+ga( "[AF] steps: the numeral is pinned to the card's top/right corner only (no bottom/left) at 60px in the source's faded ink", false !== strpos( $af_scss, 'selector .fw-steps__num-inline{position:absolute;margin:0;pointer-events:none;top:16px;right:16px;}' ) && false !== strpos( $af_scss, 'font-size:60px' ) && false !== strpos( $af_scss, 'color:rgba(39, 104, 77, 0.1)' ), $af_scss );
+ga( "[AF] steps: the icon tile is the source's 56px (`--st-size`) and the glyph keeps its green ink (marker_text_color) on the 10% tint", false !== strpos( $af_scss, '--st-size:56px' ) && 'rgb(39, 104, 77)' === (string) ( $af_steps['atts']['marker_text_color']['custom'] ?? '' ), $af_json( array( $af_steps['atts']['marker_text_color'] ?? null, $af_scss ) ) );
+ga( "[AF] steps: the `p-8` card inset and the `max-w-5xl` cap ride the shortcode", false !== strpos( $af_scss, 'selector.fw-steps .fw-steps__item{padding:32px;}' ) && false !== strpos( $af_scss, 'max-width:1024px !important' ), $af_scss );
+
+// testimonials: 48px portraits, the role line's own ink on the native option, the bold 20px footer stat, no blockquote inset
+$af_ts = $n_find( $af_pg, function ( $n ) { return 'testimonials' === ( $n['shortcode'] ?? '' ); } );
+$af_tcss = $af_ts ? $af_css_of( $af_ts ) : '';
+ga( "[AF] testimonials: a `w-12` portrait renders 48px (avatar-sm + the exact px), not the 128px default", is_array( $af_ts ) && 'avatar-sm' === (string) ( $af_ts['atts']['avatar_size'] ?? '' ) && false !== strpos( $af_tcss, '.testimonial-avatar img{width:48px !important;height:48px !important;}' ), $af_json( array( $af_ts['atts']['avatar_size'] ?? null, $af_tcss ) ) );
+ga( "[AF] testimonials: the role line's colour is the source's muted ink on author_job_color (the theme's muted surface had made it invisible)", 'rgb(103, 126, 117)' === (string) ( $af_ts['atts']['author_job_color']['custom'] ?? '' ), $af_json( $af_ts['atts']['author_job_color'] ?? null ) );
+ga( "[AF] testimonials: the footer stat figure keeps its 20px / 700 and the quote sheds the theme blockquote inset", false !== strpos( $af_tcss, 'selector .ts-card__extra-value{' ) && preg_match( '/\.ts-card__extra-value\{[^}]*font-size:20px/', $af_tcss ) && false !== strpos( $af_tcss, '.testimonial-quote{margin-left:0;margin-right:0;padding-left:0;padding-right:0;}' ), $af_tcss );
+
+// FAQ: the `max-w-3xl mx-auto` wrapper caps the accordion
+$af_faq = $n_find( $af_pg, function ( $n ) { return 'accordion' === ( $n['shortcode'] ?? '' ); } );
+ga( "[AF] a `max-w-3xl mx-auto` wrapper around the FAQ caps the accordion at 768px, centred", is_array( $af_faq ) && false !== strpos( $af_css_of( $af_faq ), 'max-width:768px !important;margin-left:auto !important;margin-right:auto !important' ), $af_faq ? $af_css_of( $af_faq ) : 'no accordion' );
+
+// palette: Muted is the muted TEXT ink (muted-foreground), never the muted surface tint
+$af_muted = ''; foreach ( (array) ( $af_v['theme_colors'] ?? array() ) as $tc ) { if ( 'Muted' === ( $tc['name'] ?? '' ) ) { $af_muted = strtolower( (string) ( $tc['color'] ?? '' ) ); } }
+ga( "[AF] theme colour Muted = the page's muted text ink (#677e75), not the pale `muted` surface (#eaf0ed)", '#677e75' === $af_muted, $af_muted );
+
+// footer: a `grid-cols-8` with a `col-span-2` brand → measured tracks pinned on the Auto-Width row (318px brand, 143px links), so the ninth column wraps like the source
+ga( "[AF] an 8-track footer with a `col-span-2` brand pins the measured tracks (brand 318px = 2×143 + 32, links 143px) on the Auto-Width row", false !== strpos( $af_misc, '.footer-col--auto:nth-child(1){flex:0 0 318px;min-width:0;}' ) && false !== strpos( $af_misc, '.footer-col--auto:nth-child(8){flex:0 0 143px;min-width:0;}' ) && 'yes' === (string) ( $af_v['main_footer_columns']['8']['main_footer_auto'] ?? '' ), substr( $af_misc, strpos( $af_misc, 'Footer: the source grid' ) ?: 0, 200 ) );
+
+
+/* ---------------------------------------------------------------------
+ * [AG] A real-site audit, 2026-09-21 (a diner landing page — the conversion test corpus): a ticker bar above a fixed
+ *     <nav> inside a wrapper <header> (the capture stamps the nav); a display-face nav; a card with a full-width banner
+ *     photo + a padded body + a `mb-16` wrapper; an hours grid of tiny "Tue. / 4–10 PM" tiles; a section h3 inside a card.
+ *     Built inline (no brand names).
+ * --------------------------------------------------------------------- */
+echo "\n[AG] Diner landing: masthead stamp on the nav, menu font, banner crop, hours tiles, card h3, times are not counters\n";
+$ag_cs = 'color:rgb(13, 13, 13);font-family:Serifa, serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block';
+$ag_html = '<!DOCTYPE html><html><head><style>:root{}</style></head><body data-sc-cs="' . $ag_cs . '">'
+	. '<header data-sc-cs="' . $ag_cs . '"><div class="fixed top-0 h-12 bg-primary" data-sc-cs="background-color:rgb(226, 60, 68);color:rgb(255, 255, 255);height:48px;display:flex;position:fixed"><span data-sc-cs="color:rgb(255, 255, 255);font-size:18px;text-transform:uppercase">BOOK A TABLE · THE NEW MENU IS HERE</span></div>'
+	. '<nav class="fixed top-12 bg-background border-b-4 border-primary" data-sc-header="rest-height:100px" data-sc-cs="background-color:rgb(255, 255, 255);border-bottom-width:4px;border-bottom-style:solid;border-bottom-color:rgb(226, 60, 68);height:100px;display:block;position:fixed"><div class="container mx-auto px-4 grid grid-cols-3 items-center h-24" data-sc-cs="padding:0px 16px;height:96px;display:grid;align-items:center"><a href="/" data-sc-cs="height:80px;display:flex"><img src="/assets/mark.png" alt="Diner" class="h-16 lg:h-20 w-auto" data-sc-cs="height:80px;width:119px;display:block"></a>'
+	. '<div class="hidden lg:flex items-center justify-center gap-10" data-sc-cs="display:flex;gap:40px;align-items:center;justify-content:center;height:28px">'
+	. '<a href="/menu" class="font-heading text-xl uppercase" data-sc-cs="color:rgb(13, 13, 13);font-family:&quot;Grotesk Condensed&quot;, &quot;Alfa Slab One&quot;, cursive;font-size:20px;font-weight:400;letter-spacing:0.5px;text-transform:uppercase;height:28px;display:block">Menu</a>'
+	. '<a href="/locations" class="font-heading text-xl uppercase" data-sc-cs="color:rgb(13, 13, 13);font-family:&quot;Grotesk Condensed&quot;, &quot;Alfa Slab One&quot;, cursive;font-size:20px;font-weight:400;letter-spacing:0.5px;text-transform:uppercase;height:28px;display:block">Locations</a>'
+	. '<a href="/about" class="font-heading text-xl uppercase" data-sc-cs="color:rgb(13, 13, 13);font-family:&quot;Grotesk Condensed&quot;, &quot;Alfa Slab One&quot;, cursive;font-size:20px;font-weight:400;letter-spacing:0.5px;text-transform:uppercase;height:28px;display:block">About</a></div>'
+	. '<div class="flex items-center justify-self-end gap-3" data-sc-cs="display:flex;gap:12px"><a href="/book" class="inline-flex items-center px-7 py-3 bg-primary text-white rounded" data-sc-cs="background-color:rgb(226, 60, 68);color:rgb(255, 255, 255);font-size:18px;padding:12px 28px;border-radius:4px;display:inline-flex;height:52px">Book a Table</a></div></div></nav></header>'
+	. '<main data-sc-cs="' . $ag_cs . '">'
+	. '<section id="locations" class="py-16 md:py-24 bg-primary" data-sc-cs="background-color:rgb(226, 60, 68);color:rgb(13, 13, 13);font-family:Serifa, serif;font-size:16px;padding:96px 0px;height:1100px;display:block">'
+	. '<div class="container mx-auto px-4" data-sc-cs="padding:0px 16px;margin:0px 20px;max-width:1400px;display:block">'
+	. '<div class="text-center mb-14" data-sc-cs="text-align:center;margin:0px 0px 56px;height:60px;display:block"><h2 class="font-heading text-5xl text-white uppercase mb-2" data-sc-cs="color:rgb(255, 255, 255);font-family:&quot;Grotesk Condensed&quot;, cursive;font-size:48px;font-weight:400;line-height:48px;text-align:center;margin:0px 0px 8px;height:48px;display:block">Our Location</h2><div class="w-24 h-1 bg-white mx-auto" data-sc-cs="background-color:rgb(255, 255, 255);margin:0px 636px;height:4px;width:96px;display:block"></div></div>'
+	. '<div class="max-w-3xl mx-auto mb-16" data-sc-cs="margin:0px 300px 64px;max-width:768px;height:622px;display:block"><div class="relative rounded-2xl overflow-hidden border border-border bg-background shadow-sm" data-sc-cs="background-color:rgb(255, 255, 255);border-top-width:1px;border-top-style:solid;border-top-color:rgb(230, 230, 230);border-radius:16px;overflow:hidden;height:622px;display:block;position:relative">'
+	. '<img src="/assets/interior.webp" alt="Diner interior" class="w-full h-48 md:h-64 object-cover" data-sc-cs="max-width:100%;height:256px;width:766px;display:block;object-fit:cover">'
+	. '<div class="p-8 md:p-12 text-center" data-sc-cs="padding:48px;text-align:center;height:364px;display:block"><span class="font-heading text-xs text-primary uppercase tracking-[0.3em] mb-2 block" data-sc-cs="color:rgb(226, 60, 68);font-size:12px;letter-spacing:3.6px;text-transform:uppercase;text-align:center;margin:0px 0px 8px;height:16px;display:block">Visit Us</span>'
+	. '<h3 class="font-heading text-5xl text-primary uppercase mb-3" data-sc-cs="color:rgb(226, 60, 68);font-family:&quot;Grotesk Condensed&quot;, cursive;font-size:48px;font-weight:400;line-height:48px;text-align:center;margin:0px 0px 12px;height:48px;display:block">Diner Downtown</h3>'
+	. '<p class="text-sm uppercase tracking-wider mb-1" data-sc-cs="color:rgb(102, 102, 102);font-size:14px;letter-spacing:0.7px;text-transform:uppercase;text-align:center;margin:0px 0px 4px;height:20px;display:block">Located in Centre Square</p>'
+	. '<p class="text-lg mb-6" data-sc-cs="color:rgb(13, 13, 13);font-size:18px;text-align:center;margin:0px 0px 24px;height:28px;display:block">1000 Main Street, Springfield, OR 97477</p>'
+	. '<div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-8" data-sc-cs="display:flex;gap:16px;justify-content:center;align-items:center;flex-direction:row;margin:0px 0px 32px;height:32px">'
+	. '<div class="flex items-center gap-3" data-sc-cs="display:flex;gap:12px;align-items:center;height:32px"><div class="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center" data-sc-cs="background-color:rgba(226, 60, 68, 0.1);border-radius:9999px;height:32px;display:flex"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-phone w-4 h-4 text-primary"><path d="M3 5h4l2 5-2 1a11 11 0 0 0 6 6l1-2 5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 7a2 2 0 0 1 0-2" data-sc-cs="color:rgb(226, 60, 68)"></path></svg></div><a href="tel:5555551234" class="text-sm" data-sc-cs="color:rgb(13, 13, 13);font-size:14px;height:20px;display:block">(555) 555-1234</a></div>'
+	. '<div class="flex items-center gap-3" data-sc-cs="display:flex;gap:12px;align-items:center;height:32px"><div class="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center" data-sc-cs="background-color:rgba(226, 60, 68, 0.1);border-radius:9999px;height:32px;display:flex"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-map-pin w-4 h-4 text-primary"><path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0" data-sc-cs="color:rgb(226, 60, 68)"></path></svg></div><span class="text-sm" data-sc-cs="color:rgb(102, 102, 102);font-size:14px;height:20px;display:block">example.org</span></div></div>'
+	. '<a href="https://example.org" class="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white font-heading text-sm uppercase rounded" data-sc-cs="background-color:rgb(226, 60, 68);color:rgb(255, 255, 255);font-size:14px;text-transform:uppercase;padding:12px 24px;border-radius:4px;height:44px;display:inline-flex;gap:8px;align-items:center">Visit Website</a></div></div></div>'
+	. '<div class="max-w-4xl mx-auto" data-sc-cs="margin:0px 236px;max-width:896px;height:170px;display:block"><h3 class="font-heading text-3xl text-white uppercase text-center mb-8" data-sc-cs="color:rgb(255, 255, 255);font-family:&quot;Grotesk Condensed&quot;, cursive;font-size:30px;font-weight:400;line-height:36px;text-align:center;margin:0px 0px 32px;height:36px;display:block">Hours</h3>'
+	. '<div class="grid grid-cols-7 gap-3" data-sc-cs="display:grid;gap:12px;grid-template-columns:117.7px 117.7px 117.7px 117.7px 117.7px 117.7px 117.7px;height:102px">';
+foreach ( array( array( 'Tue.', '4–10 PM' ), array( 'Wed.', '4–10 PM' ), array( 'Thu.', '11:30 AM–10 PM' ), array( 'Fri.', '11:30 AM–10 PM' ), array( 'Sat.', '11:30 AM–10 PM' ), array( 'Sun.', '11:30 AM–9 PM' ), array( 'Mon.', '4–10 PM' ) ) as $ag_d ) {
+	$ag_html .= '<div class="text-center py-6 rounded-lg border border-white/30 bg-[hsl(0,70%,45%)]" data-sc-cs="background-color:rgb(195, 34, 34);text-align:center;padding:24px 0px;border-top-width:1px;border-top-style:solid;border-top-color:rgba(255, 255, 255, 0.3);border-radius:8px;height:102px;display:block">'
+		. '<p class="font-heading text-base uppercase mb-2" data-sc-cs="color:rgb(245, 214, 61);font-family:&quot;Grotesk Condensed&quot;, cursive;font-size:16px;text-transform:uppercase;text-align:center;margin:0px 0px 8px;height:24px;display:block">' . $ag_d[0] . '</p>'
+		. '<p class="text-sm font-bold text-white" data-sc-cs="color:rgb(255, 255, 255);font-size:14px;font-weight:700;text-align:center;height:20px;display:block">' . $ag_d[1] . '</p></div>';
+}
+$ag_html .= '</div></div></div></section></main></body></html>';
+$ag_bl = FW_Site_Converter_Sources::build_from_html( $ag_html, 'Diner', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$ag_pg = $ag_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
+$ag_v  = $ag_bl['files']['theme-settings.json']['values'] ?? array();
+$ag_css_of = function ( $n ) { return (string) ( $n['atts']['custom_css'] ?? '' ); };
+$ag_json = function ( $n ) { return wp_json_encode( $n, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ); };
+$ag_reg = wp_json_encode( $ag_bl['files']['theme-design.json'] ?? array(), JSON_UNESCAPED_SLASHES );
+
+ga( "[AG] the capture's masthead stamp sits on the fixed <nav> inside the wrapper <header> — the rest height (100px) is still read (header_layout.min_height)", '100' === (string) ( $ag_v['header_layout']['min_height']['value'] ?? '' ), $ag_json( $ag_v['header_layout']['min_height'] ?? null ) );
+ga( "[AG] a display-face nav (`font-heading`, not the body serif) → Header → Menu → Menu Font Family", 'Grotesk Condensed' === (string) ( $ag_v['header_menu']['menu_font']['family'] ?? '' ), $ag_json( $ag_v['header_menu']['menu_font'] ?? null ) );
+ga( "[AG] a Simple image logo carries its RENDERED width (119px) so the mark is not auto-shrunk to the bar", '119' === (string) ( $ag_v['header_logo']['logo_type']['simple']['width']['value'] ?? '' ), $ag_json( $ag_v['header_logo']['logo_type']['simple'] ?? null ) );
+
+$ag_sec = null; foreach ( $ag_pg as $s ) { if ( false !== strpos( $ag_json( $s ), 'Diner Downtown' ) ) { $ag_sec = $s; break; } }
+$ag_img = $n_find( array( $ag_sec ), function ( $n ) { return 'media_image' === ( $n['shortcode'] ?? '' ); } );
+ga( "[AG] a card's `w-full h-64 object-cover` banner photo is a full-width 256px cover crop (not its natural size, inset in the card)", is_array( $ag_img ) && false !== strpos( $ag_css_of( $ag_img ), 'selector{width:100%;align-self:stretch;}selector img{width:100%;height:256px;object-fit:cover;display:block;}' ), $ag_img ? $ag_css_of( $ag_img ) : 'no image' );
+$ag_h3 = $n_find( array( $ag_sec ), function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && 'Diner Downtown' === trim( (string) ( $n['atts']['title'] ?? '' ) ); } );
+ga( "[AG] the card's own h3 keeps its red (title_color) — and the section-level `#locations h3` rule excludes card headings (`:not([class*=\"boxp-\"] *)`)", is_array( $ag_h3 ) && 'rgb(226, 60, 68)' === (string) ( $ag_h3['atts']['title_color']['custom'] ?? '' ) && false !== strpos( $ag_reg, '#locations h3:not([class*=\"boxp-\"] *){' ), $ag_json( array( $ag_h3['atts']['title_color'] ?? null, substr( $ag_reg, strpos( $ag_reg, '#locations h3' ) ?: 0, 80 ) ) ) );
+$ag_fl = $n_find( array( $ag_sec ), function ( $n ) { return 'feature_list' === ( $n['shortcode'] ?? '' ); } );
+ga( "[AG] a `flex flex-col sm:flex-row justify-center gap-4` contact row is a HORIZONTAL centred feature list at its 16px gap (the measured direction, not the phone class)", is_array( $ag_fl ) && 'horizontal' === (string) ( $ag_fl['atts']['orientation'] ?? '' ) && false !== strpos( $ag_css_of( $ag_fl ), 'selector.fw-fl--orient-horizontal{justify-content:center;column-gap:16px;}' ), $ag_json( array( $ag_fl['atts']['orientation'] ?? null, $ag_fl ? $ag_css_of( $ag_fl ) : null ) ) );
+$ag_btn = $n_find( array( $ag_sec ), function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'Visit Website' === trim( (string) ( $n['atts']['label'] ?? '' ) ); } );
+ga( "[AG] the card body's `p-12` bottom inset reaches the last block (the button's Spacing margin-bottom = 48px) — it had sat on the card's edge", is_array( $ag_btn ) && 'mb-5' === (string) ( $ag_btn['atts']['spacing']['margin']['bottom'] ?? '' ), $ag_json( $ag_btn['atts']['spacing']['margin'] ?? null ) );
+$ag_card = $n_find( array( $ag_sec ), function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && false !== strpos( wp_json_encode( $n ), 'Diner Downtown' ) && '' !== (string) ( $n['atts']['border_preset'] ?? '' ); } );
+ga( "[AG] the card wrapper's `mb-16` rides the panel (Spacing margin-bottom 64px) so the HOURS heading keeps its gap", is_array( $ag_card ) && 'mb-7' === (string) ( $ag_card['atts']['spacing']['margin']['bottom'] ?? '' ), $ag_json( $ag_card['atts']['spacing']['margin'] ?? null ) );
+$ag_bar = $n_find( array( $ag_sec ), function ( $n ) { return 'divider' === ( $n['shortcode'] ?? '' ) || ( 'flexbox' === ( $n['type'] ?? '' ) && empty( $n['_items'] ) && false !== strpos( (string) ( $n['atts']['custom_css'] ?? '' ), 'height:4px;width:96px' ) ); } );
+ga( "[AG] the heading wrapper's `mb-14` rides the rule-bar divider under the section title", is_array( $ag_bar ) && 'mb-6' === (string) ( $ag_bar['atts']['spacing']['margin']['bottom'] ?? '' ), $ag_json( $ag_bar['atts']['spacing']['margin'] ?? null ) );
+
+// hours tiles: seven cells, every one a decomposed text pair (no counter, no verbatim mirror), centred, boxed ONCE
+$ag_tiles = $af_all( $ag_pg, function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && 2 === count( (array) ( $n['_items'] ?? array() ) ) && preg_match( '/^(Tue|Wed|Thu|Fri|Sat|Sun|Mon)\.$/', trim( wp_strip_all_tags( (string) ( $n['_items'][0]['atts']['text'] ?? '' ) ) ) ); } );
+ga( "[AG] hours tiles: all seven `Day / time` cells decompose to two text blocks (an 11-character `Tue. / 4–10 PM` tile had fallen to the verbatim mirror; a `4–10 PM` had become a counter)", 7 === count( $ag_tiles ) && 0 === count( $af_all( $ag_pg, function ( $n ) { return in_array( (string) ( $n['shortcode'] ?? '' ), array( 'counter', 'code_block' ), true ); } ) ), $ag_json( array( count( $ag_tiles ), array_map( function ( $n ) { return $n['shortcode'] ?? $n['type'] ?? ''; }, $af_all( $ag_pg, function ( $n ) { return in_array( (string) ( $n['shortcode'] ?? '' ), array( 'counter', 'code_block' ), true ); } ) ) ) ) );
+ga( "[AG] hours tiles: each cell is text-centred through the cell's own measured alignment (its class list is empty on the cell record)", count( $ag_tiles ) === count( array_filter( $ag_tiles, function ( $n ) { return 'center' === (string) ( $n['atts']['text_align'] ?? '' ) || false !== strpos( (string) ( $n['atts']['custom_css'] ?? '' ), 'text-align:center' ); } ) ), $ag_json( array_map( function ( $n ) { return $n['atts']['text_align'] ?? null; }, $ag_tiles ) ) );
+
+
+/* ---------------------------------------------------------------------
+ * [AH] A real-site audit, 2026-09-21 (a home-goods storefront — the conversion test corpus): a wordmark link in the header's
+ *     outer <nav>; a `flex justify-between` intro row with a kicker + "View All"; 4:5 product tiles with corner badges, a
+ *     wishlist button and a hover pill; a 12-col bento of photo tiles with the title INSIDE the frame. Built inline.
+ * --------------------------------------------------------------------- */
+echo "\n[AH] Storefront: wordmark not a menu item, kicker not duplicated, 4:5 tiles + badges, no control glyph, bento photo tiles as overlay image boxes\n";
+$ah_cs = 'color:rgb(42, 38, 34);font-family:Inter, system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block';
+$ah_tile = function ( $name, $cat, $badge ) use ( $ah_cs ) {
+	return '<article class="group" data-sc-cs="' . $ah_cs . ';height:521px"><a class="block" href="/products/' . sanitize_title( $name ) . '" data-sc-cs="' . $ah_cs . '"><div class="relative overflow-hidden bg-muted/50 mb-5 aspect-[4/5]" data-sc-cs="background-color:rgba(232, 230, 227, 0.5);margin:0px 0px 20px;height:382px;width:306px;display:block;position:relative;aspect-ratio:4 / 5">'
+		. '<img src="/assets/' . sanitize_title( $name ) . '.jpg" alt="' . $name . '" class="w-full h-full object-cover" data-sc-cs="max-width:100%;height:382px;width:306px;display:block;object-fit:cover">'
+		. '<button class="absolute top-5 right-5 p-2.5 rounded-full bg-background/90" data-sc-cs="background-color:rgba(250, 248, 245, 0.9);padding:10px;height:36px;width:36px;display:block;position:absolute;top:20px;right:20px;border-radius:9999px"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-heart w-4 h-4"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.1 3 5.5l7 7z" data-sc-cs="color:rgb(42, 38, 34)"></path></svg></button>'
+		. ( '' !== $badge ? '<div class="absolute top-5 left-5 flex flex-col gap-2" data-sc-cs="display:flex;gap:8px;position:absolute;top:20px;left:20px;height:27px"><span class="px-3 py-1.5 text-[10px] font-semibold tracking-[0.2em] uppercase bg-primary text-primary-foreground" data-sc-cs="background-color:rgb(166, 94, 63);color:rgb(250, 248, 245);font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;padding:6px 12px;height:27px;display:block">' . $badge . '</span></div>' : '' )
+		. '<div class="absolute bottom-0 left-0 right-0 flex items-center justify-center pb-6 opacity-0 group-hover:opacity-100" data-sc-cs="padding:0px 0px 24px;height:60px;display:flex;position:absolute;bottom:0px;left:0px;right:0px"><span class="px-6 py-2.5 text-xs font-medium tracking-[0.15em] uppercase bg-background/95" data-sc-cs="background-color:rgba(250, 248, 245, 0.95);font-size:12px;text-transform:uppercase;padding:10px 24px;height:36px;display:block">View Details</span></div></div>'
+		. '<div class="space-y-2" data-sc-cs="' . $ah_cs . '"><p class="text-[11px] font-medium tracking-[0.2em] uppercase text-muted-foreground/70" data-sc-cs="color:rgba(124, 115, 106, 0.7);font-size:11px;font-weight:500;letter-spacing:2.2px;text-transform:uppercase;height:16.5px;display:block">' . $cat . '</p>'
+		. '<h3 class="font-serif text-xl text-foreground" data-sc-cs="color:rgb(42, 38, 34);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:20px;font-weight:500;line-height:28px;margin:8px 0px 0px;height:28px;display:block">' . $name . '</h3>'
+		. '<p class="text-sm text-muted-foreground" data-sc-cs="color:rgb(124, 115, 106);font-size:14px;line-height:21px;margin:8px 0px 0px;height:21px;display:block">A graceful piece for daily rituals</p>'
+		. '<p class="text-sm" data-sc-cs="color:rgb(42, 38, 34);font-size:14px;font-weight:500;margin:8px 0px 0px;height:21px;display:block">$485</p></div></a></article>';
+};
+$ah_ctile = function ( $name, $span, $aspect, $w, $h ) use ( $ah_cs ) {
+	return '<div class="md:col-span-' . $span . '" data-sc-cs="' . $ah_cs . ';height:' . $h . 'px;track-frac:' . round( $span / 12, 3 ) . '"><article data-sc-cs="' . $ah_cs . ';height:' . $h . 'px"><a class="group block relative" href="/products?collection=' . sanitize_title( $name ) . '" data-sc-cs="' . $ah_cs . ';height:' . $h . 'px;position:relative">'
+		. '<div class="relative overflow-hidden bg-muted/50 aspect-[' . $aspect . ']" data-sc-cs="background-color:rgba(232, 230, 227, 0.5);height:' . $h . 'px;width:' . $w . 'px;display:block;position:relative;aspect-ratio:' . str_replace( '/', ' / ', $aspect ) . '">'
+		. '<img src="/assets/c-' . sanitize_title( $name ) . '.jpg" alt="' . $name . '" class="w-full h-full object-cover" data-sc-cs="max-width:100%;height:' . $h . 'px;width:' . $w . 'px;display:block;object-fit:cover">'
+		. '<div class="absolute inset-0 bg-gradient-to-t from-charcoal/70 via-charcoal/10 to-transparent" data-sc-cs="background-image:linear-gradient(to top, rgba(42, 38, 34, 0.7), rgba(42, 38, 34, 0.1), rgba(0, 0, 0, 0));height:' . $h . 'px;display:block;position:absolute;top:0px;left:0px"></div>'
+		. '<div class="absolute inset-0 flex flex-col justify-end p-8" data-sc-cs="padding:32px;height:' . $h . 'px;display:flex;flex-direction:column;justify-content:flex-end;position:absolute;top:0px;left:0px"><p class="text-[10px] font-semibold tracking-[0.25em] uppercase text-white/60 mb-2" data-sc-cs="color:rgba(255, 255, 255, 0.6);font-size:10px;font-weight:600;letter-spacing:2.5px;text-transform:uppercase;margin:0px 0px 8px;height:15px;display:block">Collection</p>'
+		. '<h3 class="font-serif text-3xl text-white mb-2" data-sc-cs="color:rgb(255, 255, 255);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:30px;font-weight:500;line-height:36px;margin:0px 0px 8px;height:36px;display:block">' . $name . '</h3>'
+		. '<p class="text-sm text-white/70 max-w-xs" data-sc-cs="color:rgba(255, 255, 255, 0.7);font-size:14px;max-width:320px;height:22px;display:block">Timeless pieces built for generations</p></div></div></a></article></div>';
+};
+$ah_html = '<!DOCTYPE html><html><head><style>:root{}</style></head><body data-sc-cs="' . $ah_cs . '">'
+	. '<header data-sc-cs="' . $ah_cs . ';height:80px"><nav class="container-full" data-sc-cs="' . $ah_cs . ';padding:0px 48px;max-width:1600px;height:80px"><div class="flex items-center justify-between h-20" data-sc-cs="' . $ah_cs . ';height:80px;display:flex;justify-content:space-between;align-items:center">'
+	. '<a href="/" class="font-serif text-3xl tracking-tight text-foreground" data-sc-cs="color:rgb(42, 38, 34);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:30px;font-weight:400;letter-spacing:-0.75px;height:36px;display:block">Maison</a>'
+	. '<div class="hidden md:flex items-center gap-8" data-sc-cs="' . $ah_cs . ';height:40px;display:flex;gap:32px;align-items:center"><a href="/products" class="text-xs font-medium tracking-[0.15em] uppercase" data-sc-cs="color:rgb(124, 115, 106);font-size:12px;font-weight:500;letter-spacing:1.8px;text-transform:uppercase;height:16px;display:block">Shop All</a><a href="/about" class="text-xs font-medium tracking-[0.15em] uppercase" data-sc-cs="color:rgb(124, 115, 106);font-size:12px;font-weight:500;letter-spacing:1.8px;text-transform:uppercase;height:16px;display:block">About</a></div>'
+	. '<a href="/cart" class="relative p-2" data-sc-cs="' . $ah_cs . ';padding:8px;height:36px;display:block"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-shopping-bag w-5 h-5"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" data-sc-cs="color:rgb(42, 38, 34)"></path></svg></a></div></nav></header>'
+	. '<main data-sc-cs="' . $ah_cs . '">'
+	. '<section class="py-20 md:py-28 bg-linen" data-sc-cs="background-color:rgb(245, 242, 238);' . $ah_cs . ';padding:112px 0px;height:877px;display:block"><div class="container-full" data-sc-cs="' . $ah_cs . ';padding:0px 48px;max-width:1600px;margin:0px auto;height:653px;display:block">'
+	. '<div class="flex items-end justify-between mb-14" data-sc-cs="' . $ah_cs . ';margin:0px 0px 56px;height:76px;display:flex;justify-content:space-between;align-items:flex-end"><div data-sc-cs="' . $ah_cs . ';height:76px"><p class="text-[11px] font-semibold tracking-[0.3em] uppercase text-primary mb-3" data-sc-cs="color:rgb(166, 94, 63);font-size:11px;font-weight:600;letter-spacing:3.3px;text-transform:uppercase;margin:0px 0px 12px;height:16px;display:block">Just Arrived</p><h2 class="font-serif text-4xl text-foreground" data-sc-cs="color:rgb(42, 38, 34);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:36px;font-weight:400;line-height:40px;height:40px;display:block">Latest Products</h2></div><a href="/products" class="text-xs font-medium tracking-[0.15em] uppercase text-muted-foreground flex items-center gap-2" data-sc-cs="color:rgb(124, 115, 106);font-size:12px;font-weight:500;letter-spacing:1.8px;text-transform:uppercase;height:16px;display:flex;gap:8px;align-items:center">View All</a></div>'
+	. '<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 md:gap-10" data-sc-cs="' . $ah_cs . ';height:521px;display:grid;gap:40px;grid-template-columns:306px 306px 306px 306px">'
+	. $ah_tile( 'Arc Pendant Light', 'Lighting', 'Featured' ) . $ah_tile( 'Orb Table Lamp', 'Lighting', 'New' ) . $ah_tile( 'Large Sculptural Vessel', 'Ceramics', 'Featured' ) . $ah_tile( 'Everyday Serving Bowl', 'Ceramics', '' )
+	. '</div></div></section>'
+	. '<section class="py-24 md:py-32" data-sc-cs="' . $ah_cs . ';padding:128px 0px;height:2504px;display:block;width:1440px"><div class="container-full" data-sc-cs="' . $ah_cs . ';padding:0px 48px;max-width:1600px;margin:0px auto;height:2248px;display:block"><div class="text-center mb-16" data-sc-cs="' . $ah_cs . ';text-align:center;margin:0px 0px 64px;height:76px;display:block"><p class="text-[11px] font-semibold tracking-[0.3em] uppercase text-primary mb-3" data-sc-cs="color:rgb(166, 94, 63);font-size:11px;font-weight:600;letter-spacing:3.3px;text-transform:uppercase;margin:0px 0px 12px;height:16px;display:block">Browse By</p><h2 class="font-serif text-5xl text-foreground" data-sc-cs="color:rgb(42, 38, 34);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:48px;font-weight:400;line-height:48px;height:48px;display:block">Collections</h2></div>'
+	. '<div class="grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-6" data-sc-cs="' . $ah_cs . ';height:2108px;display:grid;gap:24px;grid-template-columns:90px 90px 90px 90px 90px 90px 90px 90px 90px 90px 90px 90px">'
+	. $ah_ctile( 'Lighting', 7, '16/9', 774, 435 ) . $ah_ctile( 'Ceramics', 5, '3/4', 546, 728 ) . $ah_ctile( 'Furniture', 4, '4/3', 432, 324 ) . $ah_ctile( 'Textiles', 4, '4/3', 432, 324 ) . $ah_ctile( 'Objects', 4, '4/3', 432, 324 ) . $ah_ctile( 'Seasonal Collection', 12, '21/9', 1344, 576 )
+	. '</div></div></section></main></body></html>';
+$ah_bl = FW_Site_Converter_Sources::build_from_html( $ah_html, 'Maison', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$ah_pg = $ah_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
+$ah_td = $ah_bl['files']['theme-design.json'] ?? array();
+$ah_css_of = function ( $n ) { return (string) ( $n['atts']['custom_css'] ?? '' ); };
+$ah_json = function ( $n ) { return wp_json_encode( $n, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ); };
+
+$ah_menu = array_map( function ( $i ) { return (string) ( $i['label'] ?? '' ); }, (array) ( $ah_td['header']['menu'] ?? array() ) );
+ga( "[AH] a display-size text wordmark (`<a href=\"/\" class=\"font-serif text-3xl\">Maison</a>`) is the brand, not the first menu item", array( 'Shop All', 'About' ) === array_values( $ah_menu ), $ah_json( $ah_menu ) );
+$ah_head = $n_find( $ah_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && 'Latest Products' === trim( (string) ( $n['atts']['title'] ?? '' ) ); } );
+ga( "[AH] an intro row's kicker is the heading's overline ONCE — never also its subtitle", is_array( $ah_head ) && 'Just Arrived' === trim( (string) ( $ah_head['atts']['overline'] ?? '' ) ) && '' === trim( (string) ( $ah_head['atts']['subtitle'] ?? '' ) ), $ah_json( array( $ah_head['atts']['overline'] ?? null, $ah_head['atts']['subtitle'] ?? null ) ) );
+$ah_hrow = $n_find( $ah_pg, function ( $n ) { if ( ! in_array( ( $n['type'] ?? '' ), array( 'column', 'flexbox' ), true ) ) { return false; } $has_h = false; $has_b = false; foreach ( (array) ( $n['_items'] ?? array() ) as $c ) { if ( 'special_heading' === ( $c['shortcode'] ?? '' ) && 'Latest Products' === trim( (string) ( $c['atts']['title'] ?? '' ) ) ) { $has_h = true; } if ( 'button' === ( $c['shortcode'] ?? '' ) ) { $has_b = true; } } return $has_h && $has_b; } );
+ga( "[AH] the intro row keeps its own `mb-14` (56px) above the product grid", is_array( $ah_hrow ) && 'mb-6' === (string) ( $ah_hrow['atts']['spacing']['margin']['bottom'] ?? '' ), $ah_json( $ah_hrow['atts']['spacing']['margin'] ?? null ) );
+
+$ah_p1 = $n_find( $ah_pg, function ( $n ) { return 'image_box' === ( $n['shortcode'] ?? '' ) && 'Arc Pendant Light' === trim( (string) ( $n['atts']['title'] ?? '' ) ); } );
+ga( "[AH] a 4:5 product photo → the nearest native ratio (3:4) + the EXACT `aspect-ratio:4 / 5` scoped on the media box", is_array( $ah_p1 ) && 'ratio-3-4' === (string) ( $ah_p1['atts']['image_ratio'] ?? '' ) && false !== strpos( $ah_css_of( $ah_p1 ), 'selector .imgbox__media{aspect-ratio:4 / 5;}' ), $ah_json( array( $ah_p1['atts']['image_ratio'] ?? null, $ah_p1 ? $ah_css_of( $ah_p1 ) : null ) ) );
+ga( "[AH] the tile's corner chip (\"Featured\") is painted as a pseudo-element on the media box with the chip's fill / ink / inset", is_array( $ah_p1 ) && preg_match( '/selector \.imgbox__media::before\{content:"Featured";position:absolute;[^}]*background-color:rgb\(166, 94, 63\)[^}]*top:20px;left:20px;\}/', $ah_css_of( $ah_p1 ) ), $ah_p1 ? $ah_css_of( $ah_p1 ) : null );
+ga( "[AH] the wishlist <button> heart is a CONTROL, never the card's icon", is_array( $ah_p1 ) && 'none' === (string) ( $ah_p1['atts']['icon']['type'] ?? 'none' ), $ah_json( $ah_p1['atts']['icon'] ?? null ) );
+ga( "[AH] the category line is the image_box's eyebrow (subtitle) with its own type, not the first body paragraph", is_array( $ah_p1 ) && 'Lighting' === (string) ( $ah_p1['atts']['subtitle'] ?? '' ) && false === strpos( (string) ( $ah_p1['atts']['text'] ?? '' ), '<p>Lighting</p>' ) && preg_match( '/\.imgbox__eyebrow\{[^}]*letter-spacing:2\.2px/', $ah_css_of( $ah_p1 ) ), $ah_json( array( $ah_p1['atts']['subtitle'] ?? null, $ah_p1['atts']['text'] ?? null ) ) );
+$ah_p4 = $n_find( $ah_pg, function ( $n ) { return 'image_box' === ( $n['shortcode'] ?? '' ) && 'Everyday Serving Bowl' === trim( (string) ( $n['atts']['title'] ?? '' ) ); } );
+ga( "[AH] a hover-revealed pill (`opacity-0 group-hover:opacity-100` \"View Details\") is NOT a badge", is_array( $ah_p4 ) && false === strpos( $ah_css_of( $ah_p4 ), 'content:"View Details"' ), $ah_p4 ? $ah_css_of( $ah_p4 ) : null );
+ga( "[AH] the product body copy keeps the description's 14px, not the 11px eyebrow", is_array( $ah_p1 ) && preg_match( '/\.imgbox__text\{font-size:14px/', $ah_css_of( $ah_p1 ) ), $ah_p1 ? $ah_css_of( $ah_p1 ) : null );
+
+$ah_sec = null; foreach ( $ah_pg as $s ) { if ( false !== strpos( $ah_json( $s ), 'Seasonal Collection' ) ) { $ah_sec = $s; break; } }
+$ah_tiles = $af_all( array( $ah_sec ), function ( $n ) { return 'image_box' === ( $n['shortcode'] ?? '' ); } );
+ga( "[AH] a bento of photo tiles inside NESTED rows renders every tile as an image_box (not an icon_box without its photo)", 6 === count( $ah_tiles ) && 0 === count( $af_all( array( $ah_sec ), function ( $n ) { return 'icon_box' === ( $n['shortcode'] ?? '' ); } ) ), $ah_json( array( count( $ah_tiles ), array_map( function ( $n ) { return $n['shortcode'] ?? $n['type']; }, $af_all( array( $ah_sec ), function ( $n ) { return 'icon_box' === ( $n['shortcode'] ?? '' ); } ) ) ) ) );
+ga( "[AH] a tile whose title sits INSIDE the photo frame is the image_box OVERLAY family with the source scrim", count( $ah_tiles ) > 0 && 'overlay' === (string) ( $ah_tiles[0]['atts']['design_settings']['family'] ?? '' ) && false !== strpos( $ah_css_of( $ah_tiles[0] ), 'selector .imgbox__scrim{background:linear-gradient(to top, rgba(42, 38, 34, 0.7)' ), $ah_json( array( $ah_tiles[0]['atts']['design_settings'] ?? null, isset( $ah_tiles[0] ) ? $ah_css_of( $ah_tiles[0] ) : null ) ) );
+$ah_sbg = (string) ( $ah_sec['atts']['background']['image']['src']['url'] ?? ( $ah_sec['atts']['background_image']['url'] ?? '' ) );
+ga( "[AH] a tile's photo is never hoisted as the SECTION background (the hero aspect-box hoist needs a band-wide, single box)", '' === $ah_sbg && false === strpos( $ah_css_of( $ah_sec ), 'c-lighting.jpg' ), $ah_json( array( $ah_sbg, $ah_css_of( $ah_sec ) ) ) );
+ga( "[AH] a page container's `max-w-[1600px]` is never a content cap on the widget row (the theme gutters stay)", 0 === count( $af_all( $ah_pg, function ( $n ) { return false !== strpos( (string) ( $n['atts']['custom_css'] ?? '' ), 'max-width:1600px !important' ); } ) ), 'a 1600px cap was stamped' );
+
+
 /* --------------------------------------------------------------------- *
  * Result
  * --------------------------------------------------------------------- */
+
+/*
+ * [AI] Gallery tile CORNERS ride the source tile's MEASURED border-radius (Stitch tileRadius → the gallery's
+ * declared `rounded` option): 0 → Square, ≤8px → Rounded, larger → Rounded large. The mapper had hard-coded
+ * `rounded`, and — the option being undeclared — the builder dropped the att, so every converted grid drew 6px
+ * corners over a square-cornered source (a storefront's social grid). The Image Style preset owns corners when set.
+ */
+echo "
+[AI] Gallery corners from the measured tile radius
+";
+ga( "[AI] 8px-radius mosaic tiles → the gallery's `rounded` (6px) corners", is_array( $ac_gal ) && 'rounded' === (string) ( $ac_gal['atts']['rounded'] ?? '' ), wp_json_encode( $ac_gal['atts']['rounded'] ?? null ) );
+$ai_bl  = FW_Site_Converter_Sources::build_from_html( str_replace( 'border-radius:8px;height:240px', 'border-radius:0px;height:240px', $ac_html ), 'Outpost', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$ai_gal = $r_find( $ai_bl['files']['pages.json']['pages'][0]['builder'] ?? array(), function ( $n ) { return 'gallery' === ( $n['shortcode'] ?? '' ); } );
+ga( "[AI] square-cornered tiles (border-radius:0px) → `rounded-0` (the grid had drawn 6px corners over sharp source tiles)", is_array( $ai_gal ) && 'rounded-0' === (string) ( $ai_gal['atts']['rounded'] ?? '' ), wp_json_encode( $ai_gal['atts']['rounded'] ?? null ) );
+$ai_bl2  = FW_Site_Converter_Sources::build_from_html( str_replace( 'border-radius:8px;height:240px', 'border-radius:16px;height:240px', $ac_html ), 'Outpost', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$ai_gal2 = $r_find( $ai_bl2['files']['pages.json']['pages'][0]['builder'] ?? array(), function ( $n ) { return 'gallery' === ( $n['shortcode'] ?? '' ); } );
+ga( "[AI] 16px-radius tiles → `rounded-lg`", is_array( $ai_gal2 ) && 'rounded-lg' === (string) ( $ai_gal2['atts']['rounded'] ?? '' ), wp_json_encode( $ai_gal2['atts']['rounded'] ?? null ) );
+
 $pass = $GLOBALS['__pass'];
 $fail = $GLOBALS['__fail'];
 echo "\n========================================\n";

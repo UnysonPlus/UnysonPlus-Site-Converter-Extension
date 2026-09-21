@@ -2078,7 +2078,23 @@ class FW_Site_Converter_Mapper {
 		$node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "\n" . $css );
 	}
 
+	/** A widget block's content cap (Stitch capW / capCenter — a `max-w-3xl mx-auto` wrapper around a FAQ, a `max-w-5xl`
+	 *  grid) → the node's own max-width, centred with auto side margins when the source centres it. The recurring
+	 *  "section container width" report: the FAQ / the Problem-Solution grid ran the full container. JS: applyBlockCap. */
+	private static function apply_block_cap( array &$node, $b ) {
+		if ( ! is_array( $b ) || empty( $b['capW'] ) || ! isset( $node['atts'] ) ) { return; }
+		$w = trim( (string) $b['capW'] );
+		if ( ! preg_match( '/^[0-9.]+(?:px|rem|em|%|ch|vw)$/', $w ) ) { return; }
+		// !important: the section's content-width rule (`.section--cw-* > .fw-container > *{max-width:min(…)}`) and a
+		// widget's own base margin out-rank a unique-class rule
+		$css = 'selector{max-width:' . $w . ' !important;' . ( ! empty( $b['capCenter'] ) ? 'margin-left:auto !important;margin-right:auto !important;' : '' ) . 'width:100%;box-sizing:border-box;}';
+		$cur = (string) ( $node['atts']['custom_css'] ?? '' );
+		if ( false !== strpos( $cur, 'max-width:' . $w ) ) { return; }
+		$node['atts']['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . $css );
+	}
+
 	private static function apply_block_anim( array &$node, array $b ) {
+		self::apply_block_cap( $node, $b ); // the block's content cap (a capped wrapper / grid) — before anything else scopes the node
 		if ( ! empty( $b['reveal'] ) ) { self::apply_reveal( $node, $b['reveal'] ); } // a measured CSS-class reveal → Scroll Motion
 		if ( ! empty( $b['loopAnim'] ) ) { self::apply_loop_anim( $node, $b['loopAnim'] ); } // the element's own running class animation
 		self::apply_inset_x( $node, $b ); // the flattened wrapper's side inset (Stitch mxAdd) → native Spacing margin
@@ -5222,6 +5238,37 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			$decl = 'text-transform:uppercase;' . ( $als !== '' ? 'letter-spacing:' . $als . ';' : '' );
 			$custom_css = 'selector .testimonial-author,selector .testimonial-job{' . $decl . '}';
 		}
+		// The card's MEASURED look (Stitch testimonial_look — first card with one): the avatar's real size (the
+		// nearest native step + the exact px, since the view inlines its own width/height), the role line's colour
+		// on the native option (the theme's muted ink had made it invisible), and the quote / name / role / footer
+		// stat typography + the footer's rhythm as scoped rules on the rendered parts. JS: testimonialLookCss.
+		$look = null; foreach ( $rows as $r ) { if ( ! empty( $r['look'] ) && is_array( $r['look'] ) ) { $look = $r['look']; break; } }
+		$avatar_size = 'avatar-lg'; $job_color = self::empty_color();
+		if ( is_array( $look ) ) {
+			$safe = function ( $d ) { return preg_replace( '/[^a-z0-9()%.,#"\'\s:;-]/i', '', (string) $d ); };
+			$lcss = '';
+			if ( ! empty( $look['avatarPx'] ) ) {
+				$px = (int) $look['avatarPx'];
+				$avatar_size = $px <= 80 ? 'avatar-sm' : ( $px <= 112 ? 'avatar-md' : 'avatar-lg' );
+				$lcss .= 'selector .testimonial-avatar img{width:' . $px . 'px !important;height:' . $px . 'px !important;}';
+			}
+			$parts = array( 'quoteCs' => '.testimonial-quote,selector .testimonial-quote p', 'nameCs' => '.testimonial-author', 'jobCs' => '.testimonial-job', 'extraLabelCs' => '.ts-card__extra-label', 'extraValueCs' => '.ts-card__extra-value' );
+			if ( ! empty( $look['quoteCs'] ) ) { $lcss .= 'selector .testimonial-quote{margin-left:0;margin-right:0;padding-left:0;padding-right:0;}'; } // the theme's blockquote inset is not the source's
+			foreach ( $parts as $pk => $sel ) {
+				if ( empty( $look[ $pk ] ) ) { continue; }
+				$d = $safe( $look[ $pk ] );
+				if ( 'jobCs' === $pk && preg_match( '/(?:^|;)color:([^;]+)/', $d, $jm ) ) { $job_color = array( 'predefined' => '', 'custom' => trim( $jm[1] ) ); $d = preg_replace( '/(?:^|;)color:[^;]+/', '', $d ); }
+				$d = trim( $d, '; ' );
+				if ( '' !== $d ) { $lcss .= 'selector ' . $sel . '{' . $d . ';}'; }
+			}
+			if ( isset( $look['extraTop'] ) && (int) $look['extraTop'] > 0 ) {
+				$half = (int) round( (int) $look['extraTop'] / 2 );
+				$lcss .= 'selector .ts-card__extra{margin-top:' . $half . 'px;padding-top:' . ( (int) $look['extraTop'] - $half ) . 'px;' . ( ! empty( $look['extraRule'] ) && preg_match( '/^(?:rgba?\([^)]*\)|#[0-9a-f]{3,8})$/i', trim( $look['extraRule'] ) ) ? 'border-top-color:' . trim( $look['extraRule'] ) . ';' : '' ) . '}';
+			}
+			// the role line's own size must win over the view's `.small` wrapper
+			$lcss = str_replace( 'selector .testimonial-job{', 'selector .testimonial-meta.small .testimonial-job{', $lcss );
+			if ( '' !== $lcss ) { $custom_css = trim( $custom_css . "\n" . $lcss ); }
+		}
 		// DESIGN — mirror the source testimonial's presentation (Classic single/grid/carousel, Marquee, …)
 		// when the converter classified it (detect_testimonial_design); else the Classic default. Only the
 		// design + its layout sub-choice are overridden — every design's other defaults stay intact.
@@ -5250,11 +5297,11 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			// testimonial (modfii) must not be force-centred.
 			'text_align'      => ( in_array( $align, array( 'left', 'start' ), true ) ? 'text-left' : ( 'right' === $align || 'end' === $align ? 'text-right' : 'text-center' ) ),
 			'avatar_shape'    => 'rounded-circle',
-			'avatar_size'     => 'avatar-lg',
+			'avatar_size'     => $avatar_size,
 			'show_rating'     => 'yes',
 			'text_color'      => self::empty_color(), 'bg_color' => self::empty_color(), 'font_size_preset' => '',
 			'title_color'     => self::empty_color(), 'quote_color' => self::empty_color(),
-			'author_name_color' => self::empty_color(), 'author_job_color' => self::empty_color(), 'site_link_color' => self::empty_color(),
+			'author_name_color' => self::empty_color(), 'author_job_color' => $job_color, 'site_link_color' => self::empty_color(),
 			'spacing'         => self::def_spacing(),
 			'animation'       => self::def_animation(),
 			'unique_id' => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => $custom_css, 'responsive_hide' => array(), 'custom_attrs' => array(),
@@ -5583,7 +5630,16 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		$atts['design'] = ! empty( $b['ordered'] ) ? 'numbered' : 'check';
 		// ORIENTATION — a source `flex flex-wrap` trust strip is HORIZONTAL; a stacked list is vertical. Was
 		// always defaulting to vertical, so the modfii inline strip rendered as a stacked column.
-		if ( ( $b['orientation'] ?? '' ) === 'horizontal' ) { $atts['orientation'] = 'horizontal'; }
+		if ( ( $b['orientation'] ?? '' ) === 'horizontal' ) {
+			$atts['orientation'] = 'horizontal';
+			// the row's own placement + gap (`justify-center gap-4`): a centred contact row had packed left at the shortcode's
+			// 1.75rem column gap (a real-site audit)
+			$lcs = (string) ( $b['list_cs'] ?? '' ); $rd = array();
+			if ( preg_match( '/(?:^|;)\s*justify-content:\s*(center|space-between|space-around|space-evenly|flex-end|end)/i', $lcs, $jm ) ) { $rd[] = 'justify-content:' . strtolower( $jm[1] ); }
+			if ( preg_match( '/(?:^|;)\s*(?:column-)?gap:\s*([0-9.]+px)/i', $lcs, $gm ) ) { $rd[] = 'column-gap:' . $gm[1]; }
+			if ( $rd ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+selector.fw-fl--orient-horizontal{" . implode( ';', $rd ) . ';}' ); }
+		}
 		// COLUMNS — a source `grid grid-cols-N` list (e.g. the "Loan Types" 2-col grid of pills) → the
 		// feature_list's native Columns option, so the items lay out N-across instead of a single stack.
 		// Base (unprefixed) grid-cols wins; a responsive `md:grid-cols-N` is the fallback.
@@ -5822,7 +5878,10 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		if ( ! isset( $atts['source']['media'] ) || ! is_array( $atts['source']['media'] ) ) { $atts['source']['media'] = array(); }
 		$atts['source']['media']['images'] = $images;
 		$atts['click_action'] = 'lightbox';
-		$atts['rounded']      = 'rounded';
+		// corners from the source tile's measured radius (Stitch tileRadius): 0 → square, ≤8px → the 6px
+		// `rounded`, larger → `rounded-lg`; an unmeasured radius stays square (the gallery default).
+		$tr = isset( $b['tileRadius'] ) && '' !== (string) $b['tileRadius'] ? (float) $b['tileRadius'] : null;
+		$atts['rounded']      = ( null === $tr ) ? 'rounded-0' : ( $tr <= 0.5 ? 'rounded-0' : ( $tr <= 8 ? 'rounded' : 'rounded-lg' ) );
 		$atts['hover_zoom']   = 'yes';
 		// CAPTIONS — when the source tiles carry a caption overlaid on the photo (a permanent title over a
 		// gradient scrim, the classic image-tile look), reproduce it with the gallery's always-visible overlay
@@ -5833,6 +5892,12 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			$cap_mode = ( isset( $b['captions'] ) && in_array( $b['captions'], array( 'overlay', 'hover', 'below' ), true ) ) ? $b['captions'] : 'overlay';
 			$atts['captions']       = $cap_mode;
 			$atts['caption_source'] = 'caption';
+			// the source caption's typography + inset on the overlay text (Stitch captionCs / captionPad)
+			$ccs = preg_replace( '/[^a-z0-9()%.,#"\'\s:;-]/i', '', (string) ( $b['captionCs'] ?? '' ) ); $ccss = '';
+			if ( '' !== trim( $ccs, '; ' ) ) { $ccss .= 'selector .fw-gallery__overlay-text,selector .fw-gallery__caption{' . trim( $ccs, '; ' ) . ';}'; }
+			if ( ! empty( $b['captionPad'] ) && preg_match( '/^[0-9.]+px(?:\s+[0-9.]+px){0,3}$/', (string) $b['captionPad'] ) ) { $ccss .= 'selector .fw-gallery__overlay{padding:' . $b['captionPad'] . ';}'; }
+			if ( '' !== $ccss ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+" . $ccss ); }
 		}
 		// DESIGN — mirror the source gallery's presentation (Grid / Masonry / Metro / Carousel / Marquee)
 		// when the converter classified it (detect_gallery_design); else the uniform Grid. Only the chosen
@@ -5981,6 +6046,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			$col['atts']['content_v']         = 'end';      // source `items-end` — align to the baseline
 			// Both children must be content-width (the special_heading wrapper + the .btn render block, which
 			// would otherwise fill the row and force a wrap). Size them to content so Space-Between works.
+			self::apply_block_margins( $col, $b ); // the row's own `mb-14`
 			$col['atts']['custom_css'] = 'selector{align-items:flex-end;flex-wrap:nowrap;}selector > *{flex:0 1 auto !important;width:auto !important;max-width:none !important;}selector .special-heading{width:auto !important;}selector .btn{flex:0 0 auto !important;width:auto !important;}';
 		}
 		return $col;
@@ -6825,6 +6891,12 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		if ( ! empty( $dz['marker_shape'] ) ) { $d['marker_shape'] = (string) $dz['marker_shape']; }
 		if ( isset( $dz['connector'] ) && '' !== $dz['connector'] ) { $d['connector'] = (string) $dz['connector']; }
 		if ( ! empty( $dz['accent'] ) )       { $d['accent_color'] = array( 'predefined' => '', 'custom' => (string) $dz['accent'] ); }
+		if ( ! empty( $dz['markerText'] ) )   { $d['marker_text_color'] = array( 'predefined' => '', 'custom' => (string) $dz['markerText'] ); } // the glyph's own ink on the tinted badge
+		if ( ! empty( $dz['markerSize'] ) )   { $d['custom_css'] = trim( (string) ( $d['custom_css'] ?? '' ) . "
+selector{--st-size:" . (int) $dz['markerSize'] . 'px;}' ); } // the badge's measured size
+		// the card's own inset: the Cards design's `.fw-steps__item` padding rule out-ranks the Box Preset's, so a `p-8` card kept the design default
+		if ( ! empty( $dz['box']['padding'] ) && preg_match( '/^[0-9.]+px(?:\s+[0-9.]+px){0,3}$/', (string) $dz['box']['padding'] ) ) { $d['custom_css'] = trim( (string) ( $d['custom_css'] ?? '' ) . "
+selector.fw-steps .fw-steps__item{padding:" . $dz['box']['padding'] . ';}' ); } // (0,3,0): the design sheet loads after the page CSS
 		// EVERYTHING the step shows lives in Card Rows (icon badge + number + title + description) so the editor
 		// is the single source of truth — no separate marker "spine" to confuse (the icon was on the marker but
 		// absent from the rows). `marker=none`; the icon renders as a body BADGE. Top row = icon + number (icon
@@ -6846,6 +6918,28 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		if ( ! empty( $dz['box'] ) && is_array( $dz['box'] ) ) {
 			$bpref = self::register_box_preset( $dz['box'] );
 			if ( '' !== $bpref ) { $d['box_style'] = $bpref; }
+		}
+		// The source NUMERAL's look (first step's numCs: a 60px bold `text-primary/10` watermark in Outfit) and its corner
+		// placement (numPos: `absolute top-4 right-4`) → scoped onto the inline number slot; the card is the anchor.
+		$n0 = null; foreach ( $src as $it ) { if ( is_array( $it ) && ! empty( $it['numCs'] ) ) { $n0 = $it; break; } }
+		if ( is_array( $n0 ) ) {
+			$nd = self::cs_decls( (string) $n0['numCs'], array( 'font-size', 'font-weight', 'line-height', 'color', 'font-family', 'letter-spacing', 'opacity' ) );
+			$ndecl = array();
+			foreach ( array( 'font-size', 'font-weight', 'line-height', 'letter-spacing' ) as $pk ) { if ( ! empty( $nd[ $pk ] ) && preg_match( '/^[0-9.]+(?:px|em|rem)?$/', trim( $nd[ $pk ] ) ) && 'normal' !== trim( $nd[ $pk ] ) ) { $ndecl[] = $pk . ':' . trim( $nd[ $pk ] ); } }
+			if ( ! empty( $nd['color'] ) && preg_match( '/^(?:rgba?\([^)]*\)|#[0-9a-f]{3,8})$/i', trim( $nd['color'] ) ) ) { $ndecl[] = 'color:' . trim( $nd['color'] ); }
+			if ( ! empty( $nd['font-family'] ) && preg_match( '/^[a-z0-9"\', -]+$/i', trim( $nd['font-family'] ) ) ) { $ndecl[] = 'font-family:' . trim( $nd['font-family'] ); }
+			if ( ! empty( $nd['opacity'] ) && (float) $nd['opacity'] > 0 && (float) $nd['opacity'] < 1 ) { $ndecl[] = 'opacity:' . (float) $nd['opacity']; }
+			$css = '';
+			if ( ! empty( $n0['numPos'] ) && is_array( $n0['numPos'] ) ) {
+				$pd = array( 'position:absolute', 'margin:0', 'pointer-events:none' );
+				foreach ( $n0['numPos'] as $side => $v ) { if ( in_array( $side, array( 'top', 'right', 'bottom', 'left' ), true ) && preg_match( '/^-?[0-9.]+px$/', (string) $v ) ) { $pd[] = $side . ':' . $v; } }
+				$css .= 'selector .fw-steps__item{position:relative;}selector .fw-steps__num-inline{' . implode( ';', $pd ) . ';}';
+			}
+			if ( $ndecl ) { $css .= 'selector .fw-steps__num-inline{' . implode( ';', $ndecl ) . ';}'; }
+			$tsafe = function ( $d ) { return trim( preg_replace( '/[^a-z0-9()%.,#"\'\s:;-]/i', '', (string) $d ), '; ' ); };
+			if ( ! empty( $n0['titleCs'] ) && '' !== $tsafe( $n0['titleCs'] ) ) { $css .= 'selector .fw-steps__title{' . $tsafe( $n0['titleCs'] ) . ( isset( $n0['titleMb'] ) ? ';margin-bottom:' . (int) $n0['titleMb'] . 'px' : '' ) . ';}'; }
+			if ( ! empty( $n0['textCs'] ) && '' !== $tsafe( $n0['textCs'] ) ) { $css .= 'selector .fw-steps__text,selector .fw-steps__text p{' . $tsafe( $n0['textCs'] ) . ';}'; }
+			if ( '' !== $css ) { $d['custom_css'] = trim( (string) ( $d['custom_css'] ?? '' ) . "\n" . $css ); }
 		}
 		return self::finalize_widget( 'steps', array( 'steps' => $steps ) + $d );
 	}
@@ -7712,14 +7806,44 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		$tag = strtolower( (string) ( $card['titleTag'] ?? 'h3' ) );
 		$atts['title_tag'] = preg_match( '/^h[2-6]$/', $tag ) ? $tag : 'h3';
 		$atts['text'] = (string) ( $card['text'] ?? '' );
+		// the card's EYEBROW (a category line above the title) → the image_box's own subtitle slot with its measured type;
+		// it had been folded into the body text as a first paragraph and re-sized every line to its 11px
+		if ( ! empty( $card['overline']['text'] ) ) {
+			$ovt = trim( wp_strip_all_tags( (string) $card['overline']['text'] ) );
+			$atts['subtitle'] = $ovt;
+			$atts['text'] = trim( preg_replace( '#^\s*<p>\s*' . preg_quote( esc_html( $ovt ), '#' ) . '\s*</p>#i', '', (string) $atts['text'] ) );
+			$od = self::cs_decls( (string) ( $card['overline']['cs'] ?? '' ), array( 'font-size', 'letter-spacing', 'text-transform', 'color', 'font-weight', 'line-height', 'font-family' ) );
+			$ol = array(); foreach ( $od as $pk => $pv ) { $pv = trim( (string) $pv ); if ( '' !== $pv && preg_match( '/^[a-z0-9()%.,#"\'\s-]+$/i', $pv ) ) { $ol[] = $pk . ':' . str_replace( '"', "'", $pv ); } }
+			if ( $ol ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+selector .imgbox__eyebrow{" . implode( ';', $ol ) . ';}' ); }
+		}
 		// Crop the image to the source frame aspect (keeps a tile grid uniform).
 		$icls = ' ' . strtolower( (string) ( $img['cls'] ?? '' ) ) . ' '; $ar = '';
 		if ( strpos( $icls, ' aspect-square ' ) !== false )    { $ar = '1/1'; }
 		elseif ( strpos( $icls, ' aspect-video ' ) !== false ) { $ar = '16/9'; }
 		elseif ( preg_match( '/\saspect-\[([0-9.]+)\/([0-9.]+)\]/', $icls, $am ) ) { $ar = $am[1] . '/' . $am[2]; }
 		elseif ( ! empty( $img['aspect'] ) ) { $ar = (string) $img['aspect']; }
+		// a corner BADGE pinned on the photo ("Featured" / "New") → a pseudo-element on the media box carrying the chip's own
+		// fill / ink / type / inset (no native badge slot on the image_box)
+		if ( ! empty( $img['badge']['text'] ) ) {
+			$bd = self::cs_decls( (string) ( $img['badge']['cs'] ?? '' ), array( 'background-color', 'color', 'font-size', 'font-weight', 'letter-spacing', 'text-transform', 'padding', 'border-radius', 'line-height', 'font-family' ) );
+			$bdecl = array( 'content:"' . addslashes( wp_strip_all_tags( (string) $img['badge']['text'] ) ) . '"', 'position:absolute', 'z-index:2', 'pointer-events:none' );
+			foreach ( $bd as $pk => $pv ) { $pv = trim( (string) $pv ); if ( '' !== $pv && preg_match( '/^[a-z0-9()%.,#"\'\s-]+$/i', $pv ) ) { $bdecl[] = $pk . ':' . $pv; } }
+			foreach ( (array) ( $img['badge']['pos'] ?? array() ) as $side => $pv ) { if ( preg_match( '/^-?[0-9.]+px$/', (string) $pv ) ) { $bdecl[] = $side . ':' . $pv; } }
+			$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+selector .imgbox__media{position:relative;}selector .imgbox__media::before{" . implode( ';', $bdecl ) . ';}' );
+		}
 		$rslug = self::img_ratio_slug( $ar );
 		if ( $rslug !== '' ) { $atts['image_ratio'] = $rslug; }
+		// an aspect the native choices lack (`aspect-[4/5]`) → the NEAREST choice on the option + the exact ratio scoped on
+		// the media box (a 4:5 product photo had rendered at the 4:3 default: "not tall enough" — a real-site audit)
+		elseif ( preg_match( '#^([0-9.]+)/([0-9.]+)$#', str_replace( ' ', '', (string) $ar ), $arm ) && (float) $arm[2] > 0 ) {
+			$want = (float) $arm[1] / (float) $arm[2]; $best = ''; $bd = 99.0;
+			foreach ( array( 'ratio-1-1' => 1.0, 'ratio-4-3' => 4 / 3, 'ratio-3-2' => 1.5, 'ratio-16-9' => 16 / 9, 'ratio-3-4' => 0.75, 'ratio-2-3' => 2 / 3 ) as $rs => $rv ) { $dd = abs( $rv - $want ); if ( $dd < $bd ) { $bd = $dd; $best = $rs; } }
+			if ( '' !== $best ) { $atts['image_ratio'] = $best; }
+			$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
+		}
 		// CTA — a short explore/CTA label (from a real button, else a whole-card "Discover →" link). An arrow
 		// glyph / icon → the `arrow` link style; else a text link. The card's own link becomes the box link.
 		$btn  = isset( $card['button'] ) && is_array( $card['button'] ) ? $card['button'] : array();
@@ -7763,6 +7887,17 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		// Design family — image-on-top + title/text below = the Stacked family (img → title → text). (Overlay
 		// / Side families are not auto-selected yet; Stacked is the faithful default for a photo-topped tile.)
 		$atts['design_settings'] = array( 'family' => 'stacked', 'stacked' => array( 'stacking' => 'img-title-text' ) );
+		// …the OVERLAY family when the source lays its title INSIDE the photo (an absolute layer over a gradient scrim — a
+		// collection tile); the scrim / inset ride as scoped CSS on the overlay layer
+		if ( ! empty( $img['textOverlay'] ) ) {
+			$atts['design_settings'] = array( 'family' => 'overlay', 'overlay' => array( 'reveal' => 'scrim', 'overlay_opacity' => '60' ) );
+			$ocss = '';
+			if ( ! empty( $img['overlayScrim'] ) && preg_match( '/^[a-z0-9()%.,\s-]+$/i', (string) $img['overlayScrim'] ) ) { $ocss .= 'selector .imgbox__scrim{background:' . $img['overlayScrim'] . ' !important;opacity:1 !important;}'; }
+			if ( ! empty( $img['overlayPad'] ) ) { $ocss .= 'selector .imgbox__overlay{padding:' . $img['overlayPad'] . ';}'; }
+			if ( 'center' === (string) ( $img['overlayPlace'] ?? '' ) ) { $ocss .= 'selector .imgbox__overlay{justify-content:center;}'; }
+			if ( '' !== $ocss ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+" . $ocss ); }
+		}
 		$atts['unique_id'] = self::uid();
 		if ( ! isset( $atts['css_id'] ) )    { $atts['css_id'] = ''; }
 		if ( ! isset( $atts['css_class'] ) ) { $atts['css_class'] = ''; }
@@ -9243,7 +9378,13 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				$b['_rid'] = self::uid(); // one id per source row → flexify keeps its cells together and apart from the next row
 				foreach ( $b['cols'] as $cc ) {
 					if ( ! is_array( $cc ) ) { continue; }
-					if ( ! empty( $cc['card'] ) && is_array( $cc['card'] ) ) { $ci = array( self::n_icon_box( $cc['card'] ) ); }
+					if ( ! empty( $cc['card'] ) && is_array( $cc['card'] ) ) {
+						// a card with a PHOTO is an image tile (a bento of collection tiles inside a nested row lost every photo: the
+						// icon_box has no image surface — a real-site audit); parity with the top-level cell path
+						$ci = ( ! empty( $cc['card']['image']['src'] ) && '' !== trim( wp_strip_all_tags( (string) ( $cc['card']['title'] ?? '' ) ) ) ) ? array( self::n_image_box( $cc['card'] ) ) : array();
+						if ( ! empty( $cc['card']['image']['src'] ) && ( empty( $ci ) || empty( $ci[0] ) ) ) { $ci = self::n_image_card( $cc['card'] ); }
+						if ( empty( $ci ) || empty( $ci[0] ) ) { $ci = array( self::n_icon_box( $cc['card'] ) ); }
+					}
 					elseif ( ! empty( $cc['buttons'] ) && is_array( $cc['buttons'] ) ) { $ci = array(); foreach ( $cc['buttons'] as $bt2 ) { $ci[] = self::n_button( (string) ( $bt2['label'] ?? 'Button' ), (string) ( $bt2['href'] ?? '#' ), (string) ( $bt2['cls'] ?? '' ), (string) ( $bt2['icon'] ?? '' ), 'after', (string) ( $bt2['cs'] ?? '' ) ); } }
 					elseif ( ! empty( $cc['paint'] ) && is_array( $cc['paint'] ) ) { $ci = array(); } // a painted empty panel → an empty cell carrying the paint (below)
 					elseif ( ! empty( $cc['blocks'] ) && is_array( $cc['blocks'] ) ) { $ci = self::build_cell_items( $cc['blocks'] ); if ( ! $ci ) { continue; } } // a DECOMPOSED content cell (heading + copy) inside a nested row (a band card's copy half)
@@ -10407,10 +10548,21 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 	 * the section/page and drifts far away. Walk the built tree and mark every such column position:relative.
 	 * Applied to the nearest containing column so the overlay pins to its own card area, not the whole hero.
 	 */
-	private static function anchor_abs_overlays( array &$node ) {
+	private static function anchor_abs_overlays( array &$node, $parent_type = '' ) {
 		$items = ( isset( $node['_items'] ) && is_array( $node['_items'] ) ) ? $node['_items'] : array();
 		if ( ! $items ) { return; }
 		$type = (string) ( $node['type'] ?? '' );
+		// A FLEXBOX cell (the two-node cell a flexed row emits) that directly holds a pinned code-block badge anchors it
+		// too — only a column did, so the hero card's `-top-4 -right-4` chip measured against the band instead of the
+		// card (a real-site audit). A section's own content flexbox stays static (the band is the chip's reference).
+		$flex_anchor = ( 'flexbox' === $type && 'section' !== $parent_type );
+		if ( $flex_anchor ) {
+			$hit = false;
+			foreach ( $items as $ch ) { if ( is_array( $ch ) && ( $ch['shortcode'] ?? '' ) === 'code_block' && strpos( (string) ( $ch['atts']['code'] ?? '' ), 'position:absolute' ) !== false ) { $hit = true; break; } }
+			if ( $hit && ( empty( $node['atts']['element_position']['position'] ) || 'default' === ( $node['atts']['element_position']['position'] ?? '' ) ) ) {
+				$node['atts']['element_position'] = array( 'position' => 'relative' );
+			}
+		}
 		if ( 'column' === $type || 'section' === $type ) {
 			// A child pinned out of flow: an overlay carried as raw CSS (legacy), or any node using the NATIVE
 			// Position option. For a SECTION also look one level into its content flexbox(es) — a hero chip
@@ -10462,7 +10614,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			}
 		}
 		foreach ( $node['_items'] as $k => $child ) {
-			if ( is_array( $child ) ) { self::anchor_abs_overlays( $node['_items'][ $k ] ); }
+			if ( is_array( $child ) ) { self::anchor_abs_overlays( $node['_items'][ $k ], $type ); }
 		}
 	}
 
@@ -11294,6 +11446,7 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 				if ( '' !== $bx ) { $node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "
 " . 'selector{' . $bx . '}selector .btn-text,selector .btn-label{display:block;}' ); }
 			}
+			self::carry_wrap_margins( $node, $b ); // a flattened wrapper's own inset around the button (a card's `p-12` bottom: mbAdd) — it had been dropped and the button sat on the card's edge
 			return $node;
 		} );
 		// An EMPTY PAINTED block (Stitch paint_block): a native empty Div (flexbox) wearing the paint + its height / growth.
@@ -11302,6 +11455,7 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 			$node = self::n_flexbox( array(), array() );
 			$node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "\n" . 'selector{' . $css . ';}' );
 			self::apply_block_margins( $node, $b );
+			self::carry_wrap_margins( $node, $b ); // the heading wrapper's `mb-14` under a title rule bar (the card had sat flush under it)
 			return $node;
 		} );
 		// A LONE ICON (Stitch lone_icon): the native icon shortcode — the inline svg (or an icon-font class), its measured size + ink.
@@ -11387,7 +11541,7 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 			// A decorative accent RULE BAR kept verbatim (`<div class="sc-tw"><div class="w-24 h-1 bg-primary
 			// mx-auto"></div></div>`) → a native box, not a code block.
 			$bar_el = self::first_content_el( $html );
-			if ( $bar_el instanceof DOMElement ) { $bar = self::n_rule_bar( $bar_el ); if ( is_array( $bar ) ) { return $bar; } }
+			if ( $bar_el instanceof DOMElement ) { $bar = self::n_rule_bar( $bar_el ); if ( is_array( $bar ) ) { self::carry_wrap_margins( $bar, $b ); return $bar; } } // + the heading wrapper's `mb-14` under the bar (the card had sat flush under it)
 			// A block flagged `verbatim` (a complex styled CARD kept whole inside `.sc-tw` — e.g. the location
 			// info card with icon SVGs, contact rows + hover effects) must NOT be structurally mirrored — the
 			// mirror decomposes it and drops most of its precise styling. Emit it faithfully (a deliberate
@@ -11515,6 +11669,7 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 				if ( $mt > 0 ) { $col['atts']['spacing']['margin']['top']    = self::spacing_token( 'mt', $mt ); }
 				if ( $mb > 0 ) { $col['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', $mb ); }
 			}
+			self::carry_wrap_margins( $col, $b ); // a flattened `max-w-3xl mx-auto mb-16` wrapper's margin (mbAdd) — the HOURS heading had sat flush under the card
 			return $col;
 		} );
 		self::register_builder( 'image', function ( $b ) {
@@ -11855,7 +12010,10 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 		$sel = $profiles[ $role ]['sel'];
 		if ( false !== strpos( $sel, '{h}' ) ) {
 			$lvl = max( 1, min( 6, (int) ( isset( $b['level'] ) ? $b['level'] : 2 ) ) );
-			$sel = str_replace( '{h}', 'h' . $lvl, $sel );
+			// …never a heading INSIDE A CARD (a Box-Preset wrapper): the section-level `#sec h3{color:#fff !important}` (an id —
+			// it beats every class rule) painted a card's own red h3 white on its white card; the card heading carries its own
+			// native title_color + scoped type (a real-site audit)
+			$sel = str_replace( '{h}', 'h' . $lvl . ':not([class*="boxp-"] *)', $sel );
 		}
 		$cls   = (string) ( isset( $b['cls'] ) ? $b['cls'] : ( isset( $b['pillCls'] ) ? $b['pillCls'] : '' ) );
 		$decls = self::el_style_decls( $cls, (string) ( isset( $b['cs'] ) ? $b['cs'] : '' ), $profiles[ $role ]['props'] );
@@ -12640,7 +12798,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 							// A decomposed comparison column carries its eyebrow LABEL ("The Problem" / "Our
 							// Solution") as an overline special_heading above the stacked item cards.
 							if ( ! empty( $c['overline'] ) ) {
-								$inner_items[] = self::n_heading( array( 'overline' => (string) $c['overline'], 'overline_color' => (string) ( $c['overlineColor'] ?? '' ), 'level' => 3 ) );
+								$inner_items[] = self::n_heading( array( 'overline' => (string) $c['overline'], 'overline_color' => (string) ( $c['overlineColor'] ?? '' ), 'overline_cs' => (string) ( $c['overlineCs'] ?? '' ), 'level' => 3 ) );
 							}
 						// SINGLE-COLUMN card STACK (gridCols<=1, e.g. the Problem/Solution comparison lists): the
 						// cards stack vertically, so a per-item nested COLUMN is pointless nesting — each 1/1 column
@@ -12973,6 +13131,7 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 					// (heading + prose + buttons) inherits that alignment as one. '' (text-left / none) forces
 					// nothing. PHP twin of the JS to-pages per-column text-align pass.
 					$cell_ta = self::cls_text_align( (string) ( $c['cls'] ?? '' ) );
+					if ( '' === $cell_ta && in_array( (string) ( $c['align'] ?? '' ), array( 'center', 'right' ), true ) ) { $cell_ta = (string) $c['align']; } // the cell's measured alignment (cell_geometry)
 					if ( $cell_ta !== '' ) { $col['atts']['text_align'] = $cell_ta; }
 					// Counter cells center their content via the column's own alignment (the source
 					// `.counter-item text-center`), instead of carrying a text-center wrapper class.
@@ -13061,6 +13220,7 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 						if ( $g_mb > 0 ) { $band['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', $g_mb ); }
 					}
 					self::apply_inset_x( $band, $b ); // the flattened shell wrapper's side inset (`.shell{margin:0 24px}`)
+					self::apply_block_cap( $band, $b ); // the grid's own `max-w-5xl mx-auto` cap (a 2-col row had run the full container)
 					$items[] = $band;
 				} else {
 					foreach ( $row_cols as $rc ) { $items[] = $rc; }
