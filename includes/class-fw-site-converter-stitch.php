@@ -13937,6 +13937,70 @@ class FW_Site_Converter_Stitch {
 	 * CONTENT cards. The absolutes must DOMINATE the stage (≥60% of children) so a hero with a single
 	 * floating badge over flow content is NOT misread as a collage.
 	 */
+	/**
+	 * A scroll cue: an out-of-flow (absolute / fixed) element anchored to the BOTTOM of its band, whose content is at most
+	 * a three-word label plus ONE glyph (an svg / icon-font chevron, arrow-down, mouse) — or a lone glyph with a cue-ish
+	 * class (`animate-bounce`). Returns the block or null. JS twin: pending (scrollCueOf).
+	 */
+	private static function scroll_cue_of( $el, $tag ) {
+		if ( ! ( $el instanceof DOMElement ) || ! in_array( $tag, array( 'div', 'a', 'button', 'span' ), true ) ) { return null; }
+		$cs  = (string) $el->getAttribute( 'data-sc-cs' );
+		$cls = ' ' . self::cls( $el ) . ' ';
+		$abs = preg_match( '/(?:^|;)\s*position:\s*(absolute|fixed)/i', $cs ) || preg_match( '/\s(?:absolute|fixed)\s/', $cls );
+		if ( ! $abs ) { return null; }
+		// anchored to the bottom (a `bottom-*` utility or a computed bottom that is the nearer edge)
+		$bot = preg_match( '/\s-?bottom-(?:\d+|\[[^\]]+\])\s/', $cls );
+		if ( ! $bot ) { $dt = (string) self::sc_css( $el, 'top' ); $db = (string) self::sc_css( $el, 'bottom' ); $t = preg_match( '/^-?[0-9.]+px$/', $dt ) ? abs( (float) $dt ) : null; $b = preg_match( '/^-?[0-9.]+px$/', $db ) ? abs( (float) $db ) : null; $bot = ( null !== $b && ( null === $t || $b < $t ) ); }
+		if ( ! $bot ) { return null; }
+		if ( $el->getElementsByTagName( 'img' )->length || $el->getElementsByTagName( 'video' )->length ) { return null; }
+		$svgs = $el->getElementsByTagName( 'svg' );
+		$fa   = '';
+		foreach ( $el->getElementsByTagName( 'i' ) as $i ) { $ic = self::cls( $i ); if ( preg_match( '/(?:^|\s)(?:fa[srlbd]?|fa-[a-z0-9-]+|bi|bi-[a-z0-9-]+)(?:\s|$)/', $ic ) ) { $fa = $ic; break; } }
+		if ( $svgs->length + ( '' !== $fa ? 1 : 0 ) !== 1 ) { return null; }
+		$label = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $el ) ) );
+		if ( str_word_count( $label ) > 3 || strlen( $label ) > 32 ) { return null; }
+		$svg   = $svgs->length ? $svgs->item( 0 ) : null;
+		$scls  = $svg ? self::cls( $svg ) : $fa;
+		$cueish = (bool) preg_match( '/scroll|descend|explore|discover|down|more/i', $label )
+			|| (bool) preg_match( '/chevron-down|arrow-down|mouse|chevrons-down|angle-down|caret-down|animate-bounce/i', $scls . ' ' . $cls );
+		if ( ! $cueish ) { return null; }
+		// the glyph: markup / library id / measured size + ink
+		$markup = ''; $lucide = ''; $size = 0; $color = '';
+		if ( $svg ) {
+			$markup = preg_replace( '/\s+data-sc-[a-z-]+=(?:"[^"]*"|\'[^\']*\')/i', '', (string) $svg->ownerDocument->saveHTML( $svg ) );
+			if ( preg_match( '/(?:^|\s)lucide-([a-z0-9-]+)(?:\s|$)/', $scls, $lm ) && 'lucide' !== $lm[1] ) { $lucide = 'lucide/' . $lm[1]; }
+			$sw = self::sc_css( $svg, 'width' ); if ( preg_match( '/^([0-9.]+)px$/', $sw, $wm ) ) { $size = (float) $wm[1]; }
+			if ( $size <= 0 && preg_match( '/(?:^|\s)(?:w|size)-(\d+)(?:\s|$)/', $scls, $wm ) ) { $size = (int) $wm[1] * 4; }
+			// the glyph's ink: an svg is never stamped, so its own utility (`text-white/50`) first, then the nearest stamped ancestor
+			$color = (string) self::sc_css( $svg, 'color' );
+			if ( '' === $color && class_exists( 'FW_Site_Converter_Tailwind' ) ) { $tc = FW_Site_Converter_Tailwind::compile_class_set( $scls ); if ( ! empty( $tc['base']['color'] ) ) { $color = (string) $tc['base']['color']; } }
+			if ( '' === $color ) { for ( $anc = $svg->parentNode, $ai = 0; $anc instanceof DOMElement && $ai < 4; $anc = $anc->parentNode, $ai++ ) { $ac = (string) self::sc_css( $anc, 'color' ); if ( '' !== $ac ) { $color = $ac; break; } } }
+			if ( '' !== $color ) { $color = self::color_keep_alpha( $color ); }
+		}
+		// the label's own typography (size / tracking / transform / ink) from the deepest element holding the label text
+		$label_cs = '';
+		if ( '' !== $label ) {
+			foreach ( $el->getElementsByTagName( '*' ) as $le ) {
+				if ( 'svg' === strtolower( $le->tagName ) || $le->getElementsByTagName( '*' )->length ) { continue; }
+				if ( trim( preg_replace( '/\s+/', ' ', (string) $le->textContent ) ) === $label ) { $label_cs = self::cs_text_decls( (string) $le->getAttribute( 'data-sc-cs' ) ); break; }
+			}
+			if ( '' === $label_cs && ! $el->getElementsByTagName( '*' )->length ) { $label_cs = self::cs_text_decls( $cs ); }
+		}
+		// layout: label above the glyph (stacked) / glyph above the label / side by side / glyph only
+		$layout = 'icon-only';
+		if ( '' !== $label ) {
+			$row = preg_match( '/(?:^|;)\s*flex-direction:\s*row/i', $cs ) && ! preg_match( '/\sflex-col\s/', $cls );
+			$first_glyph = false;
+			foreach ( $el->getElementsByTagName( '*' ) as $ce ) { $ct = strtolower( $ce->tagName ); if ( 'svg' === $ct || 'i' === $ct ) { $first_glyph = true; break; } if ( '' !== trim( (string) $ce->textContent ) && ! $ce->getElementsByTagName( 'svg' )->length && ! $ce->getElementsByTagName( 'i' )->length ) { break; } }
+			$layout = $row ? 'inline' : ( $first_glyph ? 'stacked-reverse' : 'stacked' );
+		}
+		$href = '';
+		$a = ( 'a' === $tag ) ? $el : ( $el->getElementsByTagName( 'a' )->length ? $el->getElementsByTagName( 'a' )->item( 0 ) : null );
+		if ( $a instanceof DOMElement ) { $h = trim( (string) $a->getAttribute( 'href' ) ); if ( preg_match( '/^#[a-z][\w-]*$/i', $h ) ) { $href = $h; } }
+		$tf = trim( (string) self::sc_css( $el, 'transform' ) );
+		return array( 't' => 'scroll_cue', 'role' => 'scroll_cue', 'abs' => true, 'text' => $label, 'labelCs' => $label_cs, 'svg' => $markup, 'lucide' => $lucide, 'fa' => $fa, 'size' => (int) round( $size ), 'color' => $color, 'layout' => $layout, 'target' => $href, 'pinCls' => trim( $cls ), 'pinCs' => $cs, 'transform' => ( '' !== $tf && 'none' !== $tf ) ? $tf : '', 'gap' => (string) self::sc_css( $el, 'gap' ) );
+	}
+
 	private static function is_absolute_collage( $el, $tag ) {
 		if ( ! ( $el instanceof DOMElement ) || 'div' !== $tag ) { return false; }
 		$cs  = (string) $el->getAttribute( 'data-sc-cs' );
@@ -14073,6 +14137,13 @@ class FW_Site_Converter_Stitch {
 		self::register_recognizer( 'absolute_collage', 97,
 			function ( $el, $tag ) { return self::is_absolute_collage( $el, $tag ); },
 			function ( $el, $tag, $rules ) { return self::absolute_collage_build( $el, $tag, $rules ); }
+		);
+		// A hero SCROLL CUE (`absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center` holding a tiny label + a
+		// chevron / arrow-down glyph) → the native scroll_indicator, pinned where the source pinned it. It had been flattened
+		// into an in-flow text block + lone icon under the buttons, flush left (a real-site audit — a storefront hero).
+		self::register_recognizer( 'scroll_cue', 99,
+			function ( $el, $tag ) { return null !== self::scroll_cue_of( $el, $tag ); },
+			function ( $el, $tag ) { return self::scroll_cue_of( $el, $tag ); }
 		);
 		// An INSTAGRAM FEED → the `instagram` Library shortcode (checked FIRST so a grid of Instagram
 		// posts isn't flattened into a generic gallery/card grid). Emits a native [instagram] element with
@@ -20282,7 +20353,9 @@ class FW_Site_Converter_Stitch {
 					// there, else base). Horizontal padding already rides el_inset_x. JS: the decompose dive's wmt / wmb.
 					$wp = self::el_padding( $child );
 					if ( is_array( $wp ) ) { $wpd = ( isset( $wp['lg']['top'] ) && null !== $wp['lg']['top'] ) ? $wp['lg'] : $wp['base']; $wm['top'] += (float) ( $wpd['top'] ?? 0 ); $wm['bottom'] += (float) ( $wpd['bottom'] ?? 0 ); }
-					if ( $wm['bottom'] > 0 ) { $li = count( $blocks ) - 1; $blocks[ $li ]['mbAdd'] = max( (float) ( isset( $blocks[ $li ]['mbAdd'] ) ? $blocks[ $li ]['mbAdd'] : 0 ), $wm['bottom'] ); }
+					// …onto the last IN-FLOW block: a pinned cue / floater at the end of the wrapper takes no part in its flow (the
+					// hero's `pb-28` had landed on the scroll cue instead of the CTA row — a real-site audit)
+					if ( $wm['bottom'] > 0 ) { $li = count( $blocks ) - 1; while ( $li > $before && self::block_is_floater( $blocks[ $li ] ) ) { $li--; } $blocks[ $li ]['mbAdd'] = max( (float) ( isset( $blocks[ $li ]['mbAdd'] ) ? $blocks[ $li ]['mbAdd'] : 0 ), $wm['bottom'] ); }
 					// an `mt-auto` wrapper (a card's bottom group under a flex column) pushes itself to the END of its column: carry
 					// the AUTO margin, not its computed px (166px on one screen, another elsewhere — a real-site audit). JS: mtAuto.
 					if ( preg_match( '/(?:^|\s)mt-auto(?:\s|$)/', ' ' . self::cls( $child ) . ' ' ) ) { $blocks[ $before ]['mtAuto'] = true; $mtap = is_array( $wp ) ? (float) ( $wpd['top'] ?? 0 ) : 0.0; if ( $mtap > 0 ) { $blocks[ $before ]['mtAutoPad'] = $mtap; } } // (its own padding-top rides along)

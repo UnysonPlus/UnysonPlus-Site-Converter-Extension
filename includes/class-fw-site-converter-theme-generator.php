@@ -3415,18 +3415,32 @@ JS;
 		$out .= "\t\$next = 1; foreach ( array_keys( \$insts ) as \$k ) { if ( is_numeric( \$k ) && (int) \$k >= \$next ) { \$next = (int) \$k + 1; } }\n";
 		$out .= "\t\$targets = array( 'sc-footer-copyright' ); foreach ( \$cols as \$i => \$h ) { \$targets[] = 'footer-' . ( \$i + 1 ); }\n";
 		$out .= "\tforeach ( \$targets as \$sid ) { if ( isset( \$sb[ \$sid ] ) && is_array( \$sb[ \$sid ] ) ) { \$sb[ \$sid ] = array(); } }\n"; // clear so re-convert replaces (no dup)
+		// Clearing the sidebar only drops the ASSIGNMENT: the instance stays in
+		// widget_custom_html forever, and core then sweeps it into Inactive
+		// Widgets. A site converted a few times accumulates thousands of them,
+		// which is enough to time out widgets.php and the widgets REST route.
+		// So delete the instances this seeder created last time, by id.
+		$out .= "\t\$prev = get_option( '{$fn}_footer_widget_ids', array() );\n";
+		$out .= "\tif ( is_array( \$prev ) && \$prev ) {\n";
+		$out .= "\t\tforeach ( \$prev as \$pid ) { unset( \$insts[ \$pid ] ); }\n";
+		$out .= "\t\t\$pids = array_map( function ( \$pid ) { return 'custom_html-' . \$pid; }, \$prev );\n";
+		$out .= "\t\tforeach ( \$sb as \$sid2 => \$ids2 ) { if ( is_array( \$ids2 ) ) { \$sb[ \$sid2 ] = array_values( array_diff( \$ids2, \$pids ) ); } }\n";
+		$out .= "\t}\n";
+		$out .= "\t\$created = array();\n";
 		$out .= "\t\$add = function ( \$sid, \$html ) use ( &\$insts, &\$sb, &\$next ) {\n";
 		$out .= "\t\tif ( trim( (string) \$html ) === '' ) { return; }\n";
 		$out .= "\t\t\$idx = \$next++;\n";
 		$out .= "\t\t\$insts[ \$idx ] = array( 'content' => (string) \$html );\n";
 		$out .= "\t\tif ( ! isset( \$sb[ \$sid ] ) || ! is_array( \$sb[ \$sid ] ) ) { \$sb[ \$sid ] = array(); }\n";
 		$out .= "\t\t\$sb[ \$sid ][] = 'custom_html-' . \$idx;\n";
+		$out .= "\t\t\$created[] = \$idx;\n";
 		$out .= "\t};\n";
 		$out .= "\tforeach ( \$cols as \$i => \$h ) { \$add( 'footer-' . ( \$i + 1 ), \$h ); }\n";
 		$out .= "\t\$add( 'sc-footer-copyright', \$copy );\n";
 		$out .= "\t\$insts['_multiwidget'] = 1;\n";
 		$out .= "\tupdate_option( 'widget_custom_html', \$insts );\n";
 		$out .= "\tupdate_option( 'sidebars_widgets', \$sb );\n";
+		$out .= "\tupdate_option( '{$fn}_footer_widget_ids', \$created );\n";
 		$out .= "\tupdate_option( '{$fn}_footer_widgets_seeded', 1 );\n";
 		$out .= "}\n";
 		$out .= "add_action( 'wp_loaded', '{$fn}_seed_footer_widgets', 25 );\n\n";

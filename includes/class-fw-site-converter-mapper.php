@@ -7133,6 +7133,33 @@ selector.fw-steps .fw-steps__item{padding:" . $dz['box']['padding'] . ';}' ); } 
 	 * Pasted-code source, view trigger. Requires the animation-engine extension active at render. See svg-draw.md.
 	 */
 	/** The icon shortcode for a lone glyph block ({ svg | fa, size, color }). */
+	private static function n_scroll_cue( array $b ) {
+		$over = array( 'text' => (string) ( $b['text'] ?? '' ), 'layout' => in_array( (string) ( $b['layout'] ?? '' ), array( 'stacked', 'stacked-reverse', 'inline', 'icon-only' ), true ) ? (string) $b['layout'] : 'stacked', 'target' => (string) ( $b['target'] ?? '' ), 'animation' => 'bounce' );
+		$svg = (string) ( $b['svg'] ?? '' ); $fa = (string) ( $b['fa'] ?? '' ); $lucide = (string) ( $b['lucide'] ?? '' );
+		if ( '' !== $lucide && preg_match( '#^lucide/[a-z0-9-]+$#', $lucide ) ) { $over['icon'] = array( 'type' => 'svg', 'svg-source' => 'library', 'svg-id' => $lucide, 'markup' => '' ); }
+		elseif ( '' !== trim( $svg ) ) { $over['icon'] = array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => $svg, 'svg-id' => '' ); }
+		elseif ( '' !== $fa ) { $over['icon'] = array( 'type' => 'icon-font', 'icon-class' => $fa ); }
+		$sz = (int) ( $b['size'] ?? 0 ); if ( $sz > 0 ) { $over['icon_size'] = array( 'value' => (string) $sz, 'unit' => 'px' ); }
+		$col = (string) ( $b['color'] ?? '' ); if ( '' !== $col && ! self::is_default_ink( $col ) ) { $over['icon_color'] = array( 'predefined' => '', 'custom' => $col ); }
+		$lcs = (string) ( $b['labelCs'] ?? '' ); $ld = ( '' !== $lcs ) ? self::cs_decls( $lcs, array( 'color' ) ) : array();
+		if ( ! empty( $ld['color'] ) ) { $over['text_color'] = array( 'predefined' => '', 'custom' => (string) $ld['color'] ); }
+		$node = self::finalize_widget( 'scroll_indicator', $over );
+		if ( ! is_array( $node ) ) { return null; }
+		$css = array( 'selector{margin:0;}' );
+		// the label's measured type (size / tracking / transform / weight) — the shortcode's own 10px tracked default stays otherwise
+		$lt = ( '' !== $lcs ) ? self::cs_decls( $lcs, array( 'font-size', 'letter-spacing', 'text-transform', 'font-weight', 'line-height', 'font-family' ) ) : array();
+		if ( $lt ) { $pairs = array(); foreach ( $lt as $k => $v ) { $pairs[] = $k . ':' . $v; } $css[] = 'selector .sc-scroll-cue__label{' . implode( ';', $pairs ) . ';}'; }
+		if ( preg_match( '/^([0-9.]+)px$/', (string) ( $b['gap'] ?? '' ), $gm ) && (float) $gm[1] > 0 ) { $css[] = 'selector .sc-scroll-cue{gap:' . round( (float) $gm[1] ) . 'px;}'; }
+		$ep = self::element_position_from( (string) ( $b['pinCls'] ?? '' ), (string) ( $b['pinCs'] ?? '' ) );
+		if ( $ep ) {
+			$node['atts']['element_position'] = $ep;
+			if ( preg_match( '/(?:^|\s)-translate-x-1\/2(?:\s|$)/', (string) ( $b['pinCls'] ?? '' ) ) ) { $css[] = 'selector{transform:translateX(-50%);}'; }
+			elseif ( preg_match( '/^matrix\(([^)]+)\)$/', (string) ( $b['transform'] ?? '' ), $mm ) ) { $pp = array_map( 'floatval', explode( ',', $mm[1] ) ); if ( count( $pp ) === 6 && abs( $pp[4] ) > 0.5 ) { $css[] = 'selector{transform:translateX(' . round( $pp[4] ) . 'px);}'; } }
+		}
+		$node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "\n" . implode( "\n", $css ) );
+		return $node;
+	}
+
 	private static function n_lone_icon( array $b ) {
 		$svg = (string) ( $b['svg'] ?? '' ); $fa = (string) ( $b['fa'] ?? '' );
 		if ( '' === trim( $svg ) && '' === $fa ) { return null; }
@@ -11477,6 +11504,10 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 			if ( is_array( $node ) ) { self::apply_block_margins( $node, $b ); }
 			return $node;
 		} );
+		// A SCROLL CUE (Stitch scroll_cue_of): the native scroll_indicator — the source label + glyph, its layout, its measured
+		// label typography / glyph size + ink — pinned with the native Position option from the source's placement (the section is
+		// its containing block via anchor_abs_overlays) plus the utility's own half-width centring.
+		self::register_builder( 'scroll_cue', function ( $b ) { return self::n_scroll_cue( $b ); } );
 		// A FLOATING DOCK (Stitch detect_floating_dock): one fixed-positioned row of icon tiles wearing the pill's measured skin —
 		// the native Position option (fixed, the source's bottom / top offset, left 50 % when centred) + the centring translate.
 		self::register_builder( 'dock', function ( $b ) {
