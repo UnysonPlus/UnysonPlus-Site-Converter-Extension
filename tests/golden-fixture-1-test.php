@@ -59,6 +59,46 @@ $files   = $bundle['files'] ?? array();
 $pages   = $files['pages.json']['pages'] ?? array();
 $td      = $files['theme-design.json'] ?? array();
 $ts      = $files['theme-settings.json']['values'] ?? array();
+// A converted colour now BINDS to the palette the same conversion generated: an exact opaque match is
+// stored as `{predefined:'text-ink'|'bg-ink', custom:''}` instead of a literal, so editing that preset in
+// Theme Settings moves every element the source painted with it. These assertions therefore compare the
+// RESOLVED colour — the preset's own palette hex, else the literal — which is a STRONGER claim than the
+// old "the literal reads exactly this string": it still fails if the colour is wrong, and additionally
+// fails if the preset it points at does not exist.
+/** Build a slug→hex palette map from a build's theme-settings values. */
+/**
+ * The palette cvhex() falls back to. Held in a STATIC, not a global: wp-cli's `eval-file` runs this
+ * script inside a function scope, so a top-level `$__pal` is a local and `global $__pal` reads nothing
+ * (it silently resolved every preset reference to '' — every colour assertion "failed" identically).
+ */
+function cvpal_default( $set = null ) { static $p = array(); if ( is_array( $set ) ) { $p = $set; } return $p; }
+function cvpal( array $vals ) {
+	$out = array();
+	foreach ( (array) ( $vals['theme_colors'] ?? array() ) as $e ) {
+		if ( ! is_array( $e ) ) { continue; }
+		$sl = trim( preg_replace( '/[^a-z0-9]+/', '-', strtolower( (string) ( $e['name'] ?? '' ) ) ), '-' );
+		if ( '' !== $sl ) { $out[ $sl ] = strtolower( FW_Site_Converter_Stitch::color_to_hex( (string) ( $e['color'] ?? '' ) ) ); }
+	}
+	return $out;
+}
+/**
+ * Resolve a compact colour value (preset reference or literal) to a lowercase hex, '' when unset.
+ * $pal is the palette of the build the value came from — each fixture build generates its OWN, so a
+ * reference must be resolved against its own palette, never the main build's.
+ */
+function cvhex( $v, $pal = null ) {
+	if ( ! is_array( $pal ) ) { $pal = cvpal_default(); }
+	if ( is_string( $v ) ) { $v = array( 'predefined' => '', 'custom' => $v ); }
+	if ( ! is_array( $v ) ) { return ''; }
+	$p = trim( (string) ( $v['predefined'] ?? '' ) );
+	if ( '' !== $p ) {
+		$sl = preg_replace( '/^(?:text|bg)-/', '', $p );
+		return isset( $pal[ $sl ] ) ? $pal[ $sl ] : '';
+	}
+	$c = trim( (string) ( $v['custom'] ?? '' ) );
+	return '' === $c ? '' : strtolower( FW_Site_Converter_Stitch::color_to_hex( $c ) );
+}
+cvpal_default( cvpal( $ts ) );
 $css     = (string) ( $td['custom_css'] ?? '' );
 
 $builder = $pages[0]['builder'] ?? array();
@@ -181,10 +221,10 @@ ga( "header_logo two-tone css paints .accent green", isset( $logo_custom['logo_c
 // Golden Fixture 1' logo tile is `rounded-2xl` = 24px on a 40px box (ratio 0.6). CSS clamps border-radius to
 // box/2, so a ≥50% radius renders as a FULL CIRCLE — the frame is `circle`, not `squircle`.
 ga_eq( "header_logo icon frame (circle — 24px clamps on a 40px tile)", 'circle', $logo_custom['logo_icon_frame'] ?? null );
-ga_eq( "header_logo icon chip bg (brand green)", 'rgb(33, 196, 93)', $logo_custom['logo_icon_frame_bg']['custom'] ?? null );
+ga_eq( "header_logo icon chip bg (brand green), stored as HEX (an opaque colour normalises; the picker round-trips hex and the palette de-dupe compares strings)", '#21c45d', $logo_custom['logo_icon_frame_bg']['custom'] ?? null );
 ga( "header_logo icon chip carries the paw svg mark", ( ( $logo_custom['logo_icon']['type'] ?? '' ) === 'svg' ) && strpos( (string) ( $logo_custom['logo_icon']['markup'] ?? '' ), 'paw-print' ) !== false );
 
-ga_eq( "menu hover color (brand green)", 'rgb(33, 196, 93)', $ts['header_menu']['menu_link_hover_color']['custom'] ?? null );
+ga_eq( "menu hover color (brand green), stored as HEX", '#21c45d', $ts['header_menu']['menu_link_hover_color']['custom'] ?? null );
 
 $cta = null;
 foreach ( ( $ts['header_main']['main_right'] ?? array() ) as $el ) {
@@ -312,8 +352,12 @@ ga_eq( "colors.footer_bg", '#141414', $td['colors']['footer_bg'] ?? null );
 // Brand green now lives in the native button-colour PRESET (the Primary preset's fill) rather than a
 // transplanted `.sc-btn-primary` block in the child-theme CSS — so check the preset (or CSS) carries it.
 $_green_in_preset = false;
-foreach ( (array) ( $ts['button_colors'] ?? array() ) as $_p ) { if ( strpos( wp_json_encode( $_p ), 'rgb(33, 196, 93)' ) !== false ) { $_green_in_preset = true; break; } }
-ga( "brand green (rgb(33, 196, 93)) present (button preset or CSS)", $_green_in_preset || strpos( $css, 'rgb(33, 196, 93)' ) !== false );
+foreach ( (array) ( $ts['button_colors'] ?? array() ) as $_p ) {
+	if ( strpos( wp_json_encode( $_p ), 'rgb(33, 196, 93)' ) !== false || strpos( wp_json_encode( $_p ), '#21c45d' ) !== false ) { $_green_in_preset = true; break; }
+	// …or through a PRESET REFERENCE, whose palette entry carries the green
+	foreach ( array( 'default', 'hover' ) as $_st ) { if ( '#21c45d' === cvhex( $_p['states'][ $_st ]['bg_color'] ?? null ) ) { $_green_in_preset = true; break 2; } }
+}
+ga( "brand green (rgb(33, 196, 93)) reachable — as a button preset fill, a palette reference, or CSS", $_green_in_preset || strpos( $css, 'rgb(33, 196, 93)' ) !== false || strpos( $css, '#21c45d' ) !== false );
 ga( "typography: Nunito (headings) present in CSS", strpos( $css, 'Nunito' ) !== false );
 ga( "typography: Inter (body) present in CSS", strpos( $css, 'Inter' ) !== false );
 ga( "heading scale: #features h2 rule present", strpos( $css, '#features h2' ) !== false );
@@ -841,7 +885,7 @@ ga_eq( "hero overline_container = pill", 'pill', $hero_sh['atts']['overline_cont
 ga_eq( "hero overline text survives", 'Voted #1 Pet Boarding in Springfield', $hero_sh['atts']['overline'] ?? null );
 ga_eq( "hero overline_icon is an inline svg", 'svg', $hero_sh['atts']['overline_icon']['type'] ?? null );
 ga( "hero overline_icon carries the heart svg markup", strpos( (string) ( $hero_sh['atts']['overline_icon']['markup'] ?? '' ), '<svg' ) !== false );
-ga( "hero overline_color custom is the chip's green text colour (non-empty)", '' !== (string) ( $hero_sh['atts']['overline_color']['custom'] ?? '' ), $hero_sh['atts']['overline_color']['custom'] ?? '(none)' );
+ga( "hero overline_color RESOLVES to the chip's green text colour (literal or palette reference)", '' !== cvhex( $hero_sh['atts']['overline_color'] ?? null ), $hero_sh['atts']['overline_color']['custom'] ?? '(none)' );
 // NO standalone badge anywhere in the hero section.
 $hero_badge = null;
 foreach ( $all_nodes as $e ) { if ( ( $e['sid'] ?? '' ) === 'hero' && ( $e['node']['shortcode'] ?? '' ) === 'badge' ) { $hero_badge = $e['node']; break; } }
@@ -858,7 +902,7 @@ $ch_sh    = $first_sc( $ch_nodes, 'special_heading' );
 ga( "chip-before-h2 → a special_heading (found)", $ch_sh !== null, wp_json_encode( $codes_of( $ch_nodes ) ) );
 ga_eq( "chip-before-h2 → overline_container = pill", 'pill', $ch_sh['atts']['overline_container'] ?? null );
 ga_eq( "chip-before-h2 → overline_icon type svg", 'svg', $ch_sh['atts']['overline_icon']['type'] ?? null );
-ga( "chip-before-h2 → overline_color custom non-empty", '' !== (string) ( $ch_sh['atts']['overline_color']['custom'] ?? '' ), $ch_sh['atts']['overline_color']['custom'] ?? '(none)' );
+ga( "chip-before-h2 → overline_color RESOLVES to a colour", '' !== cvhex( $ch_sh['atts']['overline_color'] ?? null ), $ch_sh['atts']['overline_color']['custom'] ?? '(none)' );
 ga( "chip-before-h2 → NO 'badge' shortcode emitted", ! in_array( 'badge', $codes_of( $ch_nodes ), true ), wp_json_encode( $codes_of( $ch_nodes ) ) );
 
 /* Negative control (button): a bare text link (no fill, no border, no semantic class) gets NO
@@ -1029,8 +1073,8 @@ ga( "text-block node built from the source paragraph", $tb_node !== null );
 $tba = is_array( $tb_node ) ? ( $tb_node['atts'] ?? array() ) : array();
 
 ga_eq( "text-block: 20px paragraph → font_size_preset='lead'", 'lead', $tba['font_size_preset'] ?? '(missing)' );
-ga( "text-block: muted colour → native text_color.custom set (rgb(41,61,54))",
-	isset( $tba['text_color']['custom'] ) && strpos( (string) $tba['text_color']['custom'], '41,61,54' ) !== false,
+ga( "text-block: the source's muted colour RESOLVES on the native text_color (rgb(41,61,54) = #293d36, literal or palette reference)",
+	'#293d36' === cvhex( $tba['text_color'] ?? null, cvpal( (array) ( $tb_bndl['files']['theme-settings.json']['values'] ?? array() ) ) ),
 	wp_json_encode( $tba['text_color'] ?? null ) );
 ga( "text-block: source margin-bottom → native spacing option (mb slug set)",
 	! empty( $tba['spacing']['margin']['bottom'] ) && strpos( (string) $tba['spacing']['margin']['bottom'], 'mb-' ) === 0,
@@ -1479,7 +1523,7 @@ ga( "footer link never-drop: hover → the theme palette var (`background` alias
 // so a `hover:text-brand` link — a token the palette lacks — rendered its hover in the resting colour: a real-site report).
 $fl2_html = str_replace( array( '<footer ', 'hover:text-background' ), array( '<footer data-sc-footer="col-gap:40px;link-hover:rgb(34, 197, 94)" ', 'hover:text-brand' ), $fl_html );
 $fl2_v = FW_Site_Converter_Sources::build_from_html( $fl2_html, 'FootL', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values'] ?? array();
-ga( "footer link hover: a MEASURED hover (stamp) maps to the native footer_link_hover_color", 'rgb(34, 197, 94)' === (string) ( $fl2_v['footer_link_hover_color']['custom'] ?? '' ), $fl2_v['footer_link_hover_color'] ?? null );
+ga( "footer link hover: a MEASURED hover (stamp) maps to the native footer_link_hover_color", '#22c55e' === (string) ( $fl2_v['footer_link_hover_color']['custom'] ?? '' ), $fl2_v['footer_link_hover_color'] ?? null );
 ga( "footer link hover: with a measured hover NO scoped `.footer-link:hover` rule shadows the native option", false === strpos( (string) ( $fl2_v['misc_custom_css']['custom_css'] ?? '' ), '.footer-link:hover' ), $fl2_v['misc_custom_css']['custom_css'] ?? '' );
 // No stamp + a token the palette does not define → nothing (never an undefined var)
 $fl3_mc = FW_Site_Converter_Sources::build_from_html( str_replace( 'hover:text-background', 'hover:text-emerald-400', $fl_html ), 'FootL', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values']['misc_custom_css']['custom_css'] ?? '';
@@ -2048,7 +2092,7 @@ ga_eq( "Bottom Bar border colour keeps its alpha (translucent hairline, not a so
 ga_eq( "Bottom Bar border on the TOP edge (facing the brand row)", array( 'top' ), $h_bcs['bottombar_border_sides'] ?? null );
 ga_eq( "header min_height = the BRAND row (78), not the stacked rows (117)", '78', $h_ts['header_layout']['min_height']['value'] ?? null );
 ga_eq( "header_border from the header's own stylesheet border-bottom", 'yes', $h_ts['header_layout']['header_border'] ?? null );
-ga_eq( "menu hover colour = the captured a:hover colour", 'rgb(172, 123, 63)', $h_ts['header_menu']['menu_link_hover_color']['custom'] ?? null );
+ga_eq( "menu hover colour = the captured a:hover colour, stored as HEX", '#ac7b3f', $h_ts['header_menu']['menu_link_hover_color']['custom'] ?? null );
 $h_css = (string) ( $h_ts['misc_custom_css']['custom_css'] ?? '' );
 ga( "chip pill skin as scoped CSS on the element class", strpos( $h_css, '.site-header .sc-hdr-chip .list-item{' ) !== false && strpos( $h_css, 'border-radius:999px' ) !== false && strpos( $h_css, 'background-color:rgba(255, 255, 255, 0.2)' ) !== false, $h_css );
 ga( "chip dot size + glow as scoped CSS", strpos( $h_css, '.sc-hdr-chip .list-item__icon{width:7px;height:7px' ) !== false && strpos( $h_css, 'rgba(215, 170, 97, 0.55) 0px 0px 18px' ) !== false, $h_css );
@@ -2199,7 +2243,7 @@ $g_ha = $g_sh['atts'] ?? array();
 ga( "special_heading found", $g_sh !== null );
 ga_eq( "plain-CSS eyebrow div → native Overline", 'Floating Mountain Split', $g_ha['overline'] ?? null );
 ga_eq( "overline uppercase (native)", 'yes', $g_ha['overline_uppercase'] ?? null );
-ga_eq( "overline colour (native)", 'rgb(138, 124, 105)', $g_ha['overline_color']['custom'] ?? null );
+ga_eq( "overline colour (native)", '#8a7c69', $g_ha['overline_color']['custom'] ?? null );
 $g_hcss = (string) ( $g_ha['custom_css'] ?? '' );
 ga( "overline exact type (10px, 3px tracking, 15px line) + the title's 16px margin-top as its gap", strpos( $g_hcss, 'selector .heading-overline{font-size:10px !important;letter-spacing:3px !important;line-height:15px !important;margin-bottom:16px !important;}' ) !== false, $g_hcss );
 ga_eq( "subtitle folded", true, strpos( (string) ( $g_ha['subtitle'] ?? '' ), 'The landscape follows' ) !== false );
@@ -2768,13 +2812,14 @@ $u_find = function ( $items, $title, $sc = 'icon_box' ) use ( &$u_find ) { forea
 $u_titles = array( 'Brand card', 'Inverse card', 'Grouped card', 'Avatar card' );
 $u_cell = function ( $items, $title ) use ( &$u_cell, $u_titles ) { foreach ( (array) $items as $it ) { $s = json_encode( $it ); if ( false === strpos( $s, $title ) ) { continue; } if ( ( $it['type'] ?? '' ) === 'flexbox' && 1 === count( array_filter( $u_titles, function ( $t ) use ( $s ) { return false !== strpos( $s, $t ); } ) ) ) { return $it; } if ( ! empty( $it['_items'] ) ) { $r = $u_cell( $it['_items'], $title ); if ( $r ) { return $r; } } } return null; };
 $u_preset = function ( $node ) use ( $u_ts ) { $bs = (string) ( $node['atts']['box_style'] ?? '' ); if ( ! preg_match( '/^boxp-box-([a-f0-9]{8})$/', $bs, $m ) ) { return ''; } $i = strpos( $u_ts, '"Box ' . $m[1] . '"' ); if ( false === $i ) { return ''; } $st = strrpos( substr( $u_ts, 0, $i ), '{"id"' ); $d = 0; for ( $k = $st; $k < strlen( $u_ts ); $k++ ) { if ( '{' === $u_ts[ $k ] ) { $d++; } elseif ( '}' === $u_ts[ $k ] ) { $d--; if ( 0 === $d ) { return substr( $u_ts, $st, $k + 1 - $st ); } } } return ''; };
+$u_pal = cvpal( (array) ( $u_bl['files']['theme-settings.json']['values'] ?? array() ) );
 $u_brand = $u_find( $u_secs, 'Brand card' ); $u_inv = $u_find( $u_secs, 'Inverse card' ); $u_grp = $u_find( $u_secs, 'Grouped card' ); $u_av = $u_find( $u_secs, 'Avatar card', 'image_box' );
 ga( "three text cards → icon_boxes, the avatar card → an image_box", $u_brand && $u_inv && $u_grp && $u_av );
 ga( "a shadow behind Tailwind's transparent ring placeholders is a real shadow (visible_shadow → the preset's Box Shadow)", (bool) preg_match( '/"box_shadow":\{"x":0,"y":20,"blur":40,"spread":0,"color":"rgba\(0, 0, 0, 0\.08\)"/', $u_preset( $u_brand ) ) );
 ga( "the card's hover ink (hover:text-white) → the title / description follow it on hover", (bool) preg_match( '/selector:hover \.icon-box__title\{[^}]*color:rgb\(255 255 255\)/', (string) $u_brand['atts']['custom_css'] ) && (bool) preg_match( '/selector:hover \.icon-box__content\{[^}]*color:rgb\(255 255 255\)/', (string) $u_brand['atts']['custom_css'] ) );
 ga( "…and the hover FILL still reaches the preset when only the stamp carried it (a config colour the class path cannot resolve)", (bool) preg_match( '/"hover":\{[^}]*"background"/', $u_preset( $u_brand ) ) || false !== strpos( $u_preset( $u_brand ), 'rgb(47, 111, 78)' ) );
 ga( "a 4px accent bar (a thin ::before) rides the card as a scoped pseudo ABOVE the fill, px-thin", (bool) preg_match( '/::before\{[^}]*z-index:1[^}]*height:4px[^}]*background:rgb\(201, 139, 62\)/', (string) $u_brand['atts']['custom_css'] ) || (bool) preg_match( '/::before\{[^}]*height:4px[^}]*z-index:1/', (string) $u_brand['atts']['custom_css'] ) );
-ga_eq( "a brand-filled card's inherited WHITE title → the native Title Colour (differs from the page ink)", '#ffffff', $u_inv['atts']['title_color']['custom'] ?? null );
+ga_eq( "a brand-filled card's inherited WHITE title → the native Title Colour, RESOLVED (differs from the page ink)", '#ffffff', cvhex( $u_inv['atts']['title_color'] ?? null, $u_pal ) );
 ga_eq( "…and its description → the native Content Colour", '#ffffff', $u_inv['atts']['content_color']['custom'] ?? null );
 ga( "a plain white card keeps the theme defaults (its ink IS the page ink → no Title Colour)", '' === (string) ( $u_brand['atts']['title_color']['custom'] ?? '' ) );
 ga( "a group-hover title (colour + underline when the CARD is hovered) → selector:hover .icon-box__title", (bool) preg_match( '/selector:hover \.icon-box__title\{[^}]*color:rgb\(47 111 78\)[^}]*text-decoration-line:underline/', (string) $u_grp['atts']['custom_css'] ) );
@@ -2847,8 +2892,8 @@ $m_css = (string) ( $m_v['misc_custom_css']['custom_css'] ?? '' );
 ga( "…with the link's own colour / size + hover as scoped CSS", (bool) preg_match( '/\.site-header \.sc-hdr-link \.list-item, \.site-header \.sc-hdr-link \.list-item a\{[^}]*color:rgb\(203, 213, 225\)[^}]*font-size:14px/', $m_css ) && false !== strpos( $m_css, '.sc-hdr-link .list-item a:hover{color:rgb(255, 255, 255);}' ) );
 ga_eq( "the nav typography is the MODE across VISIBLE links (14px), not the hidden drawer's 16px", '14', $m_menu['menu_link_font_size']['value'] ?? null );
 ga_eq( "…and its weight (500, not the drawer's 400)", '500', $m_menu['menu_link_font_weight'] ?? null );
-ga_eq( "a utility-built hover colour (`/ var(--tw-text-opacity, 1)`, truncated) → a clean rgb()", 'rgb(255, 255, 255)', $m_menu['menu_link_hover_color']['custom'] ?? null );
-ga_eq( "the nav link colour is the measured slate (a \"Sign in\" in another colour is not the active item)", 'rgb(203, 213, 225)', $m_menu['menu_link_color']['custom'] ?? null );
+ga_eq( "a utility-built hover colour (`/ var(--tw-text-opacity, 1)`, truncated) -> a clean HEX", '#ffffff', $m_menu['menu_link_hover_color']['custom'] ?? null );
+ga_eq( "the nav link colour is the measured slate (a \"Sign in\" in another colour is not the active item), stored as HEX", '#cbd5e1', $m_menu['menu_link_color']['custom'] ?? null );
 // a genuinely STACKED masthead: the links row sits BELOW the brand row (zone y) → the Bottom Bar carries the menu
 $m_two = '<header data-sc-cs="display:block;background-color:rgb(2, 6, 23)"><div class="shell" data-sc-cs="display:block" data-sc-row="gap:0px;justify:normal;zones:2">'
 	. '<div class="brand-row" data-sc-cs="display:flex;justify-content:space-between;height:72px" data-sc-zone="w:1200px;h:72px;x:0px;y:0px;bg:rgba(0, 0, 0, 0)"><a href="/" class="brand" data-sc-cs="color:rgb(248, 250, 252);font-size:18px;font-weight:600">Brand</a><a href="#start" class="btn" data-sc-cs="color:rgb(248, 250, 252);border-top-width:1px;border-top-style:solid;border-top-color:rgb(255, 255, 255);border-radius:9999px;padding:10px 20px;font-size:14px">Start</a></div>'
@@ -2943,10 +2988,11 @@ ga( "features: three icon_boxes from the card grid", 3 === count( $n_boxes ) );
 ga( "…a card's 48px icon CHIP (an <iconify-icon> in a painted rounded box) never rides the body as a stray `sc-deco-N` hook", ! empty( $n_boxes ) && false === strpos( (string) ( $n_boxes[0]['atts']['content'] ?? '' ), 'sc-deco' ) && false === strpos( (string) ( $n_boxes[0]['atts']['custom_css'] ?? '' ), 'sc-deco' ) );
 // (6) a role's SECOND distinct skin → its own "<Role> 2" preset; the header CTA colour-matches it
 $n_v = $n_bl['files']['theme-settings.json']['values'] ?? $n_bl['files']['theme-settings.json'];
+$n_pal = cvpal( (array) $n_v );
 $n_bc = $n_v['button_colors'] ?? array(); $n_names = array(); foreach ( $n_bc as $c ) { $n_names[ (string) $c['color_name'] ] = $c; }
 ga( "two DISTINCT outline skins (slate plan buttons · white header CTA) → \"Outline\" + \"Outline 2\" presets", isset( $n_names['Outline'] ) && isset( $n_names['Outline 2'] ) );
 ga_eq( "…\"Outline 2\" keeps the CTA's white border", 'rgb(255, 255, 255)', $n_names['Outline 2']['states']['default']['border_color']['custom'] ?? null );
-ga_eq( "…and its brand hover fill", 'rgb(34, 197, 94)', $n_names['Outline 2']['states']['hover']['bg_color']['custom'] ?? null );
+ga_eq( "…and its brand hover fill, RESOLVED (rgb(34,197,94) = #22c55e, literal or palette reference)", '#22c55e', cvhex( $n_names['Outline 2']['states']['hover']['bg_color'] ?? null, $n_pal ) );
 $n_cta = null; foreach ( (array) ( $n_v['header_main']['main_right'] ?? array() ) as $e ) { if ( 'cta_button' === ( $e['element_type']['element'] ?? '' ) ) { $n_cta = $e['element_type']['cta_button']; } }
 ga_eq( "the header CTA resolves to the variant by its MEASURED colours (btn-outline-2), not the first outline preset", 'btn-outline-2', $n_cta['cta_style'] ?? null );
 // (7) the source has a footer → the bundle says so (the importer resets a stale hide_site_footer from an earlier footer-less conversion)
@@ -3693,7 +3739,7 @@ $t_slug = (string) ( $t_tbl['atts']['table_preset'] ?? '' );
 ga( "a data <table> is the native table pointing at a Table Preset built from its MEASURED skin (`tbl-table-<hash>` — the option value IS the wrapper class the tabular view puts on, so the emitted `.tbl-…` rule applies), with the shortcode's own zebra / hover / frame toggles OFF (the preset owns them)", (bool) preg_match( '/^tbl-table-[0-9a-f]{8}$/', $t_slug ) && 'no' === (string) ( $t_tbl['atts']['style_striped'] ?? '' ) && 'no' === (string) ( $t_tbl['atts']['style_hover'] ?? '' ) );
 $t_tp = null; foreach ( (array) ( $t_v['table_presets'] ?? array() ) as $tp ) { if ( 'Table ' . substr( $t_slug, 10 ) === (string) ( $tp['preset_name'] ?? '' ) ) { $t_tp = $tp; } }
 ga( "…and that preset exists in Theme Settings → Tables (named `Table <hash>` so its slug is the node's), on top of the built-in library (Clean Lines … stay)", is_array( $t_tp ) && count( (array) ( $t_v['table_presets'] ?? array() ) ) >= 6 );
-ga( "the preset carries the measured cell padding (24px vertical), horizontal grid lines in the body's hairline (1px rgba(255,255,255,.05) — a `divide-y` source), the header's rule (1px rgba(255,255,255,.1)), text colour, weight and case, the body's 14px size and the row hover fill", is_array( $t_tp ) && '24' === (string) ( $t_tp['cell_padding_y']['value'] ?? '' ) && 'horizontal' === (string) ( $t_tp['grid_lines'] ?? '' ) && 'rgba(255, 255, 255, 0.05)' === (string) ( $t_tp['grid_color']['custom'] ?? '' ) && '1' === (string) ( $t_tp['sections']['header']['border_width']['value'] ?? '' ) && 'rgb(100, 116, 139)' === (string) ( $t_tp['sections']['header']['text_color']['custom'] ?? '' ) && '700' === (string) ( $t_tp['sections']['header']['font_weight'] ?? '' ) && 'uppercase' === (string) ( $t_tp['sections']['header']['text_transform'] ?? '' ) && '14' === (string) ( $t_tp['cell_font_size']['value'] ?? '' ) && 'rgba(255, 255, 255, 0.02)' === (string) ( $t_tp['sections']['hover']['bg_color']['custom'] ?? '' ) );
+ga( "the preset carries the measured cell padding (24px vertical), horizontal grid lines in the body's hairline (1px rgba(255,255,255,.05) — a `divide-y` source), the header's rule (1px rgba(255,255,255,.1)), text colour, weight and case, the body's 14px size and the row hover fill", is_array( $t_tp ) && '24' === (string) ( $t_tp['cell_padding_y']['value'] ?? '' ) && 'horizontal' === (string) ( $t_tp['grid_lines'] ?? '' ) && 'rgba(255, 255, 255, 0.05)' === (string) ( $t_tp['grid_color']['custom'] ?? '' ) && '1' === (string) ( $t_tp['sections']['header']['border_width']['value'] ?? '' ) && '#64748b' === cvhex( $t_tp['sections']['header']['text_color'] ?? null, cvpal( (array) $t_v ) ) && '700' === (string) ( $t_tp['sections']['header']['font_weight'] ?? '' ) && 'uppercase' === (string) ( $t_tp['sections']['header']['text_transform'] ?? '' ) && '14' === (string) ( $t_tp['cell_font_size']['value'] ?? '' ) && 'rgba(255, 255, 255, 0.02)' === (string) ( $t_tp['sections']['hover']['bg_color']['custom'] ?? '' ) );
 ga( "…the long tail rides the preset's own Custom CSS: the header's face / 11px / 1.1px tracking / own padding, the body's 300 weight, and no rule under the last row (a divide-y rules BETWEEN rows only)", is_array( $t_tp ) && (bool) preg_match( '/thead td\{[^}]*font-family:Syne[^}]*font-size:11px !important[^}]*letter-spacing:1\.1px/', (string) ( $t_tp['custom_css'] ?? '' ) ) && (bool) preg_match( '/tbody td\{[^}]*font-weight:300/', (string) ( $t_tp['custom_css'] ?? '' ) ) && false !== strpos( (string) ( $t_tp['custom_css'] ?? '' ), 'tr:last-child td{border-bottom:0' ) );
 $t_cells = $t_tbl['atts']['table']['content'] ?? array();
 $t_c0 = (string) ( $t_cells[1][0]['textarea'] ?? '' ); $t_c1 = (string) ( $t_cells[1][1]['textarea'] ?? '' ); $t_c2 = (string) ( $t_cells[1][2]['textarea'] ?? '' );
@@ -3898,7 +3944,7 @@ $y_codes = array(); $r_all( $y_pg, function ( $n ) { return 'code_block' === ( $
 ga( "a LONE content card (fill + radius + a transparent ring + a hairline shadow) decomposes NATIVELY as a panel — icon tile, heading, copy inside a flexbox wearing its Box Preset — never the verbatim code block (a fixture from the findings feed)", 0 === count( $y_codes ) );
 $y_panel = $r_find( $y_pg, function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && '' !== (string) ( $n['atts']['border_preset'] ?? '' ) && 'column' === (string) ( $n['atts']['direction']['base'] ?? '' ); } );
 $y_ch = $r_find( $y_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['title'] ?? '' ), 'Chromatic routing' ); } );
-ga( "…the card's title keeps its measured weight (400) and ink (rgb(7, 58, 75)) — the theme heading default (700 / body ink) was reported on three sites", is_array( $y_panel ) && is_array( $y_ch ) && false !== strpos( (string) ( $y_ch['atts']['custom_css'] ?? '' ), 'font-weight:400 !important' ) && 'rgb(7, 58, 75)' === (string) ( $y_ch['atts']['title_color']['custom'] ?? '' ) );
+ga( "…the card's title keeps its measured weight (400) and ink (rgb(7, 58, 75)) — the theme heading default (700 / body ink) was reported on three sites", is_array( $y_panel ) && is_array( $y_ch ) && false !== strpos( (string) ( $y_ch['atts']['custom_css'] ?? '' ), 'font-weight:400 !important' ) && '#073a4b' === (string) ( $y_ch['atts']['title_color']['custom'] ?? '' ) );
 $y_num = $r_find( $y_pg, function ( $n ) { return 'text_block' === ( $n['shortcode'] ?? '' ) && '01' === trim( strip_tags( (string) ( $n['atts']['text'] ?? '' ) ) ); } );
 ga( "a GHOST NUMERAL (a bare '01' set at 96px, 8 % ink) survives as a text block with its measured size — a bare number was dropped as an index", is_array( $y_num ) && false !== strpos( (string) ( $y_num['atts']['custom_css'] ?? '' ), 'font-size:96px' ) );
 ga( "a SYSTEM body stack (ui-sans-serif, system-ui) never takes the heading's Google face: the body family stays empty (the theme's sans default) while the headings carry the face", '' === (string) ( $y_v['typography']['body']['family'] ?? '' ) && '' === (string) ( $y_bl['files']['theme-design.json']['fonts']['body'] ?? '' ) && 'Syne' === (string) ( $y_bl['files']['theme-design.json']['fonts']['heading'] ?? '' ), wp_json_encode( $y_bl['files']['theme-design.json']['fonts'] ?? null ) );
@@ -3951,7 +3997,8 @@ $x_gal = array(); $r_all( $x_pg, function ( $n ) { return 'gallery' === ( $n['sh
 $x_price = $r_find( $x_pg, function ( $n ) { return 'text_block' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['text'] ?? '' ), '$248' ); } );
 ga( "IMAGE-LED PRODUCT TILES (image + category + name link + price) are NOT a gallery: no gallery node, the price survives as text (three shops in the feed lost every name and price)", 0 === count( $x_gal ) && is_array( $x_price ) );
 $x_hd = $r_find( $x_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['title'] ?? '' ), 'Featured products' ); } );
-ga( "a HEADING + LINK row (h2 + muted p beside a text link) keeps the kicker span as the OVERLINE (uppercase, its accent) and the subtitle's measured muted ink + 16px (RECURS x5: the theme's 18px body ink)", is_array( $x_hd ) && 'New season' === (string) ( $x_hd['atts']['overline'] ?? '' ) && 'yes' === (string) ( $x_hd['atts']['overline_uppercase'] ?? '' ) && 'rgb(255, 45, 85)' === (string) ( $x_hd['atts']['overline_color']['custom'] ?? '' ) && 'rgb(115, 115, 115)' === (string) ( $x_hd['atts']['subtitle_color']['custom'] ?? '' ) && ( '' !== (string) ( $x_hd['atts']['subtitle_size'] ?? '' ) || false !== strpos( (string) ( $x_hd['atts']['custom_css'] ?? '' ), '.heading-subtitle{font-size:16px' ) ), wp_json_encode( array( $x_hd['atts']['overline'] ?? null, $x_hd['atts']['overline_color'] ?? null, $x_hd['atts']['subtitle_color'] ?? null ) ) );
+$x_pal = cvpal( (array) ( $x_bl['files']['theme-settings.json']['values'] ?? array() ) );
+ga( "a HEADING + LINK row (h2 + muted p beside a text link) keeps the kicker span as the OVERLINE (uppercase, its accent) and the subtitle's measured muted ink + 16px (RECURS x5: the theme's 18px body ink)", is_array( $x_hd ) && 'New season' === (string) ( $x_hd['atts']['overline'] ?? '' ) && 'yes' === (string) ( $x_hd['atts']['overline_uppercase'] ?? '' ) && '#ff2d55' === cvhex( $x_hd['atts']['overline_color'] ?? null, $x_pal ) && '#737373' === cvhex( $x_hd['atts']['subtitle_color'] ?? null, $x_pal ) && ( '' !== (string) ( $x_hd['atts']['subtitle_size'] ?? '' ) || false !== strpos( (string) ( $x_hd['atts']['custom_css'] ?? '' ), '.heading-subtitle{font-size:16px' ) ), wp_json_encode( array( $x_hd['atts']['overline'] ?? null, $x_hd['atts']['overline_color'] ?? null, $x_hd['atts']['subtitle_color'] ?? null ) ) );
 $x_lnk = $r_find( $x_pg, function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['label'] ?? '' ), 'View all products' ); } );
 ga( "a bare TEXT LINK (no fill, no border, no padding in its stamp) is a btn-link with padding 0, no border, no underline — the native .btn inset padded it into a box (a fixture from the feed)", is_array( $x_lnk ) && 'btn-link' === (string) ( $x_lnk['atts']['style'] ?? '' ) && false !== strpos( (string) ( $x_lnk['atts']['custom_css'] ?? '' ), 'padding:0 !important' ) && false !== strpos( (string) ( $x_lnk['atts']['custom_css'] ?? '' ), 'text-decoration:none' ), (string) ( $x_lnk['atts']['custom_css'] ?? '' ) );
 $x_ib = array(); $r_all( $x_pg, function ( $n ) { return 'image_box' === ( $n['shortcode'] ?? '' ); }, $x_ib );
@@ -4571,7 +4618,7 @@ $ag_sec = null; foreach ( $ag_pg as $s ) { if ( false !== strpos( $ag_json( $s )
 $ag_img = $n_find( array( $ag_sec ), function ( $n ) { return 'media_image' === ( $n['shortcode'] ?? '' ); } );
 ga( "[AG] a card's `w-full h-64 object-cover` banner photo is a full-width 256px cover crop (not its natural size, inset in the card)", is_array( $ag_img ) && false !== strpos( $ag_css_of( $ag_img ), 'selector{width:100%;align-self:stretch;}selector img{width:100%;height:256px;object-fit:cover;display:block;}' ), $ag_img ? $ag_css_of( $ag_img ) : 'no image' );
 $ag_h3 = $n_find( array( $ag_sec ), function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && 'Diner Downtown' === trim( (string) ( $n['atts']['title'] ?? '' ) ); } );
-ga( "[AG] the card's own h3 keeps its red (title_color) — and the section-level `#locations h3` rule excludes card headings (`:not([class*=\"boxp-\"] *)`)", is_array( $ag_h3 ) && 'rgb(226, 60, 68)' === (string) ( $ag_h3['atts']['title_color']['custom'] ?? '' ) && false !== strpos( $ag_reg, '#locations h3:not([class*=\"boxp-\"] *){' ), $ag_json( array( $ag_h3['atts']['title_color'] ?? null, substr( $ag_reg, strpos( $ag_reg, '#locations h3' ) ?: 0, 80 ) ) ) );
+ga( "[AG] the card's own h3 keeps its red (title_color) — and the section-level `#locations h3` rule excludes card headings (`:not([class*=\"boxp-\"] *)`)", is_array( $ag_h3 ) && '#e23c44' === cvhex( $ag_h3['atts']['title_color'] ?? null, cvpal( (array) ( $ag_bl['files']['theme-settings.json']['values'] ?? array() ) ) ) && false !== strpos( $ag_reg, '#locations h3:not([class*=\"boxp-\"] *){' ), $ag_json( array( $ag_h3['atts']['title_color'] ?? null, substr( $ag_reg, strpos( $ag_reg, '#locations h3' ) ?: 0, 80 ) ) ) );
 $ag_fl = $n_find( array( $ag_sec ), function ( $n ) { return 'feature_list' === ( $n['shortcode'] ?? '' ); } );
 ga( "[AG] a `flex flex-col sm:flex-row justify-center gap-4` contact row is a HORIZONTAL centred feature list at its 16px gap (the measured direction, not the phone class)", is_array( $ag_fl ) && 'horizontal' === (string) ( $ag_fl['atts']['orientation'] ?? '' ) && false !== strpos( $ag_css_of( $ag_fl ), 'selector.fw-fl--orient-horizontal{justify-content:center;column-gap:16px;}' ), $ag_json( array( $ag_fl['atts']['orientation'] ?? null, $ag_fl ? $ag_css_of( $ag_fl ) : null ) ) );
 $ag_btn = $n_find( array( $ag_sec ), function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'Visit Website' === trim( (string) ( $n['atts']['label'] ?? '' ) ); } );
@@ -4798,6 +4845,644 @@ ga( "[AK] …the initials disc is the avatar, never the author: name = the heavi
 $ak_b1 = $r_find( $ak_pg, function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'Listen Now' === (string) ( $n['atts']['label'] ?? '' ); } );
 $ak_b2 = $r_find( $ak_pg, function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'Tour Dates' === (string) ( $n['atts']['label'] ?? '' ); } );
 ga( "[AK] `bg-primary` (opaque) and `bg-primary/10` (a 10 % tint of the same brand) are TWO presets — the role word alone had given both the solid one", is_array( $ak_b1 ) && is_array( $ak_b2 ) && '' !== (string) ( $ak_b1['atts']['style'] ?? '' ) && (string) $ak_b1['atts']['style'] !== (string) ( $ak_b2['atts']['style'] ?? '' ), wp_json_encode( array( $ak_b1['atts']['style'] ?? null, $ak_b2['atts']['style'] ?? null ) ) );
+
+
+/*
+ * [AL] A boutique storefront (a converted source), 2026-09-23 — the fifth real-site audit:
+ *  · a band header written as `<div class="flex justify-between"><h2>…</h2><a>View all</a></div>` is a heading + link
+ *    ROW, not a heading whose subtitle is the link (the heading side counted zero headings because the child WAS the h2);
+ *  · a filled frame whose only content is one photo is that photo's TILE — the fill, inset and height ride the image;
+ *  · a price ("$11.00") is not a statistic, so a product's "370ml | $11.00" meta row is not a counter grid;
+ *  · a hover-revealed label ("Quick View" inside an `opacity-0` layer) is never the card's eyebrow;
+ *  · a card's CTA written as a `<button>` (or a cursor-pointer row) is the card's button;
+ *  · that meta row becomes the card's body copy instead of being dropped;
+ *  · a block-flow list (`space-y-6`, no flex/grid) of numbered items is a VERTICAL steps list, and the numeral's own
+ *    round chip is never mistaken for the step CARD's box.
+ */
+echo "\n[AL] Storefront: band-header rows, photo tiles, prices, hover labels, button CTAs, vertical steps\n";
+$al_cs = function ( $fs = 16, $extra = '' ) { return 'color:rgb(18, 18, 18);font-family:Helvetica, Inter, Arial, sans-serif;font-size:' . $fs . 'px;font-weight:400;line-height:' . round( $fs * 1.5 ) . 'px;text-align:start;display:block' . $extra; };
+$al_card = function ( $name, $size, $price ) use ( $al_cs ) {
+	return '<div class="flex flex-col group border-b" data-sc-cs="' . $al_cs( 16 ) . ';height:484px;display:flex;flex-direction:column">'
+		. '<div class="bg-[#F2EDE6] p-8 flex items-center justify-center relative overflow-hidden" data-sc-cs="background-color:rgb(242, 237, 230);padding:32px;height:354px;display:flex;justify-content:center;align-items:center;flex-direction:row">'
+		. '<img alt="' . $name . '" class="max-h-[290px] w-auto object-contain" src="https://example.com/' . sanitize_title( $name ) . '.png" data-sc-cs="height:290px;width:199px;display:block;object-fit:contain">'
+		. '<div class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100" data-sc-cs="' . $al_cs( 16 ) . ';position:absolute;top:0px;left:0px;opacity:0;display:flex;align-items:center;justify-content:center"><span data-sc-cs="color:rgb(17, 17, 17);font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:Helvetica, Inter, Arial, sans-serif;font-weight:400;line-height:15px;padding:6px 12px;height:27px;display:block">Quick View</span></div>'
+		. '</div>'
+		. '<h3 class="font-serif uppercase" data-sc-cs="color:rgb(17, 17, 17);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:18px;font-weight:400;line-height:28px;letter-spacing:1.08px;text-transform:uppercase;height:28px;display:block">' . $name . '</h3>'
+		. '<div class="flex items-center justify-between" data-sc-cs="' . $al_cs( 11 ) . ';display:flex;justify-content:space-between;align-items:center;height:16px"><span data-sc-cs="' . $al_cs( 11 ) . ';height:16px">' . $size . '</span><span data-sc-cs="' . $al_cs( 11 ) . ';height:16px">' . $price . '</span></div>'
+		. '<button class="mt-4 w-full py-2.5 border-t border-b flex items-center justify-between text-[11px] uppercase" data-sc-cs="color:rgb(34, 34, 34);font-size:11px;padding:10px 4px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(213, 203, 192);display:flex;justify-content:space-between;align-items:center;height:37px"><span data-sc-cs="' . $al_cs( 11 ) . ';height:16px">Add to cart</span><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-plus w-3.5 h-3.5"><path d="M5 12h14"></path></svg></button>'
+		. '</div>';
+};
+$al_step = function ( $n, $t, $c ) use ( $al_cs ) {
+	return '<div class="flex gap-4" data-sc-cs="' . $al_cs( 16 ) . ';display:flex;gap:16px;align-items:flex-start;height:40px">'
+		. '<div class="w-8 h-8 rounded-full border flex items-center justify-center" data-sc-cs="border-radius:9999px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(184, 168, 152);height:32px;width:32px;display:flex;align-items:center;justify-content:center;color:rgb(18, 18, 18);font-size:12px;font-family:Helvetica, Inter, Arial, sans-serif;font-weight:400;line-height:16px">' . $n . '</div>'
+		. '<div data-sc-cs="' . $al_cs( 16 ) . ';height:40px"><h4 class="text-xs uppercase font-bold" data-sc-cs="color:rgb(17, 17, 17);font-size:12px;font-weight:700;line-height:16px;letter-spacing:1.92px;text-transform:uppercase;font-family:Helvetica, Inter, Arial, sans-serif;height:16px;display:block">' . $t . '</h4>'
+		. '<p class="text-xs mt-1" data-sc-cs="color:rgb(102, 102, 102);font-size:12px;font-weight:400;line-height:19.5px;font-family:Helvetica, Inter, Arial, sans-serif;height:20px;display:block">' . $c . '</p></div></div>';
+};
+$al_html = '<!DOCTYPE html><html><head><title>T</title></head><body>'
+	. '<header data-sc-cs="' . $al_cs( 16 ) . ';height:72px"><nav data-sc-cs="' . $al_cs( 16 ) . ';display:flex;gap:32px;height:72px"><a href="/" data-sc-cs="' . $al_cs( 26 ) . '">Brandy</a><a href="/shop" data-sc-cs="' . $al_cs( 16 ) . '">Shop</a><a href="/about" data-sc-cs="' . $al_cs( 16 ) . '">About</a></nav></header>'
+	// the band header ROW + a four-up product grid
+	. '<section data-sc-cs="' . $al_cs( 16 ) . ';padding:96px 0px;height:700px"><div class="max-w-7xl mx-auto px-4" data-sc-cs="' . $al_cs( 16 ) . ';max-width:1280px;margin:0px auto;padding:0px 16px;height:508px">'
+	. '<div class="flex justify-between items-baseline border-b pb-4 mb-12" data-sc-cs="' . $al_cs( 16 ) . ';display:flex;justify-content:space-between;align-items:baseline;margin:0px 0px 48px;height:36px">'
+	. '<h2 class="font-serif uppercase" data-sc-cs="color:rgb(17, 17, 17);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:30px;font-weight:400;line-height:36px;letter-spacing:4.2px;text-transform:uppercase;height:36px;display:block">The Collection</h2>'
+	. '<a href="/shop" class="text-xs uppercase underline" data-sc-cs="color:rgb(85, 85, 85);font-size:12px;font-weight:500;line-height:16px;letter-spacing:2.4px;text-transform:uppercase;text-decoration-line:underline;font-family:Helvetica, Inter, Arial, sans-serif;height:16px;display:block">View all</a></div>'
+	. '<div class="grid grid-cols-4 gap-6" data-sc-cs="' . $al_cs( 16 ) . ';display:grid;gap:24px;grid-template-columns:306px 306px 306px 306px;height:484px">'
+	. $al_card( 'Original Dill', '370ml', '$11.00' ) . $al_card( 'Garlic Herb', '370ml', '$11.00' )
+	. $al_card( 'Spicy Chili', '370ml', '$11.00' ) . $al_card( 'Sweet Tangy', '370ml', '$11.00' )
+	. '</div></div></section>'
+	// a block-flow numbered list
+	. '<section data-sc-cs="' . $al_cs( 16 ) . ';padding:96px 0px;height:420px"><div class="max-w-7xl mx-auto px-4" data-sc-cs="' . $al_cs( 16 ) . ';max-width:1280px;margin:0px auto;padding:0px 16px;height:228px">'
+	. '<h2 data-sc-cs="color:rgb(17, 17, 17);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:40px;font-weight:400;line-height:44px;height:44px;display:block">Crisp. Balanced.</h2>'
+	. '<div class="mt-8 space-y-6" data-sc-cs="' . $al_cs( 16 ) . ';display:block;height:160px">'
+	. $al_step( '01', 'Naturally fermented', 'Slow-fermented for depth of flavor and beneficial live cultures.' )
+	. $al_step( '02', 'Premium ingredients', 'Made with fresh hand-picked cucumbers and coarse sea salt.' )
+	. $al_step( '03', 'No shortcuts', 'No artificial stabilizers, vinegar sharpness or industrial dyes.' )
+	. '</div></div></section>'
+	. '<footer data-sc-cs="' . $al_cs( 16 ) . ';padding:48px 0px;height:120px"><p data-sc-cs="' . $al_cs( 16 ) . ';height:24px">© 2026 Brandy</p></footer></body></html>';
+$al_bl = FW_Site_Converter_Sources::build_from_html( $al_html, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$al_pg = $al_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
+$al_css = function ( $n ) { return (string) ( $n['atts']['custom_css'] ?? '' ); };
+
+$al_head = $r_find( $al_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && 'The Collection' === trim( wp_strip_all_tags( (string) ( $n['atts']['title'] ?? '' ) ) ); } );
+$al_link = $r_find( $al_pg, function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'View all' === trim( (string) ( $n['atts']['label'] ?? '' ) ); } );
+ga( "[AL] a band header `<div class=\"flex justify-between\"><h2>…</h2><a>View all</a></div>` keeps the link as a SIBLING (the row), never as the heading's subtitle", is_array( $al_head ) && is_array( $al_link ) && '' === trim( wp_strip_all_tags( (string) ( $al_head['atts']['subtitle'] ?? '' ) ) ), wp_json_encode( array( $al_head['atts']['subtitle'] ?? null, is_array( $al_link ) ) ) );
+$al_cards = $af_all( $al_pg, function ( $n ) { return in_array( ( $n['shortcode'] ?? '' ), array( 'icon_box', 'image_box' ), true ) && false !== stripos( (string) ( $n['atts']['title'] ?? '' ), 'Original Dill' ); } );
+$al_card_n = $al_cards ? $al_cards[0] : null;
+ga( "[AL] a product card keeps its title, its meta row as body copy, and its `<button>` CTA (the row had been dropped entirely)", is_array( $al_card_n ) && false !== strpos( wp_strip_all_tags( (string) ( $al_card_n['atts']['text'] ?? '' ) ), '370ml' ) && false !== strpos( wp_strip_all_tags( (string) ( $al_card_n['atts']['text'] ?? '' ) ), '$11.00' ), wp_json_encode( $al_card_n['atts']['text'] ?? null ) );
+$al_cta = $r_find( $al_pg, function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'Add to cart' === trim( (string) ( $n['atts']['label'] ?? '' ) ); } );
+$al_btns = $af_all( $al_pg, function ( $n ) { return false !== stripos( (string) ( $n['atts']['button_label'] ?? '' ), 'Add to cart' ) || ( 'button' === ( $n['shortcode'] ?? '' ) && false !== stripos( (string) ( $n['atts']['label'] ?? '' ), 'Add to cart' ) ); } );
+ga( "[AL] …the CTA written as a `<button>` (no <a>) becomes the card's button — one per card", count( $al_btns ) >= 4, wp_json_encode( count( $al_btns ) ) );
+ga( "[AL] a hover-revealed label inside an `opacity-0` layer is never the card's eyebrow", is_array( $al_card_n ) && false === stripos( (string) ( $al_card_n['atts']['subtitle'] ?? '' ), 'Quick View' ) && 0 === count( $af_all( $al_pg, function ( $n ) { return false !== stripos( wp_strip_all_tags( (string) ( $n['atts']['text'] ?? ( $n['atts']['title'] ?? '' ) ) ), 'Quick View' ); } ) ), 'Quick View rendered at rest' );
+ga( "[AL] a price is not a statistic — the `370ml | $11.00` meta row never becomes a counter grid", 0 === count( $af_all( $al_pg, function ( $n ) { return 'counter' === ( $n['shortcode'] ?? '' ); } ) ), 'a counter was built from the price row' );
+$al_steps = $r_find( $al_pg, function ( $n ) { return 'steps' === ( $n['shortcode'] ?? '' ); } );
+$al_dsgn = is_array( $al_steps ) ? (string) ( $al_steps['atts']['design'] ?? ( $al_steps['atts']['design_settings']['design'] ?? '' ) ) : '';
+$al_numrow = null;
+foreach ( (array) ( $al_steps['atts']['card_rows'] ?? array() ) as $cr ) { if ( in_array( 'number', (array) ( $cr['slots'] ?? array() ), true ) ) { $al_numrow = $cr; break; } }
+ga( "[AL] a block-flow (`space-y-6`) numbered list is a VERTICAL steps list — the numeral's round chip is not the step CARD's box (three stacked steps had rendered as a row of circles)", 'vertical' === $al_dsgn && false === strpos( $al_css( $al_steps ), '9999px' ), wp_json_encode( array( $al_dsgn, $al_css( $al_steps ) ) ) );
+// …a numeral drawn as a painted BADGE in its own leading cell is the native MARKER, which every design lays
+// BESIDE the body — that is the source's two-column step. (This assertion used to require the numeral in a
+// left-aligned body ROW; as a row it stacked ABOVE the title and lost its circle, so the rule was replaced by
+// the more faithful one rather than kept.)
+$al_a = is_array( $al_steps ) ? (array) ( $al_steps['atts'] ?? array() ) : array();
+ga( "[AL] …and a numeral the source draws as a painted BADGE beside the text is the native MARKER, not a stacked body row", 'number' === (string) ( $al_a['marker'] ?? '' ) && null === $al_numrow, wp_json_encode( array( $al_a['marker'] ?? '', $al_a['card_rows'] ?? array() ) ) );
+ga( "[AL] …wearing the badge's measured shape, size and outlined skin (the marker's default is a solid accent fill with white text)", 'circle' === (string) ( $al_a['marker_shape'] ?? '' ) && false !== strpos( (string) ( $al_a['custom_css'] ?? '' ), '--st-size:32px' ) && (bool) preg_match( '/\.fw-steps__marker\{[^}]*background:transparent/', (string) ( $al_a['custom_css'] ?? '' ) ) && (bool) preg_match( '/\.fw-steps__marker\{[^}]*border:1px solid/', (string) ( $al_a['custom_css'] ?? '' ) ), mb_substr( (string) ( $al_a['custom_css'] ?? '' ), 0, 400 ) );
+
+
+/*
+ * [AM] The same storefront's CHROME, 2026-09-23 — the header model, the footer brand column and a two-leaf item:
+ *  · a header is a ROW MODEL: its visible desktop rows (a phone-only row never counts), each row's measured type
+ *    and whether it holds the nav / a centred brand — so a utility bar whose type is an ARBITRARY size
+ *    (`text-[11px]`, no `text-xs` class) is still a top bar, and a block-flow header whose brand is centred in one
+ *    row with the nav in another is still the `centered` design;
+ *  · a control that rides the top bar (or a desktop-hidden row) is never ALSO a header CTA;
+ *  · the top bar's own groups are its direct children when the bar itself is the flex row;
+ *  · a footer <h3> that is the BRAND wordmark is not a "lead heading" — the brand column keeps its logo, its
+ *    description and its newsletter;
+ *  · a newsletter's label can be a styled <span>, not only an h-tag or a <p>;
+ *  · a title + description pair is split by WEIGHT as well as by size.
+ */
+echo "\n[AM] Chrome: the header row model, top-bar ownership, the footer brand column, weight-split items\n";
+$am_cs = function ( $fs = 16, $extra = '' ) { return 'color:rgb(18, 18, 18);font-family:Helvetica, Inter, Arial, sans-serif;font-size:' . $fs . 'px;font-weight:400;line-height:' . round( $fs * 1.5 ) . 'px;text-align:start;display:block' . $extra; };
+$am_html = '<!DOCTYPE html><html><head><title>T</title></head><body>'
+	. '<header class="w-full sticky top-0" data-sc-cs="background-color:rgb(250, 248, 245);font-size:16px;border-bottom-width:1px;border-bottom-style:solid;border-bottom-color:rgb(234, 227, 217);height:126px;display:block;position:sticky;width:1440px">'
+	// row 1 — the utility bar: arbitrary 11px type, no fill of its own, its groups are its OWN children
+	. '<div class="w-full px-12 py-3 flex items-center justify-between text-[11px] uppercase" data-sc-cs="font-size:11px;padding:12px 48px;border-bottom-width:1px;border-bottom-style:solid;border-bottom-color:rgb(240, 234, 225);height:75px;display:flex;justify-content:space-between;align-items:center;flex-direction:row">'
+	. '<div data-sc-cs="font-size:11px;height:17px;display:block"><button data-sc-cs="font-size:11px;height:17px;display:flex;align-items:center"><span data-sc-cs="font-size:11px;height:17px;display:block">Ship to:</span><span data-sc-cs="font-size:11px;height:17px;display:block">USA</span></button></div>'
+	. '<div class="text-center" data-sc-zone="w:300px;h:50px;x:570px;y:0px;justify:center" data-sc-cs="font-size:11px;height:50px;display:block;text-align:center"><a class="inline-block" href="/" data-sc-cs="color:rgb(17, 17, 17);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:26px;font-weight:400;line-height:32px;letter-spacing:5px;height:32px;display:block">Brandy</a></div>'
+	. '<div data-sc-cs="font-size:11px;height:17px;display:flex;gap:16px"><a href="/search" data-sc-cs="font-size:11px;height:17px;display:block">Search</a><a href="/cart" data-sc-cs="font-size:11px;height:17px;display:block">Cart (0)</a></div>'
+	. '</div>'
+	// row 2 — the nav, centred
+	. '<nav class="w-full px-6 py-3 hidden md:flex items-center justify-center gap-10 text-[12px]" data-sc-cs="font-size:12px;padding:12px 24px;height:42px;display:flex;justify-content:center;align-items:center;gap:40px;flex-direction:row"><a href="/shop" data-sc-cs="font-size:12px;height:18px;display:block">Shop</a><a href="/story" data-sc-cs="font-size:12px;height:18px;display:block">Our story</a><a href="/flavors" data-sc-cs="font-size:12px;height:18px;display:block">Flavors</a><a href="/contact" data-sc-cs="font-size:12px;height:18px;display:block">Contact</a></nav>'
+	// row 3 — the PHONE row (hidden at desktop): its MENU toggle must not become a header CTA
+	. '<div class="flex md:hidden items-center justify-between px-6 py-2" data-sc-cs="font-size:12px;padding:8px 24px;height:24px;display:none;justify-content:space-between;align-items:center"><button class="text-xs uppercase" data-sc-cs="font-size:12px;height:18px;display:block">Menu</button></div>'
+	. '</header>'
+	. '<section data-sc-cs="' . $am_cs( 16 ) . ';padding:96px 0px;height:420px"><div class="max-w-7xl mx-auto px-4" data-sc-cs="' . $am_cs( 16 ) . ';max-width:1280px;margin:0px auto;padding:0px 16px;height:228px">'
+	. '<h1 data-sc-cs="color:rgb(17, 17, 17);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:64px;font-weight:400;line-height:68px;height:68px;display:block">Iconic pickles.</h1>'
+	. '<p data-sc-cs="' . $am_cs( 16 ) . ';height:24px">Crafted in France since 1923, naturally fermented for a refined, complex taste.</p>'
+	// a two-leaf benefit item: title + description at nearly the same SIZE, split by weight
+	. '<div class="flex items-center gap-3" data-sc-cs="' . $am_cs( 12 ) . ';display:flex;gap:12px;align-items:center;height:40px"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-globe w-5 h-5" data-sc-cs="color:rgb(165, 180, 170);height:20px;width:20px"><circle cx="12" cy="12" r="10"></circle></svg><div data-sc-cs="' . $am_cs( 12 ) . ';height:40px"><p class="font-semibold uppercase" data-sc-cs="color:rgb(255, 255, 255);font-size:12px;font-weight:600;line-height:16px;text-transform:uppercase;font-family:Helvetica, Inter, Arial, sans-serif;height:16px;display:block">Worldwide shipping</p><p data-sc-cs="color:rgb(184, 212, 187);font-size:11px;font-weight:400;line-height:16px;font-family:Helvetica, Inter, Arial, sans-serif;height:16px;display:block">Delivered cold and secure to your door.</p></div></div>'
+	. '<div class="flex items-center gap-3" data-sc-cs="' . $am_cs( 12 ) . ';display:flex;gap:12px;align-items:center;height:40px"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-shield-check w-5 h-5" data-sc-cs="color:rgb(165, 180, 170);height:20px;width:20px"><circle cx="12" cy="12" r="10"></circle></svg><div data-sc-cs="' . $am_cs( 12 ) . ';height:40px"><p class="font-semibold uppercase" data-sc-cs="color:rgb(255, 255, 255);font-size:12px;font-weight:600;line-height:16px;text-transform:uppercase;font-family:Helvetica, Inter, Arial, sans-serif;height:16px;display:block">Secure payment</p><p data-sc-cs="color:rgb(184, 212, 187);font-size:11px;font-weight:400;line-height:16px;font-family:Helvetica, Inter, Arial, sans-serif;height:16px;display:block">Safe and encrypted global checkout.</p></div></div>'
+	. '</div></section>'
+	// the footer: the brand is an <h3> inside the home link — not a lead CTA heading
+	. '<footer data-sc-cs="' . $am_cs( 16 ) . ';padding:64px 48px;height:360px"><div class="grid grid-cols-4 gap-12" data-sc-cs="' . $am_cs( 16 ) . ';display:grid;gap:48px;grid-template-columns:336px 336px 336px 336px;height:240px">'
+	. '<div data-sc-cs="' . $am_cs( 16 ) . ';height:240px"><a href="/" data-sc-cs="' . $am_cs( 16 ) . ';height:40px;display:block"><h3 data-sc-cs="color:rgb(17, 17, 17);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:24px;font-weight:400;line-height:32px;letter-spacing:4px;height:32px;display:block">Brandy</h3></a>'
+	. '<p data-sc-cs="' . $am_cs( 13 ) . ';height:60px">Naturally fermented French cornichons and artisanal condiments, hand-crafted since 1923.</p>'
+	. '<span data-sc-cs="color:rgb(17, 17, 17);font-size:10px;font-weight:500;line-height:15px;letter-spacing:1.8px;text-transform:uppercase;font-family:Helvetica, Inter, Arial, sans-serif;height:15px;display:block">Join our culinary circle</span>'
+	. '<form data-sc-cs="' . $am_cs( 12 ) . ';display:flex;height:36px"><input placeholder="Enter your email address" data-sc-cs="background-color:rgb(255,255,255);color:rgb(17,17,17);font-size:12px;height:36px;display:block"><button data-sc-cs="background-color:rgb(17,17,17);color:rgb(255,255,255);font-size:12px;height:36px;display:block">Join</button></form></div>'
+	. '<div data-sc-cs="' . $am_cs( 16 ) . ';height:240px"><h4 data-sc-cs="' . $am_cs( 11 ) . ';height:16px">Shop</h4><ul data-sc-cs="' . $am_cs( 13 ) . ';height:96px"><li data-sc-cs="' . $am_cs( 13 ) . '"><a href="/all" data-sc-cs="' . $am_cs( 13 ) . '">All products</a></li><li data-sc-cs="' . $am_cs( 13 ) . '"><a href="/gifts" data-sc-cs="' . $am_cs( 13 ) . '">Gift sets</a></li></ul></div>'
+	. '<div data-sc-cs="' . $am_cs( 16 ) . ';height:240px"><h4 data-sc-cs="' . $am_cs( 11 ) . ';height:16px">About</h4><ul data-sc-cs="' . $am_cs( 13 ) . ';height:96px"><li data-sc-cs="' . $am_cs( 13 ) . '"><a href="/story" data-sc-cs="' . $am_cs( 13 ) . '">Our story</a></li><li data-sc-cs="' . $am_cs( 13 ) . '"><a href="/craft" data-sc-cs="' . $am_cs( 13 ) . '">Craftsmanship</a></li></ul></div>'
+	. '<div data-sc-cs="' . $am_cs( 16 ) . ';height:240px"><h4 data-sc-cs="' . $am_cs( 11 ) . ';height:16px">Help</h4><ul data-sc-cs="' . $am_cs( 13 ) . ';height:96px"><li data-sc-cs="' . $am_cs( 13 ) . '"><a href="/ship" data-sc-cs="' . $am_cs( 13 ) . '">Shipping</a></li><li data-sc-cs="' . $am_cs( 13 ) . '"><a href="/returns" data-sc-cs="' . $am_cs( 13 ) . '">Returns</a></li></ul></div>'
+	. '</div></footer></body></html>';
+$am_bl = FW_Site_Converter_Sources::build_from_html( $am_html, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$am_v  = $am_bl['files']['theme-settings.json']['values'] ?? array();
+$am_hl = $am_v['header_layout'] ?? array();
+// A THREE-ZONE masthead (utility · wordmark · utility) keeps CLASSIC with the logo in the centre column: the
+// centered design lays the main row out as a COLUMN, which stacks those side groups above and below the wordmark
+// (measured: the left group 27px above the brand, the right group 47px below). `centered` is for a logo ABOVE a nav.
+ga( "[AM] a three-zone masthead (utility · wordmark · utility) stays the CLASSIC design — `centered` would stack its side groups", 'classic' === (string) ( $am_hl['header_mode']['top']['header_design']['design'] ?? '' ), wp_json_encode( $am_hl['header_mode'] ?? null ) );
+$am_main = wp_json_encode( $am_v['header_main'] ?? array() );
+$am_bb   = wp_json_encode( $am_v['header_bottombar'] ?? array() );
+// The row that carries the BRAND is the masthead — utility · wordmark · utility maps to header_main's three
+// zones, and the nav row below it rides the native Bottom Bar. Mapped as a top bar instead, one source row
+// became two converted rows and the header ran 37px taller than the source.
+ga( "[AM] a masthead row (utility · centred wordmark · utility) maps to header_main's three zones — never to a separate top bar", false !== stripos( $am_main, 'Ship to' ) && false !== stripos( $am_main, 'Cart (0)' ) && false !== stripos( $am_main, '"logo"' ) && empty( $am_v['header_topbar']['topbar_left'] ), $am_main );
+ga( "[AM] …and the NAV row below it rides the native Bottom Bar, centred (not the main row's end column)", false !== stripos( $am_bb, 'menu_area' ) && false !== stripos( $am_bb, 'bottombar_center' ), $am_bb );
+ga( "[AM] plain header controls that paint nothing are TEXT LINKS, never filled CTA buttons", false === stripos( $am_main, 'cta_text":"Search' ) && false === stripos( $am_main, 'cta_text":"Cart' ), $am_main );
+ga( "[AM] the phone row's Menu toggle is no desktop action", false === stripos( $am_main, 'cta_text":"Menu' ), $am_main );
+// …and a utility row with NO brand in it IS still a top bar (the same fixture, brand removed)
+$am_html_nb = str_replace( '<a class="inline-block" href="/"', '<span class="inline-block"', str_replace( '</a></div>' . "\n", '</span></div>' . "\n", $am_html ) );
+$am_html_nb = preg_replace( '~<div class="text-center"[^>]*>.*?</div>~s', '<div class="text-center"></div>', $am_html, 1 );
+$am_v_nb = FW_Site_Converter_Sources::build_from_html( $am_html_nb, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$am_tb_txt = wp_strip_all_tags( wp_json_encode( $am_v_nb['header_topbar'] ?? array() ) );
+ga( "[AM] a BRANDLESS utility row whose type is an ARBITRARY size (`text-[11px]`) and which paints nothing is still a TOP BAR — both groups survive, kept apart", false !== stripos( $am_tb_txt, 'Ship to' ) && false !== stripos( $am_tb_txt, 'Cart (0)' ) && false !== stripos( $am_tb_txt, 'Search' ) && false === stripos( $am_tb_txt, 'SearchCart' ), $am_tb_txt );
+$am_f = wp_json_encode( array( $am_v['main_footer_columns'] ?? array(), $am_v['pre_footer_columns'] ?? array(), $am_v['footer_columns'] ?? array() ) );
+ga( "[AM] a footer <h3> that is the BRAND wordmark is not a lead heading — the brand column keeps its description and its newsletter label", false !== stripos( $am_f, 'Naturally fermented French cornichons' ) && false !== stripos( $am_f, 'Join our culinary circle' ), mb_substr( $am_f, 0, 400 ) );
+$am_pg = $am_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
+$am_fl = $r_find( $am_pg, function ( $n ) { return 'feature_list' === ( $n['shortcode'] ?? '' ); } );
+$am_items = is_array( $am_fl ) ? (array) ( $am_fl['atts']['items'] ?? array() ) : array();
+$am_first = $am_items ? reset( $am_items ) : array();
+ga( "[AM] a title + description pair at nearly the same SIZE is split by WEIGHT (it had run together: \"WORLDWIDE SHIPPINGDelivered cold…\")", is_array( $am_first ) && false === stripos( (string) ( $am_first['item_text'] ?? ( $am_first['text'] ?? '' ) ), 'shippingdelivered' ), wp_json_encode( $am_first ) );
+
+/* ============================================================================================
+ * [AN] A PINNED LABEL over a photo — a short unskinned line the source holds by a corner of the
+ * picture (`absolute top-6 left-6`). It has no fill and no radius, so neither the floating-CARD nor
+ * the decorative-BLOB bucket claimed it: the frame stopped counting as an image composite, the walk
+ * split it into a bare image plus a stray paragraph, and the label rendered ~650px BELOW the photo in
+ * the page's body face instead of over it (a real-site audit). Two rules together fix it — the label
+ * is its own overlay class folded onto the media node as a pinned pseudo-element, and a grid CELL that
+ * IS such a frame is claimed whole rather than walked child-by-child.
+ * ========================================================================================== */
+$an_cs = function ( $extra = '' ) { return 'color:rgb(18,18,18);font-family:Helvetica, Inter, Arial, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $extra; };
+$an_frame = '<div class="relative h-[680px] overflow-hidden" data-sc-cs="' . $an_cs( ';position:relative;height:680px;overflow:hidden;width:817px' ) . '">'
+	. '<img alt="Farmer" class="w-full h-full object-cover" src="https://example.com/story-farmer.png" data-sc-cs="' . $an_cs( ';object-fit:cover;height:680px;width:817px;max-width:100%' ) . '">'
+	. '<div class="absolute top-6 left-6 pointer-events-none opacity-40" data-sc-cs="' . $an_cs( ';position:absolute;top:24px;right:576px;bottom:632px;left:24px;opacity:0.4;height:24px' ) . '">'
+	. '<span class="text-xs font-serif uppercase tracking-[0.28em] text-white" data-sc-cs="color:rgb(255,255,255);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:12px;font-weight:400;line-height:16px;letter-spacing:3.36px;text-align:start;text-transform:uppercase;display:inline">Terroir &middot; 1923</span>'
+	. '</div></div>';
+$an_html = '<!DOCTYPE html><html><head><title>T</title></head><body>'
+	. '<header data-sc-cs="' . $an_cs( ';height:72px' ) . '"><nav data-sc-cs="' . $an_cs( ';display:flex;height:72px' ) . '"><a href="/" data-sc-cs="' . $an_cs( ';font-size:26px' ) . '">Brandy</a><a href="/a" data-sc-cs="' . $an_cs() . '">Work</a><a href="/b" data-sc-cs="' . $an_cs() . '">About</a></nav></header>'
+	. '<section id="story" data-sc-cs="' . $an_cs( ';padding:96px 0px;height:800px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $an_cs( ';max-width:1280px;margin:0px auto;height:680px' ) . '">'
+	. '<div class="grid grid-cols-2" data-sc-cs="' . $an_cs( ';display:grid;grid-template-columns:603px 817px;height:680px' ) . '">'
+	. '<div data-sc-cs="' . $an_cs( ';height:680px' ) . '"><h2 data-sc-cs="' . $an_cs( ';font-size:44px;font-weight:400;height:100px' ) . '">A Century Of Craftsmanship</h2><p data-sc-cs="' . $an_cs( ';height:72px' ) . '">Born in the heart of the country, perfected over a hundred years of patient work.</p></div>'
+	. $an_frame . '</div></div></section>'
+	. '<footer data-sc-cs="' . $an_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $an_cs( ';height:24px' ) . '">&copy; 2026 Brandy</p></footer></body></html>';
+$an_pg  = FW_Site_Converter_Sources::build_from_html( $an_html, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$an_img = $r_find( $an_pg, function ( $n ) { return 'media_image' === ( $n['shortcode'] ?? '' ); } );
+$an_css = is_array( $an_img ) ? (string) ( $an_img['atts']['custom_css'] ?? '' ) : '';
+$an_txt = $r_find( $an_pg, function ( $n ) { return 'text_block' === ( $n['shortcode'] ?? '' ) && false !== stripos( (string) ( $n['atts']['text'] ?? '' ), 'Terroir' ); } );
+ga( "[AN] the frame is still ONE media_image (the photo was not split from its label)", is_array( $an_img ), $an_css );
+ga( "[AN] the pinned label rides the media node as a pseudo-element, never as a paragraph in the flow", false !== strpos( $an_css, '::after' ) && false !== stripos( $an_css, 'Terroir' ) && null === $an_txt, mb_substr( $an_css, 0, 300 ) );
+ga( "[AN] …anchored to the corner the source measured (top/left, not the computed bottom/right complements)", (bool) preg_match( '/::after\{[^}]*top:24px/', $an_css ) && (bool) preg_match( '/::after\{[^}]*left:24px/', $an_css ) && false === strpos( $an_css, 'bottom:632' ), mb_substr( $an_css, 0, 300 ) );
+ga( "[AN] …wearing its OWN face (the serif, its tracking, uppercase and the wrapper's opacity), not the page body face", (bool) preg_match( '/::after\{[^}]*font-size:12px/', $an_css ) && false !== stripos( $an_css, 'Cormorant' ) && (bool) preg_match( '/::after\{[^}]*letter-spacing:3.36px/', $an_css ) && (bool) preg_match( '/::after\{[^}]*text-transform:uppercase/', $an_css ) && (bool) preg_match( '/::after\{[^}]*opacity:0.4/', $an_css ), mb_substr( $an_css, 0, 400 ) );
+// NEGATIVE: a label that PAINTS (a chip with a fill) is a floating CARD, not a pseudo-element watermark
+$an_html2 = str_replace( 'class="absolute top-6 left-6 pointer-events-none opacity-40" data-sc-cs="' . $an_cs( ';position:absolute;top:24px;right:576px;bottom:632px;left:24px;opacity:0.4;height:24px' ),
+	'class="absolute top-6 left-6 bg-white rounded-full shadow" data-sc-cs="' . $an_cs( ';position:absolute;top:24px;right:576px;bottom:632px;left:24px;height:24px;background-color:rgb(255,255,255);border-radius:9999px;box-shadow:rgba(0,0,0,0.1) 0px 2px 8px 0px' ), $an_html );
+$an_pg2  = FW_Site_Converter_Sources::build_from_html( $an_html2, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$an_img2 = $r_find( $an_pg2, function ( $n ) { return 'media_image' === ( $n['shortcode'] ?? '' ); } );
+$an_css2 = is_array( $an_img2 ) ? (string) ( $an_img2['atts']['custom_css'] ?? '' ) : '';
+// A PLAY CONTROL over the picture — a round painted button holding one glyph, centred by a full-bleed
+// layer. It matched no overlay class, so the frame stopped being a composite and the button rendered in
+// the FLOW: it appeared at the top of the NEXT section.
+$an_play = '<div class="absolute inset-0 flex items-center justify-center" data-sc-cs="' . $an_cs( ';position:absolute;top:0px;right:0px;bottom:0px;left:0px;display:flex;align-items:center;justify-content:center' ) . '">'
+	. '<button class="w-16 h-16 rounded-full bg-white/90 shadow-lg" aria-label="Play the film" data-sc-cs="color:rgb(0,0,0);background-color:rgba(255,255,255,0.9);border-radius:9999px;width:64px;height:64px;box-shadow:rgba(0, 0, 0, 0.1) 0px 10px 15px 0px;display:flex;align-items:center;justify-content:center">'
+	. '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-play w-6 h-6" data-sc-cs="width:24px;height:24px"><path d="M5 5l15 7-15 7z" fill="currentColor"></path></svg>'
+	. '</button></div>';
+$an_html4 = str_replace( '<div class="absolute top-6 left-6', $an_play . '<div class="absolute top-6 left-6', $an_html );
+$an_pg4  = FW_Site_Converter_Sources::build_from_html( $an_html4, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$an_img4 = $r_find( $an_pg4, function ( $n ) { return 'media_image' === ( $n['shortcode'] ?? '' ); } );
+$an_css4 = is_array( $an_img4 ) ? (string) ( $an_img4['atts']['custom_css'] ?? '' ) : '';
+$an_icon4 = $r_find( $an_pg4, function ( $n ) { return in_array( (string) ( $n['shortcode'] ?? '' ), array( 'icon', 'sc_icon' ), true ); } );
+ga( "[AN] a PLAY control over the picture is pinned at its centre, never left in the flow (it had landed atop the next section)", (bool) preg_match( '/::before\{[^}]*top:50%/', $an_css4 ) && (bool) preg_match( '/::before\{[^}]*data:image\/svg/', $an_css4 ) && null === $an_icon4, mb_substr( $an_css4, 0, 400 ) );
+ga( "[AN] …wearing the control's own circle, fill, shadow and measured size", (bool) preg_match( '/::before\{[^}]*width:64px/', $an_css4 ) && (bool) preg_match( '/::before\{[^}]*background-color:rgba\(255, ?255, ?255, ?0.9\)/', $an_css4 ) && (bool) preg_match( '/::before\{[^}]*box-shadow:/', $an_css4 ), mb_substr( $an_css4, 0, 500 ) );
+ga( "[AN] …with `currentColor` resolved to the control's measured ink (a data URI has no cascade to inherit from)", false === stripos( $an_css4, 'currentColor' ), mb_substr( $an_css4, 0, 500 ) );
+ga( "[AN] …and the caption label still rides ::after beside it", (bool) preg_match( '/::after\{[^}]*content:"Terroir/', $an_css4 ), mb_substr( $an_css4, 0, 600 ) );
+// NEGATIVE: a STACKED lockup (a circular seal on three lines) is not one label — a pseudo-element's
+// `content` is a single string, so folding it would have read "MAISON1923FRANCE".
+$an_seal = '<span data-sc-cs="' . $an_cs( ';font-size:11px' ) . '">Maison</span><span data-sc-cs="' . $an_cs( ';font-size:11px' ) . '">1923</span><span data-sc-cs="' . $an_cs( ';font-size:11px' ) . '">France</span>';
+$an_html3 = str_replace( '<span class="text-xs font-serif uppercase tracking-[0.28em] text-white" data-sc-cs="color:rgb(255,255,255);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:12px;font-weight:400;line-height:16px;letter-spacing:3.36px;text-align:start;text-transform:uppercase;display:inline">Terroir &middot; 1923</span>', $an_seal, $an_html );
+$an_pg3  = FW_Site_Converter_Sources::build_from_html( $an_html3, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$an_css3 = (string) ( ( $r_find( $an_pg3, function ( $n ) { return 'media_image' === ( $n['shortcode'] ?? '' ); } ) )['atts']['custom_css'] ?? '' );
+ga( "[AN] NEGATIVE: a STACKED lockup over the photo is never folded into one pseudo-element string", false === stripos( $an_css3, 'Maison1923France' ), mb_substr( $an_css3, 0, 300 ) );
+ga( "[AN] NEGATIVE: a SKINNED chip over the photo stays a floating card — it is not flattened into a pseudo-element label", false === strpos( $an_css2, '::after' ) || false === stripos( $an_css2, 'Terroir' ), mb_substr( $an_css2, 0, 300 ) );
+
+
+/* ============================================================================================
+ * [AO] A PRODUCT TILE's meta row and its bare "add to cart" control.
+ *  · the row that lays a volume and a price APART keeps two cells, each with its own type — joined
+ *    with a separator, the price read as mid-sentence body copy at the card's size;
+ *  · a measured colour is written as HEX, because WordPress's inline-style filter drops `rgb()`
+ *    outright (the colour vanished from the rendered row while the data looked right);
+ *  · a control ruled only top and bottom keeps those edges — substituting a Button Preset drew a
+ *    full box around it;
+ *  · its trailing glyph comes back as a currentColour MASK, since the image box owns the CTA markup
+ *    and an inline svg had nowhere to go (it was simply dropped);
+ *  · the control's measured type is scoped to `.imgbox__btn` as well as `.imgbox__link`, which only
+ *    exists in the Link style — the label had rendered at the theme's 16px, not the source's 11px.
+ * ========================================================================================== */
+$ao_cs = function ( $extra = '' ) { return 'color:rgb(18,18,18);font-family:Helvetica, Inter, Arial, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $extra; };
+$ao_card = '<div class="flex flex-col group" data-sc-cs="' . $ao_cs( ';display:flex;flex-direction:column;height:520px' ) . '">'
+	. '<div class="relative" data-sc-cs="' . $ao_cs( ';position:relative;height:354px;background-color:rgb(242,237,230)' ) . '"><img alt="Jar" class="w-full h-full object-contain" src="https://example.com/jar.png" data-sc-cs="' . $ao_cs( ';object-fit:contain;height:290px;width:240px;max-width:100%' ) . '"></div>'
+	. '<h3 data-sc-cs="' . $ao_cs( ';font-size:18px;font-weight:400;height:26px' ) . '">Original Dill Cornichons</h3>'
+	. '<div class="flex justify-between" data-sc-cs="' . $ao_cs( ';display:flex;justify-content:space-between;height:20px' ) . '">'
+	. '<span data-sc-cs="color:rgb(122,117,110);font-family:Helvetica, Inter, Arial, sans-serif;font-size:12px;font-weight:400;line-height:16px;display:inline">370ml</span>'
+	. '<span data-sc-cs="color:rgb(17,17,17);font-family:Helvetica, Inter, Arial, sans-serif;font-size:14px;font-weight:600;line-height:20px;display:inline">$11.00</span>'
+	. '</div>'
+	. '<button class="flex justify-between items-center" data-sc-cs="color:rgb(34,34,34);font-family:Helvetica, Inter, Arial, sans-serif;font-size:11px;font-weight:500;line-height:16px;letter-spacing:2.2px;text-transform:uppercase;text-align:center;padding:10px 4px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(213,203,192);border-bottom-width:1px;border-bottom-style:solid;border-bottom-color:rgb(213,203,192);border-radius:0px;height:38px;display:flex;justify-content:space-between;align-items:center">'
+	. '<span data-sc-cs="' . $ao_cs( ';font-size:11px' ) . '">Add to Cart</span>'
+	. '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="lucide lucide-plus w-3.5 h-3.5" data-sc-cs="height:14px;width:14px"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>'
+	. '</button></div>';
+$ao_html = '<!DOCTYPE html><html><head><title>T</title></head><body>'
+	. '<header data-sc-cs="' . $ao_cs( ';height:72px' ) . '"><nav data-sc-cs="' . $ao_cs( ';display:flex;height:72px' ) . '"><a href="/" data-sc-cs="' . $ao_cs( ';font-size:26px' ) . '">Brandy</a><a href="/a" data-sc-cs="' . $ao_cs() . '">Shop</a><a href="/b" data-sc-cs="' . $ao_cs() . '">About</a></nav></header>'
+	. '<section id="collection" data-sc-cs="' . $ao_cs( ';padding:96px 0px;height:760px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $ao_cs( ';max-width:1280px;margin:0px auto;height:560px' ) . '">'
+	. '<h2 data-sc-cs="' . $ao_cs( ';font-size:28px;height:36px' ) . '">The Collection</h2>'
+	. '<div class="grid grid-cols-4" data-sc-cs="' . $ao_cs( ';display:grid;grid-template-columns:302px 302px 302px 302px;gap:24px;height:520px' ) . '">'
+	. str_repeat( $ao_card, 4 ) . '</div></div></section>'
+	. '<footer data-sc-cs="' . $ao_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $ao_cs( ';height:24px' ) . '">&copy; 2026 Brandy</p></footer></body></html>';
+$ao_pg  = FW_Site_Converter_Sources::build_from_html( $ao_html, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$ao_box = $r_find( $ao_pg, function ( $n ) { return 'image_box' === ( $n['shortcode'] ?? '' ); } );
+$ao_a   = is_array( $ao_box ) ? (array) ( $ao_box['atts'] ?? array() ) : array();
+$ao_txt = (string) ( $ao_a['text'] ?? '' );
+$ao_css = (string) ( $ao_a['custom_css'] ?? '' );
+ga( "[AO] the tile is one image_box carrying the CTA label", is_array( $ao_box ) && false !== stripos( (string) ( $ao_a['button_label'] ?? '' ), 'Add to Cart' ), wp_json_encode( array( $ao_a['button_label'] ?? '', $ao_a['button_style'] ?? '' ) ) );
+ga( "[AO] the meta row keeps TWO cells laid apart, never one joined sentence", false !== strpos( $ao_txt, 'justify-content:space-between' ) && false !== strpos( $ao_txt, '>370ml<' ) && false !== strpos( $ao_txt, '>$11.00<' ), $ao_txt );
+ga( "[AO] …each cell wearing its OWN measured type (12px grey volume beside a 14px semibold price)", (bool) preg_match( '/font-size:12px[^"]*"[^>]*>370ml/', $ao_txt ) && (bool) preg_match( '/font-size:14px[^"]*font-weight:600/', $ao_txt ), $ao_txt );
+ga( "[AO] …and its colour written as HEX, which WordPress's inline-style filter keeps (an `rgb()` one is dropped)", false !== stripos( $ao_txt, '#7a756e' ) && false === stripos( $ao_txt, 'rgb(122' ), $ao_txt );
+ga( "[AO] the control ruled only top+bottom keeps those edges and paints no fill — no Preset box around it", (bool) preg_match( '/\.imgbox__btn\{[^}]*border-top:1px solid/', $ao_css ) && (bool) preg_match( '/\.imgbox__btn\{[^}]*background:transparent/', $ao_css ) && empty( $ao_a['button_preset'] ), mb_substr( $ao_css, 0, 400 ) );
+ga( "[AO] …and keeps its label and glyph apart, as the source lays them", (bool) preg_match( '/\.imgbox__btn\{[^}]*justify-content:space-between/', $ao_css ), mb_substr( $ao_css, 0, 400 ) );
+ga( "[AO] the trailing glyph comes back as a current-colour MASK (the image box owns the CTA markup, so an inline svg had nowhere to go)", (bool) preg_match( '/\.imgbox__btn::after\{[^}]*mask:url\("data:image\/svg\+xml/', $ao_css ) && (bool) preg_match( '/\.imgbox__btn::after\{[^}]*background-color:currentColor/', $ao_css ), mb_substr( $ao_css, 0, 600 ) );
+ga( "[AO] …at the glyph's RENDERED size (its `w-3.5` class, not the svg's own 24px attribute)", (bool) preg_match( '/\.imgbox__btn::after\{[^}]*width:14px/', $ao_css ), mb_substr( $ao_css, 0, 600 ) );
+ga( "[AO] the control's measured type is scoped to .imgbox__btn too — `.imgbox__link` exists only in the Link style", (bool) preg_match( '/\.imgbox__btn\{[^}]*font-size:11px|\.imgbox__link,selector \.imgbox__btn\{/', $ao_css ), mb_substr( $ao_css, 0, 600 ) );
+
+
+/* ============================================================================================
+ * [AP] A FIVE-COLUMN footer: a wide brand column beside four link columns.
+ *  · the theme's fifths picker can only express compositions summing to five units, so five
+ *    physical columns have no native choice but "equal" — the measured tracks ride as scoped CSS.
+ *    Equal-split, the brand column came out 162px too narrow, its wordmark wrapped to a second line
+ *    and every link column shifted ~128px left, leaving the footer 88px taller than the source;
+ *  · a plain TEXT link to a social network, listed under a "Follow us" heading, is one of that
+ *    column's entries — it had been hoovered into the brand column's icon row, so the column lost
+ *    two of its four links and the footer grew two glyphs the source never drew.
+ * ========================================================================================== */
+$ap_cs = function ( $extra = '' ) { return 'color:rgb(18,18,18);font-family:Helvetica, Inter, Arial, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $extra; };
+$ap_col = function ( $title, $links, $span = 2 ) use ( $ap_cs ) {
+	$li = '';
+	foreach ( $links as $lbl => $href ) { $li .= '<li data-sc-cs="' . $ap_cs( ';height:20px' ) . '"><a href="' . $href . '" data-sc-cs="' . $ap_cs( ';font-size:12px;height:18px;display:inline' ) . '">' . $lbl . '</a></li>'; }
+	return '<div class="md:col-span-' . $span . '" data-sc-cs="' . $ap_cs( ';width:197px;height:180px' ) . '">'
+		. '<h4 data-sc-cs="' . $ap_cs( ';font-size:11px;font-weight:600;letter-spacing:2.2px;text-transform:uppercase;height:17px' ) . '">' . $title . '</h4>'
+		. '<ul data-sc-cs="' . $ap_cs( ';height:120px' ) . '">' . $li . '</ul></div>';
+};
+$ap_brand = '<div class="md:col-span-4" data-sc-cs="' . $ap_cs( ';width:425px;height:240px' ) . '">'
+	. '<a class="inline-block" href="/" data-sc-cs="' . $ap_cs( ';height:44px' ) . '"><h2 data-sc-cs="' . $ap_cs( ';font-size:24px;height:24px' ) . '">Brandy Maison</h2></a>'
+	. '<p data-sc-cs="' . $ap_cs( ';font-size:12px;height:40px' ) . '">Naturally fermented condiments, hand-crafted with time-honored heritage.</p></div>';
+$ap_grid = 'color:rgb(18,18,18);font-family:Helvetica, Inter, Arial, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:grid;grid-template-columns:97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px;gap:32px;height:240px';
+$ap_row = '<div class="max-w-[1340px] mx-auto grid grid-cols-1 md:grid-cols-12" data-sc-cs="' . $ap_grid . '">'
+	. $ap_brand
+	. $ap_col( 'Shop', array( 'All Products' => '/shop', 'Best Sellers' => '/shop' ) )
+	. $ap_col( 'About', array( 'Our Story' => '/story', 'Craftsmanship' => '/story' ) )
+	. $ap_col( 'Help', array( 'Shipping' => '/contact', 'Returns' => '/contact' ) )
+	. $ap_col( 'Follow Us', array( 'Instagram' => 'https://instagram.com', 'Facebook' => 'https://facebook.com', 'The Gazette' => '/journal' ) )
+	. '</div>';
+$ap_html = '<!DOCTYPE html><html><head><title>T</title></head><body>'
+	. '<header data-sc-cs="' . $ap_cs( ';height:72px' ) . '"><nav data-sc-cs="' . $ap_cs( ';display:flex;height:72px' ) . '"><a href="/" data-sc-cs="' . $ap_cs( ';font-size:26px' ) . '">Brandy</a><a href="/a" data-sc-cs="' . $ap_cs() . '">Shop</a><a href="/b" data-sc-cs="' . $ap_cs() . '">About</a></nav></header>'
+	. '<section data-sc-cs="' . $ap_cs( ';padding:96px 0px;height:400px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $ap_cs( ';max-width:1280px;margin:0px auto;height:200px' ) . '"><h2 data-sc-cs="' . $ap_cs( ';font-size:36px;height:44px' ) . '">Our Pantry</h2><p data-sc-cs="' . $ap_cs( ';height:24px' ) . '">A paragraph so the page has a body section above its footer.</p></div></section>'
+	. '<footer data-sc-cs="' . $ap_cs( ';padding:64px 0px 48px;height:360px' ) . '">' . $ap_row
+	. '<p data-sc-cs="' . $ap_cs( ';font-size:11px;height:17px' ) . '">&copy; 2026 Brandy Maison. All rights reserved.</p></footer></body></html>';
+$ap_v   = FW_Site_Converter_Sources::build_from_html( $ap_html, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$ap_css = (string) ( $ap_v['misc_custom_css']['custom_css'] ?? '' );
+$ap_cols = wp_json_encode( $ap_v['main_footer_columns'] ?? array() );
+ga( "[AP] the five source columns become five footer columns", '5' === (string) ( $ap_v['main_footer_columns']['count'] ?? '' ), mb_substr( $ap_cols, 0, 200 ) );
+ga( "[AP] the source's MEASURED tracks ride as scoped CSS — the fifths picker cannot express a wide brand beside four equal link columns", (bool) preg_match( '/\.footer-row--grid\{grid-template-columns:2fr 1fr 1fr 1fr 1fr/', $ap_css ), ( preg_match( '/footer-row--grid\{[^}]*\}/', $ap_css, $apm ) ? $apm[0] : '(no track rule)' ) );
+ga( "[AP] …and the source's own column gap with it", (bool) preg_match( '/\.footer-row--grid\{[^}]*column-gap:32px/', $ap_css ), ( preg_match( '/footer-row--grid\{[^}]*\}/', $ap_css, $apm2 ) ? $apm2[0] : '(none)' ) );
+ga( "[AP] a plain TEXT link to a social network stays an entry of its own column", false !== stripos( $ap_cols, 'Instagram' ) && false !== stripos( $ap_cols, 'Facebook' ), mb_substr( $ap_cols, -420 ) );
+ga( "[AP] …and is NOT also drawn as a social glyph in the brand column", false === stripos( $ap_cols, 'social_icons' ), mb_substr( $ap_cols, 0, 300 ) );
+// NEGATIVE: five EQUAL source columns need no override at all
+$ap_eq = str_replace( array( 'class="md:col-span-4" data-sc-cs="' . $ap_cs( ';width:425px;height:240px' ), 'grid-template-columns:97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px 97.5px' ),
+	array( 'class="md:col-span-2" data-sc-cs="' . $ap_cs( ';width:197px;height:240px' ), 'grid-template-columns:197px 197px 197px 197px 197px' ), $ap_html );
+$ap_eq = str_replace( 'md:grid-cols-12', 'md:grid-cols-5', $ap_eq );
+$ap_css2 = (string) ( ( FW_Site_Converter_Sources::build_from_html( $ap_eq, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array() )['misc_custom_css']['custom_css'] ?? '' );
+ga( "[AP] NEGATIVE: an EQUAL five-column source keeps the native layout and gets no track override", false === strpos( $ap_css2, 'footer-row--grid{grid-template-columns' ), ( preg_match( '/footer-row--grid\{[^}]*\}/', $ap_css2, $apm3 ) ? $apm3[0] : '(none — correct)' ) );
+// NEGATIVE: a GLYPH social link is still the social row
+$ap_glyph = str_replace( '<a href="https://instagram.com" data-sc-cs="' . $ap_cs( ';font-size:12px;height:18px;display:inline' ) . '">Instagram</a>',
+	'<a href="https://instagram.com" data-sc-cs="' . $ap_cs( ';font-size:12px;height:18px;display:inline' ) . '"><svg class="lucide lucide-instagram" data-sc-cs="height:16px;width:16px"><path d="M4 4h16v16H4z"></path></svg></a>', $ap_html );
+$ap_cols2 = wp_json_encode( ( FW_Site_Converter_Sources::build_from_html( $ap_glyph, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array() )['main_footer_columns'] ?? array() );
+ga( "[AP] NEGATIVE: a GLYPH-ONLY social link is still the social row, not a column entry", false !== stripos( $ap_cols2, 'social_icons' ), mb_substr( $ap_cols2, 0, 300 ) );
+
+
+/* ============================================================================================
+ * [AQ] VERTICAL RHYTHM — the two ways a source's spacing silently disappeared.
+ *  · A wrapper's own margin (`mt-8` on a button ROW) was folded onto EACH BUTTON. That is right for
+ *    a lone control, but inside a flex row it inflates the row instead of moving it: a hero's button
+ *    row measured 78px instead of 46px and swallowed the air beneath it. The margin belongs to the
+ *    group; the children carry none.
+ *  · A row rebuilt by the bento splitter has its margins zeroed, because a MULTI-row split hands them
+ *    to the wrapping stack — but the SINGLE-row return has no wrapper, so the margin was simply lost.
+ *    A hero's benefit row dropped the 48px above it and the hairline rule under the buttons rode up.
+ * Both were invisible to a position-based check: the row's own padding absorbed the difference, so the
+ * next block landed within a few px of where the source has it. Only a GAP comparison sees them.
+ * ========================================================================================== */
+$aq_cs = function ( $e = '' ) { return 'color:rgb(18,18,18);font-family:Helvetica, Inter, Arial, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$aq_btnrow = '<div class="mt-8 flex flex-wrap items-center gap-4" data-sc-cs="' . $aq_cs( ';display:flex;gap:16px;align-items:center;margin:32px 0px 0px;height:46px' ) . '">'
+	. '<a href="/shop" data-sc-cs="color:rgb(255,255,255);background-color:rgb(18,18,18);font-size:11px;font-weight:500;line-height:16px;letter-spacing:2.2px;text-transform:uppercase;padding:14px 32px;height:44px;display:inline-flex;margin:0px">Shop Collection</a>'
+	. '<a href="/story" data-sc-cs="color:rgb(18,18,18);border-top-width:1px;border-top-style:solid;border-top-color:rgb(213,203,192);font-size:11px;font-weight:500;line-height:16px;letter-spacing:2.2px;text-transform:uppercase;padding:14px 32px;height:44px;display:inline-flex;margin:0px">Discover Our Heritage</a>'
+	. '</div>';
+$aq_html = '<!DOCTYPE html><html><head><title>T</title></head><body>'
+	. '<header data-sc-cs="' . $aq_cs( ';height:72px' ) . '"><nav data-sc-cs="' . $aq_cs( ';display:flex;height:72px' ) . '"><a href="/" data-sc-cs="' . $aq_cs( ';font-size:26px' ) . '">Brandy</a><a href="/a" data-sc-cs="' . $aq_cs() . '">Shop</a><a href="/b" data-sc-cs="' . $aq_cs() . '">About</a></nav></header>'
+	. '<section id="hero" data-sc-cs="' . $aq_cs( ';padding:64px 0px 96px;height:800px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $aq_cs( ';max-width:1280px;margin:0px auto;height:573px' ) . '">'
+	. '<h1 data-sc-cs="' . $aq_cs( ';font-size:76px;line-height:80px;height:240px' ) . '">Iconic Pickles.</h1>'
+	. '<p data-sc-cs="' . $aq_cs( ';height:48px' ) . '">Crafted in France since 1923, naturally fermented for unmatched crunch and a refined taste.</p>'
+	. $aq_btnrow . '</div></section>'
+	. '<footer data-sc-cs="' . $aq_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $aq_cs( ';height:24px' ) . '">&copy; 2026 Brandy</p></footer></body></html>';
+$aq_pg = FW_Site_Converter_Sources::build_from_html( $aq_html, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$aq_btns = array();
+$aq_walk = function ( $items ) use ( &$aq_walk, &$aq_btns ) {
+	foreach ( (array) $items as $it ) { if ( ! is_array( $it ) ) { continue; }
+		if ( 'button' === ( $it['shortcode'] ?? '' ) ) { $aq_btns[] = $it; }
+		$aq_walk( $it['_items'] ?? array() ); } };
+$aq_walk( $aq_pg );
+// the GROUP wrapper = the nearest flexbox whose items are the two buttons
+$aq_group = null;
+$aq_find_group = function ( $items ) use ( &$aq_find_group, &$aq_group ) {
+	foreach ( (array) $items as $it ) { if ( ! is_array( $it ) ) { continue; }
+		$kids = (array) ( $it['_items'] ?? array() );
+		$n = 0; foreach ( $kids as $k ) { if ( is_array( $k ) && 'button' === ( $k['shortcode'] ?? '' ) ) { $n++; } }
+		if ( $n >= 2 && null === $aq_group ) { $aq_group = $it; }
+		$aq_find_group( $kids ); } };
+$aq_find_group( $aq_pg );
+$aq_gm = is_array( $aq_group ) ? (array) ( $aq_group['atts']['spacing']['margin'] ?? array() ) : array();
+$aq_bm = array(); foreach ( $aq_btns as $bb ) { $aq_bm[] = (string) ( $bb['atts']['spacing']['margin']['top'] ?? '' ); }
+ga( "[AQ] both buttons of the row are built", 2 === count( $aq_btns ), count( $aq_btns ) );
+ga( "[AQ] the wrapper's `mt-8` rides the button GROUP, so the row MOVES down", is_array( $aq_group ) && false !== strpos( (string) ( $aq_gm['top'] ?? '' ), '32' ), wp_json_encode( $aq_gm ) );
+ga( "[AQ] …and NOT each button, which would inflate the row instead (78px tall against the source's 46px)", '' === implode( '', $aq_bm ), wp_json_encode( $aq_bm ) );
+
+// …a row the bento splitter rebuilds as ONE row keeps the source row's own margin
+$aq_cell = function ( $t, $sub ) use ( $aq_cs ) { return '<div data-sc-cs="' . $aq_cs( ';height:44px' ) . '"><span data-sc-cs="color:rgb(17,17,17);font-size:18px;font-weight:600;line-height:28px;display:block;height:28px">' . $t . '</span><span data-sc-cs="color:rgb(122,117,110);font-size:11px;line-height:16px;display:block;height:16px">' . $sub . '</span></div>'; };
+$aq_row = '<div class="mt-12 flex items-center gap-6 pt-6 border-t" data-sc-cs="' . $aq_cs( ';display:grid;grid-template-columns:420px 300px;align-items:center;gap:24px;margin:48px 0px 0px;padding:24px 0px 0px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(236,228,219);height:69px' ) . '">'
+	. $aq_cell( '100+ Years', 'Traditional Fermentation' ) . $aq_cell( '100% French', 'Terroir Grown Gherkins' ) . '</div>';
+$aq_html2 = str_replace( $aq_btnrow, $aq_btnrow . $aq_row, $aq_html );
+$aq_pg2 = FW_Site_Converter_Sources::build_from_html( $aq_html2, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$aq_bene = null;
+$aq_find_bene = function ( $items ) use ( &$aq_find_bene, &$aq_bene ) {
+	foreach ( (array) $items as $it ) { if ( ! is_array( $it ) ) { continue; }
+		$j = wp_json_encode( $it );
+		if ( null === $aq_bene && false !== strpos( $j, '100+ Years' ) && false !== strpos( $j, '100% French' ) && 'flexbox' === ( $it['type'] ?? '' )
+			&& false !== strpos( (string) ( $it['atts']['custom_css'] ?? '' ), 'padding-top' ) ) { $aq_bene = $it; }
+		$aq_find_bene( $it['_items'] ?? array() ); } };
+$aq_find_bene( $aq_pg2 );
+$aq_bmar = is_array( $aq_bene ) ? (string) ( $aq_bene['atts']['spacing']['margin']['top'] ?? '' ) : '';
+ga( "[AQ] a rebuilt SINGLE row keeps the source row's own top margin (the multi-row split hands it to a stack; the single-row return had no wrapper and dropped it)", '' !== $aq_bmar, wp_json_encode( array( 'found' => is_array( $aq_bene ), 'mt' => $aq_bmar ) ) );
+
+
+/* ============================================================================================
+ * [AR] A SELF-CAPPED image keeps its cap, and a native widget keeps its own margin.
+ *  · `max-h-[620px] w-auto object-contain` is a picture whose HEIGHT is the fixed dimension. With
+ *    the cap dropped it filled its cell instead — 515×673 against the source's 474×620 — and since
+ *    the copy column beside it is vertically centred, the whole hero grew 53px and every line in
+ *    that column sat 26px low: one defect, three symptoms.
+ *  · A native widget (steps / tabs / gallery …) built into a CELL had its own measured margin
+ *    dropped, while the same widget at section level kept it — so a steps list lost the `mt-8`
+ *    above it.
+ * ========================================================================================== */
+$ar_cs = function ( $e = '' ) { return 'color:rgb(18,18,18);font-family:Helvetica, Inter, Arial, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$ar_step = function ( $n, $t, $c ) use ( $ar_cs ) {
+	return '<div class="flex items-start gap-4" data-sc-cs="' . $ar_cs( ';display:flex;gap:16px;align-items:flex-start;height:40px' ) . '">'
+		. '<div class="w-8 h-8 rounded-full border flex items-center justify-center" data-sc-cs="border-radius:9999px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(184,168,152);height:32px;width:32px;display:flex;align-items:center;justify-content:center;color:rgb(18,18,18);font-size:12px;font-family:Helvetica, Inter, Arial, sans-serif;font-weight:400;line-height:16px">' . $n . '</div>'
+		. '<div data-sc-cs="' . $ar_cs( ';height:40px' ) . '"><h4 data-sc-cs="color:rgb(17,17,17);font-size:12px;font-weight:700;line-height:16px;letter-spacing:1.92px;text-transform:uppercase;font-family:Helvetica, Inter, Arial, sans-serif;height:16px;display:block">' . $t . '</h4>'
+		. '<p class="mt-1" data-sc-cs="color:rgb(102,102,102);font-size:12px;font-weight:400;line-height:19.5px;font-family:Helvetica, Inter, Arial, sans-serif;margin:4px 0px 0px;height:20px;display:block">' . $c . '</p></div></div>';
+};
+$ar_html = '<!DOCTYPE html><html><head><title>T</title></head><body>'
+	. '<header data-sc-cs="' . $ar_cs( ';height:72px' ) . '"><nav data-sc-cs="' . $ar_cs( ';display:flex;height:72px' ) . '"><a href="/" data-sc-cs="' . $ar_cs( ';font-size:26px' ) . '">Brandy</a><a href="/a" data-sc-cs="' . $ar_cs() . '">Shop</a><a href="/b" data-sc-cs="' . $ar_cs() . '">About</a></nav></header>'
+	. '<section id="flavors" data-sc-cs="' . $ar_cs( ';padding:64px 0px;height:700px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $ar_cs( ';max-width:1280px;margin:0px auto;height:560px' ) . '">'
+	. '<div class="grid grid-cols-2" data-sc-cs="' . $ar_cs( ';display:grid;grid-template-columns:640px 640px;gap:32px;height:560px' ) . '">'
+	// the MEDIA cell: a self-capped product shot
+	. '<div class="relative flex items-center justify-center" data-sc-cs="' . $ar_cs( ';position:relative;display:flex;align-items:center;justify-content:center;height:560px' ) . '">'
+	. '<div class="absolute inset-0 blur-2xl rounded-full" data-sc-cs="' . $ar_cs( ';position:absolute;top:0px;right:0px;bottom:0px;left:0px;background-color:rgba(234,225,213,0.4);border-radius:9999px' ) . '"></div>'
+	. '<img alt="Jar" class="max-h-[540px] md:max-h-[620px] w-auto object-contain" src="https://example.com/jar.png" data-sc-cs="' . $ar_cs( ';object-fit:contain;max-width:100%;height:620px' ) . '">'
+	. '</div>'
+	// the COPY cell: a heading + a steps list carrying its own `mt-8`
+	. '<div data-sc-cs="' . $ar_cs( ';height:560px' ) . '"><h2 data-sc-cs="' . $ar_cs( ';font-size:44px;line-height:48px;height:96px' ) . '">Crisp. Balanced.</h2>'
+	. '<div class="mt-8 space-y-6" data-sc-cs="' . $ar_cs( ';margin:32px 0px 0px;height:200px' ) . '">'
+	. $ar_step( '01', 'Naturally fermented', 'Slow-fermented for depth of flavor and beneficial live cultures.' )
+	. '<div data-sc-cs="' . $ar_cs( ';margin:24px 0px 0px;height:40px' ) . '">' . $ar_step( '02', 'Premium ingredients', 'Made with fresh hand-picked cucumbers and coarse sea salt.' ) . '</div>'
+	. '<div data-sc-cs="' . $ar_cs( ';margin:24px 0px 0px;height:40px' ) . '">' . $ar_step( '03', 'No shortcuts', 'No artificial stabilizers, vinegar sharpness or industrial dyes.' ) . '</div>'
+	. '</div></div></div></div></section>'
+	. '<footer data-sc-cs="' . $ar_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $ar_cs( ';height:24px' ) . '">&copy; 2026 Brandy</p></footer></body></html>';
+$ar_pg  = FW_Site_Converter_Sources::build_from_html( $ar_html, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$ar_img = $r_find( $ar_pg, function ( $n ) { return 'media_image' === ( $n['shortcode'] ?? '' ); } );
+$ar_icss = is_array( $ar_img ) ? (string) ( $ar_img['atts']['custom_css'] ?? '' ) : '';
+ga( "[AR] a self-capped image keeps its own max-height and lets the width follow (it had filled its cell, growing the band and pushing the column beside it down)", (bool) preg_match( '/max-height:620px/', $ar_icss ) && (bool) preg_match( '/width:auto/', $ar_icss ), mb_substr( $ar_icss, 0, 320 ) );
+ga( "[AR] …the DESKTOP tier of the cap wins (`max-h-[540px] md:max-h-[620px]` renders at 620)", false === strpos( $ar_icss, 'max-height:540px' ), mb_substr( $ar_icss, 0, 320 ) );
+$ar_steps = $r_find( $ar_pg, function ( $n ) { return 'steps' === ( $n['shortcode'] ?? '' ); } );
+$ar_sa = is_array( $ar_steps ) ? (array) ( $ar_steps['atts'] ?? array() ) : array();
+$ar_mt = (string) ( $ar_sa['spacing']['margin']['top'] ?? '' );
+$ar_scss = (string) ( $ar_sa['custom_css'] ?? '' );
+ga( "[AR] a native widget built into a CELL keeps its own measured margin (the steps list's `mt-8` had nowhere to go)", false !== strpos( $ar_mt, '32' ), wp_json_encode( array( 'mt' => $ar_mt ) ) );
+ga( "[AR] …and the source's own step RHYTHM overrides the design's defaults, weighted past the per-design sheet that loads after the page CSS", (bool) preg_match( '/\.fw-steps__item\{padding-bottom:24px !important/', $ar_scss ) && (bool) preg_match( '/--st-size:32px !important/', $ar_scss ), mb_substr( $ar_scss, 0, 320 ) );
+
+
+/* ============================================================================================
+ * [AS] The marks a lockup and a masthead carry, which had gone missing.
+ *  · A masthead utility is drawn as `[glyph] Label` ("magnifier Search", "bag Cart (0)"). Only the
+ *    label survived, so the header lost both marks. The list item has a native icon slot.
+ *  · The theme reuses the HEADER's logo in the footer, so a footer whose lockup carries a LONGER
+ *    second line ("· 1923 · France" against the masthead's "· 1923 ·") simply lost the difference.
+ *    One native tagline serves both, so the footer's own text is restated on its sub-line.
+ *  · …and that reader only looked at span/div/a/p/strong/b, so a footer wordmark written as an
+ *    `<h2>` made it bail before any of this — the footer's own brand type was never carried either.
+ * ========================================================================================== */
+$as_cs = function ( $e = '' ) { return 'color:rgb(18,18,18);font-family:Helvetica, Inter, Arial, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$as_util = function ( $glyph, $label ) use ( $as_cs ) {
+	return '<button class="flex items-center gap-1.5" aria-label="' . $label . '" data-sc-cs="' . $as_cs( ';display:flex;align-items:center;gap:6px;font-size:11px;height:17px' ) . '">'
+		. '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-' . $glyph . ' w-3.5 h-3.5" data-sc-cs="width:14px;height:14px"><path d="M4 4h16v16H4z"></path></svg>'
+		. '<span data-sc-cs="' . $as_cs( ';font-size:11px;display:inline;height:17px' ) . '">' . $label . '</span></button>';
+};
+$as_hdr = '<header class="w-full" data-sc-cs="' . $as_cs( ';height:126px' ) . '">'
+	. '<div class="grid grid-cols-3 items-center" data-sc-cs="' . $as_cs( ';display:grid;grid-template-columns:480px 480px 480px;align-items:center;height:74px' ) . '">'
+	. '<div class="text-[11px]" data-sc-cs="' . $as_cs( ';font-size:11px;height:17px' ) . '"><span data-sc-cs="' . $as_cs( ';font-size:11px;display:inline' ) . '">Ship to: USA</span></div>'
+	. '<div class="text-center" data-sc-cs="' . $as_cs( ';text-align:center;height:44px' ) . '"><a class="inline-block" href="/" data-sc-cs="' . $as_cs( ';height:44px' ) . '"><h2 data-sc-cs="' . $as_cs( ';font-size:24px;height:24px' ) . '">Brandy Maison</h2><p data-sc-cs="color:rgb(122,117,110);font-size:10px;font-weight:400;letter-spacing:3px;text-transform:uppercase;line-height:15px;display:block;height:15px;font-family:Helvetica, Inter, Arial, sans-serif">&middot; 1923 &middot;</p></a></div>'
+	. '<div class="flex items-center gap-6" data-sc-cs="' . $as_cs( ';display:flex;align-items:center;gap:24px;height:17px' ) . '">' . $as_util( 'search', 'Search' ) . $as_util( 'shopping-bag', 'Cart (0)' ) . '</div>'
+	. '</div>'
+	. '<nav data-sc-cs="' . $as_cs( ';display:flex;gap:32px;height:51px' ) . '"><a href="/shop" data-sc-cs="' . $as_cs() . '">Shop</a><a href="/story" data-sc-cs="' . $as_cs() . '">Our Story</a><a href="/contact" data-sc-cs="' . $as_cs() . '">Contact</a></nav></header>';
+$as_ftr = '<footer class="w-full" data-sc-cs="' . $as_cs( ';padding:64px 0px 48px;height:360px' ) . '">'
+	. '<div class="max-w-[1340px] mx-auto grid md:grid-cols-12" data-sc-cs="' . $as_cs( ';display:grid;grid-template-columns:425px 197px 197px;gap:32px;height:240px' ) . '">'
+	. '<div class="md:col-span-4" data-sc-cs="' . $as_cs( ';width:425px;height:240px' ) . '">'
+	. '<a class="inline-block" href="/" data-sc-cs="' . $as_cs( ';height:44px' ) . '"><h2 data-sc-cs="color:rgb(17,17,17);font-family:&quot;Cormorant Garamond&quot;, Georgia, serif;font-size:24px;font-weight:400;letter-spacing:5.28px;line-height:24px;display:block;height:24px">Brandy Maison</h2>'
+	. '<p data-sc-cs="color:rgb(122,117,110);font-family:Helvetica, Inter, Arial, sans-serif;font-size:10px;font-weight:400;letter-spacing:3px;text-transform:uppercase;line-height:15px;display:block;height:15px">&middot; 1923 &middot; France</p></a>'
+	. '<p data-sc-cs="' . $as_cs( ';font-size:12px;height:40px' ) . '">Naturally fermented condiments, hand-crafted with time-honored heritage.</p></div>'
+	. '<div class="md:col-span-2" data-sc-cs="' . $as_cs( ';width:197px;height:180px' ) . '"><h4 data-sc-cs="' . $as_cs( ';font-size:11px;height:17px' ) . '">Shop</h4><ul data-sc-cs="' . $as_cs( ';height:60px' ) . '"><li data-sc-cs="' . $as_cs( ';height:20px' ) . '"><a href="/shop" data-sc-cs="' . $as_cs( ';font-size:12px;display:inline' ) . '">All Products</a></li><li data-sc-cs="' . $as_cs( ';height:20px' ) . '"><a href="/shop" data-sc-cs="' . $as_cs( ';font-size:12px;display:inline' ) . '">Best Sellers</a></li></ul></div>'
+	. '<div class="md:col-span-2" data-sc-cs="' . $as_cs( ';width:197px;height:180px' ) . '"><h4 data-sc-cs="' . $as_cs( ';font-size:11px;height:17px' ) . '">About</h4><ul data-sc-cs="' . $as_cs( ';height:60px' ) . '"><li data-sc-cs="' . $as_cs( ';height:20px' ) . '"><a href="/story" data-sc-cs="' . $as_cs( ';font-size:12px;display:inline' ) . '">Our Story</a></li><li data-sc-cs="' . $as_cs( ';height:20px' ) . '"><a href="/story" data-sc-cs="' . $as_cs( ';font-size:12px;display:inline' ) . '">Craftsmanship</a></li></ul></div>'
+	. '</div><p data-sc-cs="' . $as_cs( ';font-size:11px;height:17px' ) . '">&copy; 2026 Brandy Maison.</p></footer>';
+$as_html = '<!DOCTYPE html><html><head><title>Brandy Maison</title></head><body>' . $as_hdr
+	. '<section data-sc-cs="' . $as_cs( ';padding:96px 0px;height:400px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $as_cs( ';max-width:1280px;margin:0px auto;height:200px' ) . '"><h2 data-sc-cs="' . $as_cs( ';font-size:36px;height:44px' ) . '">Our Pantry</h2><p data-sc-cs="' . $as_cs( ';height:24px' ) . '">A paragraph so the page carries a body section between its chrome.</p></div></section>'
+	. $as_ftr . '</body></html>';
+$as_v   = FW_Site_Converter_Sources::build_from_html( $as_html, 'Brandy Maison', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$as_hdrj = wp_json_encode( $as_v['header_main'] ?? array() );
+$as_css  = (string) ( $as_v['misc_custom_css']['custom_css'] ?? '' );
+ga( "[AS] a masthead utility keeps its own GLYPH beside the label (only the label had survived)", false !== stripos( str_replace( '\/', '/', $as_hdrj ), 'lucide/search' ), mb_substr( $as_hdrj, 0, 400 ) );
+ga( "[AS] …both of them, each on its own control", ( false !== stripos( $as_hdrj, 'search' ) && false !== stripos( $as_hdrj, 'shopping-bag' ) ) || substr_count( strtolower( $as_hdrj ), 'li_icon' ) >= 2, mb_substr( $as_hdrj, -420 ) );
+ga( "[AS] the FOOTER lockup's own second line is restated (the theme reuses the header's tagline, which is shorter here)", (bool) preg_match( '/\.footer \.site-logo__sub::after\{[^}]*content:"[^"]*France/u', $as_css ), ( preg_match( '/site-logo__sub::after\{[^}]*\}/', $as_css, $asm ) ? $asm[0] : '(no rule — the reader bailed)' ) );
+ga( "[AS] …the literal character, not a JSON escape (CSS `content` has no `\\u00b7`)", false === stripos( $as_css, 'u00b7' ), ( preg_match( '/site-logo__sub::after\{[^}]*\}/', $as_css, $asm2 ) ? mb_substr( $asm2[0], 0, 120 ) : '-' ) );
+ga( "[AS] …and a footer wordmark written as an `<h2>` is still found (the reader looked only at span/div/a/p/strong/b and bailed)", (bool) preg_match( '/\.footer \.site-title-text\{[^}]*letter-spacing:5.28px/', $as_css ), ( preg_match( '/site-title-text\{[^}]*\}/', $as_css, $asm3 ) ? $asm3[0] : '(no rule)' ) );
+
+
+/* ============================================================================================
+ * [AT] The wordmark's FACE, and an icon that is not weather.
+ *  · A brand wordmark is very often set in a face of its own. Until Header → Identity gained a
+ *    Site Title Font Family the measured face could only ride the residual logo_custom_css, which
+ *    deliberately carried a DISTINCTIVE stack only (serif / mono / a quoted name) — so a display
+ *    sans like `Syncopate, sans-serif` was skipped and the wordmark rendered in the theme's face.
+ *  · Ambient-effect detection reads a layer's class/id for an effect keyword. Icon libraries name
+ *    their glyphs exactly the same way — `lucide-droplets`, `-snowflake`, `-sparkles`, `-leaf` —
+ *    and ship `aria-hidden="true"`, which on its own cleared the "is this decorative?" gate. A
+ *    barbershop's "Hot Towel Shave" card icon therefore rained on its whole services section.
+ * ========================================================================================== */
+$at_cs = function ( $e = '' ) { return 'color:rgb(230,230,230);font-family:Inter, system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$at_card = function ( $glyph, $title, $copy ) use ( $at_cs ) {
+	return '<div class="group border p-8" data-sc-cs="' . $at_cs( ';background-color:rgb(26,26,26);border-top-width:1px;border-top-style:solid;border-top-color:rgb(42,42,42);padding:32px;height:220px' ) . '">'
+		. '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-' . $glyph . ' w-10 h-10 mb-6 text-muted-foreground" aria-hidden="true" data-sc-cs="width:40px;height:40px;color:rgb(138,138,138)"><path d="M4 4h16v16H4z"></path></svg>'
+		. '<h3 data-sc-cs="' . $at_cs( ';font-size:20px;font-weight:400;letter-spacing:3px;text-transform:uppercase;height:28px' ) . '">' . $title . '</h3>'
+		. '<p data-sc-cs="' . $at_cs( ';font-size:14px;color:rgb(153,153,153);height:44px' ) . '">' . $copy . '</p></div>';
+};
+$at_html = '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $at_cs( ';background-color:rgb(10,10,10)' ) . '">'
+	. '<header data-sc-cs="' . $at_cs( ';height:88px' ) . '"><nav data-sc-cs="' . $at_cs( ';display:flex;gap:32px;height:88px' ) . '">'
+	// the wordmark, in a display sans of its own (a plain `sans-serif` generic — the case the residual skipped)
+	. '<a href="/" data-sc-cs="' . $at_cs( ';height:44px' ) . '"><span data-sc-cs="color:rgb(255,255,255);font-family:Syncopate, sans-serif;font-size:22px;font-weight:700;letter-spacing:4.4px;line-height:28px;text-transform:uppercase;display:inline">Obsidian</span></a>'
+	. '<a href="/services" data-sc-cs="' . $at_cs() . '">Services</a><a href="/about" data-sc-cs="' . $at_cs() . '">About</a><a href="/book" data-sc-cs="' . $at_cs() . '">Book</a></nav></header>'
+	. '<section id="services-preview" data-sc-cs="' . $at_cs( ';padding:96px 0px;height:600px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $at_cs( ';max-width:1280px;margin:0px auto;height:400px' ) . '">'
+	. '<h2 data-sc-cs="' . $at_cs( ';font-size:36px;letter-spacing:7px;text-transform:uppercase;height:44px' ) . '">Our Services</h2>'
+	. '<div class="grid grid-cols-3 gap-8" data-sc-cs="' . $at_cs( ';display:grid;grid-template-columns:405px 405px 405px;gap:32px;height:220px' ) . '">'
+	. $at_card( 'scissors', 'Precision Cut', 'Tailored haircut including consultation, wash, and styling.' )
+	. $at_card( 'droplets', 'Hot Towel Shave', 'Traditional straight razor shave with essential oils and hot towels.' )
+	. $at_card( 'wind', 'Beard Sculpting', 'Detailed beard trim, line-up, and conditioning treatment.' )
+	. '</div></div></section>'
+	. '<footer data-sc-cs="' . $at_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $at_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+$at_bl = FW_Site_Converter_Sources::build_from_html( $at_html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$at_v  = $at_bl['files']['theme-settings.json']['values'] ?? array();
+$at_lc = $at_v['header_logo']['logo_type']['custom'] ?? array();
+ga( "[AT] the wordmark's measured FACE rides the native Site Title Font Family", false !== stripos( (string) ( $at_lc['title_font']['family'] ?? '' ), 'Syncopate' ), wp_json_encode( $at_lc['title_font'] ?? null ) );
+ga( "[AT] …a plain `sans-serif` generic included — the residual CSS path carried only serif/mono/quoted stacks, so this exact case was silently skipped", false === stripos( (string) ( $at_lc['logo_custom_css'] ?? '' ), 'font-family' ), mb_substr( (string) ( $at_lc['logo_custom_css'] ?? '' ), 0, 200 ) );
+$at_pgj = wp_json_encode( $at_bl['files']['pages.json']['pages'][0]['builder'] ?? array() );
+ga( "[AT] a `lucide-droplets` CARD ICON is content, not an ambient rain layer (it had rained on the whole section)", false === stripos( $at_pgj, '"rain"' ), ( preg_match( '/"bg_effect[^,]{0,70}/', $at_pgj, $atm ) ? $atm[0] : 'no bg_effect' ) );
+ga( "[AT] …and no effect is invented from the other glyph names either (`wind`, `scissors`) — only the element's own `none` default remains", 0 === preg_match( '/"effect":"(?!none")[a-z]+"/', $at_pgj ), ( preg_match_all( '/"effect":"[a-z]+"/', $at_pgj, $atm2 ) ? implode( ',', array_unique( $atm2[0] ) ) : 'none' ) );
+// NEGATIVE: a genuine named ambient LAYER is still detected
+$at_html2 = str_replace( '<div class="grid grid-cols-3 gap-8"', '<div class="fg-rain absolute inset-0" aria-hidden="true" data-sc-cs="position:absolute;top:0px;right:0px;bottom:0px;left:0px"></div><div class="grid grid-cols-3 gap-8"', $at_html );
+$at_pgj2 = wp_json_encode( FW_Site_Converter_Sources::build_from_html( $at_html2, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array() );
+ga( "[AT] NEGATIVE: a real, named ambient LAYER (`fg-rain`, empty + inset-0) is still read as the Rain effect", false !== stripos( $at_pgj2, 'rain' ), ( preg_match( '/"bg_effect[^,]{0,70}/', $at_pgj2, $atm3 ) ? $atm3[0] : 'no bg_effect' ) );
+
+
+/* ============================================================================================
+ * [AU] GLASS ON SCROLL — decided by the STAMPS, never by the class list.
+ * A framework header swaps its own className on scroll
+ *   `scrolled ? 'border-b bg-background/80 backdrop-blur-md py-4' : 'border-transparent py-6'`
+ * and the capture serialises the DOM AFTER its scroll pass, so the classes in the captured HTML are
+ * the SCROLLED ones while `data-sc-cs` holds the REST computed style. The padding proves it: a class
+ * list reading `py-4` (16px) beside a rest stamp of 24px is the scrolled class list. Reading
+ * `backdrop-blur-*` off those classes as "glass at rest" frosts a header the source leaves bare over
+ * its hero. Only the stamps are honest — blur in the SCROLLED stamp and none in the REST stamp means
+ * glass on scroll ONLY, whatever the class list says.
+ * The scrolled fill substituted for a blur-only state must also be TRANSLUCENT: an opaque one turns
+ * the bar solid on scroll.
+ * ========================================================================================== */
+$au_cs = function ( $e = '' ) { return 'color:rgb(245,245,245);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$au_page = function ( $hdr ) use ( $au_cs ) {
+	return '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $au_cs( ';background-color:rgb(10,10,10)' ) . '">' . $hdr
+		. '<section data-sc-cs="' . $au_cs( ';padding:96px 0px;height:600px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $au_cs( ';max-width:1280px;margin:0px auto;height:400px' ) . '">'
+		. '<h1 data-sc-cs="' . $au_cs( ';font-size:72px;line-height:76px;height:160px' ) . '">Presence</h1>'
+		. '<p data-sc-cs="' . $au_cs( ';height:24px' ) . '">A paragraph beneath the headline so the hero band carries real copy.</p></div></section>'
+		. '<footer data-sc-cs="' . $au_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $au_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+};
+// the captured class list is the SCROLLED one (`py-4` = 16px) while the rest stamp says 24px — exactly the
+// shape the guard has to read correctly
+$au_hdr = '<header class="fixed top-0 left-0 right-0 z-50 transition-all duration-300 border-b bg-background/80 backdrop-blur-md border-border py-4"'
+	. ' data-sc-cs="' . $au_cs( ';position:fixed;padding:24px 0px;border-bottom-width:1px;border-bottom-style:solid;border-bottom-color:rgba(0, 0, 0, 0);height:85px' ) . '"'
+	. ' data-sc-header="rest-height:85px"'
+	. ' data-sc-scrolled="background-color:rgba(0, 0, 0, 0);backdrop-filter:blur(12px);border-bottom:1px solid rgb(38, 38, 38);padding-top:16px;padding-bottom:16px;height:69px;rest-height:85px">'
+	. '<nav data-sc-cs="' . $au_cs( ';display:flex;gap:32px;height:85px' ) . '"><a href="/" data-sc-cs="' . $au_cs( ';font-size:22px' ) . '">Obsidian</a>'
+	. '<a href="/services" data-sc-cs="' . $au_cs() . '">Services</a><a href="/shop" data-sc-cs="' . $au_cs() . '">Shop</a><a href="/about" data-sc-cs="' . $au_cs() . '">About</a></nav></header>';
+$au_v = FW_Site_Converter_Sources::build_from_html( $au_page( $au_hdr ), 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$au_h = $au_v['header_layout'] ?? array();
+ga( "[AU] the header is BARE at rest — the `backdrop-blur-md` in the captured class list is the SCROLLED state (its `py-4` disagrees with the 24px rest stamp), not the resting one", 'no' === (string) ( $au_h['header_glass'] ?? '' ), wp_json_encode( array( 'header_glass' => $au_h['header_glass'] ?? null, 'scroll_glass' => $au_h['scroll_glass'] ?? null ) ) );
+ga( "[AU] …and it frosts ON SCROLL, which is what the scrolled stamp's blur really says", 'yes' === (string) ( $au_h['scroll_glass'] ?? '' ), wp_json_encode( $au_h['scroll_glass'] ?? null ) );
+ga( "[AU] …over a transparent overlay at the top, with no fill of its own", 'overlay' === (string) ( $au_h['header_position'] ?? '' ) && '' === (string) ( $au_h['bg_color']['custom'] ?? '' ), wp_json_encode( array( $au_h['header_position'] ?? null, $au_h['bg_color'] ?? null ) ) );
+$au_sbg = (string) ( $au_h['scroll_bg_color']['custom'] ?? '' );
+ga( "[AU] the scrolled fill substituted for a blur-only state is TRANSLUCENT, never opaque (an opaque one turns the glass bar solid on scroll)", '' === $au_sbg || (bool) preg_match( '/^rgba\(/i', $au_sbg ), $au_sbg );
+ga( "[AU] …at the alpha the source's own utility states (`bg-background/80`), not a guess", '' === $au_sbg || false !== strpos( $au_sbg, '0.8' ), $au_sbg );
+ga( "[AU] …and the source's measured blur radius rides the glass", '12' === (string) ( $au_h['header_glass_blur']['value'] ?? '' ), wp_json_encode( $au_h['header_glass_blur'] ?? null ) );
+
+/* ============================================================================================
+ * [AV] A CONVERTED COLOUR BINDS TO THE PALETTE THE SAME CONVERSION GENERATED.
+ * The palette is DERIVED from the source — `Ink` IS its body ink, `Primary` IS its brand colour —
+ * yet every colour writer emitted a literal, so a heading carried `#f5f5f5` while the entry named Ink
+ * held the identical colour and nothing linked them: editing Ink moved nothing and the generated
+ * palette was decorative. Binding restores provenance the writers dropped. Its FOUR guards matter as
+ * much as the rule:
+ *   · the `predefined` half is a PREFIXED CLASS (`text-…` on an ink, `bg-…` on a fill) — the wrong
+ *     prefix paints the wrong CSS property, so only keys of a known kind bind;
+ *   · the halves are MUTUALLY EXCLUSIVE (the preset wins), so `custom` is CLEARED, not left stale;
+ *   · a TRANSLUCENT value has no preset to point at and stays literal;
+ *   · a colour with NO palette entry stays literal — the "deliberately unique colour" case.
+ * ========================================================================================== */
+$av_cs = function ( $e = '' ) { return 'color:rgb(245,245,245);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$av_html = '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $av_cs( ';background-color:rgb(10,10,10)' ) . '">'
+	. '<header data-sc-cs="' . $av_cs( ';height:80px' ) . '"><nav data-sc-cs="' . $av_cs( ';display:flex;gap:32px;height:80px' ) . '">'
+	. '<a href="/" data-sc-cs="' . $av_cs( ';font-size:22px' ) . '">Obsidian</a><a href="/a" data-sc-cs="' . $av_cs() . '">Services</a><a href="/b" data-sc-cs="' . $av_cs() . '">About</a></nav></header>'
+	. '<section id="intro" data-sc-cs="' . $av_cs( ';padding:96px 0px;height:520px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $av_cs( ';max-width:1280px;margin:0px auto;height:328px' ) . '">'
+	// the kicker carries a colour NO palette entry holds (a deliberate one-off) …
+	. '<span data-sc-cs="color:rgb(255,45,85);font-family:Inter, sans-serif;font-size:12px;font-weight:700;letter-spacing:2.4px;text-transform:uppercase;line-height:16px;display:block;height:16px">Since 1997</span>'
+	// … the h2 is painted in the site's own INK (which becomes the Ink palette role) …
+	. '<h2 data-sc-cs="' . $av_cs( ';font-size:44px;line-height:48px;height:96px' ) . '">Sharp by hand</h2>'
+	// … and the subtitle in a TRANSLUCENT ink, which has no preset form
+	. '<p data-sc-cs="color:rgba(245, 245, 245, 0.6);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;display:block;height:24px">A paragraph beneath the headline so the band carries real copy.</p>'
+	. '</div></section>'
+	. '<footer data-sc-cs="' . $av_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $av_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+$av_bl  = FW_Site_Converter_Sources::build_from_html( $av_html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$av_v   = $av_bl['files']['theme-settings.json']['values'] ?? array();
+$av_pal = cvpal( (array) $av_v );
+$av_pg  = $av_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
+$av_sh  = $r_find( $av_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['title'] ?? '' ), 'Sharp by hand' ); } );
+$av_tc  = is_array( $av_sh ) ? ( $av_sh['atts']['title_color'] ?? null ) : null;
+$av_sc  = is_array( $av_sh ) ? ( $av_sh['atts']['subtitle_color'] ?? null ) : null;
+$av_oc  = is_array( $av_sh ) ? ( $av_sh['atts']['overline_color'] ?? null ) : null;
+$av_ink = strtolower( FW_Site_Converter_Stitch::color_to_hex( 'rgb(245,245,245)' ) );
+ga( "[AV] the heading painted in the site's own ink REFERENCES the palette role built from it, as a `text-` class (not a literal)", is_array( $av_tc ) && (bool) preg_match( '/^text-[a-z0-9-]+$/', (string) ( $av_tc['predefined'] ?? '' ) ), wp_json_encode( $av_tc ) );
+ga( "[AV] …and that reference RESOLVES to the very colour the source painted (the binding is provenance, not a guess)", $av_ink === cvhex( $av_tc, $av_pal ), wp_json_encode( array( cvhex( $av_tc, $av_pal ), $av_ink ) ) );
+ga( "[AV] …with `custom` CLEARED — the halves are mutually exclusive and the preset wins, so a stale literal beside it would be a lie", is_array( $av_tc ) && '' === trim( (string) ( $av_tc['custom'] ?? '' ) ), wp_json_encode( $av_tc ) );
+ga( "[AV] NEGATIVE: a TRANSLUCENT ink keeps its rgba() literal — alpha has no preset to point at", is_array( $av_sc ) && '' === trim( (string) ( $av_sc['predefined'] ?? '' ) ) && (bool) preg_match( '/^rgba\(/i', trim( (string) ( $av_sc['custom'] ?? '' ) ) ), wp_json_encode( $av_sc ) );
+ga( "[AV] NEGATIVE: a colour NO palette entry holds stays a literal — the deliberately-unique colour is not forced into a role", is_array( $av_oc ) && '' === trim( (string) ( $av_oc['predefined'] ?? '' ) ) && '' !== trim( (string) ( $av_oc['custom'] ?? '' ) ) && ! isset( array_flip( $av_pal )[ cvhex( $av_oc, $av_pal ) ] ), wp_json_encode( $av_oc ) );
+ga( "[AV] NEGATIVE: the PALETTE ITSELF is never rewritten to reference itself (every entry keeps a real colour)", (bool) ( function () use ( $av_v ) { foreach ( (array) ( $av_v['theme_colors'] ?? array() ) as $e ) { if ( ! is_array( $e ) || '' === trim( (string) ( $e['color'] ?? '' ) ) ) { return false; } } return ! empty( $av_v['theme_colors'] ); } )(), wp_json_encode( array_slice( (array) ( $av_v['theme_colors'] ?? array() ), 0, 3 ) ) );
+$av_j = wp_json_encode( $av_bl['files'] );
+ga( "[AV] NEGATIVE: no `bg-` class ever lands on a text field, nor a `text-` class on a fill (the wrong prefix paints the wrong property)", false === strpos( $av_j, '"title_color":{"predefined":"bg-' ) && false === strpos( $av_j, '"bg_color":{"predefined":"text-' ), 'title_color/bg_color prefixes' );
+
+
+/* ============================================================================================
+ * [AW] ONE PROPERTY, ONE WRITER — the section rule stops painting a heading's COLOUR.
+ * The section styler emitted `#sec h1:not([class*="boxp-"] *){color:… !important}` from the SAME stamp
+ * the heading node reads for its native Title Colour, so one property was written from two places — and
+ * the section rule (an ID selector, `!important`) beat both the option's own output and the palette class
+ * the colour binds to. Two symptoms, one cause: [AV]'s preset binding rendered the literal anyway
+ * (editing Ink in Theme Settings moved nothing — measured in the browser), and the builder's Title Colour
+ * field was INERT on every converted heading. The rule keeps the type it alone can carry; the heading's
+ * own option keeps the colour.
+ * ========================================================================================== */
+$aw_cs = function ( $e = '' ) { return 'color:rgb(245,245,245);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$aw_html = '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $aw_cs( ';background-color:rgb(10,10,10)' ) . '">'
+	. '<header data-sc-cs="' . $aw_cs( ';height:80px' ) . '"><nav data-sc-cs="' . $aw_cs( ';display:flex;gap:32px;height:80px' ) . '">'
+	. '<a href="/" data-sc-cs="' . $aw_cs( ';font-size:22px' ) . '">Obsidian</a><a href="/a" data-sc-cs="' . $aw_cs() . '">Services</a><a href="/b" data-sc-cs="' . $aw_cs() . '">About</a></nav></header>'
+	. '<section id="craft" data-sc-cs="' . $aw_cs( ';padding:96px 0px;height:420px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $aw_cs( ';max-width:1280px;margin:0px auto;height:228px' ) . '">'
+	. '<h2 data-sc-cs="color:rgb(245,245,245);font-family:Syncopate, sans-serif;font-size:44px;font-weight:700;letter-spacing:4px;text-transform:uppercase;line-height:48px;display:block;height:96px">Sharp by hand</h2>'
+	. '<p data-sc-cs="' . $aw_cs( ';height:24px' ) . '">A paragraph beneath the headline so the band carries real copy.</p>'
+	. '</div></section>'
+	. '<footer data-sc-cs="' . $aw_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $aw_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+$aw_bl = FW_Site_Converter_Sources::build_from_html( $aw_html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$aw_j  = wp_json_encode( $aw_bl['files'] );
+$aw_rules = array();
+if ( preg_match_all( '/#craft h2:not\(\[class\*=\\\\"boxp-\\\\"\] \*\)\{[^}]*\}/', $aw_j, $awm ) ) { $aw_rules = $awm[0]; }
+if ( ! $aw_rules && preg_match_all( '/#craft h2[^{]*\{[^}]*\}/', $aw_j, $awm2 ) ) { $aw_rules = $awm2[0]; }
+$aw_rule = $aw_rules ? (string) $aw_rules[0] : '';
+ga( "[AW] the section-scoped heading rule still exists and carries the TYPE only it can (the source's own face / size / tracking / case)", '' !== $aw_rule && false !== stripos( $aw_rule, 'Syncopate' ) && false !== stripos( $aw_rule, 'font-size' ), '' !== $aw_rule ? mb_substr( $aw_rule, 0, 220 ) : '(no #craft h2 rule at all)' );
+ga( "[AW] …but NOT the heading's colour — one property written from two places let an ID rule outrank the heading's own Title Colour (and the palette class it binds to)", '' === $aw_rule || ! preg_match( '/[{;]\s*color\s*:/i', $aw_rule ), mb_substr( $aw_rule, 0, 220 ) );
+$aw_pg = $aw_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
+$aw_sh = $r_find( $aw_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['title'] ?? '' ), 'Sharp by hand' ); } );
+ga( "[AW] …the heading node is the single owner of that colour (its own Title Colour, so the builder field actually moves the page)", is_array( $aw_sh ) && ( '' !== trim( (string) ( $aw_sh['atts']['title_color']['predefined'] ?? '' ) ) || '' !== trim( (string) ( $aw_sh['atts']['title_color']['custom'] ?? '' ) ) ), wp_json_encode( is_array( $aw_sh ) ? ( $aw_sh['atts']['title_color'] ?? null ) : null ) );
+
 
 $pass = $GLOBALS['__pass'];
 $fail = $GLOBALS['__fail'];

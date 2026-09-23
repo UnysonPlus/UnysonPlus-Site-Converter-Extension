@@ -639,6 +639,12 @@ class FW_Site_Converter_Mapper {
 	}
 
 	/** Match a text block's computed font-size (px) → the nearest BODY size-preset CLASS within ±1.5px, or ''. */
+	/** The px size a text preset renders at, by its class ('' / unknown → 0). */
+	private static function text_preset_size( $class ) {
+		foreach ( (array) self::$text_presets as $p ) { if ( (string) $p['class'] === (string) $class ) { return (float) $p['size']; } }
+		return 0.0;
+	}
+
 	private static function text_preset_for( $px ) {
 		if ( $px === null || empty( self::$text_presets ) ) { return ''; }
 		$px = (float) $px;
@@ -794,6 +800,49 @@ class FW_Site_Converter_Mapper {
 		$c = fw_get_db_settings_option( 'button_colors', array() );
 		$s = fw_get_db_settings_option( 'button_sizes', array() );
 		if ( ! empty( $c ) || ! empty( $s ) ) { self::set_button_presets( (array) $c, (array) $s ); }
+	}
+
+	/**
+	 * An inline SVG glyph reproduced as a CURRENT-COLOUR pseudo-element, for a control with no native icon slot.
+	 *
+	 * Several native shortcodes render a CTA whose markup we do not own (the image box's `.imgbox__btn`, a card's
+	 * link), so a trailing glyph on the source control — the `+` on an "add to cart" row, a chevron — had nowhere
+	 * to go and was simply dropped. Painting it as a MASK (rather than a background image) keeps it tinted by the
+	 * control's own `color`, so it still follows the hover colour and the theme, exactly like a real icon.
+	 *
+	 * @param string $svg   The glyph's verbatim `<svg>` markup.
+	 * @param string $sel   The scoped child selector to hang it on (e.g. `.imgbox__btn`).
+	 * @param string $slot  'after' (trailing) or 'before' (leading).
+	 * @return string Scoped CSS, or '' when the markup can't be carried safely.
+	 */
+	public static function svg_mask_css( $svg, $sel, $slot = 'after', $root = 'selector' ) {
+		$svg = trim( (string) $svg );
+		if ( '' === $svg || strlen( $svg ) > 4000 || false === stripos( $svg, '<svg' ) ) { return ''; }
+		if ( preg_match( '/<(?:script|foreignObject)\b/i', $svg ) ) { return ''; }
+		// The RENDERED size is the source's utility class (`w-3.5 h-3.5` = 14px), not the svg's own 24px attribute.
+		$size = 16.0;
+		if ( preg_match( '/(?:^|\s)w-\[([0-9.]+)px\]/', $svg, $m ) )      { $size = (float) $m[1]; }
+		elseif ( preg_match( '/(?:^|\s)w-([0-9.]+)(?:\s|")/', $svg, $m ) ) { $size = (float) $m[1] * 4; }
+		elseif ( preg_match( '/\bwidth="([0-9.]+)"/', $svg, $m ) )          { $size = (float) $m[1]; }
+		$size = max( 8.0, min( 64.0, $size ) );
+		// A mask needs opaque ink: a stroke/fill of `currentColor` resolves to black inside the data URI, which is
+		// what the mask wants (the alpha is the shape). Strip the class so no page rule re-sizes it.
+		$clean = preg_replace( '/\s(?:class|data-[a-z-]+|aria-hidden)="[^"]*"/i', '', $svg );
+		$uri   = 'data:image/svg+xml,' . rawurlencode( preg_replace( '/\s+/', ' ', trim( $clean ) ) );
+		$d = array(
+			'content:""', 'display:inline-block', 'flex:0 0 auto',
+			'width:' . self::px( $size ), 'height:' . self::px( $size ),
+			'background-color:currentColor',
+			'-webkit-mask:url("' . $uri . '") center/contain no-repeat',
+			'mask:url("' . $uri . '") center/contain no-repeat',
+		);
+		return trim( $root . ' ' . $sel ) . '::' . ( 'before' === $slot ? 'before' : 'after' ) . '{' . implode( ';', $d ) . ';}';
+	}
+
+	/** A px length with no trailing `.0` (14.0 → `14px`). */
+	private static function px( $v ) {
+		$v = (float) $v;
+		return ( abs( $v - round( $v ) ) < 0.01 ? (string) (int) round( $v ) : rtrim( rtrim( number_format( $v, 2, '.', '' ), '0' ), '.' ) ) . 'px';
 	}
 
 	public static function button_preset_for( $cls, $cs = '' ) {
@@ -1752,7 +1801,26 @@ class FW_Site_Converter_Mapper {
 				// Side-by-side via the column's NATIVE content_direction + content_gap (not a .btn-row CSS
 				// wrapper) — matches the JS to-pages path. Gap from the source button container if captured.
 				$grp = isset( $run[0]['_group'] ) ? $run[0]['_group'] : array();
+				// The WRAPPER's own margin belongs to the GROUP, not to each button. n_button folds a lone
+				// button's wrapper margin onto the button itself, which is right for one control — but inside a
+				// flex ROW it inflates the row instead of moving it: a 32px `mt-8` made a hero's button row 78px
+				// tall instead of 46px and swallowed the air that should sit beneath it, while every position
+				// test still passed because the next block landed in the same place (a real-site audit). Lift it
+				// to the column and clear it from the children, so the row moves as one.
+				$g_mt = ''; $g_mb = '';
+				foreach ( $run as &$rb ) {
+					if ( ! isset( $rb['atts']['spacing']['margin'] ) ) { continue; }
+					if ( '' === $g_mt ) { $g_mt = (string) ( $rb['atts']['spacing']['margin']['top'] ?? '' ); }
+					if ( '' === $g_mb ) { $g_mb = (string) ( $rb['atts']['spacing']['margin']['bottom'] ?? '' ); }
+					$rb['atts']['spacing']['margin']['top']    = '';
+					$rb['atts']['spacing']['margin']['bottom'] = '';
+				}
+				unset( $rb );
 				$col = self::n_column( '1_1', array_map( $strip, $run ) );
+				if ( ( '' !== $g_mt || '' !== $g_mb ) && isset( $col['atts']['spacing']['margin'] ) ) {
+					if ( '' !== $g_mt ) { $col['atts']['spacing']['margin']['top']    = $g_mt; }
+					if ( '' !== $g_mb ) { $col['atts']['spacing']['margin']['bottom'] = $g_mb; }
+				}
 				// a `flex flex-col` button stack (a CTA card's two stacked actions) keeps its COLUMN direction — every group rendered
 				// side by side before (measured); its buttons then fill the stack's width like the source `w-full`
 				// The STAMP is the desktop computed direction and decides the lg value: `flex-col sm:flex-row` (+ `w-full sm:w-auto`
@@ -3049,7 +3117,12 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				if ( ! empty( $cells[0]['atts']['_row_minh'] ) ) { $over['min_height'] = array( 'base' => array( 'value' => (string) (int) $cells[0]['atts']['_row_minh'], 'unit' => 'px' ), 'md' => array( 'value' => '', 'unit' => 'vh' ), 'lg' => array( 'value' => '', 'unit' => 'vh' ) ); }
 				// The row's own layout (carry_row_skin → _row_lay): gap → native Gap; align-items → native Align Items;
 				// space-between / center / end → native Justify with CONTENT-sized cells (no 12-span width); margins → Spacing.
-				$rl = $cells[0]['atts']['_row_lay'] ?? null;
+				// …read from WHICHEVER cell carries it: the record rides on every cell of the row, but the cells
+				// can be rebuilt or reordered before this point, and reading only the first silently dropped the
+				// row's own layout — including the 48px above a hero's benefit row, so the rule under its buttons
+				// rode up and the design's air vanished (a real-site audit).
+				$rl = null;
+				foreach ( $cells as $rc ) { if ( ! empty( $rc['atts']['_row_lay'] ) && is_array( $rc['atts']['_row_lay'] ) ) { $rl = $rc['atts']['_row_lay']; break; } }
 				if ( is_array( $rl ) ) {
 					if ( ! empty( $rl['gap'] ) )    { $gs = self::gap_slug( (string) $rl['gap'] ); if ( '' !== $gs ) { $over['gap'] = array( 'base' => $gs, 'md' => '', 'lg' => '' ); } }
 					if ( ! empty( $rl['valign'] ) ) { $over['align_items'] = array( 'base' => $rl['valign'], 'md' => '', 'lg' => '' ); }
@@ -3070,8 +3143,16 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				$rowfb = self::n_flexbox( $cells, $over );
 				if ( is_array( $rl ) && ( ! empty( $rl['tracksMd'] ) || ! empty( $rl['tracksSm'] ) ) ) { $rowfb = self::apply_tablet_stack( $rowfb, array( 'tracksMd' => (int) ( $rl['tracksMd'] ?? 0 ), 'tracksSm' => (int) ( $rl['tracksSm'] ?? 0 ) ) ); }
 				if ( is_array( $rl ) ) {
-					if ( ! empty( $rl['mt'] ) && isset( $rowfb['atts']['spacing']['margin'] ) ) { $rowfb['atts']['spacing']['margin']['top']    = self::spacing_token( 'mt', (float) $rl['mt'] ); }
-					if ( ! empty( $rl['mb'] ) && isset( $rowfb['atts']['spacing']['margin'] ) ) { $rowfb['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', (float) $rl['mb'] ); }
+					// The row's own margin, with a scoped fallback: when the node has no native Spacing att the
+					// margin used to be dropped in silence rather than emitted as CSS.
+					foreach ( array( 'mt' => 'top', 'mb' => 'bottom' ) as $rk => $rside ) {
+						if ( empty( $rl[ $rk ] ) ) { continue; }
+						if ( isset( $rowfb['atts']['spacing']['margin'] ) && is_array( $rowfb['atts']['spacing']['margin'] ) ) {
+							$rowfb['atts']['spacing']['margin'][ $rside ] = self::spacing_token( $rk, (float) $rl[ $rk ] );
+						} else {
+							$rowfb['atts']['custom_css'] = trim( (string) ( $rowfb['atts']['custom_css'] ?? '' ) . "\nselector{margin-" . $rside . ':' . (int) round( (float) $rl[ $rk ] ) . 'px;}' );
+						}
+					}
 					if ( ! empty( $rl['pad'] ) ) { $rowfb = self::apply_cell_pad( $rowfb, array( 'pad' => $rl['pad'] ) ); }
 					if ( ! empty( $rl['mx'] ) )  { self::apply_inset_x( $rowfb, array( 'mxAdd' => $rl['mx'] ) ); }
 					if ( ! empty( $rl['scroll'] ) ) { $rowfb = self::apply_scroll_strip( $rowfb, $rl['scroll'] ); }
@@ -5268,6 +5349,13 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		if ( is_array( $look ) ) {
 			$safe = function ( $d ) { return preg_replace( '/[^a-z0-9()%.,#"\'\s:;-]/i', '', (string) $d ); };
 			$lcss = '';
+			// The rating row's own INK + glyph size (Stitch testimonial_look starColor / starSize): the element's
+			// default gold repainted stars a source draws in its page ink (a real-site audit).
+			if ( ! empty( $look['starColor'] ) && preg_match( '/^(?:#[0-9a-f]{3,8}|rgba?\([^)]*\))$/i', trim( (string) $look['starColor'] ) ) ) {
+				// the rendered stars are `.ts-card__rating .sc-rating__fill` (the shared rating helper's markup)
+				$lcss .= 'selector .ts-card__rating .sc-rating__fill,selector .testimonial-rating .ts-star{color:' . trim( (string) $look['starColor'] ) . ' !important;}';
+			}
+			if ( ! empty( $look['starSize'] ) ) { $lcss .= 'selector .ts-card__rating .sc-rating,selector .testimonial-rating .ts-star{font-size:' . (int) $look['starSize'] . 'px;}'; }
 			if ( ! empty( $look['avatarPx'] ) ) {
 				$px = (int) $look['avatarPx'];
 				$avatar_size = $px <= 80 ? 'avatar-sm' : ( $px <= 112 ? 'avatar-md' : 'avatar-lg' );
@@ -5329,16 +5417,21 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		);
 		// When any testimonial carries a footer stat, pin the Card Rows so the Extra Texts slot renders at the
 		// card footer (a divider + the stat rows). Omitted otherwise, so plain testimonials keep the option default.
-		if ( $any_extra ) {
-			// Justify/align the card rows to the SOURCE alignment (a left-aligned boxed card keeps its rating,
-			// avatar+author and footer left, not force-centred).
-			$j = in_array( $align, array( 'left', 'start' ), true ) ? 'start' : ( ( 'right' === $align || 'end' === $align ) ? 'end' : 'center' );
-			$atts['card_rows'] = array(
+		// Justify/align the card rows to the SOURCE alignment (a left-aligned boxed card keeps its rating,
+		// avatar+author and footer left, not force-centred). Pinned whenever the source is NOT centred — it
+		// used to ride only on the presence of a footer stat, so removing a spurious stat silently handed the
+		// card back to the shortcode's centred default and a left-aligned source centred its stars and author
+		// (a real-site audit).
+		$j = in_array( $align, array( 'left', 'start' ), true ) ? 'start' : ( ( 'right' === $align || 'end' === $align ) ? 'end' : 'center' );
+		if ( $any_extra || 'center' !== $j ) {
+			$rows_pin = array(
 				array( 'slots' => array( 'rating' ),           'direction' => 'inline', 'justify' => $j,      'align' => 'center' ),
 				array( 'slots' => array( 'quote' ),            'direction' => 'stack',  'justify' => 'start', 'align' => $j ),
 				array( 'slots' => array( 'avatar', 'author' ), 'direction' => 'inline', 'justify' => $j,      'align' => 'center' ),
-				array( 'slots' => array( 'extra' ),            'direction' => 'stack',  'justify' => 'start', 'align' => $j ),
 			);
+			// the Extra Texts slot only when there IS one — an empty footer row would draw its divider for nothing
+			if ( $any_extra ) { $rows_pin[] = array( 'slots' => array( 'extra' ), 'direction' => 'stack', 'justify' => 'start', 'align' => $j ); }
+			$atts['card_rows'] = $rows_pin;
 		}
 		// BOX STYLE — the source's per-card box skin (fill / border / radius / shadow / hover, e.g. modfii's
 		// `bg-background rounded-2xl border`) → a shared Box Preset applied to EACH testimonial card, so the
@@ -5619,7 +5712,11 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			return '';
 		};
 		$mk_color = function ( $src ) {
+			// …as HEX when opaque (ink_value keeps a translucent rgba as-is). Every palette entry is hex and
+			// the colour picker round-trips hex, so an `rgb()` literal here rendered a heading the picker
+			// could not show and the palette could not match (a real-site audit).
 			$src = trim( (string) $src );
+			$src = self::ink_value( $src );
 			return ( '' !== $src && ! self::is_default_ink( $src ) ) ? array( 'predefined' => '', 'custom' => $src ) : array( 'predefined' => '', 'custom' => '' );
 		};
 		$items = array();
@@ -5687,7 +5784,15 @@ selector.fw-fl--orient-horizontal{" . implode( ';', $rd ) . ';}' ); }
 		if ( $label_fs <= 0 && '' !== (string) ( $b['label_cls'] ?? '' ) ) { $lm = FW_Site_Converter_Tailwind::compile_class_set( (string) $b['label_cls'], self::$style_cfg ); if ( isset( $lm['base']['font-size'] ) ) { $label_fs = self::px_of( $lm['base']['font-size'] ); } }
 		if ( $label_fs > 0 ) {
 			$preset = self::text_preset_for( $label_fs );
-			if ( '' !== $preset ) {
+			$p_px   = '' !== $preset ? self::text_preset_size( $preset ) : 0.0;
+			if ( '' !== $preset && $p_px > 0 && abs( $p_px - $label_fs ) >= 0.5 ) {
+				// The preset is within tolerance but not the SAME size (a 12px label against an 11px Caption):
+				// keeping the preset for theme-wide editability, the measured size is pinned on top, so the
+				// label renders at the size the source drew it (three labels a pixel short — a real-site audit).
+				$atts['font_size_preset'] = $preset;
+				$cur = isset( $atts['custom_css'] ) ? (string) $atts['custom_css'] : '';
+				$atts['custom_css'] = trim( $cur . ( '' !== $cur ? "\n" : '' ) . 'selector .fw-fl__text{font-size:' . (int) round( $label_fs ) . 'px;}' );
+			} elseif ( '' !== $preset ) {
 				$atts['font_size_preset'] = $preset;
 			} else {
 				// No BODY preset within tolerance (e.g. a 14px `text-sm` label sits between the theme's 12px
@@ -6914,7 +7019,7 @@ selector.fw-fl--orient-horizontal{" . implode( ';', $rd ) . ';}' ); }
 		if ( ! empty( $dz['accent'] ) )       { $d['accent_color'] = array( 'predefined' => '', 'custom' => (string) $dz['accent'] ); }
 		if ( ! empty( $dz['markerText'] ) )   { $d['marker_text_color'] = array( 'predefined' => '', 'custom' => (string) $dz['markerText'] ); } // the glyph's own ink on the tinted badge
 		if ( ! empty( $dz['markerSize'] ) )   { $d['custom_css'] = trim( (string) ( $d['custom_css'] ?? '' ) . "
-selector{--st-size:" . (int) $dz['markerSize'] . 'px;}' ); } // the badge's measured size
+selector{--st-size:" . (int) $dz['markerSize'] . 'px !important;}' ); } // the badge's measured size (the per-design sheet loads AFTER the page CSS)
 		// the card's own inset: the Cards design's `.fw-steps__item` padding rule out-ranks the Box Preset's, so a `p-8` card kept the design default
 		if ( ! empty( $dz['box']['padding'] ) && preg_match( '/^[0-9.]+px(?:\s+[0-9.]+px){0,3}$/', (string) $dz['box']['padding'] ) ) { $d['custom_css'] = trim( (string) ( $d['custom_css'] ?? '' ) . "
 selector.fw-steps .fw-steps__item{padding:" . $dz['box']['padding'] . ';}' ); } // (0,3,0): the design sheet loads after the page CSS
@@ -6930,11 +7035,45 @@ selector.fw-steps .fw-steps__item{padding:" . $dz['box']['padding'] . ';}' ); } 
 		$rows = array();
 		if ( $has_icon && $has_num )  { $rows[] = array( 'slots' => array( 'icon', 'number' ), 'direction' => 'inline', 'justify' => 'between', 'align' => 'center' ); }
 		elseif ( $has_icon )          { $rows[] = array( 'slots' => array( 'icon' ),   'direction' => 'stack', 'justify' => 'start', 'align' => 'start' ); }
+		// a numeral the source sets INLINE at the start of each item (Stitch numInline) is LEFT-aligned; the
+		// end-aligned row is the "big faded number in the corner" convention, not a left chip list
+		elseif ( $has_num && ! empty( $dz['numBadge'] ) ) { $rows[] = null; }   // (the badge rides the native marker — see below)
+		elseif ( $has_num && ! empty( $dz['numInline'] ) ) { $rows[] = array( 'slots' => array( 'number' ), 'direction' => 'stack', 'justify' => 'start', 'align' => 'start' ); }
 		elseif ( $has_num )           { $rows[] = array( 'slots' => array( 'number' ), 'direction' => 'stack', 'justify' => 'end',   'align' => 'end' ); }
 		$rows[] = array( 'slots' => array( 'title' ),   'direction' => 'stack', 'justify' => 'start', 'align' => 'start' );
 		$rows[] = array( 'slots' => array( 'content' ), 'direction' => 'stack', 'justify' => 'start', 'align' => 'start' );
+		$rows = array_values( array_filter( $rows ) );
 		$d['card_rows'] = $rows;
 		$d['marker']    = 'none';
+		// A numeral the source draws as a painted BADGE in its own leading cell is the native MARKER: the design
+		// lays it beside the body, which is the source's two-column step. Its measured shape, size and skin ride
+		// with it — the shortcode's marker paints a solid accent fill with white text, which is rarely the
+		// source's outlined chip.
+		if ( $has_num && ! empty( $dz['numBadge'] ) ) {
+			$d['marker'] = 'number';
+			if ( isset( $dz['connector'] ) && in_array( (string) $dz['connector'], array( 'solid', 'none' ), true ) ) { $d['connector'] = (string) $dz['connector']; }
+			if ( ! empty( $dz['numShape'] ) && in_array( (string) $dz['numShape'], array( 'circle', 'rounded', 'square' ), true ) ) { $d['marker_shape'] = (string) $dz['numShape']; }
+			// the source's measured rhythm, over the design's own defaults
+			if ( isset( $dz['itemGap'] ) ) {
+				$d['custom_css'] = trim( (string) ( $d['custom_css'] ?? '' ) . "\nselector .fw-steps__item{padding-bottom:" . (int) round( (float) $dz['itemGap'] ) . 'px !important;}selector .fw-steps__item:last-child{padding-bottom:0 !important;}' );
+			}
+			if ( isset( $dz['titleGap'] ) ) {
+				$tg = (int) round( (float) $dz['titleGap'] );
+				$d['custom_css'] = trim( (string) ( $d['custom_css'] ?? '' ) . "\nselector .fw-steps__title{margin-bottom:0 !important;}selector .fw-steps__body{padding-top:0 !important;}selector .fw-steps__body .steps-card__row + .steps-card__row{margin-top:" . $tg . 'px !important;}' );
+			}
+			$bcs = (string) ( $dz['numBadgeCs'] ?? '' );
+			if ( '' !== $bcs ) {
+				$bd = self::cs_decls( $bcs, array( 'background-color', 'border-top-width', 'border-top-color', 'color', 'font-size', 'font-weight', 'font-family', 'letter-spacing' ) );
+				$md = array();
+				$bg = (string) ( $bd['background-color'] ?? '' );
+				$md[] = ( '' !== $bg && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)|transparent/i', $bg ) ) ? 'background:' . $bg : 'background:transparent';
+				if ( ! empty( $bd['border-top-width'] ) && (float) $bd['border-top-width'] > 0 && ! empty( $bd['border-top-color'] ) ) { $md[] = 'border:' . $bd['border-top-width'] . ' solid ' . $bd['border-top-color']; }
+				foreach ( array( 'color', 'font-size', 'font-weight', 'font-family', 'letter-spacing' ) as $k ) {
+					if ( ! empty( $bd[ $k ] ) && preg_match( '/^[a-z0-9(),.%\s#\/\'"-]+$/i', (string) $bd[ $k ] ) ) { $md[] = $k . ':' . $bd[ $k ]; }
+				}
+				if ( $md ) { $d['custom_css'] = trim( (string) ( $d['custom_css'] ?? '' ) . "\nselector .fw-steps__marker{" . implode( ';', $md ) . ';}' ); }
+			}
+		}
 		// Box Preset (box_style) for the Cards design — match the step card skin to a clustered `.boxp-` preset.
 		if ( ! empty( $dz['box'] ) && is_array( $dz['box'] ) ) {
 			$bpref = self::register_box_preset( $dz['box'] );
@@ -7917,13 +8056,54 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 				if ( '' !== (string) ( $bp0['style'] ?? '' ) ) { $atts['button_preset'] = (string) $bp0['style']; }
 				if ( preg_match( '/(?:^|\s)(?:w-full|w-100|block)(?:\s|$)/', ' ' . (string) ( $btn['cls'] ?? '' ) . ' ' ) ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__btn{display:block;width:100%;text-align:center;}" ); }
 			}
+			// The control's own GLYPH (a trailing `+` on an "add to cart" row, a chevron): the image box owns the
+			// CTA markup, so an inline svg had nowhere to go and was dropped. Painted as a currentColour mask it
+			// keeps the source's glyph, its size and its hover tint. Skipped for the `arrow` style, which already
+			// draws one.
+			$gsvg = (string) ( $btn['glyphSvg'] ?? '' );
+			if ( '' !== $gsvg && 'arrow' !== (string) ( $atts['button_style'] ?? '' ) ) {
+				$gcss = self::svg_mask_css( $gsvg, '.imgbox__btn', (string) ( $btn['iconPos'] ?? 'after' ) );
+				if ( '' !== $gcss ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\n" . $gcss ); }
+			}
+			// …and a control whose source border is NOT uniform on four edges (an "add to cart" row ruled only
+			// top and bottom) must keep those edges: substituting a Button Preset drew a full box around it.
+			$bcs1 = (string) ( $btn['srcCs'] ?? $btn['cs'] ?? '' );
+			if ( '' !== $bcs1 && 'button' === (string) ( $atts['button_style'] ?? '' ) ) {
+				$edge = array(); $seen = array();
+				foreach ( array( 'top', 'right', 'bottom', 'left' ) as $side ) {
+					$w = preg_match( '/(?:^|;)\s*border-' . $side . '-width:\s*([0-9.]+)px/i', $bcs1, $wm ) ? (float) $wm[1] : 0.0;
+					$c = preg_match( '/(?:^|;)\s*border-' . $side . '-color:\s*([^;]+)/i', $bcs1, $cm ) ? trim( $cm[1] ) : '';
+					$seen[ $side ] = ( $w > 0 && '' !== $c ) ? ( $w . '|' . $c ) : '';
+					if ( $w > 0 && '' !== $c && preg_match( '/^[a-z0-9(),.%\s#\/-]+$/i', $c ) ) { $edge[] = 'border-' . $side . ':' . $w . 'px solid ' . $c; }
+				}
+				$uniform = ( 1 === count( array_unique( array_values( $seen ) ) ) );
+				if ( $edge && ! $uniform ) {
+					unset( $atts['button_preset'] );
+					$row = array( 'border:0', 'background:transparent' );
+					$row = array_merge( $row, $edge );
+					// the source row lays its label and glyph apart (`justify-content:space-between`) — keep that
+					if ( preg_match( '/(?:^|;)\s*justify-content:\s*(space-between|space-around|center|flex-end)/i', $bcs1, $jm ) ) {
+						$row[] = 'display:flex'; $row[] = 'align-items:center'; $row[] = 'justify-content:' . strtolower( $jm[1] );
+					}
+					if ( preg_match( '/(?:^|;)\s*padding:\s*([0-9.]+px(?:\s+[0-9.]+px){0,3})/i', $bcs1, $pm ) ) { $row[] = 'padding:' . $pm[1]; }
+					// …and the row's own top margin (the source's `mt-4` separating it from the meta line): without it
+					// the control sat 15px tighter under the price than the source draws it (the gap lens caught it).
+					if ( preg_match( '/(?:^|;)\s*margin:\s*([0-9.]+)px/i', $bcs1, $mm1 ) && (float) $mm1[1] > 0 && (float) $mm1[1] <= 80 ) { $row[] = 'margin-top:' . (int) round( (float) $mm1[1] ) . 'px'; }
+					if ( preg_match( '/(?:^|;)\s*border-radius:\s*([0-9.]+px)/i', $bcs1, $rm ) ) { $row[] = 'border-radius:' . $rm[1]; }
+					foreach ( $row as $ri => $rv ) { $row[ $ri ] = $rv . ' !important'; }
+					$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__btn{" . implode( ';', $row ) . ';}' );
+				}
+			}
 			// the link's OWN measured skin (colour / weight / size) → scoped on .imgbox__link: a `text-primary font-bold` "Learn more"
 			// rendered in the theme's link default (a fixture from the feed)
 			$lcs = (string) ( $btn['srcCs'] ?? $btn['cs'] ?? '' );
 			if ( '' !== $lcs ) {
 				$ld = self::cs_decls( $lcs, array( 'color', 'font-weight', 'font-size', 'letter-spacing', 'text-transform' ) ); $lo = array();
 				foreach ( $ld as $lk => $lv ) { if ( '' !== $lv && preg_match( '/^[a-z0-9()%.,\s#-]+$/i', $lv ) ) { $lo[] = $lk . ':' . $lv . ' !important'; } }
-				if ( $lo ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__link{" . implode( ';', $lo ) . ';}' ); }
+				// `.imgbox__link` only exists in the LINK style; in the Button style the anchor itself is
+				// `.imgbox__btn`, so the measured type landed on nothing and the label rendered at the theme's
+				// 16px instead of the source's 11px tracked caps. Scope both.
+				if ( $lo ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__link,selector .imgbox__btn{" . implode( ';', $lo ) . ';}' ); }
 			}
 		}
 		$box_href = $cta_href !== '' ? $cta_href : (string) ( $link['href'] ?? '' );
@@ -7977,7 +8157,21 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 		// media frame's height instead of a ratio. The body rendered flush (0 padding) and the photo at 4:3 (a fixture from the feed).
 		$cpad0 = trim( (string) ( $card['contentPad'] ?? '' ) );
 		if ( '' !== $cpad0 && preg_match( '/^[0-9. px]+$/', $cpad0 ) ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__body{padding:" . $cpad0 . " !important;}" ); }
-		if ( ! empty( $img['frameHeight'] ) && (float) $img['frameHeight'] >= 80 ) {
+		if ( ! empty( $img['frameHeight'] ) && (float) $img['frameHeight'] >= 80 && ! empty( $img['frameContain'] ) ) {
+			// A painted tile that CONTAINS its photo (Stitch frameBg / frameContain / imgMaxH): the frame keeps the
+			// source's fill, inset and height and centres the photo at its own size — cropping it to the column made
+			// a 199x290 jar render 302x227 (measured with verifySections).
+			$atts['image_ratio'] = 'original';
+			$decl = array( 'height:' . (int) round( (float) $img['frameHeight'] ) . 'px !important', 'aspect-ratio:auto !important', 'display:flex', 'align-items:center', 'justify-content:center', 'overflow:hidden' );
+			if ( ! empty( $img['frameBg'] ) && preg_match( '/^(?:#[0-9a-f]{3,8}|rgba?\([^)]*\))$/i', (string) $img['frameBg'] ) ) { $decl[] = 'background:' . $img['frameBg']; }
+			if ( ! empty( $img['framePad'] ) && preg_match( '/^[0-9.]+px(?:\s+[0-9.]+px){0,3}$/', (string) $img['framePad'] ) ) { $decl[] = 'padding:' . $img['framePad']; }
+			$idecl = array( 'width:auto !important', 'max-width:100% !important', 'height:auto !important', 'object-fit:contain !important' );
+			if ( ! empty( $img['imgMaxH'] ) ) { $idecl[] = 'max-height:' . (int) round( (float) $img['imgMaxH'] ) . 'px !important'; }
+			$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+selector .imgbox__media{" . implode( ';', $decl ) . ';}'
+				. "
+selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
+		} elseif ( ! empty( $img['frameHeight'] ) && (float) $img['frameHeight'] >= 80 ) {
 			$atts['image_ratio'] = 'original';
 			$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__media{height:" . (int) round( (float) $img['frameHeight'] ) . "px !important;aspect-ratio:auto !important;}selector .imgbox__img{width:100%;height:100%;object-fit:cover;}" );
 		}
@@ -9553,7 +9747,9 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 			$cell_native = array( 'table' => 'n_table', 'accordion' => 'n_accordion', 'tabs' => 'n_tabs', 'steps' => 'n_steps', 'timeline' => 'n_timeline', 'progress' => 'n_progress', 'pricing' => 'n_pricing', 'gallery' => 'n_gallery' );
 			if ( isset( $cell_native[ $bt ] ) && method_exists( __CLASS__, $cell_native[ $bt ] ) ) {
 				$node = call_user_func( array( __CLASS__, $cell_native[ $bt ] ), $b );
-				if ( is_array( $node ) ) { self::apply_block_anim( $node, $b ); $items[] = $node; }
+				// …carrying the widget's OWN measured margin here too: a steps list inside a CELL takes this path,
+				// and its `mt-8` was dropped while the same widget at section level kept it.
+				if ( is_array( $node ) ) { self::apply_block_margins( $node, $b ); self::apply_block_anim( $node, $b ); $items[] = $node; }
 				continue;
 			}
 
@@ -10326,7 +10522,11 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 		// default. Skip the plain default ink (a normal-black title stays inherit). Overline colour is owned by
 		// the pill/overline path above, so it's left alone here.
 		$mk_color = function ( $src ) {
+			// …as HEX when opaque (ink_value keeps a translucent rgba as-is). Every palette entry is hex and
+			// the colour picker round-trips hex, so an `rgb()` literal here rendered a heading the picker
+			// could not show and the palette could not match (a real-site audit).
 			$src = trim( (string) $src );
+			$src = self::ink_value( $src );
 			return ( $src !== '' && ! self::is_default_ink( $src ) ) ? array( 'predefined' => '', 'custom' => $src ) : self::empty_color();
 		};
 		$subtitle_color = $mk_color( $h['subtitle_color_src'] ?? '' );
@@ -10371,7 +10571,7 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 		}
 		$overline_container = ! empty( $h['overline_pill'] ) ? 'pill' : '';
 		$overline_color     = ( ! empty( $h['overline_color'] ) )
-			? array( 'predefined' => '', 'custom' => (string) $h['overline_color'] )
+			? array( 'predefined' => '', 'custom' => self::ink_value( (string) $h['overline_color'] ) )   // hex when opaque, like every other colour option
 			: array( 'predefined' => '', 'custom' => '' );
 		$overline_class = self::strip_inert_utilities( $h['overline_class'] ?? '' );
 		$title_class    = self::strip_inert_utilities( $h['title_class'] ?? '' );
@@ -12148,9 +12348,20 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 			// it beats every class rule) painted a card's own red h3 white on its white card; the card heading carries its own
 			// native title_color + scoped type (a real-site audit)
 			$sel = str_replace( '{h}', 'h' . $lvl . ':not([class*="boxp-"] *)', $sel );
+			// …and it must not ALSO paint the heading's COLOUR. The heading node already carries that colour as
+			// its own native Title Colour — read from this very stamp — so emitting it here too writes one
+			// property from two places, and this rule (an ID selector, `!important`) beats both the option's own
+			// output AND the palette class the colour is bound to. Two costs, one cause: a converted heading
+			// bound to the `Ink` preset kept rendering the literal (editing Ink in Theme Settings moved
+			// nothing), and the Title Colour field in the builder was inert — the user changed it and the page
+			// did not move. The heading's own option owns its colour; this rule keeps the type (face, size,
+			// weight, tracking, case) that has no per-heading field. A heading whose stamp declares NO colour
+			// is untouched — there the section rule is the only carrier.
+			$heading_owns_color = true;
 		}
 		$cls   = (string) ( isset( $b['cls'] ) ? $b['cls'] : ( isset( $b['pillCls'] ) ? $b['pillCls'] : '' ) );
 		$decls = self::el_style_decls( $cls, (string) ( isset( $b['cs'] ) ? $b['cs'] : '' ), $profiles[ $role ]['props'] );
+		if ( ! empty( $heading_owns_color ) ) { unset( $decls['color'] ); }
 		// A FLUID heading (a declared clamp()/vw size): the section rule must not pin the computed px snapshot
 		// over the fluid expression the heading node carries — emit the expression itself, and the relative
 		// line-height / letter-spacing that scale with it (the "heading looks smaller on a wider screen" bug).
@@ -12672,7 +12883,9 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 			if ( ( $b['t'] ?? '' ) === 'heading_cta' ) {
 				$flush_buf();
 				$node = self::n_heading_cta( $b );
-				if ( is_array( $node ) ) { self::apply_block_anim( $node, $b ); $items[] = $node; }
+				// …carrying the widget's OWN measured margin here too: a steps list inside a CELL takes this path,
+				// and its `mt-8` was dropped while the same widget at section level kept it.
+				if ( is_array( $node ) ) { self::apply_block_margins( $node, $b ); self::apply_block_anim( $node, $b ); $items[] = $node; }
 				continue;
 			}
 
@@ -12726,6 +12939,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 				$node = call_user_func( array( __CLASS__, $native_own[ $bt_native ] ), $b );
 				if ( is_array( $node ) ) {
 					self::carry_wrap_margins( $node, $b ); // a flattened wrapper's vertical margin + padding around the widget
+					self::apply_block_margins( $node, $b ); // …and the widget's OWN measured margin (a steps list's `mt-8` had nowhere to go)
 					self::apply_block_anim( $node, $b );
 					$items[] = self::n_column( '1_1', array( $node ) );
 				}
@@ -13510,6 +13724,13 @@ selector{max-width:100% !important;}" );
 					$sm = $child['atts']['spacing']['margin'] ?? null;
 					if ( is_array( $sm ) && '' !== (string) ( $sm['left'] ?? '' ) && preg_match( '/^ms-(.+)$/', (string) $sm['left'], $ml ) && 'me-' . $ml[1] === (string) ( $sm['right'] ?? '' ) ) { $child['atts']['spacing']['margin']['left'] = ''; $child['atts']['spacing']['margin']['right'] = ''; }
 					if ( $left_cap > 0 ) { $child['atts']['content_align'] = 'left'; } // (the flexbox view: margin-left:0 for a left-aligned cap)
+					// A band whose own container carries NO side padding reaches the cap's edge: the theme's
+					// Content Width renders `min(cap, 100% − 2·gutter)`, so the site gutter inset it a second
+					// time and its picture sat ~44px off the source's edge. No native option expresses
+					// "this band only, no gutter", so the cap is re-stated without it.
+					if ( ! empty( $sec['sectionNoGutter'] ) && ! $in_main_cap && $cwpx > 0 ) {
+						$child['atts']['custom_css'] = trim( (string) ( $child['atts']['custom_css'] ?? '' ) . "\n" . '@media (min-width:992px){selector{max-width:min(' . (int) round( $cwpx ) . 'px,100%) !important;}}' );
+					}
 					if ( $in_main_cap ) { $child['atts']['custom_css'] = trim( (string) ( $child['atts']['custom_css'] ?? '' ) . "
 selector{max-width:100% !important;}" ); } // (#main's gutter is the gutter — none again around the flexbox)
 				}
