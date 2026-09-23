@@ -4716,6 +4716,89 @@ ga( "[AJ] …pinned with the native Position option (bottom, left 50%) + the uti
 $aj_btn = $r_find( $aj_pg, function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'Shop Now' === (string) ( $n['atts']['label'] ?? '' ); } );
 ga( "[AJ] the container's `pb-28` (112px) lands on the CTA — the last IN-FLOW block — not on the pinned cue (the content had sat 70px too low)", is_array( $aj_btn ) && '' !== (string) ( $aj_btn['atts']['spacing']['margin']['bottom'] ?? '' ) && ( ! is_array( $aj_cue ) || '' === (string) ( $aj_cue['atts']['spacing']['margin']['bottom'] ?? '' ) ), wp_json_encode( array( $aj_btn['atts']['spacing']['margin']['bottom'] ?? null, $aj_cue['atts']['spacing']['margin']['bottom'] ?? null ) ) );
 
+
+/*
+ * [AK] The shared-report feed's ranked themes, 2026-09-23 — each one a general rule:
+ *  · a band header written as a small kicker heading over the real headline is ONE special_heading (overline + title),
+ *    and a chip/kicker keeps the gap the source held below it;
+ *  · a THIRD font face the page really uses (a mono in a code panel) is loaded, not just referenced;
+ *  · an <img> that pins its OWN box (`w-full h-[740px] object-cover rounded-2xl`) keeps that box;
+ *  · a quote card that ends in an author block (avatar / monogram disc + heavier name over lighter role) is a
+ *    testimonial, with the monogram as the avatar — never as the author name;
+ *  · a button's preset follows its COMPUTED fill, so `bg-primary` and `bg-primary/10` never collapse into one.
+ */
+echo "\n[AK] Feed themes: kicker headings, the chip gap, a third face, a pinned image box, author blocks, tinted vs solid buttons\n";
+$ak_cs = function ( $fs = 16, $extra = '' ) { return 'color:rgb(20,20,20);font-family:Inter, system-ui, sans-serif;font-size:' . $fs . 'px;font-weight:400;line-height:' . round( $fs * 1.55 ) . 'px;text-align:start;display:block' . $extra; };
+$ak_mono = 'color:rgb(226,232,240);font-family:&quot;Space Mono&quot;, &quot;Courier New&quot;, monospace;font-size:14px;font-weight:400;line-height:22px;text-align:start;display:block';
+$ak_card = function ( $quote, $ini, $name, $job ) use ( $ak_cs ) {
+	return '<div class="rounded-xl border p-8" data-sc-cs="' . $ak_cs( 16 ) . ';background-color:rgb(255,255,255);border-top-width:1px;border-top-style:solid;border-top-color:rgb(229,231,235);border-radius:12px;padding:32px;height:260px">'
+		. '<p data-sc-cs="' . $ak_cs( 16 ) . ';height:72px">' . $quote . '</p>'
+		. '<div class="flex items-center gap-4" data-sc-cs="' . $ak_cs( 16 ) . ';display:flex;gap:16px;align-items:center;height:48px">'
+		. '<div class="w-12 h-12 rounded-full" data-sc-cs="background-color:rgb(226,232,240);border-radius:9999px;height:48px;width:48px;display:flex;align-items:center;justify-content:center"><span data-sc-cs="color:rgb(71,85,105);font-family:Inter, system-ui, sans-serif;font-size:18px;font-weight:600;line-height:24px;height:24px;display:block">' . $ini . '</span></div>'
+		. '<div data-sc-cs="' . $ak_cs( 16 ) . ';height:44px"><div data-sc-cs="color:rgb(20,20,20);font-family:Inter, system-ui, sans-serif;font-size:16px;font-weight:600;line-height:24px;height:24px;display:block">' . $name . '</div>'
+		. '<div data-sc-cs="color:rgb(107,114,128);font-family:Inter, system-ui, sans-serif;font-size:14px;font-weight:400;line-height:20px;height:20px;display:block">' . $job . '</div></div></div></div>';
+};
+$ak_html = '<!DOCTYPE html><html><head><title>T</title></head><body>'
+	. '<header data-sc-cs="' . $ak_cs( 16 ) . ';height:72px"><nav data-sc-cs="' . $ak_cs( 16 ) . ';display:flex;gap:32px;height:72px"><a href="/" data-sc-cs="' . $ak_cs( 26 ) . '">Brandy</a><a href="/a" data-sc-cs="' . $ak_cs( 16 ) . '">Work</a><a href="/b" data-sc-cs="' . $ak_cs( 16 ) . '">About</a></nav></header>'
+	// band header: a 14px mono uppercase kicker HEADING over the 48px headline
+	. '<section data-sc-cs="' . $ak_cs( 16 ) . ';padding:96px 0px;height:420px"><div class="max-w-7xl mx-auto px-4" data-sc-cs="' . $ak_cs( 16 ) . ';max-width:1280px;margin:0px auto;padding:0px 16px;height:228px">'
+	. '<div class="mb-12" data-sc-cs="' . $ak_cs( 16 ) . ';margin:0px 0px 48px;height:96px">'
+	. '<h2 class="text-sm font-mono uppercase tracking-widest" data-sc-cs="color:rgb(37,99,235);font-family:&quot;Space Mono&quot;, monospace;font-size:14px;font-weight:400;line-height:20px;letter-spacing:2.8px;text-transform:uppercase;height:20px;display:block">Live Experience</h2>'
+	. '<h3 class="text-5xl font-bold" data-sc-cs="color:rgb(20,20,20);font-family:Inter, system-ui, sans-serif;font-size:48px;font-weight:700;line-height:52px;height:52px;display:block">Upcoming Shows</h3>'
+	. '</div>'
+	. '<p data-sc-cs="' . $ak_cs( 16 ) . ';height:24px">A first body paragraph in the page face, long enough to outweigh the terminal lines.</p>'
+	. '<p data-sc-cs="' . $ak_cs( 16 ) . ';height:24px">A second body paragraph in the page face, also longer than any single code line.</p>'
+	. '<p data-sc-cs="' . $ak_cs( 16 ) . ';height:24px">A third body paragraph in the page face, keeping prose the dominant text here.</p>'
+	// a code panel in a THIRD face
+	. '<div class="rounded-lg p-6" data-sc-cs="background-color:rgb(15,23,42);border-radius:8px;padding:24px;height:140px;display:block">'
+	. '<p data-sc-cs="' . $ak_mono . ';height:22px">~/projects/site $ build --watch</p>'
+	. '<p data-sc-cs="' . $ak_mono . ';height:22px">compiled 42 files in 1.8s</p>'
+	. '<p data-sc-cs="' . $ak_mono . ';height:22px">ready on localhost:3000</p>'
+	. '</div></div></section>'
+	// a hero chip 24px above the h1, and two buttons: an opaque brand fill + a 10 % tint of the same brand
+	. '<section data-sc-cs="' . $ak_cs( 16 ) . ';padding:96px 0px;height:420px"><div class="max-w-7xl mx-auto px-4" data-sc-cs="' . $ak_cs( 16 ) . ';max-width:1280px;margin:0px auto;padding:0px 16px;height:228px">'
+	. '<span class="inline-flex items-center rounded-full border px-4 py-1 text-xs uppercase tracking-widest" data-sc-cs="color:rgb(37,99,235);font-size:12px;line-height:16px;letter-spacing:2.4px;text-transform:uppercase;border-radius:9999px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(191,219,254);padding:4px 16px;margin:0px 0px 24px;height:26px;display:inline-flex">New in 2026</span>'
+	. '<h1 data-sc-cs="color:rgb(20,20,20);font-family:Inter, system-ui, sans-serif;font-size:56px;font-weight:700;line-height:60px;height:60px;display:block">Hear it first</h1>'
+	. '<div class="flex gap-4" data-sc-cs="' . $ak_cs( 16 ) . ';display:flex;gap:16px;height:52px">'
+	. '<a href="/listen" class="bg-primary text-primary-foreground" data-sc-cs="background-color:rgb(153,51,255);color:rgb(255,255,255);font-family:Inter, system-ui, sans-serif;font-size:16px;font-weight:700;line-height:24px;padding:14px 28px;border-radius:8px;height:52px;display:inline-flex;align-items:center;justify-content:center">Listen Now</a>'
+	. '<a href="/tour" class="bg-primary/10 text-primary" data-sc-cs="background-color:rgba(153,51,255,0.1);color:rgb(153,51,255);font-family:Inter, system-ui, sans-serif;font-size:16px;font-weight:700;line-height:24px;padding:14px 28px;border-radius:8px;height:52px;display:inline-flex;align-items:center;justify-content:center">Tour Dates</a>'
+	. '</div></div></section>'
+	// a photo that pins its OWN box
+	. '<section data-sc-cs="' . $ak_cs( 16 ) . ';padding:96px 0px;height:932px"><div class="max-w-7xl mx-auto px-4" data-sc-cs="' . $ak_cs( 16 ) . ';max-width:1280px;margin:0px auto;padding:0px 16px;height:740px">'
+	. '<div class="grid grid-cols-2 gap-16" data-sc-cs="' . $ak_cs( 16 ) . ';display:grid;gap:64px;grid-template-columns:592px 592px;height:740px">'
+	. '<div data-sc-cs="' . $ak_cs( 16 ) . ';height:740px"><img src="https://example.com/story.jpg" alt="" class="w-full h-[740px] object-cover rounded-2xl" data-sc-cs="height:740px;width:592px;display:block;object-fit:cover;border-radius:16px"></div>'
+	. '<div data-sc-cs="' . $ak_cs( 16 ) . ';height:200px"><h2 data-sc-cs="' . $ak_cs( 36 ) . ';font-weight:700;height:44px">Our story</h2><p data-sc-cs="' . $ak_cs( 16 ) . ';height:72px">Three lines of copy beside the photo so the row is a real two-column band.</p></div>'
+	. '</div></div></section>'
+	// quote cards with NO quotation marks, rating or dash — only an author block
+	. '<section data-sc-cs="' . $ak_cs( 16 ) . ';padding:96px 0px;height:460px"><div class="max-w-7xl mx-auto px-4" data-sc-cs="' . $ak_cs( 16 ) . ';max-width:1280px;margin:0px auto;padding:0px 16px;height:268px">'
+	. '<div class="grid grid-cols-3 gap-8" data-sc-cs="' . $ak_cs( 16 ) . ';display:grid;gap:32px;grid-template-columns:405px 405px 405px;height:260px">'
+	. $ak_card( 'They rebuilt our storefront in a week and it still feels like ours.', 'S', 'Sarah Jenkins', 'Head of Retail' )
+	. $ak_card( 'The handover was clean and the docs were better than our own.', 'D', 'Dan Okafor', 'CTO' )
+	. $ak_card( 'Our load times halved and the team can edit every page themselves.', 'E', 'Elena Ruiz', 'Marketing Lead' )
+	. '</div></div></section>'
+	. '<footer data-sc-cs="' . $ak_cs( 16 ) . ';padding:48px 0px;height:120px"><p data-sc-cs="' . $ak_cs( 16 ) . ';height:24px">© 2026 Brandy</p></footer></body></html>';
+$ak_bl = FW_Site_Converter_Sources::build_from_html( $ak_html, 'Brandy', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$ak_pg = $ak_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
+$ak_all = function ( $pred ) use ( $ak_pg, $af_all ) { return $af_all( $ak_pg, $pred ); };
+$ak_css = function ( $n ) { return (string) ( $n['atts']['custom_css'] ?? '' ); };
+
+$ak_head = $r_find( $ak_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && 'Upcoming Shows' === trim( wp_strip_all_tags( (string) ( $n['atts']['title'] ?? '' ) ) ); } );
+ga( "[AK] a small mono/uppercase kicker HEADING over a 48px headline is ONE special_heading: overline = the kicker, title = the headline (the tag order h2→h3 says nothing)", is_array( $ak_head ) && 'Live Experience' === trim( (string) ( $ak_head['atts']['overline'] ?? '' ) ), wp_json_encode( array( $ak_head['atts']['overline'] ?? null, $ak_head['atts']['title'] ?? null ) ) );
+ga( "[AK] …and the kicker is not ALSO left as a lone heading or text block", 0 === count( $ak_all( function ( $n ) { return in_array( ( $n['shortcode'] ?? '' ), array( 'special_heading', 'text_block' ), true ) && 'Live Experience' === trim( wp_strip_all_tags( (string) ( $n['atts']['title'] ?? ( $n['atts']['text'] ?? '' ) ) ) ); } ) ), 'the kicker survived as its own element' );
+$ak_hero = $r_find( $ak_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && 'New in 2026' === trim( (string) ( $n['atts']['overline'] ?? '' ) ); } );
+ga( "[AK] a chip folded in as the overline keeps the gap the source held below it (24px, not the theme's 8px)", is_array( $ak_hero ) && false !== strpos( $ak_css( $ak_hero ), '.heading-overline{margin-bottom:24px' ), $ak_css( $ak_hero ) );
+$ak_g = (string) ( $ak_bl['files']['theme-design.json']['fonts']['google'] ?? '' );
+ga( "[AK] a THIRD face the page really uses (the code panel's mono) is added to the font link — once — and never becomes the body face", false !== strpos( $ak_g, 'family=Space+Mono' ) && 1 === substr_count( $ak_g, 'family=Space+Mono' ) && 'Inter' === (string) ( $ak_bl['files']['theme-design.json']['fonts']['body'] ?? '' ), wp_json_encode( array( $ak_g, $ak_bl['files']['theme-design.json']['fonts']['body'] ?? null ) ) );
+$ak_img = $r_find( $ak_pg, function ( $n ) { return 'media_image' === ( $n['shortcode'] ?? '' ); } );
+ga( "[AK] an <img> that pins its OWN box keeps it: 740px + object-fit:cover + the 16px radius (it had rendered height:auto at the column's width)", is_array( $ak_img ) && false !== strpos( $ak_css( $ak_img ), 'height:740px' ) && false !== strpos( $ak_css( $ak_img ), 'object-fit:cover' ) && false !== strpos( $ak_css( $ak_img ), 'border-radius:16px' ), $ak_css( $ak_img ) );
+$ak_t = $r_find( $ak_pg, function ( $n ) { return 'testimonials' === ( $n['shortcode'] ?? '' ); } );
+$ak_rows = is_array( $ak_t ) ? (array) ( $ak_t['atts']['testimonials'] ?? array() ) : array();
+ga( "[AK] quote cards with NO quotation marks, rating or dash are still testimonials when they end in an author block — all three of them", 3 === count( $ak_rows ), wp_json_encode( count( $ak_rows ) ) );
+ga( "[AK] …the initials disc is the avatar, never the author: name = the heavier line, job = the lighter one (an all-caps ROLE like \"CTO\" is not mistaken for a monogram)", 3 === count( $ak_rows ) && 'Sarah Jenkins' === (string) ( $ak_rows[0]['author_name'] ?? '' ) && 'Head of Retail' === (string) ( $ak_rows[0]['author_job'] ?? '' ) && 'Dan Okafor' === (string) ( $ak_rows[1]['author_name'] ?? '' ) && 'CTO' === (string) ( $ak_rows[1]['author_job'] ?? '' ), wp_json_encode( array_map( function ( $r ) { return array( $r['author_name'] ?? '', $r['author_job'] ?? '' ); }, $ak_rows ) ) );
+$ak_b1 = $r_find( $ak_pg, function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'Listen Now' === (string) ( $n['atts']['label'] ?? '' ); } );
+$ak_b2 = $r_find( $ak_pg, function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'Tour Dates' === (string) ( $n['atts']['label'] ?? '' ); } );
+ga( "[AK] `bg-primary` (opaque) and `bg-primary/10` (a 10 % tint of the same brand) are TWO presets — the role word alone had given both the solid one", is_array( $ak_b1 ) && is_array( $ak_b2 ) && '' !== (string) ( $ak_b1['atts']['style'] ?? '' ) && (string) $ak_b1['atts']['style'] !== (string) ( $ak_b2['atts']['style'] ?? '' ), wp_json_encode( array( $ak_b1['atts']['style'] ?? null, $ak_b2['atts']['style'] ?? null ) ) );
+
 $pass = $GLOBALS['__pass'];
 $fail = $GLOBALS['__fail'];
 echo "\n========================================\n";

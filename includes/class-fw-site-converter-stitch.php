@@ -10288,6 +10288,42 @@ class FW_Site_Converter_Stitch {
 	 * @param string $title page/theme name
 	 * @return array design-config
 	 */
+	/**
+	 * Named font families the page USES beyond the ones already loaded — the third face a source keeps for code /
+	 * terminal panels or a script accent. Read off every stamped leaf's computed `font-family` (the first named
+	 * family of the stack), ranked by how much text wears it, minus the families already passed in. At most two,
+	 * and only a face carrying real text (≥ 2 leaves), so a one-off inline style never adds a webfont.
+	 *
+	 * @param string   $html  the captured page.
+	 * @param string[] $known families already loaded (heading / body / the source link's).
+	 * @return string[]
+	 */
+	private static function extra_faces( $html, array $known ) {
+		if ( '' === trim( (string) $html ) ) { return array(); }
+		$skip = array();
+		foreach ( $known as $k ) { $k = strtolower( trim( (string) $k, " \t\"'" ) ); if ( '' !== $k ) { $skip[ $k ] = true; } }
+		$count = array(); $names = array();
+		if ( ! preg_match_all( '/data-sc-cs="([^"]*)"/i', (string) $html, $mm ) ) { return array(); }
+		foreach ( $mm[1] as $cs ) {
+			if ( ! preg_match( '/(?:^|;)\s*font-family:\s*([^;]+)/i', html_entity_decode( $cs, ENT_QUOTES ), $fm ) ) { continue; }
+			$fam = trim( (string) preg_split( '/\s*,\s*/', trim( $fm[1] ) )[0], " \t\"'" );
+			if ( '' === $fam || ! preg_match( '/^[A-Za-z][A-Za-z0-9 ]+$/', $fam ) ) { continue; }
+			$lc = strtolower( $fam );
+			if ( isset( $skip[ $lc ] ) ) { continue; }
+			if ( preg_match( '/^(?:ui-|system-ui|sans-serif|serif|monospace|inherit|initial)/i', $fam ) ) { continue; }
+			$count[ $lc ] = ( $count[ $lc ] ?? 0 ) + 1;
+			$names[ $lc ] = $fam;
+		}
+		arsort( $count );
+		$out = array();
+		foreach ( $count as $lc => $n ) {
+			if ( $n < 2 ) { continue; }
+			$out[] = $names[ $lc ];
+			if ( count( $out ) >= 2 ) { break; }
+		}
+		return $out;
+	}
+
 	public static function tokens_to_design_config( array $tokens, $html, $title ) {
 		list( $head_font, $body_font ) = self::pick_fonts_raw( $tokens );
 		$google = '';
@@ -10313,7 +10349,23 @@ class FW_Site_Converter_Stitch {
 		// named family (self-hosted, e.g. Cormorant Garamond / Inter). This is what functions_php enqueues, so
 		// the family in the carried CSS actually loads instead of falling back to a system serif.
 		if ( $google === '' && ( $head_font !== '' || $body_font !== '' ) && class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
-			$google = FW_Site_Converter_Theme_Generator::synth_google_fonts_url( array( $head_font, $body_font ) );
+			$google = FW_Site_Converter_Theme_Generator::synth_google_fonts_url( array_merge( array( $head_font, $body_font ), self::extra_faces( (string) $html, array( $head_font, $body_font ) ) ) );
+		}
+		// …and a THIRD face the page really uses (a mono in a code/terminal panel, a script accent) must LOAD, even when the
+		// source shipped its own font link: the converter carries that family onto the nodes that used it, but without the
+		// family in the stylesheet those nodes fell back to Courier / the generic stack (reported on three sites).
+		$extra = self::extra_faces( (string) $html, array_merge( array( $head_font, $body_font ), $gfonts ) );
+		foreach ( $extra as $ei => $ef ) { if ( '' !== $google && false !== stripos( $google, 'family=' . str_replace( ' ', '+', $ef ) . ':' ) ) { unset( $extra[ $ei ] ); } }
+		$extra = array_values( $extra );
+		if ( $extra && class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
+			$extra_url = FW_Site_Converter_Theme_Generator::synth_google_fonts_url( $extra );
+			if ( '' !== $extra_url ) {
+				$google = ( '' === $google )
+					? $extra_url
+					: ( false !== strpos( $google, 'fonts.googleapis.com/css2' )
+						? preg_replace( '/&display=swap$/', '', $google ) . '&' . preg_replace( '#^https?://fonts\.googleapis\.com/css2\?#', '', $extra_url )
+						: $google );
+			}
 		}
 
 		$ink    = self::token_color( $tokens, array( 'text', 'on-background', 'on-surface' ) );
@@ -22153,8 +22205,75 @@ class FW_Site_Converter_Stitch {
 		if ( mb_strlen( $t ) < 30 ) { return false; }
 		if ( preg_match( '/["“”«»‘’]/u', $t ) ) { return true; }
 		if ( self::testimonial_rating( $k ) !== null ) { return true; }
-		return (bool) preg_match( '/(^|\s)[—–-]\s*[A-Z][a-z]+/u', $t );
+		if ( preg_match( '/(^|\s)[—–-]\s*[A-Z][a-z]+/u', $t ) ) { return true; }
+		// …or the card ENDS in an author block (a portrait / initials disc beside a heavier name line over a lighter
+		// role line). Plenty of sources quote without quotation marks, a rating or a dash, so the attribution is the
+		// only reliable hallmark — without it such a grid fell through to plain text columns and the whole
+		// testimonials element (avatars, roles, the design) was lost (reported repeatedly in the feed).
+		return self::has_author_block( $k );
 	}
+
+	/**
+	 * Does a card end in an AUTHOR BLOCK? A small avatar — an `<img>` or a ≤ 72px rounded disc holding a 1–3 letter
+	 * monogram — next to a stack of two short text leaves whose first is visibly heavier or larger than the second
+	 * (name over role). Returns false for a bare pair of lines: the avatar (or a clear weight step) is what separates
+	 * an attribution from an ordinary two-line card footer.
+	 */
+	private static function has_author_block( $k ) {
+		if ( ! ( $k instanceof DOMElement ) ) { return false; }
+		// The block is a ROW: one element holding the avatar AND the two stacked lines. Requiring the row (rather than
+		// "somewhere in the card") is what keeps a service card (icon tile + title + body) and a product tile (photo +
+		// name + price) out — their image and their lines are not one attribution lockup.
+		foreach ( $k->getElementsByTagName( '*' ) as $row ) {
+			$rcs = (string) $row->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/(?:^|;)\s*display:\s*(?:flex|inline-flex)/i', $rcs ) ) { continue; }
+			if ( preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $rcs ) ) { continue; }
+			// the avatar: a ROUND disc (a monogram or an image) no larger than a portrait
+			$avatar = null;
+			foreach ( $row->getElementsByTagName( '*' ) as $d ) {
+				$dcs  = (string) $d->getAttribute( 'data-sc-cs' );
+				$dcls = self::cls( $d );
+				$round = preg_match( '/border-radius:\s*(?:9999px|50%)/i', $dcs ) || preg_match( '/(?:^|\s)rounded-full(?:\s|$)/', $dcls );
+				if ( ! $round ) { continue; }
+				$size = 0.0;
+				if ( preg_match( '/(?:^|;)\s*(?:width|height):\s*([0-9.]+)px/i', $dcs, $dw ) ) { $size = (float) $dw[1]; }
+				elseif ( preg_match( '/(?:^|\s)(?:w|h|size)-(\d{1,2})(?:\s|$)/', $dcls, $um ) ) { $size = (int) $um[1] * 4; }
+				if ( $size <= 0 || $size > 80 ) { continue; }
+				$dt = trim( preg_replace( '/\s+/u', ' ', self::text( $d ) ) );
+				if ( 'img' === strtolower( $d->tagName ) || '' === $dt || preg_match( '/^\p{Lu}{1,3}$/u', $dt ) ) { $avatar = $d; break; }
+			}
+			if ( null === $avatar ) { continue; }
+			// …beside a stack of two short lines, the first heavier or larger than the second (name over role)
+			$lines = array();
+			foreach ( $row->getElementsByTagName( '*' ) as $e ) {
+				if ( $e->getElementsByTagName( '*' )->length ) { continue; }
+				if ( $avatar === $e || self::dom_contains( $avatar, $e ) ) { continue; } // the monogram itself
+				$t = trim( preg_replace( '/\s+/u', ' ', self::text( $e ) ) );
+				if ( '' === $t || mb_strlen( $t ) > 48 || ! preg_match( '/\p{L}/u', $t ) ) { continue; }
+				$ecs = (string) $e->getAttribute( 'data-sc-cs' );
+				$lines[] = array(
+					'w'  => preg_match( '/(?:^|;)\s*font-weight:\s*([0-9]+)/i', $ecs, $wm ) ? (int) $wm[1] : 400,
+					'fs' => preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', $ecs, $fm ) ? (float) $fm[1] : 0.0,
+				);
+			}
+			$n = count( $lines );
+			if ( $n < 2 || $n > 3 ) { continue; }
+			for ( $i = 0; $i < $n - 1; $i++ ) {
+				$a = $lines[ $i ]; $b = $lines[ $i + 1 ];
+				if ( $a['w'] >= 500 && $b['w'] < $a['w'] ) { return true; }
+				if ( $a['fs'] > 0 && $b['fs'] > 0 && $b['fs'] < $a['fs'] && $a['w'] >= $b['w'] ) { return true; }
+			}
+		}
+		return false;
+	}
+
+	/** Is $needle inside $hay (or the same node)? */
+	private static function dom_contains( $hay, $needle ) {
+		if ( ! ( $hay instanceof DOMNode ) || ! ( $needle instanceof DOMNode ) ) { return false; }
+		for ( $p = $needle; $p instanceof DOMNode; $p = $p->parentNode ) { if ( $p === $hay ) { return true; } }
+		return false;
+	}
+
 	/** A gallery-style image tile: a full-bleed cover image (object-cover) framed by the card (an
 	 *  `aspect-` ratio or `overflow-hidden`) with any caption living in an absolutely-positioned overlay —
 	 *  the photo is the content, not a testimonial avatar. */
@@ -22201,7 +22320,7 @@ class FW_Site_Converter_Stitch {
 				// a lone QUOTE GLYPH (“ ” ❝ ") is decoration, never the author (it became author_name — a fixture from the feed)
 				if ( ! preg_match( '/\p{L}/u', $t ) ) { continue; }
 				// 2–3 uppercase letters inside a small rounded disc are an INITIALS avatar, not the name (a fixture from the feed)
-				if ( preg_match( '/^\p{Lu}{2,3}$/u', $t ) ) {
+				if ( preg_match( '/^\p{Lu}{1,3}$/u', $t ) ) {
 					$disc = $e; $is_disc = false;
 					for ( $i = 0; $i < 2 && $disc instanceof DOMElement; $i++, $disc = $disc->parentNode ) {
 						$dcs = (string) $disc->getAttribute( 'data-sc-cs' );

@@ -823,6 +823,12 @@ class FW_Site_Converter_Mapper {
 			// preset, so the two always agree. Then the Tailwind `bg-*` fills.
 			$sem = '';
 			if ( preg_match( '/\s(?:(?:btn|button|cta)[-_]{1,2})?(primary|secondary|accent|outline|ghost|tertiary)(?:[-_][a-z0-9]+)?\s/', $lc, $sm ) ) { $sem = $sm[1]; }
+			// …but an ALPHA-TINTED fill is not the role's SOLID preset. `bg-primary` and `bg-primary/10` carry the same role
+			// word, so a hero CTA whose computed background is the opaque brand colour and a quiet button at 10 % opacity both
+			// resolved to btn-primary — and the CTA then wore the tinted skin (reported on two sites). When the computed fill is
+			// translucent, skip the class shortcut and let the COMPUTED match below pick the preset that really fits.
+			$bg_a = self::rgba_quad( isset( $props['background-color'] ) ? $props['background-color'] : '' );
+			if ( is_array( $bg_a ) && isset( $bg_a[3] ) && (float) $bg_a[3] < 0.9 && (float) $bg_a[3] > 0.0 ) { $sem = ''; $lc = ' '; }
 			if ( 'primary' === $sem || preg_match( '/\s(?:bg-primary|bg-brand)\b/', $lc ) )        { $role = 'primary'; }
 			elseif ( ( 'accent' === $sem || preg_match( '/\s(?:bg-accent|bg-cta)(?![a-z])/', $lc ) ) && self::btn_color_slug_by_role( 'accent' ) !== '' ) { $role = 'accent'; }
 			elseif ( 'secondary' === $sem || 'accent' === $sem || preg_match( '/\s(?:bg-secondary|bg-accent|bg-cta)\b/', $lc ) ) { $role = 'secondary'; }
@@ -4516,7 +4522,22 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			if ( '' !== $box ) { break; }
 			$p = $p->parentNode;
 		}
-		if ( '' === $box ) { return ''; }
+		if ( '' === $box ) {
+			// …or the IMG ITSELF is the frame (`class="w-full h-[740px] object-cover rounded-2xl"`, no wrapper class): its own
+			// PINNED height is the design. Without this the photo kept `height:auto`, filled its column at the natural ratio and
+			// the band's height drifted (592x740 rendered 608x608 — reported on three sites).
+			$icss = (string) $img->getAttribute( 'data-sc-cs' );
+			$h    = 0.0;
+			if ( preg_match( '/h-\[([0-9.]+)px\]/', $icls, $hm ) ) { $h = (float) $hm[1]; }
+			elseif ( preg_match( '/h-(\d{1,3})(?:\s|$)/', $icls, $hm ) ) { $h = (int) $hm[1] * 4; }
+			elseif ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $icss, $hm ) ) { $h = (float) $hm[1]; }
+			if ( $h < 80 || $h > 1600 ) { return ''; }
+			$own = 'selector img{width:100%;height:' . (int) round( $h ) . 'px;object-fit:cover;display:block;';
+			$d   = self::cs_decls( $icss, array( 'border-radius', 'box-shadow' ) );
+			if ( ! empty( $d['border-radius'] ) && preg_match( '/^[0-9a-z%.\s]+$/i', (string) $d['border-radius'] ) && '0px' !== trim( (string) $d['border-radius'] ) ) { $own .= 'border-radius:' . trim( (string) $d['border-radius'] ) . ';'; }
+			if ( ! empty( $d['box-shadow'] ) && 'none' !== strtolower( trim( (string) $d['box-shadow'] ) ) && preg_match( '/^[a-z0-9#(),.%\s-]+$/i', (string) $d['box-shadow'] ) ) { $own .= 'box-shadow:' . trim( (string) $d['box-shadow'] ) . ';'; }
+			return $own . '}';
+		}
 
 		return 'selector{' . $box . 'overflow:hidden;}'
 			. 'selector img{width:100%;height:100%;object-fit:cover;display:block;}';
@@ -9138,6 +9159,58 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 				|| ( preg_match( '/(?:^|;)\s*border-top-width:\s*([0-9.]+)px/i', $pill_cs, $pwm ) && (float) $pwm[1] > 0 );
 			$b['overline_pill']  = $skinned;
 			$b['overline_color'] = $color;
+			$b['overline_gap']   = self::block_gap_below( $b );
+			$blocks[ $keys[ $i ] ] = $b;
+		}
+		return $blocks;
+	}
+
+	/**
+	 * A band header written as TWO headings — a small tracked/mono kicker (`<h2 class="text-sm font-mono uppercase">`)
+	 * over the real headline (`<h3 class="text-5xl font-bold">`) — is ONE heading: the small one is the overline, the
+	 * big one the title. The tag order says nothing (h2 then h3 here), so the SIZE decides: the first is a kicker when
+	 * its computed font-size is ≤ 60 % of the next heading's (or it is uppercase / tracked / a different family and
+	 * still smaller). Without this the converter kept the kicker as the title and emitted the headline as a second
+	 * heading — the source's hierarchy inverted (reported repeatedly in the shared-report feed).
+	 *
+	 * Retags the kicker block's role to `overline`; the existing heading-group coalescing then folds the pair into one
+	 * special_heading. JS twin: pending (coalesceHeadingGroups).
+	 */
+	private static function transform_kicker_headings( array $blocks ) {
+		$keys = array_keys( $blocks );
+		$n    = count( $keys );
+		$fs   = function ( $b ) {
+			$cs = (string) ( $b['cs'] ?? '' );
+			if ( preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', $cs, $m ) ) { return (float) $m[1]; }
+			return 0.0;
+		};
+		for ( $i = 0; $i < $n - 1; $i++ ) {
+			$b = $blocks[ $keys[ $i ] ];
+			if ( ! is_array( $b ) || 'heading' !== (string) ( $b['t'] ?? '' ) ) { continue; }
+			if ( ! in_array( (string) ( $b['role'] ?? '' ), array( 'title', 'heading' ), true ) ) { continue; }
+			if ( ! empty( $b['apart'] ) || ! empty( $b['abs'] ) ) { continue; }
+			$next = null;
+			for ( $j = $i + 1; $j < $n; $j++ ) {
+				$c = $blocks[ $keys[ $j ] ];
+				if ( ! is_array( $c ) || ! empty( $c['omit'] ) ) { continue; }
+				$next = $c; break;
+			}
+			if ( ! is_array( $next ) || 'heading' !== (string) ( $next['t'] ?? '' ) ) { continue; }
+			if ( ! in_array( (string) ( $next['role'] ?? '' ), array( 'title', 'heading' ), true ) ) { continue; }
+			$a = $fs( $b ); $z = $fs( $next );
+			if ( $a <= 0 || $z <= 0 || $a >= $z ) { continue; }
+			$txt = trim( preg_replace( '/\s+/u', ' ', wp_strip_all_tags( (string) ( $b['html'] ?? $b['text'] ?? '' ) ) ) );
+			if ( '' === $txt || mb_strlen( $txt ) > 60 ) { continue; } // a real two-line headline is not a kicker
+			$bcs   = (string) ( $b['cs'] ?? '' ); $ncs = (string) ( $next['cs'] ?? '' );
+			$upper = (bool) preg_match( '/text-transform:\s*uppercase/i', $bcs ) || (bool) preg_match( '/\buppercase\b/', (string) ( $b['cls'] ?? '' ) );
+			$track = preg_match( '/letter-spacing:\s*([0-9.]+)px/i', $bcs, $lm ) && (float) $lm[1] >= 1;
+			$fam   = function ( $cs ) { return preg_match( '/(?:^|;)\s*font-family:\s*([^;]+)/i', $cs, $m ) ? strtolower( trim( $m[1] ) ) : ''; };
+			$diff  = ( '' !== $fam( $bcs ) && $fam( $bcs ) !== $fam( $ncs ) );
+			if ( ! ( $a <= 0.6 * $z || $upper || $track || $diff ) ) { continue; }
+			$b['role']         = 'overline';
+			$b['text']         = $txt;
+			$b['html']         = $txt;
+			$b['overline_gap'] = self::block_gap_below( $b );
 			$blocks[ $keys[ $i ] ] = $b;
 		}
 		return $blocks;
@@ -9145,6 +9218,7 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 
 	private static function build_cell_items( array $blocks ) {
 		$blocks = self::transform_badge_overlines( $blocks ); // chip-before-heading → overline
+		$blocks = self::transform_kicker_headings( $blocks ); // a small heading before a big one → its overline
 		foreach ( $blocks as &$nb ) { if ( is_array( $nb ) ) { $nb['nested'] = true; } } unset( $nb ); // inside a cell / panel: no section-scoped styler reaches these blocks
 		$items = array();
 		$head  = null;
@@ -9230,6 +9304,7 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 				if ( 'overline' === $role ) {
 					if ( isset( $b['overline_svg'] ) )   { $head['overline_svg']   = (string) $b['overline_svg']; }
 					if ( ! empty( $b['overline_dot_css'] ) ) { $head['overline_dot_css'] = (string) $b['overline_dot_css']; }
+					if ( ! empty( $b['overline_gap'] ) ) { $head['overline_gap'] = (int) $b['overline_gap']; }
 					if ( ! empty( $b['overline_pill'] ) ) { $head['overline_pill']  = true; }
 					if ( isset( $b['overline_pill_cls'] ) ) { $head['overline_pill_class'] = (string) $b['overline_pill_cls']; }
 					if ( isset( $b['overline_pill_cs'] ) )  { $head['overline_pill_cs'] = (string) $b['overline_pill_cs']; }
@@ -9741,6 +9816,33 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 	 * it off each rendered part's class (underscores are spaces in Tailwind arbitrary values; the commas that
 	 * separate shadow layers survive) and re-assert it as scoped CSS on that part. '' when none carry one.
 	 */
+	/**
+	 * The gap a chip / kicker keeps BELOW itself in the source (its own `margin-bottom`, a flattened wrapper's
+	 * `mbAdd`, or the parent's `space-y-*` rhythm carried as the block's `mb`), in px — 0 when it declares none.
+	 * Folded into a heading as the overline, that gap is the only thing holding the chip off the headline; without
+	 * it the pill sat 8px above an h1 the source spaced 24–32px away (reported on six sites).
+	 */
+	private static function block_gap_below( array $b ) {
+		$cands = array();
+		if ( isset( $b['mb'] ) && is_numeric( $b['mb'] ) ) { $cands[] = (float) $b['mb']; }
+		if ( isset( $b['mbAdd'] ) && is_numeric( $b['mbAdd'] ) ) { $cands[] = (float) $b['mbAdd']; }
+		$cs = (string) ( $b['pillCs'] ?? $b['cs'] ?? '' );
+		if ( '' !== $cs ) {
+			$d = self::cs_decls( $cs, array( 'margin-bottom', 'margin' ) );
+			if ( isset( $d['margin-bottom'] ) && preg_match( '/^([0-9.]+)px$/', trim( $d['margin-bottom'] ), $m ) ) { $cands[] = (float) $m[1]; }
+			elseif ( isset( $d['margin'] ) && preg_match( '/^[0-9.]+px\s+[0-9.]+px\s+([0-9.]+)px/', trim( $d['margin'] ), $m ) ) { $cands[] = (float) $m[1]; }
+		}
+		$g = $cands ? max( $cands ) : 0.0;
+		return ( $g >= 4 && $g <= 160 ) ? round( $g ) : 0; // ignore noise and a runaway wrapper inset
+	}
+
+	/** The measured chip/kicker → heading gap as scoped CSS on `.heading-overline` (no native option). */
+	private static function overline_gap_css( $h ) {
+		$g = (int) ( $h['overline_gap'] ?? 0 );
+		if ( $g <= 0 || '' === trim( (string) ( $h['overline'] ?? '' ) ) || '' === trim( (string) ( $h['title'] ?? '' ) ) ) { return ''; }
+		return 'selector .heading-overline{margin-bottom:' . $g . 'px;}';
+	}
+
 	private static function heading_text_shadow_css( $h ) {
 		$parts = array( 'title' => '.heading-title', 'subtitle' => '.heading-subtitle', 'overline' => '.heading-overline' );
 		$css = '';
@@ -10317,6 +10419,7 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 				. $overline_type_css // NEVER-DROP: overline font-size + letter-spacing (no native option)
 				. self::overline_pill_skin_css( $h ) // NEVER-DROP: pill glass skin (translucent fill + border + backdrop-blur + radius)
 				. (string) ( $h['overline_dot_css'] ?? '' ) // the status dot's pulse + glow on the overline mark
+				. self::overline_gap_css( $h ) // NEVER-DROP: the source's chip/kicker → heading gap (no native option)
 			. self::heading_filter_css( $h ) // NEVER-DROP: a title CSS filter (e.g. a hero drop-shadow glow) - no native option
 			. self::heading_text_shadow_css( $h ) // NEVER-DROP: a per-part text-shadow (hero legibility glow) - no native option
 				. $measures['css'] // NEVER-DROP: per-part constrained measure (max-w-* mx-auto → scoped max-width)
@@ -12310,6 +12413,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 
 		$blocks = isset( $sec['blocks'] ) && is_array( $sec['blocks'] ) ? $sec['blocks'] : array();
 		$blocks = self::transform_badge_overlines( $blocks ); // chip-before-heading → the heading's overline
+		$blocks = self::transform_kicker_headings( $blocks ); // a small heading before a big one → its overline
 
 		// A full-screen background <video> (extractor-flagged `bg` = absolute + object-cover behind the
 		// content) becomes the SECTION's background video — not a content media_video block. Pull it out
@@ -12638,6 +12742,9 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 				$role = 'subtitle';
 			}
 			if ( $role === 'heading' && 'subtitle' === (string) ( $blocks_v[ $bi + 1 ]['role'] ?? '' ) ) { if ( $head !== null && '' !== (string) ( $head['title'] ?? '' ) ) { $flush_head(); $head = null; } $role = 'title'; } // (a pending eyebrow-only head takes it as its title) // (see build_cell_items: an h3+ with its tagged subtitle is one heading)
+			// …and a heading that FOLLOWS a pending eyebrow (an overline with no title yet) is that eyebrow's TITLE — the band-header
+			// pair (a small mono kicker over the real headline, transform_kicker_headings) folds into ONE special_heading.
+			if ( $role === 'heading' && $head !== null && '' === (string) ( $head['title'] ?? '' ) && '' !== (string) ( $head['overline'] ?? '' ) ) { $role = 'title'; }
 			if ( 'heading' === (string) ( $b['t'] ?? '' ) && ( $wm = self::watermark_of( $b ) ) ) { // (see build_cell_items)
 				$flush_head();
 				$buf[] = self::n_watermark_heading( $b, $wm );
@@ -12666,6 +12773,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 				if ( 'overline' === $role ) {
 					if ( isset( $b['overline_svg'] ) )   { $head['overline_svg']   = (string) $b['overline_svg']; }
 					if ( ! empty( $b['overline_dot_css'] ) ) { $head['overline_dot_css'] = (string) $b['overline_dot_css']; }
+					if ( ! empty( $b['overline_gap'] ) ) { $head['overline_gap'] = (int) $b['overline_gap']; }
 					if ( ! empty( $b['overline_pill'] ) ) { $head['overline_pill']  = true; }
 					if ( isset( $b['overline_pill_cls'] ) ) { $head['overline_pill_class'] = (string) $b['overline_pill_cls']; }
 					if ( isset( $b['overline_pill_cs'] ) )  { $head['overline_pill_cs'] = (string) $b['overline_pill_cs']; } // the measured pill skin (a `.glass` sheet class the compile can't see)

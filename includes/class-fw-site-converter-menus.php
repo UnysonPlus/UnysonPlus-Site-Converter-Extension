@@ -78,7 +78,59 @@ class FW_Site_Converter_Menus {
 			$out['menus'][] = self::import_menu( $spec );
 		}
 
+		self::claim_primary( $out['menus'] );
+
 		return $out;
+	}
+
+	/**
+	 * THIS import must own the `primary` location — never leave it pointing at a PREVIOUS conversion's menu.
+	 *
+	 * A menu's location is inferred from its NAME, so a source whose nav menu is called "<Brand> Menu" (or just
+	 * "<Brand>") matched nothing, was created, and stayed unassigned while `primary` still carried the menu of
+	 * whatever site was converted before — the single most-reported converter failure (35 sites in the shared-report
+	 * feed, hand-fixed every time). Naming can never be exhaustive, so the rule is structural instead: when no menu
+	 * in this import claimed `primary`, the FIRST imported menu that has items and is not a footer menu takes it
+	 * (menus.json emits the header nav first). A menu that genuinely belongs elsewhere still keeps its own location,
+	 * and an import of footer-only menus assigns nothing (the bundle then clears the stale primary).
+	 *
+	 * @param array $rows import_menu() rows, by reference — the chosen row's `location`/`assigned` are updated.
+	 */
+	private static function claim_primary( array &$rows ) {
+		if ( ! array_key_exists( 'primary', self::registered_locations() ) ) {
+			return;
+		}
+		foreach ( $rows as $r ) {
+			if ( is_array( $r ) && 'primary' === ( $r['location'] ?? '' ) && ! empty( $r['assigned'] ) ) {
+				return; // this import already owns it
+			}
+		}
+		foreach ( $rows as $i => $r ) {
+			if ( ! is_array( $r ) || empty( $r['items'] ) || '' !== (string) ( $r['error'] ?? '' ) ) {
+				continue;
+			}
+			$loc = (string) ( $r['location'] ?? '' );
+			if ( '' !== $loc && 'primary' !== $loc ) {
+				continue; // it belongs to another registered location (footer, …)
+			}
+			if ( false !== stripos( (string) ( $r['name'] ?? '' ), 'footer' ) ) {
+				continue;
+			}
+			$menu = wp_get_nav_menu_object( (string) $r['name'] );
+			if ( ! $menu ) {
+				continue;
+			}
+			$locations = get_theme_mod( 'nav_menu_locations', array() );
+			if ( ! is_array( $locations ) ) {
+				$locations = array();
+			}
+			$locations['primary'] = (int) $menu->term_id;
+			set_theme_mod( 'nav_menu_locations', $locations );
+			$rows[ $i ]['location']         = 'primary';
+			$rows[ $i ]['assigned']         = true;
+			$rows[ $i ]['assigned_by_rule'] = true; // not from the name — the structural fallback
+			return;
+		}
 	}
 
 	/**
@@ -635,7 +687,7 @@ class FW_Site_Converter_Menus {
 		$want = '';
 		if ( strpos( $n, 'footer' ) !== false ) {
 			$want = 'footer';
-		} elseif ( strpos( $n, 'primary' ) !== false || strpos( $n, 'main' ) !== false || strpos( $n, 'header' ) !== false || strpos( $n, 'nav' ) !== false ) {
+		} elseif ( strpos( $n, 'primary' ) !== false || strpos( $n, 'main' ) !== false || strpos( $n, 'header' ) !== false || strpos( $n, 'nav' ) !== false || strpos( $n, 'menu' ) !== false ) {
 			$want = 'primary';
 		}
 
