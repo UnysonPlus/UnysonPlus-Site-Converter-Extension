@@ -5484,6 +5484,338 @@ $aw_sh = $r_find( $aw_pg, function ( $n ) { return 'special_heading' === ( $n['s
 ga( "[AW] …the heading node is the single owner of that colour (its own Title Colour, so the builder field actually moves the page)", is_array( $aw_sh ) && ( '' !== trim( (string) ( $aw_sh['atts']['title_color']['predefined'] ?? '' ) ) || '' !== trim( (string) ( $aw_sh['atts']['title_color']['custom'] ?? '' ) ) ), wp_json_encode( is_array( $aw_sh ) ? ( $aw_sh['atts']['title_color'] ?? null ) : null ) );
 
 
+/* ============================================================================================
+ * [AX] A `<br>` IS A WORD BOUNDARY — two words either side of it must not weld together.
+ * DOM textContent drops element nodes silently, so `HIGH IN<br>PROTEIN` read back as the non-word
+ * `HIGH INPROTEIN`. The converter reads textContent in dozens of places, so ONE source using `<br>`
+ * for a deliberate two-line lockup corrupted card titles, the brand wordmark, the site <title> and
+ * the footer logo at once (a real-site audit found all four). The tree now carries a newline in the
+ * `<br>`'s place, so every present and future reader is correct by construction.
+ * ========================================================================================== */
+$ax_cs = function ( $e = '' ) { return 'color:rgb(17,17,17);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$ax_card = function ( $t1, $t2, $copy ) use ( $ax_cs ) {
+	return '<div class="p-6 border" data-sc-cs="' . $ax_cs( ';padding:24px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(229,231,235);height:180px' ) . '">'
+		. '<h3 data-sc-cs="' . $ax_cs( ';font-size:18px;font-weight:900;line-height:28px;text-transform:uppercase;height:56px' ) . '">' . $t1 . '<br>' . $t2 . '</h3>'
+		. '<p data-sc-cs="' . $ax_cs( ';font-size:14px;height:60px' ) . '">' . $copy . '</p></div>';
+};
+$ax_html = '<!DOCTYPE html><html><head><title>Obsidian &mdash; Good Things.</title></head><body data-sc-cs="' . $ax_cs( ';background-color:rgb(255,255,255)' ) . '">'
+	// the brand wordmark is a TWO-LINE lockup, the exact shape that welded
+	. '<header data-sc-cs="' . $ax_cs( ';height:96px' ) . '"><nav data-sc-cs="' . $ax_cs( ';display:flex;gap:32px;height:96px' ) . '">'
+	. '<a href="/" data-sc-cs="' . $ax_cs( ';height:56px' ) . '"><span data-sc-cs="color:rgb(17,17,17);font-family:Inter, sans-serif;font-size:22px;font-weight:900;line-height:28px;display:inline">Obsidian<br>Supply</span></a>'
+	. '<a href="/shop" data-sc-cs="' . $ax_cs() . '">Shop</a><a href="/about" data-sc-cs="' . $ax_cs() . '">About</a><a href="/faq" data-sc-cs="' . $ax_cs() . '">FAQ</a></nav></header>'
+	. '<section id="benefits" data-sc-cs="' . $ax_cs( ';padding:96px 0px;height:480px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $ax_cs( ';max-width:1280px;margin:0px auto;height:288px' ) . '">'
+	. '<h2 data-sc-cs="' . $ax_cs( ';font-size:36px;height:44px' ) . '">Nutrition that matters</h2>'
+	. '<div class="grid grid-cols-3 gap-8" data-sc-cs="' . $ax_cs( ';display:grid;grid-template-columns:405px 405px 405px;gap:32px;height:180px' ) . '">'
+	. $ax_card( 'HIGH IN', 'PROTEIN', 'Supports strong muscles and daily energy for playtime.' )
+	. $ax_card( 'OMEGA-3', 'RICH', 'Promotes healthy skin, a glossy coat and agile joints.' )
+	. $ax_card( 'EASY TO', 'DIGEST', 'Gentle on the stomach, tailored for sensitive appetites.' )
+	. '</div></div></section>'
+	. '<footer data-sc-cs="' . $ax_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $ax_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+$ax_bl = FW_Site_Converter_Sources::build_from_html( $ax_html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$ax_j  = wp_json_encode( $ax_bl['files'] );
+ga( "[AX] a `<br>` inside a card title does not weld its two words (`HIGH IN` + `PROTEIN`, never `HIGH INPROTEIN`)", false === strpos( $ax_j, 'HIGH INPROTEIN' ), ( preg_match( '/HIGH ?IN ?PROTEIN/', $ax_j, $axm ) ? $axm[0] : '(absent)' ) );
+ga( "[AX] …and the words survive, separated — the break became a boundary, not a deletion", false !== strpos( $ax_j, 'HIGH IN' ) && false !== strpos( $ax_j, 'PROTEIN' ), 'HIGH IN / PROTEIN present' );
+ga( "[AX] …for every such title in the section, not just the first", false === strpos( $ax_j, 'OMEGA-3RICH' ) && false === strpos( $ax_j, 'EASY TODIGEST' ), wp_json_encode( array( strpos( $ax_j, 'OMEGA-3RICH' ), strpos( $ax_j, 'EASY TODIGEST' ) ) ) );
+$ax_v  = $ax_bl['files']['theme-settings.json']['values'] ?? array();
+$ax_lc = $ax_v['header_logo']['logo_type']['custom'] ?? array();
+ga( "[AX] a TWO-LINE brand wordmark is not welded either (`ObsidianSupply`) — the header logo reads the same tree", false === stripos( wp_json_encode( $ax_lc ), 'obsidiansupply' ), mb_substr( wp_json_encode( $ax_lc ), 0, 180 ) );
+ga( "[AX] NEGATIVE: a heading with NO `<br>` is untouched — no stray separator is introduced", false !== strpos( $ax_j, 'Nutrition that matters' ), 'plain heading intact' );
+
+
+/* ============================================================================================
+ * [AY] A ONE-PAGE SITE LINKS ITS BRAND TO A SECTION, NOT TO "/".
+ * The brand-anchor test accepted only '', '#', '/' or a bare origin. A single-page source has no "/"
+ * to link home to — its wordmark points at the first section (`<a href="#hero">`) — so NO brand anchor
+ * was found and detection fell through to the header's leftmost block, harvesting the utility cluster.
+ * A real-site audit shipped the glued label "AccountCART (1)" as the site title, the header logo AND the
+ * footer logo, and the wordmark's FACE came out as the body font because the face was read off the wrong
+ * element. The menu links beside it are fragments too — they sit inside <nav>, and the existing non-nav
+ * ranking already prefers the brand over them.
+ * ========================================================================================== */
+$ay_cs = function ( $e = '' ) { return 'color:rgb(10,10,10);font-family:"Plus Jakarta Sans", system-ui, sans-serif;font-size:13px;font-weight:800;line-height:19.5px;text-align:start;text-transform:uppercase;display:block' . $e; };
+$ay_html = '<!DOCTYPE html><html><head><title>Obsidian&reg; &mdash; Good Things. Happy People.</title></head><body data-sc-cs="color:rgb(10,10,10);font-family:\'Plus Jakarta Sans\', system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block;background-color:rgb(255,255,255)">'
+	. '<header class="w-full flex items-center justify-between px-20 py-7" data-sc-cs="' . $ay_cs( ';display:flex;align-items:center;justify-content:space-between;padding:28px 80px;height:97px' ) . '">'
+	. '<div class="flex items-center gap-12" data-sc-cs="' . $ay_cs( ';display:flex;align-items:center;gap:48px;height:41px' ) . '">'
+	// the BRAND: an in-page anchor, in its own display face
+	. '<a href="#hero" class="font-heading font-black text-4xl" data-sc-cs="color:rgb(10,10,10);font-family:&quot;Bricolage Grotesque&quot;, sans-serif;font-size:36px;font-weight:900;line-height:41px;letter-spacing:-0.9px;text-align:start;display:flex;align-items:center;height:41px">Obsidian</a>'
+	. '<nav class="hidden md:flex items-center gap-8" data-sc-cs="' . $ay_cs( ';display:flex;align-items:center;gap:32px;height:20px' ) . '">'
+	. '<a href="#collections" data-sc-cs="' . $ay_cs( ';display:inline' ) . '">Shop</a><a href="#our-story" data-sc-cs="' . $ay_cs( ';display:inline' ) . '">Our Story</a>'
+	. '<a href="#reviews" data-sc-cs="' . $ay_cs( ';display:inline' ) . '">Reviews</a><a href="#faq" data-sc-cs="' . $ay_cs( ';display:inline' ) . '">FAQ</a></nav></div>'
+	// the UTILITY cluster that was mistaken for the brand
+	. '<div class="flex items-center gap-8" data-sc-cs="' . $ay_cs( ';display:flex;align-items:center;gap:32px;height:41px' ) . '">'
+	. '<button data-sc-cs="' . $ay_cs( ';display:inline-block' ) . '">Account</button>'
+	. '<button aria-label="View Shopping Cart" data-sc-cs="' . $ay_cs( ';display:flex;align-items:center;gap:8px;background-color:rgb(10,10,10);color:rgb(245,195,68);padding:10px 16px;border-radius:9999px;height:41px' ) . '">'
+	. '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-shopping-bag w-4 h-4" aria-hidden="true" data-sc-cs="width:16px;height:16px"><path d="M4 4h16v16H4z"></path></svg>CART (1)</button></div></header>'
+	. '<section id="hero" data-sc-cs="color:rgb(10,10,10);font-family:\'Plus Jakarta Sans\', system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block;padding:96px 80px;height:600px">'
+	. '<h1 data-sc-cs="color:rgb(10,10,10);font-family:\'Bricolage Grotesque\', sans-serif;font-size:82px;font-weight:900;line-height:78px;text-align:start;display:block;height:156px">Good Things. Happy People.</h1>'
+	. '<p data-sc-cs="color:rgb(10,10,10);font-family:\'Plus Jakarta Sans\', system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block;height:48px">Premium goods made with care for a better everyday.</p></section>'
+	. '<footer data-sc-cs="color:rgb(255,255,255);font-family:\'Plus Jakarta Sans\', system-ui, sans-serif;font-size:14px;font-weight:400;line-height:21px;text-align:start;display:block;padding:48px 80px;height:160px;background-color:rgb(10,10,10)">'
+	. '<p data-sc-cs="color:rgb(255,255,255);font-family:\'Plus Jakarta Sans\', system-ui, sans-serif;font-size:14px;font-weight:400;line-height:21px;text-align:start;display:block;height:21px">&copy; 2026 Obsidian. All rights reserved.</p></footer></body></html>';
+$ay_bl = FW_Site_Converter_Sources::build_from_html( $ay_html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$ay_v  = $ay_bl['files']['theme-settings.json']['values'] ?? array();
+$ay_lc = $ay_v['header_logo']['logo_type']['custom'] ?? array();
+$ay_lj = wp_json_encode( $ay_lc );
+$ay_td = $ay_bl['files']['theme-design.json'] ?? array();
+ga( "[AY] the wordmark is the brand's own text, not the utility cluster beside it (`Account` + `CART (1)` glued)", false === stripos( $ay_lj, 'account' ) && false === stripos( $ay_lj, 'cart' ), mb_substr( $ay_lj, 0, 220 ) );
+ga( "[AY] …and it is the actual brand word", false !== stripos( $ay_lj, 'obsidian' ) || false !== stripos( wp_json_encode( $ay_td ), 'obsidian' ), mb_substr( $ay_lj, 0, 220 ) );
+ga( "[AY] …carrying the wordmark's OWN display face, not the body font (the face was read off the wrong element)", false !== stripos( (string) ( $ay_lc['title_font']['family'] ?? '' ), 'Bricolage' ), wp_json_encode( $ay_lc['title_font'] ?? null ) );
+ga( "[AY] the SITE TITLE is the brand too (it is read from the same detection, so it failed the same way)", false === stripos( (string) ( $ay_td['site_title'] ?? '' ), 'account' ) && false === stripos( (string) ( $ay_td['site_title'] ?? '' ), 'cart' ), wp_json_encode( $ay_td['site_title'] ?? null ) );
+ga( "[AY] NEGATIVE: the in-page MENU links are still menu links, not brand candidates (they sit inside <nav>)", false === stripos( $ay_lj, 'our story' ) && false === stripos( $ay_lj, 'reviews' ), mb_substr( $ay_lj, 0, 220 ) );
+
+
+/* ============================================================================================
+ * [AZ] A BLOCK'S DESIGN IS READ FROM ITS OWN SECTION, NEVER FROM A NEIGHBOUR'S.
+ * The testimonial design scan walks up to 2 ancestors, because slider machinery often lives on a
+ * wrapper — and an ancestor's saveHTML() carries ALL of its descendants. On a flat one-page DOM two
+ * levels clear the section entirely and read its SIBLINGS, so a `divide-y` belonging to a DIFFERENT
+ * section's four-column feature row (its vertical rules) matched the STACKED test and the testimonial
+ * grid rendered as a one-up editorial list — measured 200px taller than the source. Any marquee, snap
+ * track or slider lib that belongs to this block is inside this section too, so clamping the walk at
+ * the section boundary costs nothing and removes a whole class of cross-section false positives.
+ * ========================================================================================== */
+$az_cs = function ( $e = '' ) { return 'color:rgb(17,17,17);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$az_card = function ( $quote, $who ) use ( $az_cs ) {
+	return '<div class="bg-white rounded-2xl p-8" data-sc-cs="' . $az_cs( ';background-color:rgb(255,255,255);border-radius:16px;padding:32px;height:240px' ) . '">'
+		. '<div class="flex gap-1" data-sc-cs="' . $az_cs( ';display:flex;gap:4px;height:16px' ) . '">'
+		. str_repeat( '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="lucide lucide-star w-4 h-4" data-sc-cs="width:16px;height:16px"><path d="M12 2l3 7h7l-6 4 2 7-6-4-6 4 2-7-6-4h7z"></path></svg>', 5 )
+		. '</div>'
+		. '<p data-sc-cs="' . $az_cs( ';font-size:15px;height:72px' ) . '">&ldquo;' . $quote . '&rdquo;</p>'
+		. '<p data-sc-cs="' . $az_cs( ';font-size:13px;font-weight:700;height:20px' ) . '">&mdash; ' . $who . '</p></div>';
+};
+// the NEIGHBOUR: a four-column feature row whose vertical rules ride `divide-y sm:divide-x`
+$az_feat = '<section id="nutrition" data-sc-cs="' . $az_cs( ';padding:80px 0px;height:420px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $az_cs( ';max-width:1280px;margin:0px auto;height:260px' ) . '">'
+	. '<h2 data-sc-cs="' . $az_cs( ';font-size:40px;height:48px' ) . '">Nutrition that matters</h2>'
+	. '<div class="grid grid-cols-4 gap-8 divide-y sm:divide-y-0 sm:divide-x divide-black/10" data-sc-cs="' . $az_cs( ';display:grid;grid-template-columns:296px 296px 296px 296px;gap:32px;height:180px' ) . '">'
+	. '<div data-sc-cs="' . $az_cs( ';height:180px' ) . '"><h3 data-sc-cs="' . $az_cs( ';font-size:16px;height:24px' ) . '">High in protein</h3><p data-sc-cs="' . $az_cs( ';font-size:14px;height:60px' ) . '">Supports strong muscles and daily energy.</p></div>'
+	. '<div data-sc-cs="' . $az_cs( ';height:180px' ) . '"><h3 data-sc-cs="' . $az_cs( ';font-size:16px;height:24px' ) . '">Omega-3 rich</h3><p data-sc-cs="' . $az_cs( ';font-size:14px;height:60px' ) . '">Promotes a healthy skin and a glossy coat.</p></div>'
+	. '<div data-sc-cs="' . $az_cs( ';height:180px' ) . '"><h3 data-sc-cs="' . $az_cs( ';font-size:16px;height:24px' ) . '">Immunity boost</h3><p data-sc-cs="' . $az_cs( ';font-size:14px;height:60px' ) . '">Natural antioxidants for a fortified system.</p></div>'
+	. '<div data-sc-cs="' . $az_cs( ';height:180px' ) . '"><h3 data-sc-cs="' . $az_cs( ';font-size:16px;height:24px' ) . '">Easy to digest</h3><p data-sc-cs="' . $az_cs( ';font-size:14px;height:60px' ) . '">Gentle on the stomach for sensitive appetites.</p></div>'
+	. '</div></div></section>';
+// the TESTIMONIALS: a plain static three-up grid, no slider/marquee/divide machinery of its own
+$az_rev = '<section id="reviews" data-sc-cs="' . $az_cs( ';padding:80px 0px;background-color:rgb(29,78,216);height:560px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $az_cs( ';max-width:1280px;margin:0px auto;height:400px' ) . '">'
+	. '<h2 data-sc-cs="' . $az_cs( ';font-size:40px;height:48px' ) . '">What our customers say</h2>'
+	. '<div class="grid grid-cols-1 md:grid-cols-3 gap-8" data-sc-cs="' . $az_cs( ';display:grid;grid-template-columns:405px 405px 405px;gap:32px;height:240px' ) . '">'
+	. $az_card( 'My dog absolutely loves these treats every single day.', 'Sarah J.' )
+	. $az_card( 'Finally a treat that is healthy and tastes great too.', 'Michael T.' )
+	. $az_card( 'The quality is unmatched and I recommend it widely.', 'Emily R.' )
+	. '</div></div></section>';
+$az_html = '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $az_cs( ';background-color:rgb(255,255,255)' ) . '">'
+	. '<header data-sc-cs="' . $az_cs( ';height:80px' ) . '"><nav data-sc-cs="' . $az_cs( ';display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $az_cs( ';font-size:22px' ) . '">Obsidian</a><a href="/a" data-sc-cs="' . $az_cs() . '">Shop</a><a href="/b" data-sc-cs="' . $az_cs() . '">About</a></nav></header>'
+	. $az_feat . $az_rev
+	. '<footer data-sc-cs="' . $az_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $az_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+$az_pg = FW_Site_Converter_Sources::build_from_html( $az_html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$az_t  = $r_find( $az_pg, function ( $n ) { return 'testimonials' === ( $n['shortcode'] ?? '' ); } );
+$az_ds = is_array( $az_t ) ? (array) ( $az_t['atts']['design_settings'] ?? array() ) : array();
+ga( "[AZ] a static three-up testimonial grid is the CLASSIC design — a neighbouring section's `divide-y` does not make it STACKED", 'default' === (string) ( $az_ds['design'] ?? '' ), wp_json_encode( $az_ds['design'] ?? null ) );
+ga( "[AZ] …laid out as a GRID, not the carousel default (which renders one card per row)", 'grid' === (string) ( $az_ds['default']['layout_type']['layout_choice'] ?? '' ), wp_json_encode( $az_ds['default']['layout_type'] ?? null ) );
+ga( "[AZ] …at the source's own column count", 'row-cols-3' === (string) ( $az_ds['default']['layout_type']['grid']['grid_columns'] ?? '' ), wp_json_encode( $az_ds['default']['layout_type']['grid'] ?? null ) );
+// NEGATIVE: the block's OWN divide-y still means stacked
+$az_html2 = str_replace( 'class="grid grid-cols-1 md:grid-cols-3 gap-8"', 'class="grid grid-cols-1 divide-y gap-8"', $az_html );
+$az_pg2 = FW_Site_Converter_Sources::build_from_html( $az_html2, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+$az_t2  = $r_find( $az_pg2, function ( $n ) { return 'testimonials' === ( $n['shortcode'] ?? '' ); } );
+$az_d2  = is_array( $az_t2 ) ? (string) ( $az_t2['atts']['design_settings']['design'] ?? '' ) : '';
+ga( "[AZ] NEGATIVE: a `divide-y` on the testimonial block ITSELF still reads as the STACKED editorial list", 'stacked' === $az_d2, wp_json_encode( $az_d2 ) );
+
+
+/* ============================================================================================
+ * [BA] THE MEDIA FRAME KEEPS ITS OWN FILL AND ITS OWN INSET.
+ * The native image box paints a placeholder fill (`.imgbox__media{background:#f1f3f5}`) so a photo that
+ * has not loaded is not a hole. That is invisible behind an image which COVERS its frame — and plainly
+ * wrong behind a transparent cut-out shown with `object-contain`, where the source's own band should
+ * show through: a real-site audit had four product cut-outs, which the source sits directly on its
+ * orange band, rendering on pale grey tiles. The frame's PADDING was dropped in the same place, so each
+ * picture filled its frame edge-to-edge and every tile read larger than the source's.
+ * The converter measures the frame, so it carries what the frame actually declares — a real fill when
+ * there is one, transparent when there is none, and the inset either way.
+ * ========================================================================================== */
+$ba_cs = function ( $e = '' ) { return 'color:rgb(17,17,17);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:center;display:block' . $e; };
+$ba_card = function ( $name, $price, $file, $frame_extra ) use ( $ba_cs ) {
+	return '<div class="group flex flex-col items-center text-center" data-sc-cs="' . $ba_cs( ';display:flex;flex-direction:column;align-items:center;height:497px' ) . '">'
+		. '<div class="relative w-full aspect-[4/5] flex items-center justify-center p-4" data-sc-cs="' . $ba_cs( ';padding:16px;display:flex;align-items:center;justify-content:center;aspect-ratio:4 / 5;height:425px' . $frame_extra ) . '">'
+		. '<img alt="' . $name . '" class="max-h-full max-w-full object-contain" src="https://example.com/' . $file . '" data-sc-cs="object-fit:contain;max-width:100%;height:393px">'
+		. '</div>'
+		. '<h3 data-sc-cs="' . $ba_cs( ';font-size:14px;font-weight:700;text-transform:uppercase;height:23px' ) . '">' . $name . '</h3>'
+		. '<p data-sc-cs="' . $ba_cs( ';font-size:14px;height:24px' ) . '">' . $price . '</p></div>';
+};
+$ba_page = function ( $frame_extra ) use ( $ba_cs, $ba_card ) {
+	return '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $ba_cs( ';background-color:rgb(255,255,255)' ) . '">'
+		. '<header data-sc-cs="' . $ba_cs( ';height:80px' ) . '"><nav data-sc-cs="' . $ba_cs( ';display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $ba_cs( ';font-size:22px' ) . '">Obsidian</a><a href="/a" data-sc-cs="' . $ba_cs() . '">Shop</a><a href="/b" data-sc-cs="' . $ba_cs() . '">About</a></nav></header>'
+		. '<section id="collections" data-sc-cs="' . $ba_cs( ';padding:80px 0px;background-color:rgb(234,88,12);height:760px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $ba_cs( ';max-width:1280px;margin:0px auto;height:600px' ) . '">'
+		. '<h2 data-sc-cs="' . $ba_cs( ';font-size:40px;height:48px' ) . '">Shop our collections</h2>'
+		. '<div class="grid grid-cols-4 gap-6" data-sc-cs="' . $ba_cs( ';display:grid;grid-template-columns:302px 302px 302px 302px;gap:24px;height:497px' ) . '">'
+		. $ba_card( 'Peanut Butter Bites', '$12.00', 'pouch-peanut.png', $frame_extra )
+		. $ba_card( 'Chicken Jerky', '$14.00', 'pouch-chicken.png', $frame_extra )
+		. $ba_card( 'Salmon Crisps', '$15.00', 'pouch-salmon.png', $frame_extra )
+		. $ba_card( 'Sweet Potato Chews', '$13.00', 'pouch-sweet.png', $frame_extra )
+		. '</div></div></section>'
+		. '<footer data-sc-cs="' . $ba_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $ba_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+};
+$ba_find = function ( $html ) {
+	$pg = FW_Site_Converter_Sources::build_from_html( $html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+	$hit = null;
+	$walk = function ( $n ) use ( &$walk, &$hit ) {
+		if ( ! is_array( $n ) || null !== $hit ) { return; }
+		if ( 'image_box' === ( $n['shortcode'] ?? '' ) ) { $hit = $n; return; }
+		foreach ( $n as $v ) { if ( is_array( $v ) ) { if ( isset( $v['shortcode'] ) ) { $walk( $v ); } else { foreach ( $v as $c ) { if ( is_array( $c ) ) { $walk( $c ); } } } } }
+	};
+	foreach ( (array) $pg as $sx ) { $walk( $sx ); }
+	return is_array( $hit ) ? (string) ( $hit['atts']['custom_css'] ?? '' ) : '';
+};
+// (a) a frame that paints NOTHING — the placeholder fill must be cleared
+$ba_css = $ba_find( $ba_page( '' ) );
+ga( "[BA] a media frame that paints nothing clears the box's placeholder fill (a cut-out had rendered on a pale grey tile)", (bool) preg_match( '/\.imgbox__media\{[^}]*background:transparent/', $ba_css ), mb_substr( $ba_css, 0, 220 ) );
+ga( "[BA] …and keeps the frame's own INSET, so the picture does not fill it edge-to-edge and read larger than the source's", (bool) preg_match( '/\.imgbox__media\{[^}]*padding:16px/', $ba_css ), mb_substr( $ba_css, 0, 220 ) );
+// (b) a frame that DOES paint carries its real colour, not transparent
+$ba_css2 = $ba_find( $ba_page( ';background-color:rgb(245,245,245)' ) );
+ga( "[BA] a frame that DOES paint carries its own measured colour, not a blanket transparent", (bool) preg_match( '/\.imgbox__media\{[^}]*background:rgb\(245, ?245, ?245\)/', $ba_css2 ) && ! preg_match( '/\.imgbox__media\{[^}]*background:transparent/', $ba_css2 ), mb_substr( $ba_css2, 0, 220 ) );
+
+
+/* ============================================================================================
+ * [BB] A BAR THAT PAINTS NOTHING STILL HAS A COLOUR BEHIND IT.
+ * A header nested inside a coloured band (`<section class="bg-[#f5c344]"><header class="w-full …">`)
+ * is transparent in its own right, so the emitted fill fell back to the theme's default WHITE and a
+ * yellow masthead converted to a white one — the most visible defect on that conversion. What a reader
+ * sees is the nearest painted ANCESTOR, so the converter reads that instead of guessing.
+ * Guarded to bars in NORMAL FLOW: a fixed/absolute/sticky header floats OVER the page, where the
+ * transparency IS the design (the overlay/glass path owns it) and inheriting the hero's fill would paint
+ * a solid bar across a photo the source deliberately shows through.
+ * ========================================================================================== */
+$bb_cs = function ( $e = '' ) { return 'color:rgb(10,10,10);font-family:Inter, sans-serif;font-size:13px;font-weight:800;line-height:20px;text-align:start;text-transform:uppercase;display:block' . $e; };
+$bb_page = function ( $hdr_pos_cs ) use ( $bb_cs ) {
+	return '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $bb_cs( ';background-color:rgb(255,255,255)' ) . '">'
+		. '<section id="hero" class="relative w-full bg-[#f5c344]" data-sc-cs="' . $bb_cs( ';background-color:rgb(245,195,68);padding:0px 0px 96px;height:769px' ) . '">'
+		. '<header class="w-full flex items-center justify-between px-20 py-7" data-sc-cs="' . $bb_cs( ';display:flex;align-items:center;justify-content:space-between;padding:28px 80px;height:97px' . $hdr_pos_cs ) . '">'
+		. '<a href="#hero" data-sc-cs="color:rgb(10,10,10);font-family:Inter, sans-serif;font-size:36px;font-weight:900;line-height:41px;text-align:start;display:flex;height:41px">Obsidian</a>'
+		. '<nav data-sc-cs="' . $bb_cs( ';display:flex;gap:32px;height:20px' ) . '"><a href="#shop" data-sc-cs="' . $bb_cs( ';display:inline' ) . '">Shop</a><a href="#story" data-sc-cs="' . $bb_cs( ';display:inline' ) . '">Our Story</a><a href="#faq" data-sc-cs="' . $bb_cs( ';display:inline' ) . '">FAQ</a></nav></header>'
+		. '<div class="max-w-7xl mx-auto" data-sc-cs="' . $bb_cs( ';max-width:1280px;margin:0px auto;height:560px' ) . '">'
+		. '<h1 data-sc-cs="color:rgb(10,10,10);font-family:Inter, sans-serif;font-size:82px;font-weight:900;line-height:78px;text-align:start;display:block;height:156px">Good treats. Happy dogs.</h1>'
+		. '<p data-sc-cs="color:rgb(10,10,10);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block;height:48px">Premium dog treats made with organic ingredients.</p></div></section>'
+		. '<section id="story" data-sc-cs="' . $bb_cs( ';padding:96px 0px;height:420px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $bb_cs( ';max-width:1280px;margin:0px auto;height:228px' ) . '">'
+		. '<h2 data-sc-cs="color:rgb(10,10,10);font-family:Inter, sans-serif;font-size:40px;font-weight:900;line-height:48px;text-align:start;display:block;height:48px">Made with love</h2>'
+		. '<p data-sc-cs="color:rgb(10,10,10);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block;height:48px">Founded by dog lovers who believe pets deserve the best.</p></div></section>'
+		. '<footer data-sc-cs="' . $bb_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $bb_cs( ';height:20px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+};
+// the fill may be a LITERAL or a palette REFERENCE (an exact match binds — see [AV]), so resolve it
+$bb_hl = function ( $html ) {
+	$v = FW_Site_Converter_Sources::build_from_html( $html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array();
+	return array( 'hl' => (array) ( $v['header_layout'] ?? array() ), 'pal' => cvpal( (array) $v ) );
+};
+// (a) a STATIC bar inside a coloured band takes that band's fill
+$bb_r  = $bb_hl( $bb_page( '' ) );
+$bb_a  = $bb_r['hl'];
+$bb_bg = cvhex( $bb_a['bg_color'] ?? null, $bb_r['pal'] );
+ga( "[BB] a static header that paints nothing takes the fill of the band it sits in (it had defaulted to white)", '' !== $bb_bg && '#ffffff' !== $bb_bg, wp_json_encode( array( $bb_bg, $bb_a['bg_color'] ?? null ) ) );
+ga( "[BB] …the band's EXACT colour, not an approximation", '#f5c344' === $bb_bg, wp_json_encode( array( $bb_bg, $bb_a['bg_color'] ?? null ) ) );
+// (b) NEGATIVE: a FIXED bar floats over the page — its transparency is the design
+$bb_r2  = $bb_hl( $bb_page( ';position:fixed' ) );
+$bb_b   = $bb_r2['hl'];
+$bb_bg2 = cvhex( $bb_b['bg_color'] ?? null, $bb_r2['pal'] );
+ga( "[BB] NEGATIVE: a FIXED/overlay bar does NOT inherit the hero's fill — the transparency is the design there", '#f5c344' !== $bb_bg2, wp_json_encode( array( $bb_bg2, $bb_b['header_position'] ?? null ) ) );
+
+
+/* ============================================================================================
+ * [BC] A FOOTER'S TRUST ROW SURVIVES, AND THE BRAND LOCKUP IS NOT A LEGAL LINK.
+ * Both bottom-bar readers are anchored on the copyright element — legal links and the bottom tagline are
+ * found among ITS siblings. A footer whose copyright sits up in the brand column and whose bottom row
+ * holds two plain LABEL groups matched neither, so the whole row was dropped: a real-site audit lost
+ * "USDA Organic Certified · Made in USA · 100% Recyclable Packaging" and the shipping line opposite it.
+ * Worse, the brand lockup sharing that copyright column was collected AS a legal link, which both
+ * rendered a stray wordmark in the copyright bar and made the legal branch match, hiding the real bottom
+ * bar. A legal link points at a real page; the brand points home or at the top of this one.
+ * ========================================================================================== */
+$bc_cs = function ( $e = '' ) { return 'color:rgb(255,255,255);font-family:Inter, sans-serif;font-size:14px;font-weight:400;line-height:21px;text-align:start;display:block' . $e; };
+$bc_col = function ( $h, $links ) use ( $bc_cs ) {
+	$out = '<div data-sc-cs="' . $bc_cs( ';height:180px' ) . '"><h4 data-sc-cs="' . $bc_cs( ';font-size:11px;text-transform:uppercase;height:17px' ) . '">' . $h . '</h4><ul data-sc-cs="' . $bc_cs( ';height:120px' ) . '">';
+	foreach ( $links as $l ) { $out .= '<li data-sc-cs="' . $bc_cs( ';height:24px' ) . '"><a href="/' . sanitize_title( $l ) . '" data-sc-cs="' . $bc_cs( ';display:inline' ) . '">' . $l . '</a></li>'; }
+	return $out . '</ul></div>';
+};
+$bc_html = '<!DOCTYPE html><html><head><title>Obsidian&reg; &mdash; Good Things.</title></head><body data-sc-cs="' . $bc_cs( ';background-color:rgb(255,255,255)' ) . '">'
+	. '<header data-sc-cs="' . $bc_cs( ';height:80px' ) . '"><nav data-sc-cs="' . $bc_cs( ';display:flex;gap:32px;height:80px' ) . '"><a href="#hero" data-sc-cs="' . $bc_cs( ';font-size:22px' ) . '">Obsidian</a><a href="#shop" data-sc-cs="' . $bc_cs() . '">Shop</a><a href="#faq" data-sc-cs="' . $bc_cs() . '">FAQ</a></nav></header>'
+	. '<section id="hero" data-sc-cs="' . $bc_cs( ';padding:96px 0px;height:420px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $bc_cs( ';max-width:1280px;margin:0px auto;height:228px' ) . '">'
+	. '<h1 data-sc-cs="color:rgb(17,17,17);font-family:Inter, sans-serif;font-size:64px;font-weight:900;line-height:68px;text-align:start;display:block;height:136px">Good things.</h1>'
+	. '<p data-sc-cs="color:rgb(17,17,17);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block;height:48px">Premium goods made with care.</p></div></section>'
+	. '<footer data-sc-cs="' . $bc_cs( ';padding:64px 0px 48px;background-color:rgb(10,10,10);height:420px' ) . '">'
+	. '<div class="max-w-7xl mx-auto grid grid-cols-4 gap-8" data-sc-cs="' . $bc_cs( ';display:grid;grid-template-columns:425px 197px 197px 197px;gap:32px;height:240px' ) . '">'
+	// the BRAND column: wordmark link + blurb + the copyright, all together
+	. '<div data-sc-cs="' . $bc_cs( ';width:425px;height:240px' ) . '">'
+	. '<a href="#hero" data-sc-cs="' . $bc_cs( ';height:36px' ) . '"><span data-sc-cs="color:rgb(255,255,255);font-family:Inter, sans-serif;font-size:30px;font-weight:900;line-height:36px;display:inline">Obsidian&reg;</span></a>'
+	. '<p data-sc-cs="' . $bc_cs( ';font-size:13px;height:60px' ) . '">Crafting premium goods that bring joy and lasting quality.</p>'
+	. '<p data-sc-cs="' . $bc_cs( ';font-size:12px;height:18px' ) . '">&copy; 2026 Obsidian. All rights reserved.</p></div>'
+	. $bc_col( 'Shop', array( 'All Products', 'Best Sellers', 'New Arrivals' ) )
+	. $bc_col( 'Company', array( 'Our Story', 'Careers', 'Press' ) )
+	. $bc_col( 'Help', array( 'FAQ', 'Shipping', 'Contact' ) )
+	. '</div>'
+	// the TRUST ROW: two plain label groups, no links, no copyright
+	. '<div class="pt-6 flex items-center justify-between" data-sc-cs="' . $bc_cs( ';display:flex;align-items:center;justify-content:space-between;padding:24px 0px 0px;font-size:12px;color:rgb(115,115,115);height:40px' ) . '">'
+	. '<div class="flex flex-wrap gap-4" data-sc-cs="' . $bc_cs( ';display:flex;gap:16px;font-size:12px;height:16px' ) . '">'
+	. '<span data-sc-cs="' . $bc_cs( ';font-size:12px;display:inline' ) . '">USDA Organic Certified</span><span data-sc-cs="' . $bc_cs( ';font-size:12px;display:inline' ) . '">&bull;</span>'
+	. '<span data-sc-cs="' . $bc_cs( ';font-size:12px;display:inline' ) . '">Made in USA</span><span data-sc-cs="' . $bc_cs( ';font-size:12px;display:inline' ) . '">&bull;</span>'
+	. '<span data-sc-cs="' . $bc_cs( ';font-size:12px;display:inline' ) . '">100% Recyclable Packaging</span></div>'
+	. '<div data-sc-cs="' . $bc_cs( ';font-size:12px;height:16px' ) . '"><span data-sc-cs="' . $bc_cs( ';font-size:12px;display:inline' ) . '">Worldwide Tracked Shipping from $4.99</span></div>'
+	. '</div></footer></body></html>';
+$bc_v = FW_Site_Converter_Sources::build_from_html( $bc_html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$bc_j = wp_json_encode( $bc_v['copyright_settings'] ?? array() );
+ga( "[BC] the footer's TRUST ROW survives — a bottom bar of plain labels, with neither a copyright nor a link, is still a bottom bar", false !== strpos( $bc_j, 'USDA Organic Certified' ) && false !== strpos( $bc_j, '100% Recyclable Packaging' ), mb_substr( $bc_j, 0, 200 ) );
+ga( "[BC] …including the group OPPOSITE it, which takes the other column", false !== strpos( $bc_j, 'Worldwide Tracked Shipping' ), mb_substr( $bc_j, 0, 200 ) );
+ga( "[BC] …with its separators spaced, not welded to the labels either side", false === strpos( $bc_j, 'USA\u2022' ) && false === strpos( $bc_j, "USA\u{2022}" ), mb_substr( $bc_j, 0, 200 ) );
+$bc_lg = ( new ReflectionMethod( 'FW_Site_Converter_Stitch', 'detect_footer_legal_links' ) );
+$bc_lg->setAccessible( true );
+$bc_links = (array) $bc_lg->invoke( null, $bc_html );
+ga( "[BC] the footer BRAND lockup sharing the copyright column is not collected as a legal link", 0 === count( array_filter( $bc_links, function ( $l ) { return false !== stripos( (string) ( $l['label'] ?? '' ), 'obsidian' ); } ) ), wp_json_encode( $bc_links ) );
+// NEGATIVE: real legal links are still found
+$bc_html2 = str_replace( '<p data-sc-cs="' . $bc_cs( ';font-size:12px;height:18px' ) . '">&copy; 2026 Obsidian. All rights reserved.</p>',
+	'<p data-sc-cs="' . $bc_cs( ';font-size:12px;height:18px' ) . '">&copy; 2026 Obsidian. All rights reserved.</p><a href="/privacy" data-sc-cs="' . $bc_cs( ';font-size:12px;display:inline' ) . '">Privacy Policy</a><a href="/terms" data-sc-cs="' . $bc_cs( ';font-size:12px;display:inline' ) . '">Terms</a>', $bc_html );
+$bc_links2 = (array) $bc_lg->invoke( null, $bc_html2 );
+ga( "[BC] NEGATIVE: real legal links (pointing at real pages) are still collected", count( $bc_links2 ) >= 2 && false !== stripos( wp_json_encode( $bc_links2 ), 'privacy' ), wp_json_encode( $bc_links2 ) );
+
+
+/* ============================================================================================
+ * [BD] A PRESET DEFINITION HOLDS A LITERAL — it is the thing other values point AT.
+ * The colour binding ([AV]) attaches an emitted colour to the palette entry it matches. Inside a PRESET
+ * DEFINITION that is circular, and worse: a preset's consumer generates CSS from the literal, so a class
+ * name in `predefined` produces NO declaration at all. A real-site audit: the Primary BUTTON preset's
+ * `bg_color` bound to `bg-primary`, the generated preset CSS carried no background, and the header CTA
+ * rendered as a small unstyled white box with its label invisible on it — the failure only showed after a
+ * user edited the button, because until then nothing had re-read the preset.
+ * The palette was already exempt; every preset COLLECTION needs the same exemption for the same reason.
+ * Values that POINT at these presets still bind — only the definitions are left alone.
+ * ========================================================================================== */
+$bd_cs = function ( $e = '' ) { return 'color:rgb(245,245,245);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$bd_html = '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $bd_cs( ';background-color:rgb(10,10,10)' ) . '">'
+	. '<header data-sc-cs="' . $bd_cs( ';height:88px' ) . '"><nav data-sc-cs="' . $bd_cs( ';display:flex;gap:32px;align-items:center;height:88px' ) . '">'
+	. '<a href="#hero" data-sc-cs="' . $bd_cs( ';font-size:22px;font-weight:900' ) . '">Obsidian</a>'
+	. '<a href="#shop" data-sc-cs="' . $bd_cs() . '">Shop</a><a href="#about" data-sc-cs="' . $bd_cs() . '">About</a>'
+	// the CTA whose look the Primary BUTTON preset carries: white fill, black ink
+	. '<a href="/book" class="px-6 py-2.5 bg-white text-black uppercase" data-sc-cs="color:rgb(0, 0, 0);background-color:rgb(255, 255, 255);font-family:Inter, sans-serif;font-size:13px;font-weight:700;line-height:16px;letter-spacing:2.6px;text-transform:uppercase;padding:10px 24px;text-align:center;display:inline-block;height:36px">Book Now</a></nav></header>'
+	. '<section id="hero" data-sc-cs="' . $bd_cs( ';padding:96px 0px;height:560px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $bd_cs( ';max-width:1280px;margin:0px auto;height:368px' ) . '">'
+	. '<h1 data-sc-cs="' . $bd_cs( ';font-size:72px;line-height:76px;height:160px' ) . '">Refine your presence</h1>'
+	. '<p data-sc-cs="' . $bd_cs( ';height:48px' ) . '">A barbershop built on craft and consistency.</p></div></section>'
+	. '<footer data-sc-cs="' . $bd_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $bd_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+$bd_v  = FW_Site_Converter_Sources::build_from_html( $bd_html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$bd_bc = (array) ( $bd_v['button_colors'] ?? array() );
+// name-agnostic: EVERY button preset the conversion emits must keep literals, whatever its role is called
+$bd_bound = array(); $bd_lit = 0;
+foreach ( $bd_bc as $b ) {
+	foreach ( (array) ( $b['states'] ?? array() ) as $st => $vals ) {
+		foreach ( array( 'bg_color', 'text_color', 'border_color' ) as $ck ) {
+			$cv = $vals[ $ck ] ?? null;
+			if ( ! is_array( $cv ) ) { continue; }
+			if ( '' !== trim( (string) ( $cv['predefined'] ?? '' ) ) ) { $bd_bound[] = ( $b['color_name'] ?? '?' ) . ".$st.$ck=" . $cv['predefined']; }
+			elseif ( '' !== trim( (string) ( $cv['custom'] ?? '' ) ) ) { $bd_lit++; }
+		}
+	}
+}
+ga( "[BD] a BUTTON preset's own colours stay LITERALS — its CSS is generated from the value, so a class name emits no declaration at all", empty( $bd_bound ), wp_json_encode( $bd_bound ) );
+ga( "[BD] …and the preset really does carry measured colours (the exemption did not just empty it)", $bd_lit >= 1 && ! empty( $bd_bc ), wp_json_encode( array( 'presets' => count( $bd_bc ), 'literal_colours' => $bd_lit ) ) );
+$bd_fill = '';
+foreach ( $bd_bc as $b ) { $c = (string) ( $b['states']['default']['bg_color']['custom'] ?? '' ); if ( '' !== $c ) { $bd_fill = $c; break; } }
+ga( "[BD] …at the source's measured fill", false !== strpos( strtolower( $bd_fill ), 'ffffff' ) || false !== strpos( $bd_fill, '255, 255, 255' ), wp_json_encode( $bd_fill ) );
+ga( "[BD] the PALETTE is still never rewritten to reference itself", (bool) ( function () use ( $bd_v ) { foreach ( (array) ( $bd_v['theme_colors'] ?? array() ) as $e ) { if ( ! is_array( $e ) || '' === trim( (string) ( $e['color'] ?? '' ) ) ) { return false; } } return ! empty( $bd_v['theme_colors'] ); } )(), wp_json_encode( array_slice( (array) ( $bd_v['theme_colors'] ?? array() ), 0, 2 ) ) );
+// …while values that POINT at a preset still bind (the [AV] rule is intact)
+$bd_j = wp_json_encode( $bd_v );
+ga( "[BD] NEGATIVE: values that POINT at a preset still bind — the exemption is for definitions only", (bool) preg_match( '/"(?:title_color|text_color|bg_color)":\{"predefined":"(?:text|bg)-[a-z0-9-]+"/', $bd_j ), ( preg_match( '/"[a-z_]*color":\{"predefined":"(?:text|bg)-[a-z0-9-]+"/', $bd_j, $bdm ) ? $bdm[0] : '(none bound)' ) );
+
+
 $pass = $GLOBALS['__pass'];
 $fail = $GLOBALS['__fail'];
 echo "\n========================================\n";

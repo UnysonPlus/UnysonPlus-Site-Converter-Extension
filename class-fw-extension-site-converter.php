@@ -4334,6 +4334,26 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			.fw-ext-site-converter .fw-sc-file-btn .dashicons{font-size:16px;width:16px;height:16px}
 			.fw-ext-site-converter .fw-sc-fname{font-style:italic;color:#1a7f37}
 			.fw-ext-site-converter .fw-sc-editor .CodeMirror{border:1px solid #8c8f94;border-radius:4px;height:auto;min-height:140px}
+			/* ---- Dark admin-skin support ----------------------------------------
+			 * This page's custom UI carries hardcoded LIGHT colors (cards, fieldsets,
+			 * code blocks, notices — many inline), so on the admin skin's dark mode it
+			 * stayed a white slab. Repaint via a flipping-variable palette: the LIGHT
+			 * defaults reproduce today's look, and the two dark triggers
+			 * (html[data-upa-mode="dark"] and system + prefers-dark) flip the values;
+			 * !important is needed to beat the inline styles. Light-mode grays are
+			 * unified to one token, a sub-perceptual change. */
+			.fw-ext-site-converter{--sc-panel:#fff;--sc-inset:#f6f7f7;--sc-border:#dcdcde;--sc-ink:#1d2327;--sc-mut:#646970;--sc-setup-bg:#f3f9ff;--sc-setup-bd:#c3dcf0;--sc-note-bg:#fef7e6;--sc-note-bd:#f0d98c}
+			html[data-upa-mode="dark"] body.upa .fw-ext-site-converter{--sc-panel:#1d1f24;--sc-inset:#16171b;--sc-border:#35373f;--sc-ink:#e5e7ec;--sc-mut:#a1a5ae;--sc-setup-bg:#15202e;--sc-setup-bd:#2a4056;--sc-note-bg:#251d0b;--sc-note-bd:#544619}
+			@media (prefers-color-scheme:dark){html[data-upa-mode="system"] body.upa .fw-ext-site-converter{--sc-panel:#1d1f24;--sc-inset:#16171b;--sc-border:#35373f;--sc-ink:#e5e7ec;--sc-mut:#a1a5ae;--sc-setup-bg:#15202e;--sc-setup-bd:#2a4056;--sc-note-bg:#251d0b;--sc-note-bd:#544619}}
+			.fw-ext-site-converter .fw-sc-card,.fw-ext-site-converter .fw-sc-why,.fw-ext-site-converter .fw-sc-progress{background:var(--sc-panel)!important;border-color:var(--sc-border)!important;color:var(--sc-ink)!important}
+			.fw-ext-site-converter .fw-sc-optgroup,.fw-ext-site-converter .fw-sc-editor .CodeMirror{border-color:var(--sc-border)!important}
+			.fw-ext-site-converter .fw-sc-tabs{border-bottom-color:var(--sc-border)!important}
+			.fw-ext-site-converter .fw-sc-card[open]>summary{border-bottom-color:var(--sc-border)!important}
+			.fw-ext-site-converter .fw-sc-optgroup legend,.fw-ext-site-converter .fw-sc-opts,.fw-ext-site-converter .fw-sc-name,.fw-ext-site-converter .fw-sc-copy{color:var(--sc-mut)!important}
+			.fw-ext-site-converter pre{background:var(--sc-inset)!important;color:var(--sc-ink)!important}
+			.fw-ext-site-converter .fw-sc-thumb,.fw-ext-site-converter .fw-sc-bar{background:var(--sc-inset)!important}
+			.fw-ext-site-converter .fw-sc-setup{background:var(--sc-setup-bg)!important;border-color:var(--sc-setup-bd)!important}
+			.fw-ext-site-converter [style*="#fef7e6"],.fw-ext-site-converter [style*="#fcf9e8"],.fw-ext-site-converter [style*="#fcf3cd"],.fw-ext-site-converter [style*="#fcf0cd"],.fw-ext-site-converter [style*="#fbf9f0"]{background:var(--sc-note-bg)!important;border-color:var(--sc-note-bd)!important;color:var(--sc-ink)!important}
 			</style>
 			<script>
 			( function () {

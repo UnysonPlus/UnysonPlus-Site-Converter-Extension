@@ -4863,7 +4863,7 @@ class FW_Site_Converter_Stitch {
 			$brand_nl = false;
 			if ( $with_brand ) {
 				// When the brand band is a MULTI-COLUMN row (a flex/grid with the newsletter in a SEPARATE
-				// cell from the logo/tagline — the common `Maison … | Stay Connected [signup]` pre-footer),
+				// cell from the logo/tagline — the common `Brand … | Stay Connected [signup]` pre-footer),
 				// emit TWO columns: brand (logo + tagline) then a dedicated newsletter column. Merging them
 				// into one column (the old behavior) mis-mapped the band to a single-column bar. A single-
 				// column brand band (newsletter stacked under the brand) still merges as before.
@@ -5099,6 +5099,21 @@ class FW_Site_Converter_Stitch {
 			$copyright_col_2 = array(
 				array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $legal_html ) ), 'element_css_class' => 'text-end' ),
 			);
+		} elseif ( '' !== ( $lbar = self::detect_footer_label_bar( (string) $html ) )['left'] || '' !== $lbar['right'] ) {
+			// A bottom bar of plain LABEL groups — no copyright, no links — which the copyright-anchored
+			// readers above cannot see. Its left group joins the copyright column so nothing is lost, and its
+			// right group takes the opposite column, which is where the source puts it.
+			// It outranks the TAGLINE branch below deliberately: the tagline reader takes any short text
+			// sibling of the copyright, which on a brand column is the brand BLURB, not a bottom-bar line. A
+			// genuine two-group row that distributes itself apart is the stronger signal, so it wins.
+			if ( '' !== $lbar['left'] ) {
+				$copyright_col_1[] = array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<p>' . esc_html( $lbar['left'] ) . '</p>' ) ) );
+			}
+			if ( '' !== $lbar['right'] ) {
+				$copyright_col_2 = array(
+					array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<p>' . esc_html( $lbar['right'] ) . '</p>' ) ), 'element_css_class' => 'text-end' ),
+				);
+			}
 		} elseif ( $tagline !== '' ) {
 			// A bottom-bar tagline opposite the © line ("Designed for the modern professional.") → the right
 			// column, auto-aligned end. Without this the second bottom-bar <p> was silently dropped.
@@ -5951,8 +5966,18 @@ class FW_Site_Converter_Stitch {
 		$brand = null; $brand_img = null; $brand_nonnav = null; $brand_any = null;
 		foreach ( $header->getElementsByTagName( 'a' ) as $a ) {
 			$href = trim( (string) $a->getAttribute( 'href' ) );
-			if ( ! ( $href === '' || $href === '#' || $href === '/' || preg_match( '~^https?://[^/]+/?$~', $href ) ) ) { continue; }
+			// A ONE-PAGE site has no "/" to link home to: its brand points at the first section
+			// (`<a href="#hero">`), an IN-PAGE anchor. Accepting only '', '#', '/' or a bare origin found no
+			// brand anchor at all on those sources, so detection fell through to the header's leftmost block
+			// and harvested the utility cluster instead — a real-site audit shipped "AccountCART (1)" as the
+			// site title, the header logo AND the footer logo. Any '#fragment' is a candidate; the menu links
+			// beside it are fragments too, but they sit inside <nav> and the non-nav ranking below already
+			// prefers the brand over them.
+			$is_frag = ( '' !== $href && '#' === $href[0] );
+			if ( ! ( $href === '' || $href === '#' || $href === '/' || $is_frag || preg_match( '~^https?://[^/]+/?$~', $href ) ) ) { continue; }
 			if ( self::is_button( $a ) ) { continue; }
+			// …but never the SKIP LINK, which is also an in-page fragment and usually comes first in the DOM.
+			if ( $is_frag && preg_match( '/^\s*skip\b/i', trim( preg_replace( '/\s+/', ' ', (string) $a->textContent ) ) ) ) { continue; }
 			if ( $brand_any === null ) { $brand_any = $a; }
 			$in_nav = false;
 			for ( $p = $a->parentNode; $p instanceof DOMElement; $p = $p->parentNode ) { if ( strtolower( $p->tagName ) === 'nav' ) { $in_nav = true; break; } }
@@ -6129,7 +6154,7 @@ class FW_Site_Converter_Stitch {
 				}
 			}
 		}
-		// A TWO-LINE LOCKUP — a wordmark over a small sub-line ("MAISON CORNICHON" over "· 1923 ·") — has no single
+		// A TWO-LINE LOCKUP — a wordmark over a small sub-line (a wordmark over a small dated sub-line) — has no single
 		// leaf matching the glued text, so $wm stayed the <a> and the whole lockup took the WRAPPER's type: an 11px
 		// sans instead of the 24px tracked serif the source draws, with the sub-line run into the title. Split it by
 		// MEASUREMENT: the largest text leaf is the wordmark, the smaller one the tagline (above it when it precedes).
@@ -6518,6 +6543,58 @@ class FW_Site_Converter_Stitch {
 	/** The footer's bottom-bar SECONDARY tagline — a short text `<p>` sitting in the same row as the ©
 	 *  line (a `justify-between` bottom bar: "© …" left, "Designed for the modern professional." right),
 	 *  which is NOT the copyright and NOT a legal-link list. Returns '' when the bar has only the © line. */
+	/**
+	 * A footer's trailing TWO-GROUP LABEL ROW — a bottom bar that carries neither a copyright nor links.
+	 *
+	 * The bottom-bar readers are anchored on the copyright element: legal links and the tagline are both
+	 * found among ITS siblings. A footer whose copyright sits up in the brand column and whose bottom row
+	 * holds two plain label groups therefore matched nothing, and the whole row was dropped — a real-site
+	 * audit lost "USDA Organic Certified · Made in USA · 100% Recyclable Packaging" on the left and the
+	 * shipping line on the right, the footer's entire trust row.
+	 *
+	 * The shape is unmistakable on its own: the footer's LAST flex row that distributes its children apart
+	 * (`justify-content: space-between`) and whose groups are text only — no links, no images. Returns
+	 * array( 'left' => string, 'right' => string ), either side '' when absent.
+	 *
+	 * @param string $html the captured document
+	 * @return array{left:string,right:string}
+	 */
+	private static function detect_footer_label_bar( $html ) {
+		$none = array( 'left' => '', 'right' => '' );
+		$dom  = self::load_dom( $html );
+		if ( ! $dom ) { return $none; }
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( ! $footer ) { return $none; }
+		$best = null;
+		foreach ( $footer->getElementsByTagName( 'div' ) as $row ) {
+			$cs = (string) $row->getAttribute( 'data-sc-cs' );
+			if ( '' === $cs || ! preg_match( '/(?:^|;)\\s*display:\\s*flex/i', $cs ) ) { continue; }
+			if ( ! preg_match( '/(?:^|;)\\s*justify-content:\\s*space-between/i', $cs ) ) { continue; }
+			if ( $row->getElementsByTagName( 'a' )->length || $row->getElementsByTagName( 'img' )->length ) { continue; }
+			if ( $row->getElementsByTagName( 'svg' )->length ) { continue; }
+			$kids = self::el_children( $row );
+			if ( count( $kids ) < 2 ) { continue; }
+			$t = trim( preg_replace( '/\\s+/', ' ', (string) $row->textContent ) );
+			if ( '' === $t || mb_strlen( $t ) > 240 ) { continue; }
+			// a © row is the copyright bar, which the existing readers already own
+			if ( false !== mb_strpos( $t, "\u{00A9}" ) || false !== stripos( $t, 'rights reserved' ) ) { continue; }
+			$best = $kids; // keep walking: the LAST such row is the bottom bar
+		}
+		if ( null === $best ) { return $none; }
+		$txt = function ( $el ) {
+			$t = trim( preg_replace( '/\\s+/', ' ', (string) $el->textContent ) );
+			// the source separates its badges with a middot span; collapse the doubled spacing that leaves
+			// The badges are separated by their own glyph span, so the collapsed text welds label to
+			// separator ("Made in USA\u{2022}100% Recyclable"). Space whichever separator the source used —
+			// bullet, middot, bar or dash — rather than only the one the first source happened to pick.
+			return trim( preg_replace( '/\s*([\x{2022}\x{00B7}\x{2013}\x{2014}|])\s*/u', ' $1 ', $t ) );
+		};
+		$left  = $txt( $best[0] );
+		$right = count( $best ) >= 2 ? $txt( $best[ count( $best ) - 1 ] ) : '';
+		if ( '' === $left && '' === $right ) { return $none; }
+		return array( 'left' => $left, 'right' => $right );
+	}
+
 	private static function detect_footer_bottom_tagline( $html ) {
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return ''; }
@@ -8347,11 +8424,23 @@ class FW_Site_Converter_Stitch {
 		// a ONE-ROW footer (logo | links | ©): the © shares its row with the BRAND and the main links — those are the menu, not
 		// legal links; they were cloned into the copyright bar beneath the same links (a fixture from the feed)
 		if ( self::footer_is_single_row( $footer ) ) { return array(); }
+		// The footer's own BRAND LOCKUP often shares the copyright band (the wordmark above the blurb above
+		// the © line, all in the same column). It is a link home, not a legal link — collected as one, it
+		// rendered a stray wordmark in the copyright bar AND, by making the legal branch match, hid the
+		// bottom bar the source actually had (a real-site audit lost the whole trust row that way).
+		// A legal link points at a real page; the brand points at home or the top of this one.
+		$tt    = $dom->getElementsByTagName( 'title' )->item( 0 );
+		$brand = $tt ? mb_strtolower( self::title_brand_segment( (string) $tt->textContent ) ) : '';
+		$norm  = function ( $v ) { return preg_replace( '/[^a-z0-9]+/', '', mb_strtolower( (string) $v ) ); };
+		$bkey  = $norm( $brand );
 		$out = array();
 		foreach ( $band->getElementsByTagName( 'a' ) as $a ) {
 			$lbl = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $a ) ) );
 			$hrf = trim( (string) $a->getAttribute( 'href' ) );
-			if ( $lbl !== '' && self::social_lucide( $hrf ) === '' ) { $out[] = array( 'label' => $lbl, 'href' => $hrf ); }
+			if ( '' === $lbl || '' !== self::social_lucide( $hrf ) ) { continue; }
+			$home = ( '' === $hrf || '#' === $hrf || '/' === $hrf || '#' === $hrf[0] || preg_match( '~^https?://[^/]+/?$~', $hrf ) );
+			if ( $home && '' !== $bkey && $norm( $lbl ) === $bkey ) { continue; } // the brand lockup
+			$out[] = array( 'label' => $lbl, 'href' => $hrf );
 			if ( count( $out ) >= 6 ) { break; }
 		}
 		return $out;
@@ -9685,6 +9774,26 @@ class FW_Site_Converter_Stitch {
 		}
 		$bg = self::sc_css( $chrome, 'background-color' );
 		if ( $bg !== '' && stripos( $bg, 'transparent' ) === false && ! preg_match( '/rgba\([^)]*,\s*0\s*\)/i', $bg ) ) { $out['bg'] = $bg; }
+		// A bar that paints NOTHING still has a colour behind it. A header nested inside a coloured band
+		// (`<section class="bg-[#f5c344]"><header class="w-full …">`) is transparent in its own right, so
+		// the emitted fill fell back to the theme default WHITE and a yellow masthead converted to a white
+		// one — the single most visible defect on that conversion. What a reader sees is the nearest painted
+		// ANCESTOR, so read that instead of guessing.
+		// Only for a bar in NORMAL FLOW: a fixed/absolute/sticky header floats OVER the page, and there the
+		// transparency is the design (the overlay/glass path owns it) — inheriting the hero's fill would
+		// paint a solid bar across a photo the source deliberately shows through.
+		if ( ! isset( $out['bg'] ) ) {
+			$pos = strtolower( trim( (string) self::sc_css( $header, 'position' ) ) );
+			if ( ! in_array( $pos, array( 'fixed', 'absolute', 'sticky' ), true ) ) {
+				for ( $anc = $header->parentNode, $n = 0; $anc instanceof DOMElement && $n < 4; $anc = $anc->parentNode, $n++ ) {
+					$abg = self::sc_css( $anc, 'background-color' );
+					if ( '' === $abg || false !== stripos( $abg, 'transparent' ) || preg_match( '/rgba\([^)]*,\s*0\s*\)/i', $abg ) ) { continue; }
+					$out['bg']         = $abg;
+					$out['bg_from_anc'] = true; // the fill is INHERITED, not declared — the scroll logic wants to know
+					break;
+				}
+			}
+		}
 		// A GRADIENT header ground (`bg-gradient-to-b from-black/80 to-transparent` — a fade over the hero) has no header option; it
 		// rides Misc CSS on .site-header (a finding filed on six conversions). Also the header's own padding when the bar is a
 		// padded band (pt-8 pb-16) rather than a fixed-height bar.
@@ -10394,7 +10503,7 @@ class FW_Site_Converter_Stitch {
 			if ( ( self::is_button( $a ) || self::cs_is_button( $a ) ) && ! self::nav_pill_sibling( $a ) ) { continue; }         // skip the CTA (a pill nav's items are all skinned — they ARE the menu)
 			if ( self::nav_el_hidden( $a ) ) { continue; }                               // skip a hidden drawer's duplicate links
 			if ( $a->getElementsByTagName( 'svg' )->length || $a->getElementsByTagName( 'img' )->length ) { continue; } // skip brand/icon links
-			// Skip the BRAND wordmark — a LARGE home link (e.g. "Maison" at 30px, font-serif/tracking-tight)
+			// Skip the BRAND wordmark — a LARGE home link (e.g. a one-word brand at 30px, font-serif/tracking-tight)
 			// is the logo, not a nav item; sampling it pollutes the menu style (font-size/letter-spacing/weight).
 			// A normal-sized home link (a real "Home" nav item) is kept, so its colour still counts.
 			$href = trim( (string) $a->getAttribute( 'href' ) );
@@ -23568,9 +23677,19 @@ class FW_Site_Converter_Stitch {
 		$single   = array( 'design' => 'default', 'layout_choice' => 'single',   'grid_columns' => 'row-cols-3' );
 		$carousel = array( 'design' => 'default', 'layout_choice' => 'carousel', 'grid_columns' => 'row-cols-3' );
 		if ( ! ( $el instanceof DOMElement ) ) { return $count >= 2 ? $carousel : $single; }
-		// The slider / marquee machinery often lives on a WRAPPER, so scan the block + up to 2 ancestors.
+		// The slider / marquee machinery often lives on a WRAPPER, so scan the block + up to 2 ancestors —
+		// but NEVER past the block's own SECTION. Every test below is a text scan over that scope's HTML, and
+		// an ancestor's saveHTML() contains all of its descendants, so on a flat one-page DOM two levels can
+		// clear the section entirely and read its siblings. A real-site audit: a `divide-y` on a DIFFERENT
+		// section's four-column feature row (with its vertical rules) matched the STACKED test, and the
+		// testimonials three-up grid rendered as a one-up editorial list, 200px taller than the source. A
+		// marquee, a snap track or a slider lib that belongs to this block is inside this section too, so
+		// stopping at the boundary costs nothing and removes a whole class of cross-section false positives.
 		$scope = $el;
-		for ( $i = 0; $i < 2 && $scope->parentNode instanceof DOMElement; $i++ ) { $scope = $scope->parentNode; }
+		for ( $i = 0; $i < 2 && $scope->parentNode instanceof DOMElement; $i++ ) {
+			$scope = $scope->parentNode;
+			if ( in_array( strtolower( (string) $scope->tagName ), array( 'section', 'main', 'article', 'body' ), true ) ) { break; }
+		}
 		$doc = $el->ownerDocument;
 		$hay = strtolower( (string) ( $doc ? $doc->saveHTML( $scope ) : '' ) );
 
@@ -23621,6 +23740,58 @@ class FW_Site_Converter_Stitch {
 			return array( 'design' => 'default', 'layout_choice' => 'grid', 'grid_columns' => 'row-cols-' . $n );
 		}
 		return $single;
+	}
+
+	/**
+	 * The media FRAME's own background — the element that wraps a card's <img>.
+	 *
+	 * The native image box paints a placeholder fill (`.imgbox__media{background:#f1f3f5}`) so a photo that
+	 * has not loaded is not a hole. That is invisible behind an image which COVERS its frame, and plainly
+	 * wrong behind a transparent cut-out shown with `object-contain`: a real-site audit had four product
+	 * cut-outs, which the source sits directly on its orange band, rendering on pale grey tiles.
+	 * The converter measures the frame, so it can simply carry what the frame actually paints — a real
+	 * fill when there is one, and 'transparent' when there is not.
+	 *
+	 * @param DOMElement|null $img the card's image
+	 * @return string a CSS colour, 'transparent', or '' when the frame is unknown
+	 */
+	/**
+	 * The media FRAME's own side padding (px), which insets the picture inside its frame.
+	 *
+	 * Same reasoning as media_frame_bg: the frame is measured, so carry what it declares. A product
+	 * cut-out shown with `object-contain` inside a `p-4` frame renders 2x16px smaller than the frame; drop
+	 * the padding and it fills edge-to-edge, so every tile reads larger than the source's.
+	 *
+	 * @param DOMElement|null $img the card's image
+	 * @return int padding per side in px, 0 when none or unknown
+	 */
+	private static function media_frame_pad( $img ) {
+		if ( ! ( $img instanceof DOMElement ) ) { return 0; }
+		$frame = $img->parentNode;
+		if ( ! ( $frame instanceof DOMElement ) ) { return 0; }
+		$cs = (string) $frame->getAttribute( 'data-sc-cs' );
+		if ( '' === $cs || ! preg_match( '/(?:^|;)\s*padding:\s*([^;]+)/i', $cs, $m ) ) { return 0; }
+		$parts = preg_split( '/\s+/', trim( $m[1] ) );
+		// shorthand: 1 value = all sides; 2 = v h; 3 = t h b; 4 = t r b l. The SIDE padding is what insets
+		// the picture horizontally, and a frame that pads at all pads evenly in practice.
+		$side = '';
+		if ( 1 === count( $parts ) ) { $side = $parts[0]; }
+		elseif ( count( $parts ) >= 2 ) { $side = $parts[1]; }
+		if ( ! preg_match( '/^([0-9.]+)px$/', trim( (string) $side ), $pm ) ) { return 0; }
+		$px = (int) round( (float) $pm[1] );
+		return ( $px > 0 && $px <= 80 ) ? $px : 0;
+	}
+
+	private static function media_frame_bg( $img ) {
+		if ( ! ( $img instanceof DOMElement ) ) { return ''; }
+		$frame = $img->parentNode;
+		if ( ! ( $frame instanceof DOMElement ) ) { return ''; }
+		$cs = (string) $frame->getAttribute( 'data-sc-cs' );
+		if ( '' === $cs ) { return ''; }
+		if ( ! preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $cs, $m ) ) { return 'transparent'; }
+		$v = trim( $m[1] );
+		if ( '' === $v || false !== stripos( $v, 'transparent' ) || preg_match( '/rgba\([^)]*,\s*0\s*\)/i', $v ) ) { return 'transparent'; }
+		return $v;
 	}
 
 	private static function is_card_cell( $k ) {
@@ -24487,7 +24658,7 @@ class FW_Site_Converter_Stitch {
 				}
 				continue;
 			}
-			$image = array( 'src' => $isrc, 'alt' => trim( (string) $im->getAttribute( 'alt' ) ), 'cls' => self::cls( $im ), 'aspect' => self::img_frame_aspect( $im, $cell ), 'extra' => self::img_extra_css( $im ) );
+			$image = array( 'src' => $isrc, 'alt' => trim( (string) $im->getAttribute( 'alt' ) ), 'cls' => self::cls( $im ), 'aspect' => self::img_frame_aspect( $im, $cell ), 'extra' => self::img_extra_css( $im ), 'frameBg' => self::media_frame_bg( $im ), 'framePad' => self::media_frame_pad( $im ) );
 			// a FIXED-HEIGHT media frame (`h-64 overflow-hidden` → 256px; a `w-full h-full object-cover` image filling it): the
 			// box's crop is a height, not a ratio — it fell back to 4:3 (a fixture from the feed). Measured on the frame.
 			$fr = ( $im->parentNode instanceof DOMElement ) ? $im->parentNode : null;
@@ -25021,7 +25192,7 @@ class FW_Site_Converter_Stitch {
 		$hosts = array();
 		if ( $drop_buttons ) {
 			// Header: union EVERY <nav> cluster. A SPLIT header nav has a LEFT and a RIGHT <nav> around a
-			// centered logo (e.g. "Home / Collections" left, "Maison / Concierge" right) — reading only the
+			// centered logo (e.g. "Home / Collections" left, "Brand / Concierge" right) — reading only the
 			// first <nav> silently DROPPED the right cluster. The brand/logo link sits OUTSIDE the navs (an
 			// empty-text <a><img></a>), so it's excluded by the empty-label skip below, not carried as an item.
 			foreach ( $scope->getElementsByTagName( 'nav' ) as $n ) { $hosts[] = $n; }
@@ -25059,7 +25230,7 @@ class FW_Site_Converter_Stitch {
 					if ( $label === '' ) { continue; } // icon-only (e.g. the logo <a><img></a>)
 					$url = $el->getAttribute( 'href' );
 					if ( $url === '' ) { $url = '#'; }
-					// a TEXT WORDMARK (`<a href="/" class="font-serif text-3xl">Maison</a>` — a display-size home link, one or two words)
+					// a TEXT WORDMARK (`<a href="/" class="font-serif text-3xl">Brand</a>` — a display-size home link, one or two words)
 					// is the brand, not a menu item: it had become the first item of both the header and footer menus (a real-site audit)
 					$lfs = preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', (string) $el->getAttribute( 'data-sc-cs' ), $lfm ) ? (float) $lfm[1] : 0.0;
 					if ( $lfs >= 22 && str_word_count( $label ) <= 2 && preg_match( '~^(?:/|\./|index\.html?|https?://[^/]+/?)?(?:[#?].*)?$~i', trim( $url ) ) ) { continue; }
@@ -25465,16 +25636,25 @@ class FW_Site_Converter_Stitch {
 			return $node;
 		};
 
-		// The palette definition itself must never be rewritten to reference itself.
+		// A PRESET DEFINITION MUST HOLD A LITERAL — it is the thing other values point AT, so binding a
+		// reference inside one is circular. The palette was already exempt; every other preset COLLECTION
+		// needs the same exemption for the same reason, and for a harder one: their consumers generate CSS
+		// from the literal, so a class name in `predefined` produces NO declaration at all.
+		// A real-site audit: a button preset's `bg_color` bound to `bg-primary`, the preset's generated CSS
+		// then carried no background, and the header CTA rendered as a small unstyled white box with its
+		// label invisible on it. Every value that POINTS at these presets still binds — only the definitions
+		// are left alone.
+		$preset_keys = array( 'theme_colors', 'button_colors', 'box_presets', 'table_presets', 'section_style_presets', 'container_width_presets', 'badge_presets', 'card_presets' );
 		foreach ( array( 'theme-settings.json', 'pages.json' ) as $fn ) {
 			if ( ! isset( $files[ $fn ] ) || ! is_array( $files[ $fn ] ) ) { continue; }
-			if ( 'theme-settings.json' === $fn && isset( $files[ $fn ]['values']['theme_colors'] ) ) {
-				$keep = $files[ $fn ]['values']['theme_colors'];
-				$files[ $fn ] = $walk( $files[ $fn ], '' );
-				$files[ $fn ]['values']['theme_colors'] = $keep;
-			} else {
-				$files[ $fn ] = $walk( $files[ $fn ], '' );
+			$keep = array();
+			if ( 'theme-settings.json' === $fn ) {
+				foreach ( $preset_keys as $pk ) {
+					if ( isset( $files[ $fn ]['values'][ $pk ] ) ) { $keep[ $pk ] = $files[ $fn ]['values'][ $pk ]; }
+				}
 			}
+			$files[ $fn ] = $walk( $files[ $fn ], '' );
+			foreach ( $keep as $pk => $pv ) { $files[ $fn ]['values'][ $pk ] = $pv; }
 		}
 		return $files;
 	}
@@ -26320,7 +26500,38 @@ class FW_Site_Converter_Stitch {
 		$dom->loadHTML( '<?xml encoding="UTF-8">' . $html );
 		libxml_clear_errors();
 		libxml_use_internal_errors( $prev );
+		self::unglue_line_breaks( $dom );
 		return $dom;
+	}
+
+	/**
+	 * A `<br>` IS A WORD BOUNDARY — give it one, once, for every reader of this tree.
+	 *
+	 * DOM `textContent` concatenates text nodes and drops element nodes silently, so `HIGH IN<br>PROTEIN`
+	 * reads back as `HIGH INPROTEIN`: two words welded into a non-word. The converter reads `textContent`
+	 * in dozens of places (headings, card titles, the brand wordmark, menu labels, footer columns), so the
+	 * defect surfaced everywhere a source used `<br>` for a deliberate two-line lockup — a real-site audit
+	 * found it in four card titles, the site title, the header logo AND the footer logo at once.
+	 *
+	 * Fixing it at each call site would mean finding all of them and keeping new ones honest forever. Doing
+	 * it ONCE here — replacing every `<br>` with a newline text node as the tree is built — makes every
+	 * present and future `textContent` read correct by construction. Call sites that collapse whitespace
+	 * (`preg_replace('/\s+/', ' ')`, which most do) get "HIGH IN PROTEIN"; call sites that care about the
+	 * break still see a newline and can re-emit `<br>`.
+	 *
+	 * @param DOMDocument $dom the freshly parsed tree, modified in place
+	 */
+	private static function unglue_line_breaks( $dom ) {
+		if ( ! ( $dom instanceof DOMDocument ) ) { return; }
+		$brs = $dom->getElementsByTagName( 'br' );
+		if ( ! $brs || ! $brs->length ) { return; }
+		// getElementsByTagName is LIVE — replacing while iterating it skips half the list. Snapshot first.
+		$list = array();
+		foreach ( $brs as $br ) { $list[] = $br; }
+		foreach ( $list as $br ) {
+			if ( ! $br->parentNode ) { continue; }
+			$br->parentNode->replaceChild( $dom->createTextNode( "\n" ), $br );
+		}
 	}
 
 	/** Element children (skip text/comment nodes). */
@@ -26802,7 +27013,7 @@ class FW_Site_Converter_Stitch {
 		if ( strpos( $icls, ' aspect-square ' ) !== false || preg_match( '/\baspect-square\b/', self::cls( $el ) ) ) { $ar = '1/1'; } elseif ( preg_match( '/\baspect-\[([0-9.]+)\/([0-9.]+)\]/', self::cls( $el ) . ' ' . $icls, $am ) ) { $ar = $am[1] . '/' . $am[2]; } elseif ( preg_match( '/aspect-video/', self::cls( $el ) . $icls ) ) { $ar = '16/9'; }
 		$fh = 0.0; if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $el->getAttribute( 'data-sc-cs' ), $fhm ) ) { $fh = (float) $fhm[1]; }
 		$card = array(
-			'image' => array( 'src' => $src, 'alt' => trim( (string) $img->getAttribute( 'alt' ) ), 'cls' => self::cls( $img ), 'aspect' => $ar, 'extra' => self::img_extra_css( $img ) ),
+			'image' => array( 'src' => $src, 'alt' => trim( (string) $img->getAttribute( 'alt' ) ), 'cls' => self::cls( $img ), 'aspect' => $ar, 'extra' => self::img_extra_css( $img ), 'frameBg' => self::media_frame_bg( $img ), 'framePad' => self::media_frame_pad( $img ) ),
 			'title' => $title, 'titleTag' => 'h3', 'titleCs' => $title_cs, 'titleFontSize' => ( preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+px)/i', $title_cs, $tfm ) ? $tfm[1] : '' ), 'titleWeight' => ( preg_match( '/(?:^|;)\s*font-weight:\s*([0-9]+)/i', $title_cs, $twm ) ? $twm[1] : '' ),
 			'text' => implode( '', array_map( function ( $l ) { return '<p>' . esc_html( $l['text'] ) . '</p>'; }, $lines ) ),
 			'bodyCs' => isset( $lines[0]['cs'] ) ? $lines[0]['cs'] : '', 'bodyFontSize' => ( isset( $lines[0]['cs'] ) && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+px)/i', $lines[0]['cs'], $bfm ) ) ? $bfm[1] : '',
@@ -26956,7 +27167,7 @@ class FW_Site_Converter_Stitch {
 			// belongs on, in the page's body face instead of its own (a real-site audit). Folded onto the media
 			// node as a pinned pseudo-element by img_pinned_labels_css().
 			// …ONE LINE only. A pseudo-element's `content` is a single string, so a stacked lockup (a circular
-			// seal reading MAISON / 1923 / FRANCE on three lines) would be glued into "MAISON1923FRANCE".
+			// seal reading BRAND / 1923 / COUNTRY on three lines) would be glued into "BRAND1923COUNTRY".
 			// A genuine label carries its whole text in ONE leaf.
 			$leaves = 0;
 			foreach ( $d->getElementsByTagName( '*' ) as $ln ) {

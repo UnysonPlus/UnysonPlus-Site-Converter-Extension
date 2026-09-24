@@ -8020,6 +8020,20 @@ selector .imgbox__eyebrow{" . implode( ';', $ol ) . ';}' ); }
 			$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
 selector .imgbox__media{position:relative;}selector .imgbox__media::before{" . implode( ';', $bdecl ) . ';}' );
 		}
+		// The media frame's own FILL. The shortcode paints a placeholder (`#f1f3f5`) so an unloaded photo is
+		// not a hole — invisible behind an image that covers its frame, and plainly wrong behind a transparent
+		// cut-out shown with `object-contain`, where the source's own band shows through instead. Carry what
+		// the source frame actually paints: a real colour when it has one, transparent when it has none.
+		$fpad = (int) ( $img['framePad'] ?? 0 );
+		if ( $fpad > 0 ) {
+			$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+selector .imgbox__media{padding:" . $fpad . "px;box-sizing:border-box;}selector .imgbox__media-inner{height:100%;}" );
+		}
+		$fbg = trim( (string) ( $img['frameBg'] ?? '' ) );
+		if ( '' !== $fbg && preg_match( '/^(?:transparent|#[0-9a-f]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\))$/i', $fbg ) ) {
+			$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+selector .imgbox__media{background:" . $fbg . ';}' );
+		}
 		$rslug = self::img_ratio_slug( $ar );
 		if ( $rslug !== '' ) { $atts['image_ratio'] = $rslug; }
 		// an aspect the native choices lack (`aspect-[4/5]`) → the NEAREST choice on the option + the exact ratio scoped on
