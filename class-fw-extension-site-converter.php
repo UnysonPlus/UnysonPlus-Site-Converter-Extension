@@ -44,6 +44,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-landing.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sources.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sandbox.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-kit.php' );
 
 		// The site's OWN corrections, applied before anything converts. Boot happens on every request, not
 		// only in admin, because a conversion can be driven from the REST endpoint too.
@@ -4516,6 +4517,13 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			</div><!-- /#panel-tools -->
 
 			<div class="fw-sc-panel" id="panel-diagnostics">
+
+			<?php
+			// The AI Dev Kit cross-check. Prints nothing unless FW_UPW_KIT_PATH is defined, so a normal
+			// install never sees it; a developer machine gets told when the kit's docs and this converter
+			// have drifted apart, which is otherwise invisible until an agent follows stale guidance.
+			FW_Site_Converter_Kit::render_notice();
+			?>
 
 			<details class="fw-sc-card" open>
 					<summary><span class="dashicons dashicons-yes-alt"></span> <?php esc_html_e( 'Converter self-test', 'fw' ); ?></summary>
