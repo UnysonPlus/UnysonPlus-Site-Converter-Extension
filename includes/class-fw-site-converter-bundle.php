@@ -301,6 +301,7 @@ class FW_Site_Converter_Bundle {
 				? $media['urls']
 				: ( self::is_list( $media ) ? $media : array() );
 			$urls    = array_slice( array_values( array_filter( array_map( 'trim', array_map( 'strval', (array) $urls ) ) ) ), 0, 500 );
+			FW_Site_Converter_Progress::step( 'media' );
 			$results = $urls ? FW_Site_Converter_Media::import_urls( $urls ) : array();
 			$out['media']      = self::summarize_media( $results );
 			$out['sections'][] = 'media';
@@ -309,6 +310,7 @@ class FW_Site_Converter_Bundle {
 		// --- Phase 2: styling presets ---
 		$presets = self::read_json( $dir, self::FILE_PRESETS );
 		if ( $do_design && ! $scoped && $presets !== null && class_exists( 'FW_Site_Converter_Presets' ) ) {
+			FW_Site_Converter_Progress::step( 'presets' );
 			$out['presets']    = FW_Site_Converter_Presets::import( $presets );
 			$out['sections'][] = 'presets';
 		}
@@ -321,6 +323,7 @@ class FW_Site_Converter_Bundle {
 			// `force_chrome` re-applies even settings the user edited since the last conversion. Off by
 			// default: converting a SECOND page of the same site must not silently revert header/footer
 			// text the user corrected after the first one (see Theme_Settings::user_edited_keys).
+			FW_Site_Converter_Progress::step( 'settings' );
 			$out['theme_settings'] = FW_Site_Converter_Theme_Settings::import( $theme, true, ! empty( $opts['force_chrome'] ) );
 			$out['sections'][]     = 'theme-settings';
 		}
@@ -383,6 +386,7 @@ class FW_Site_Converter_Bundle {
 					}
 				}
 			}
+			FW_Site_Converter_Progress::step( 'theme' );
 			$res               = FW_Site_Converter_Theme_Generator::install( $theme_design );
 			$out['theme']      = $res;
 			$out['sections'][] = 'theme';
@@ -512,6 +516,7 @@ class FW_Site_Converter_Bundle {
 		// the dedicated build action); kept as the no-mapping fallback.
 		$pages = self::read_json( $dir, self::FILE_PAGES );
 		if ( $do_pages && $scope_sections && $pages !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
+			FW_Site_Converter_Progress::step( 'content' );
 			$out['pages']      = FW_Site_Converter_Pages::import( $pages );
 			$out['sections'][] = 'pages';
 		}

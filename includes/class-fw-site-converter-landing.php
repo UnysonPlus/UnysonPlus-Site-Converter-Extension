@@ -44,7 +44,44 @@ class FW_Site_Converter_Landing {
 			$stem  = sanitize_title( preg_replace( '/\.[a-z0-9]+$/i', '', basename( $path ) ) );
 			$title = $stem !== '' ? ucwords( str_replace( array( '-', '_' ), ' ', $stem ) ) : 'Landing';
 		}
-		$dir = (string) $data['dir'];
+		return self::from_dir( (string) $data['dir'], $url, $title );
+	}
+
+	/**
+	 * Import a mirror uploaded as a .zip (index.html + assets/ + manifest.json at the zip root) — what the
+	 * Site Converter's browser sends when it mirrored through a capture service on the editor's computer.
+	 *
+	 * @param string $zip_file uploaded zip path
+	 * @param string $url      the source url (for the title and the mode filter)
+	 * @param string $title
+	 * @return array same shape as import()
+	 */
+	public static function from_zip( $zip_file, $url, $title = '' ) {
+		if ( ! function_exists( 'unzip_file' ) ) { require_once ABSPATH . 'wp-admin/includes/file.php'; }
+		if ( ! WP_Filesystem() ) { return array( 'ok' => false, 'error' => 'Could not initialise the filesystem to unpack the mirror.' ); }
+		$dir = trailingslashit( get_temp_dir() ) . 'fw-sc-mirror-' . wp_generate_password( 10, false );
+		$res = unzip_file( $zip_file, $dir );
+		if ( is_wp_error( $res ) ) { return array( 'ok' => false, 'error' => 'Could not unpack the mirror: ' . $res->get_error_message() ); }
+		if ( ! is_file( $dir . '/index.html' ) ) { return array( 'ok' => false, 'error' => 'The mirror has no index.html.' ); }
+		$r = self::from_dir( $dir, $url, $title );
+		// The importer copies the assets it needs into the uploads folder, so the unpacked copy can go.
+		global $wp_filesystem;
+		if ( $wp_filesystem ) { $wp_filesystem->delete( $dir, true ); }
+		return $r;
+	}
+
+	/**
+	 * @param string $dir   mirror folder
+	 * @param string $url   the source url
+	 * @param string $title page title (derived from the url path when empty)
+	 * @return array same shape as import()
+	 */
+	private static function from_dir( $dir, $url, $title = '' ) {
+		if ( '' === trim( (string) $title ) ) {
+			$path  = (string) wp_parse_url( $url, PHP_URL_PATH );
+			$stem  = sanitize_title( preg_replace( '/\.[a-z0-9]+$/i', '', basename( $path ) ) );
+			$title = $stem !== '' ? ucwords( str_replace( array( '-', '_' ), ' ', $stem ) ) : 'Landing';
+		}
 		// Mode: 'auto' (default) inlines a native hero unless the source hijacks the window scroll;
 		// 'inline' / 'sandbox' force one. Filterable so callers/devs can override.
 		$mode  = apply_filters( 'fw_sc_landing_mode', 'auto', $url, $dir );

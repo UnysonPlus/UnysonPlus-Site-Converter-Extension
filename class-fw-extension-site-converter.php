@@ -45,6 +45,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sources.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sandbox.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-kit.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-progress.php' );
 
 		// The site's OWN corrections, applied before anything converts. Boot happens on every request, not
 		// only in admin, because a conversion can be driven from the REST endpoint too.
@@ -88,6 +89,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			// File-upload Convert with review: prepare (build bundle + return mapping) → build (corrected).
 			add_action( 'wp_ajax_fw_sc_convert_prepare', array( $this, '_ajax_convert_prepare' ) );
 			add_action( 'wp_ajax_fw_sc_convert_build', array( $this, '_ajax_convert_build' ) );
+			// Read while the build POST is still running, from a second request — see the Progress class.
+			add_action( 'wp_ajax_fw_sc_progress', array( $this, '_ajax_progress' ) );
 			add_action( 'wp_ajax_fw_sc_upload_assets', array( $this, '_ajax_upload_assets' ) );
 			add_action( 'wp_ajax_fw_sc_export_rules', array( $this, '_ajax_export_rules' ) );
 			add_action( 'wp_ajax_fw_sc_import_rules', array( $this, '_ajax_import_rules' ) );
@@ -1092,8 +1095,17 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			return $out;
 		}
 		$found = '';
+		$bundle_file = isset( $opts['bundle_file'] ) ? (string) $opts['bundle_file'] : '';
 
-		if ( $this->node_capture_ready() ) {
+		if ( $bundle_file !== '' && is_file( $bundle_file ) && filesize( $bundle_file ) > 0 ) {
+			// The BROWSER fetched block-bundle.json from the capture service and uploaded it: the service runs
+			// on the editor's computer, which a hosted server cannot reach (localhost there is the server).
+			if ( ! copy( $bundle_file, $tmp . '/block-bundle.json' ) ) {
+				$out['error'] = __( 'Could not save the uploaded block bundle.', 'fw' );
+				return $out;
+			}
+			$found = $tmp;
+		} elseif ( $this->node_capture_ready() ) {
 			// LOCAL Node exec: "<node>" "<script>" "<url>" "<outdir>" --target=block-theme --vocab=<v>.
 			// capture.mjs writes block-bundle.json into a per-site subfolder under $tmp.
 			$dir = $this->capture_dir();
@@ -1506,7 +1518,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$title = isset( $_POST['title'] ) ? sanitize_text_field( wp_unslash( $_POST['title'] ) ) : '';
 		$svc   = isset( $_POST['svc'] ) ? esc_url_raw( wp_unslash( $_POST['svc'] ) ) : '';
 		if ( ! preg_match( '#^https?://#i', $url ) ) { wp_send_json_error( array( 'message' => __( 'Enter a full URL (https://…).', 'fw' ) ), 400 ); }
-		$r = FW_Site_Converter_Landing::from_url( $url, $title, $svc );
+		// The browser fetched the mirror from the capture service as a .zip (the service runs on the editor's
+		// computer, which a hosted server cannot reach) — import that. Otherwise ask the service directly
+		// (same-machine setups).
+		if ( ! empty( $_FILES['mirror_zip']['tmp_name'] ) && is_uploaded_file( $_FILES['mirror_zip']['tmp_name'] ) ) {
+			$r = FW_Site_Converter_Landing::from_zip( (string) $_FILES['mirror_zip']['tmp_name'], $url, $title );
+		} else {
+			$r = FW_Site_Converter_Landing::from_url( $url, $title, $svc );
+		}
 		if ( empty( $r['ok'] ) ) { wp_send_json_error( array( 'message' => isset( $r['error'] ) ? $r['error'] : __( 'Mirror failed.', 'fw' ) ), 500 ); }
 		wp_send_json_success( array(
 			'post_id' => (int) $r['post_id'],
@@ -1713,9 +1732,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			if ( $sc_src === '' ) {
 				wp_send_json_error( array( 'message' => __( 'Block Theme output converts from a URL. Enter the source URL above.', 'fw' ) ) );
 			}
+			$bt_file = ( ! empty( $_FILES['fw_sc_block_bundle']['tmp_name'] ) && is_uploaded_file( $_FILES['fw_sc_block_bundle']['tmp_name'] ) ) ? (string) $_FILES['fw_sc_block_bundle']['tmp_name'] : ''; // phpcs:ignore WordPress.Security.NonceVerification
 			$bt = $this->run_block_theme_conversion( $sc_src, array(
 				'vocabulary'  => self::sc_vocab_opt(),
 				'service_url' => isset( $_POST['fw_sc_service_url'] ) ? esc_url_raw( trim( (string) wp_unslash( $_POST['fw_sc_service_url'] ) ) ) : '', // phpcs:ignore WordPress.Security.NonceVerification
+				'bundle_file' => $bt_file,
 			) );
 			if ( empty( $bt['ok'] ) ) {
 				wp_send_json_error( array( 'message' => ( '' !== $bt['error'] ) ? $bt['error'] : __( 'Block Theme conversion failed.', 'fw' ) ) );
@@ -1866,6 +1887,18 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 * in the stashed design (theme + media), import everything, ACTIVATE the generated child theme, and
 	 * learn the corrections. PRG-redirects to the bundle-result view.
 	 */
+	/**
+	 * The build-progress poll. Deliberately trivial: read a transient and return it.
+	 *
+	 * No nonce check beyond the capability, because a failing poll must never be able to break a build that
+	 * is already running, and the payload is a list of step labels the user is watching anyway.
+	 */
+	public function _ajax_progress() {
+		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array(), 403 ); }
+		$p = class_exists( 'FW_Site_Converter_Progress' ) ? FW_Site_Converter_Progress::read() : null;
+		wp_send_json_success( is_array( $p ) ? $p : array( 'steps' => array() ) );
+	}
+
 	public function _ajax_convert_build() {
 		check_ajax_referer( self::NONCE );
 		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 ); }
@@ -1876,6 +1909,19 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		$stash = $this->convert_stash_get();
 		if ( ! is_array( $stash ) ) { wp_send_json_error( array( 'message' => __( 'The conversion session expired — please upload the file again.', 'fw' ) ) ); }
+
+		// Declare the run's steps up front, so the panel can show the WHOLE list from the first poll and the
+		// reader can see how much is left rather than only what is happening now.
+		FW_Site_Converter_Progress::start( array(
+			'pages'    => __( 'Building the pages from your mapping', 'fw' ),
+			'media'    => __( 'Importing images', 'fw' ),
+			'presets'  => __( 'Applying colour, button and box presets', 'fw' ),
+			'settings' => __( 'Writing Theme Settings', 'fw' ),
+			'theme'    => __( 'Generating and activating the child theme', 'fw' ),
+			'content'  => __( 'Creating the pages and menus', 'fw' ),
+			'finish'   => __( 'Finishing up', 'fw' ),
+		) );
+		FW_Site_Converter_Progress::step( 'pages' );
 
 		// Re-enable the styling mapper (it is OFF between requests) with the source's design tokens, so the
 		// rebuilt buttons/cards get their sc-btn / .box / btn-row classes. WITHOUT this, build_pages produces
@@ -2025,7 +2071,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$__am = get_transient( $this->assets_key() );
 		FW_Site_Converter_Mapper::set_assets( is_array( $__am ) ? $__am : array() ); // "Attach media" uploads → used by the mapper
 		$result = FW_Site_Converter_Stitch::import_bundle( array( 'files' => $files, 'screens' => $stash['screens'] ?? 1, 'error' => '' ) );
-		if ( ! empty( $result['error'] ) && empty( $result['sections'] ) ) { wp_send_json_error( array( 'message' => $result['error'] ) ); }
+		if ( ! empty( $result['error'] ) && empty( $result['sections'] ) ) {
+			FW_Site_Converter_Progress::fail( $result['error'] );
+			wp_send_json_error( array( 'message' => $result['error'] ) );
+		}
+		FW_Site_Converter_Progress::step( 'finish' );
 
 		if ( ! empty( $result['theme']['slug'] ) && empty( $result['theme']['error'] ) && wp_get_theme( $result['theme']['slug'] )->exists() ) {
 			switch_theme( $result['theme']['slug'] );
@@ -2035,6 +2085,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				$this->apply_converted_logo();               // wire the header logo to the imported attachment (Site Identity)
 		}
 		$learned = FW_Site_Converter_Mapper::learn( $mapping );
+
+		// Every step accounted for before the response goes back, so the panel's last poll shows a complete
+		// list rather than a spinner frozen on whatever happened to run last.
+		FW_Site_Converter_Progress::finish();
 
 		$result['stage']          = 'bundle_result';
 		$result['convert_source'] = isset( $stash['source']['label'] ) ? $stash['source']['label'] : '';
@@ -3464,9 +3518,96 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				if ( aiChk ) { aiChk.addEventListener( 'change', pingAI ); }
 				if ( aiUrlEl ) { aiUrlEl.addEventListener( 'change', pingAI ); }
 				pingAI();
+				/**
+				 * The build panel: what the long request is DOING, shown next to the button that started it.
+				 *
+				 * Three deliberate choices, each from watching this wait feel broken:
+				 *   - It renders right after the button. The old indicator went to the top of a panel that is
+				 *     several screens tall, so on a large mapping the user watched a disabled button and saw
+				 *     nothing move.
+				 *   - Named steps, not a percentage. The server reports which phase it is in; a percentage
+				 *     here could only be invented, and an invented one sits near "99%" for most of a minute.
+				 *   - The elapsed count appears only after 5s, so a quick build stays quiet and a slow one
+				 *     says "still working, and here is how long" instead of looking hung.
+				 */
+				function buildPanel( btnEl ) {
+					var host = document.createElement( 'div' );
+					host.className = 'fw-sc-buildprog';
+					host.setAttribute( 'aria-live', 'polite' );
+					host.setAttribute( 'aria-busy', 'true' );
+					host.innerHTML = '<div class="fw-sc-bp-bar"><span></span></div>'
+						+ '<p class="fw-sc-bp-head"><strong><?php echo esc_js( __( 'Building your site…', 'fw' ) ); ?></strong>'
+						+ '<span class="fw-sc-bp-elapsed" hidden></span></p>'
+						+ '<ul class="fw-sc-bp-steps"></ul>';
+					var anchor = btnEl && btnEl.parentNode ? btnEl.parentNode : null;
+					if ( anchor ) { anchor.parentNode.insertBefore( host, anchor.nextSibling ); }
+					else { document.querySelector( '.fw-ext-site-converter' ).appendChild( host ); }
+					try { host.scrollIntoView( { block: 'center', behavior: 'smooth' } ); } catch ( e ) { host.scrollIntoView(); }
+
+					var t0 = Date.now(), stop = false, seen = false;
+					var stepsEl = host.querySelector( '.fw-sc-bp-steps' );
+					var elEl    = host.querySelector( '.fw-sc-bp-elapsed' );
+
+					function tick() {
+						var secs = Math.round( ( Date.now() - t0 ) / 1000 );
+						if ( secs >= 5 ) {
+							elEl.hidden = false;
+							elEl.textContent = secs + '<?php echo esc_js( __( 's', 'fw' ) ); ?>'
+								+ ( secs > 25 ? ' — <?php echo esc_js( __( 'large pages can take about a minute', 'fw' ) ); ?>' : '' );
+						}
+					}
+
+					function render( p ) {
+						if ( ! p || ! p.steps || ! p.steps.length ) { return; }
+						seen = true;
+						var h = '';
+						for ( var i = 0; i < p.steps.length; i++ ) {
+							var st = p.steps[ i ];
+							h += '<li class="is-' + st.state + '">'
+								+ '<span class="fw-sc-bp-mark" aria-hidden="true"></span>'
+								+ '<span>' + escH( st.label ) + '</span></li>';
+						}
+						stepsEl.innerHTML = h;
+					}
+
+					function poll() {
+						if ( stop ) { return; }
+						var fd = new FormData(); fd.append( 'action', 'fw_sc_progress' );
+						fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } )
+							.then( function ( r ) { return r.json(); } )
+							.then( function ( j ) { if ( j && j.success ) { render( j.data ); } } )
+							// A failed poll is cosmetic: the build is unaffected, so swallow it and try again.
+							.catch( function () {} )
+							.then( function () { if ( ! stop ) { setTimeout( poll, 800 ); } } );
+					}
+
+					var timer = setInterval( tick, 1000 );
+					poll();
+
+					return {
+						done: function () {
+							stop = true; clearInterval( timer );
+							host.setAttribute( 'aria-busy', 'false' );
+							if ( host.parentNode ) { host.parentNode.removeChild( host ); }
+						},
+						// Leave the panel up on failure, marked, so the last completed step says where it got to.
+						failed: function ( msg ) {
+							stop = true; clearInterval( timer );
+							host.setAttribute( 'aria-busy', 'false' );
+							host.classList.add( 'is-failed' );
+							var at = host.querySelector( '.fw-sc-bp-steps li.is-running span:last-child' );
+							host.querySelector( '.fw-sc-bp-head' ).innerHTML =
+								'<strong><?php echo esc_js( __( 'Build failed.', 'fw' ) ); ?></strong> ' + escH( msg || '' )
+								// Naming the step it stopped on turns "it broke" into something reportable.
+								+ ( at ? ' <span style="color:#646970">(<?php echo esc_js( __( 'stopped at:', 'fw' ) ); ?> ' + escH( at.textContent ) + ')</span>' : '' );
+						}
+					};
+				}
+
 				function doBuild( mapping, btnEl ) {
 					if ( btnEl ) { btnEl.disabled = true; btnEl.textContent = '<?php echo esc_js( __( 'Building…', 'fw' ) ); ?>'; }
-					loading( '<?php echo esc_js( __( 'Building the child theme &amp; pages…', 'fw' ) ); ?>', 99, 7000, '<?php echo esc_js( __( 'Generating the child theme files, importing the pages &amp; menus, and activating the theme.', 'fw' ) ); ?>' );
+					var panel = buildPanel( btnEl );
+					window.fwScBuildPanel = panel;
 					if ( serviceMode ) {
 							var sfd = new FormData(); sfd.append( 'action', 'fw_sc_build_mapping' ); sfd.append( '_wpnonce', nonce ); sfd.append( 'mapping', JSON.stringify( mapping ) );
 							var stEl = document.getElementById( 'fw-sc-opt-theme' ); sfd.append( 'opt_theme', ( ! stEl || stEl.checked ) ? '1' : '0' );
@@ -3574,7 +3715,21 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						if ( window.__fwSCScreenshotB64 ) { fd.append( 'fw_sc_screenshot_b64', window.__fwSCScreenshotB64 ); window.__fwSCScreenshotB64 = ''; }
 						var titleEl = form.querySelector( '[name=fw_sc_file_title]' );
 						if ( titleEl && titleEl.value.trim() ) { fd.append( 'fw_sc_file_title', titleEl.value.trim() ); }
-						return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( res ) {
+						// Block-theme output: fetch block-bundle.json from the capture service HERE, in the browser —
+						// the service runs on this computer, which a hosted WordPress server cannot reach — and upload
+						// it with the request. If this fails, PHP falls back to fetching it itself (same-machine setups).
+						var preBundle = Promise.resolve();
+						( function () {
+							var t = document.querySelector( 'input[name=fw_sc_target]:checked' );
+							var v = document.querySelector( 'input[name=fw_sc_vocab]:checked' );
+							var src = window.__fwSCSourceUrl || '';
+							if ( ! t || t.value !== 'block-theme' || ! src || typeof svc !== 'function' ) { return; }
+							var q = '?url=' + encodeURIComponent( src ) + '&target=block-theme&vocab=' + encodeURIComponent( v ? v.value : 'core' );
+							preBundle = fetch( svc() + '/capture' + q ).then( function ( r ) { return r.ok ? r.blob() : null; } ).then( function ( b ) {
+								if ( b && b.size ) { fd.append( 'fw_sc_block_bundle', b, 'block-bundle.json' ); }
+							} ).catch( function () {} );
+						} )();
+						return preBundle.then( function () { return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ); } ).then( function ( r ) { return r.json(); } ).then( function ( res ) {
 							if ( ! ( res && res.success ) ) { throw new Error( ( res && res.data && res.data.message ) || '<?php echo esc_js( __( 'Could not map the rendered page.', 'fw' ) ); ?>' ); }
 							if ( res.data && res.data.redirect ) { window.location.href = res.data.redirect; return new Promise( function () {} ); }
 							return res.data;
@@ -3889,6 +4044,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					document.getElementById( 'fw-sc-file-build' ).addEventListener( 'click', function () {
 						var bb = this;
 						doBuild( mapping, bb ).catch( function ( e ) {
+							if ( window.fwScBuildPanel ) { window.fwScBuildPanel.failed( e.message ); }
 							bb.disabled = false; bb.textContent = '<?php echo esc_js( __( 'Build the site from this mapping', 'fw' ) ); ?>';
 							container.insertAdjacentHTML( 'afterbegin', '<div class="notice notice-error"><p>' + escH( e.message ) + '</p></div>' );
 						} );
@@ -4233,7 +4389,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			( function () {
 				var $u = document.getElementById( 'fw-sc-landing-url' ), $b = document.getElementById( 'fw-sc-landing-go' ), $s = document.getElementById( 'fw-sc-landing-status' );
 				if ( ! $b ) { return; }
-				function svcUrl() { try { return ( typeof svc === 'function' ) ? svc() : ''; } catch ( e ) { return ''; } }
+				// The capture-service address set on this screen (the AI section's Service URL field, remembered in
+				// localStorage). svc() is private to another script block, so read the field / saved value directly.
+				function svcUrl() {
+					try { if ( typeof svc === 'function' ) { return svc(); } } catch ( e ) {}
+					var el = document.getElementById( 'fw-sc-ai-svcurl' ), v = el && el.value ? el.value : '';
+					try { v = v || localStorage.getItem( 'fw_sc_capture_service' ) || ''; } catch ( e ) {}
+					return String( v ).replace( /\/+$/, '' );
+				}
 				$b.addEventListener( 'click', function () {
 					var url = ( $u.value || '' ).trim();
 					if ( ! /^https?:\/\//i.test( url ) ) { $s.innerHTML = '<span style="color:#b32d2e"><?php echo esc_js( __( 'Enter a full URL (https://…).', 'fw' ) ); ?></span>'; return; }
@@ -4244,7 +4407,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					fd.append( '_wpnonce', $b.getAttribute( 'data-nonce' ) );
 					fd.append( 'url', url );
 					fd.append( 'svc', svcUrl() );
-					fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } )
+					// Mirror from THIS browser (the capture service runs on this computer, which a hosted
+					// server cannot reach) and upload the files; if that fails the server tries itself.
+					var base = svcUrl() || 'http://localhost:8787';
+					fetch( base.replace( /\/+$/, '' ) + '/mirror?zip=1&url=' + encodeURIComponent( url ) )
+						.then( function ( r ) { return ( r.ok && /zip/.test( r.headers.get( 'content-type' ) || '' ) ) ? r.blob() : null; } )
+						.catch( function () { return null; } )
+						.then( function ( zip ) {
+							if ( zip && zip.size ) { fd.append( 'mirror_zip', zip, 'mirror.zip' ); }
+							return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } );
+						} )
 						.then( function ( r ) { return r.json(); } )
 						.then( function ( j ) {
 							$b.disabled = false;
@@ -4631,6 +4803,37 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			.fw-ext-site-converter .fw-sc-card{border:1px solid #dcdcde;border-radius:6px;background:#fff;margin:0 0 .8em;box-shadow:0 1px 1px rgba(0,0,0,.04)}
 			.fw-ext-site-converter .fw-sc-card[open]>summary{border-bottom:1px solid #f0f0f1}
 			.fw-ext-site-converter .fw-sc-card-body{padding:.6em 1.2em 1.1em}
+				/* BUILD PROGRESS panel -- rendered beside the button that started the build. */
+				.fw-ext-site-converter .fw-sc-buildprog{border:1px solid #c3c4c7;border-left:4px solid var(--fw-accent,#3858e9);border-radius:4px;background:#fff;padding:.9em 1.1em;margin:.8em 0;max-width:560px}
+				.fw-ext-site-converter .fw-sc-buildprog.is-failed{border-left-color:#d63638}
+				/* An INDETERMINATE bar: the server reports which step it is on, never how far through it is,
+				   so a filling bar would be a guess. A travelling one only claims that work is happening. */
+				.fw-ext-site-converter .fw-sc-bp-bar{height:3px;background:#e6e7e9;border-radius:3px;overflow:hidden;margin:0 0 .7em}
+				.fw-ext-site-converter .fw-sc-bp-bar span{display:block;height:100%;width:35%;border-radius:3px;background:var(--fw-accent,#3858e9);animation:fw-sc-bp-slide 1.5s ease-in-out infinite}
+				@keyframes fw-sc-bp-slide{0%{margin-left:-35%}100%{margin-left:100%}}
+				.fw-ext-site-converter .fw-sc-buildprog.is-failed .fw-sc-bp-bar span{animation:none;width:100%;margin-left:0;background:#d63638}
+				/* A failed run keeps its step list -- it says how far it got -- but nothing in it may still
+				   animate, or the panel goes on claiming work is happening after it has stopped. */
+				.fw-ext-site-converter .is-failed .fw-sc-bp-steps li.is-running .fw-sc-bp-mark{animation:none;border-color:#d63638;border-top-color:#d63638}
+				.fw-ext-site-converter .is-failed .fw-sc-bp-steps li.is-running{color:#d63638}
+				/* The head is a two-column flex for title + elapsed; a failure message is prose and was being
+				   flung to the right margin by space-between. */
+				.fw-ext-site-converter .is-failed .fw-sc-bp-head{display:block}
+				.fw-ext-site-converter .fw-sc-bp-head{margin:0 0 .5em;display:flex;justify-content:space-between;align-items:baseline;gap:1em}
+				.fw-ext-site-converter .fw-sc-bp-elapsed{color:#646970;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+				.fw-ext-site-converter .fw-sc-bp-steps{margin:0;padding:0;list-style:none;font-size:13px;line-height:1.7}
+				.fw-ext-site-converter .fw-sc-bp-steps li{display:flex;align-items:center;gap:.55em;color:#646970}
+				.fw-ext-site-converter .fw-sc-bp-steps li.is-running{color:#1d2327;font-weight:600}
+				.fw-ext-site-converter .fw-sc-bp-steps li.is-pending{opacity:.55}
+				.fw-ext-site-converter .fw-sc-bp-mark{flex:0 0 auto;width:12px;height:12px;border-radius:50%;border:2px solid #c3c4c7;box-sizing:border-box}
+				.fw-ext-site-converter .is-done .fw-sc-bp-mark{border-color:#00a32a;background:#00a32a}
+				.fw-ext-site-converter .is-running .fw-sc-bp-mark{border-color:var(--fw-accent,#3858e9);border-top-color:transparent;animation:fw-sc-bp-spin .7s linear infinite}
+				@keyframes fw-sc-bp-spin{to{transform:rotate(360deg)}}
+				/* Motion is the whole signal here, so when it is unwelcome keep the state legible without it. */
+				@media (prefers-reduced-motion:reduce){
+					.fw-ext-site-converter .fw-sc-bp-bar span{animation:none;width:100%;margin-left:0}
+					.fw-ext-site-converter .is-running .fw-sc-bp-mark{animation:none;border-top-color:var(--fw-accent,#3858e9);background:var(--fw-accent,#3858e9)}
+				}
 				.fw-ext-site-converter .fw-sc-bar{height:8px;background:#dfe3e8;border-radius:6px;overflow:hidden;margin:.2em 0}
 				.fw-ext-site-converter .fw-sc-bar-fill{height:100%;width:5%;background:var(--fw-accent, #3858e9);border-radius:6px;transition:width .25s linear}
 			.fw-ext-site-converter .fw-sc-card-body>p:first-child{margin-top:.4em}
@@ -4651,13 +4854,19 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			.fw-ext-site-converter{--sc-panel:#fff;--sc-inset:#f6f7f7;--sc-border:#dcdcde;--sc-ink:#1d2327;--sc-mut:#646970;--sc-setup-bg:#f3f9ff;--sc-setup-bd:#c3dcf0;--sc-note-bg:#fef7e6;--sc-note-bd:#f0d98c}
 			html[data-upa-mode="dark"] body.upa .fw-ext-site-converter{--sc-panel:#1d1f24;--sc-inset:#16171b;--sc-border:#35373f;--sc-ink:#e5e7ec;--sc-mut:#a1a5ae;--sc-setup-bg:#15202e;--sc-setup-bd:#2a4056;--sc-note-bg:#251d0b;--sc-note-bd:#544619}
 			@media (prefers-color-scheme:dark){html[data-upa-mode="system"] body.upa .fw-ext-site-converter{--sc-panel:#1d1f24;--sc-inset:#16171b;--sc-border:#35373f;--sc-ink:#e5e7ec;--sc-mut:#a1a5ae;--sc-setup-bg:#15202e;--sc-setup-bd:#2a4056;--sc-note-bg:#251d0b;--sc-note-bd:#544619}}
-			.fw-ext-site-converter .fw-sc-card,.fw-ext-site-converter .fw-sc-why,.fw-ext-site-converter .fw-sc-progress{background:var(--sc-panel)!important;border-color:var(--sc-border)!important;color:var(--sc-ink)!important}
+			.fw-ext-site-converter .fw-sc-card,.fw-ext-site-converter .fw-sc-why,.fw-ext-site-converter .fw-sc-progress,.fw-ext-site-converter .fw-sc-buildprog{background:var(--sc-panel)!important;border-color:var(--sc-border)!important;color:var(--sc-ink)!important}
 			.fw-ext-site-converter .fw-sc-optgroup,.fw-ext-site-converter .fw-sc-editor .CodeMirror{border-color:var(--sc-border)!important}
 			.fw-ext-site-converter .fw-sc-tabs{border-bottom-color:var(--sc-border)!important}
 			.fw-ext-site-converter .fw-sc-card[open]>summary{border-bottom-color:var(--sc-border)!important}
 			.fw-ext-site-converter .fw-sc-optgroup legend,.fw-ext-site-converter .fw-sc-opts,.fw-ext-site-converter .fw-sc-name,.fw-ext-site-converter .fw-sc-copy{color:var(--sc-mut)!important}
 			.fw-ext-site-converter pre{background:var(--sc-inset)!important;color:var(--sc-ink)!important}
 			.fw-ext-site-converter .fw-sc-thumb,.fw-ext-site-converter .fw-sc-bar{background:var(--sc-inset)!important}
+			.fw-ext-site-converter .fw-sc-bp-bar{background:var(--sc-inset)!important}
+			/* The rule above sets every border colour; the accent edge is the panel's signal, so restore it. */
+			.fw-ext-site-converter .fw-sc-buildprog{border-left-color:var(--fw-accent,#3858e9)!important}
+			.fw-ext-site-converter .fw-sc-buildprog.is-failed{border-left-color:#d63638!important}
+			.fw-ext-site-converter .fw-sc-bp-steps li{color:var(--sc-mut)!important}
+			.fw-ext-site-converter .fw-sc-bp-steps li.is-running{color:var(--sc-ink)!important}
 			.fw-ext-site-converter .fw-sc-setup{background:var(--sc-setup-bg)!important;border-color:var(--sc-setup-bd)!important}
 			.fw-ext-site-converter [style*="#fef7e6"],.fw-ext-site-converter [style*="#fcf9e8"],.fw-ext-site-converter [style*="#fcf3cd"],.fw-ext-site-converter [style*="#fcf0cd"],.fw-ext-site-converter [style*="#fbf9f0"]{background:var(--sc-note-bg)!important;border-color:var(--sc-note-bd)!important;color:var(--sc-ink)!important}
 			</style>
