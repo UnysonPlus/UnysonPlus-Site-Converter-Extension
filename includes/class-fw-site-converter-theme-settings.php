@@ -95,7 +95,91 @@ class FW_Site_Converter_Theme_Settings {
 		return array_key_exists( $id, $v ) ? $v[ $id ] : null;
 	}
 
-	public static function import( $data, $replace_chrome = false ) {
+	/** Option holding the fingerprint of what the LAST conversion wrote, per settings key. */
+	const FINGERPRINT_OPTION = 'fw_sc_settings_fingerprint';
+
+	/** Stable hash of a settings value, for comparing "what we wrote" against "what is stored now". */
+	private static function value_fingerprint( $value ) {
+		return md5( (string) wp_json_encode( $value ) );
+	}
+
+	/**
+	 * Settings keys the USER has changed since the last conversion wrote them.
+	 *
+	 * A conversion may overwrite a value it wrote ITSELF; it must not overwrite one the user has since
+	 * edited. Converting a second page of the same site re-ran the full design import, which rewrote every
+	 * chrome key from the fresh capture — so header and footer text the user had corrected after the first
+	 * conversion silently reverted. The page importers already work this way (`_upw_import_hash`); this is
+	 * the same guard for theme settings.
+	 *
+	 * Comparing the stored value against the fingerprint of what we last wrote distinguishes the two
+	 * cases exactly: unchanged since our write → ours to replace; different → the user's, leave it.
+	 * With no fingerprint recorded (a first conversion, or an older install) nothing is protected, which
+	 * is the correct default — there is no user edit to lose yet.
+	 *
+	 * @return array [ key => true ] for keys that differ from what the last conversion wrote
+	 */
+	private static function user_edited_keys() {
+		$prints = get_option( self::FINGERPRINT_OPTION, array() );
+		if ( ! is_array( $prints ) || ! $prints ) { return array(); }
+
+		$edited = array();
+		foreach ( $prints as $key => $print ) {
+			$stored = fw_get_db_settings_option( $key, null );
+			if ( null === $stored ) { continue; }
+			if ( self::value_fingerprint( $stored ) !== $print ) { $edited[ $key ] = true; }
+		}
+		return $edited;
+	}
+
+	/**
+	 * Re-fingerprint keys AFTER the whole import has run.
+	 *
+	 * Later phases (theme generation, presets, the page pass) can legitimately rewrite a settings value
+	 * that this class already fingerprinted. Without this the next conversion would read that as a user
+	 * edit and protect it forever — a key the converter itself changed would never update again. Called
+	 * once at the end of a full import, over the keys it imported.
+	 *
+	 * @param string[] $keys settings keys to re-read and re-stamp
+	 */
+	public static function refresh_fingerprints( array $keys ) {
+		// BASELINE THE WHOLE STATE, not just the keys this phase wrote.
+		//
+		// Re-stamping only the imported keys left two holes, and both of them lock the converter out of a
+		// key permanently: a key CLEARED by the replace-chrome pass is never re-stamped, and a key a LATER
+		// phase rewrites (theme generation, presets, the page pass) keeps the stamp taken before that
+		// rewrite. Either way the next conversion reads the converter's own work as a user edit, skips the
+		// key — and because a skipped key is never re-stamped either, it stays skipped forever. Measured:
+		// a run that imported cleanly (0 skipped) was followed by one reporting 26 keys "user-edited",
+		// after which the footer padding, columns and border could not be written again at all.
+		//
+		// At the end of a FULL import the settings state IS the converter's work, by definition — so every
+		// key it owns is baselined here. A user edit can then only happen after this point, which is
+		// exactly what the guard is meant to notice.
+		$all = array_unique( array_merge( $keys, self::CHROME_KEYS, self::OWNED_KEYS ) );
+		self::record_fingerprints( $all );
+	}
+
+	/** Record what this conversion wrote, so the NEXT one can tell our values from the user's. */
+	private static function record_fingerprints( array $written ) {
+		$prints = get_option( self::FINGERPRINT_OPTION, array() );
+		if ( ! is_array( $prints ) ) { $prints = array(); }
+		foreach ( $written as $key ) {
+			$v = fw_get_db_settings_option( $key, null );
+			// A key with NO stored value has nothing to protect: keeping a stamp for it would make the next
+			// read (null, skipped by user_edited_keys) and any later write disagree for no reason.
+			if ( null === $v ) { unset( $prints[ $key ] ); continue; }
+			$prints[ $key ] = self::value_fingerprint( $v );
+		}
+		update_option( self::FINGERPRINT_OPTION, $prints, false );
+	}
+
+	/**
+	 * @param array $data           the theme-settings payload
+	 * @param bool  $replace_chrome clear chrome the payload does not carry (a full, non-scoped import)
+	 * @param bool  $force          overwrite even values the user edited since the last conversion
+	 */
+	public static function import( $data, $replace_chrome = false, $force = false ) {
 		$out = array( 'imported' => array(), 'skipped' => array(), 'cleared' => array(), 'cross_theme' => false, 'error' => '' );
 
 		if ( ! is_array( $data ) ) {
@@ -108,6 +192,23 @@ class FW_Site_Converter_Theme_Settings {
 		}
 
 		$incoming = ( isset( $data['values'] ) && is_array( $data['values'] ) ) ? $data['values'] : $data;
+
+		/**
+		 * The Theme Settings values a conversion is about to write — the last point at which they can be
+		 * corrected without editing the converter.
+		 *
+		 * This is where a SITE-SPECIFIC correction belongs: the converter measured a value it could not
+		 * express, or expressed it as the wrong option, and you want THIS site right without a core patch
+		 * that would be wrong for every other source. Add, change or unset keys; the fingerprinting and the
+		 * user-edit guard below both apply to the result, so a value set here is still never written over one
+		 * the user has since edited by hand.
+		 *
+		 * @since 1.10.12
+		 * @param array $incoming       option id => value.
+		 * @param bool  $replace_chrome whether this conversion is replacing the header/footer chrome.
+		 * @param bool  $force          whether it is overwriting values the user edited.
+		 */
+		$incoming = (array) apply_filters( 'fw_site_converter_theme_settings', $incoming, $replace_chrome, $force );
 
 		// Drop metadata keys (when given a raw map).
 		foreach ( array_keys( $incoming ) as $k ) {
@@ -151,8 +252,11 @@ class FW_Site_Converter_Theme_Settings {
 		// REPLACE (not merge) the chrome this conversion owns: any chrome container the payload does
 		// NOT carry is cleared first, so nothing from a previous conversion survives into this one.
 		// Scoped/partial imports skip this — they are deliberately additive.
+		$user_edited = $force ? array() : self::user_edited_keys();
+
 		if ( $replace_chrome ) {
 			foreach ( self::CHROME_KEYS as $ck ) {
+				if ( isset( $user_edited[ $ck ] ) ) { $out['skipped'][] = $ck; continue; } // the user's, not ours
 				if ( ! array_key_exists( $ck, $incoming ) ) {
 					$existing = fw_get_db_settings_option( $ck, null );
 					if ( ! empty( $existing ) ) {
@@ -165,6 +269,7 @@ class FW_Site_Converter_Theme_Settings {
 			// site with no signal for it never inherits the previous conversion's value ("the last header wins").
 			foreach ( self::OWNED_KEYS as $ok ) {
 				if ( array_key_exists( $ok, $incoming ) || in_array( $ok, self::CHROME_KEYS, true ) || in_array( $ok, $exclude, true ) ) { continue; }
+				if ( isset( $user_edited[ $ok ] ) ) { $out['skipped'][] = $ok; continue; } // the user's, not ours
 				$existing = fw_get_db_settings_option( $ok, null );
 				if ( null === $existing ) { continue; }
 				$def = self::declared_default( $ok );
@@ -175,9 +280,16 @@ class FW_Site_Converter_Theme_Settings {
 			}
 		}
 		foreach ( $incoming as $k => $v ) {
+			if ( isset( $user_edited[ $k ] ) ) { $out['skipped'][] = $k; continue; } // edited since we wrote it
 			fw_set_db_settings_option( $k, $v );
 			$out['imported'][] = $k;
 		}
+
+		// Fingerprint everything this conversion actually wrote, so a LATER conversion can tell our values
+		// from the user's. Keys we skipped keep their previous fingerprint, which is what still marks them
+		// as edited next time.
+		if ( $out['imported'] ) { self::record_fingerprints( $out['imported'] ); }
+		$out['skipped'] = array_values( array_unique( $out['skipped'] ) );
 
 		// IMPORTANT: do NOT fire `fw_settings_form_saved` here. Its hooks
 		// (identity-sync, google-fonts regen) re-write / re-process settings as a

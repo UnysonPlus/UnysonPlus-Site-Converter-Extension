@@ -538,6 +538,21 @@ ga_eq( "steps[0] title", 'Plan', $steps['atts']['steps'][0]['title'] ?? null );
 /* Negative: a plain feature grid (no step class / numbers) must NOT become steps. */
 $feat_steps = $sc_nodes_of( '<section id="fs"><div class="grid"><div><h3>Fast</h3><p>We ship every order within a day of purchase for you.</p></div><div><h3>Kind</h3><p>Our friendly team answers every question you might have.</p></div></div></section>' );
 ga( "feature grid is NOT mis-claimed as steps", null === $first_sc( $feat_steps, 'steps' ), wp_json_encode( $codes_of( $feat_steps ) ) );
+/* Responsive column utilities are resolved at the CAPTURED VIEWPORT, not at their mobile base step: a
+   `grid-cols-1 md:grid-cols-4` flow is a FOUR-up horizontal row at 1440px, so it must NOT come back vertical.
+   (Reading the base step turned a 4-up timeline into a 1-up list on a real-site conversion. JS twin:
+   capture-extract.mjs → detectStepsDesign.) */
+$resp_steps_html = '<section id="rs"><div class="grid grid-cols-1 md:grid-cols-4 gap-8 relative" data-sc-cs="display:grid;grid-template-columns:280px 280px 280px 280px">'
+	. '<div class="step"><span class="step-number">01</span><h3>Intake</h3><p>We take the brief.</p></div>'
+	. '<div class="step"><span class="step-number">02</span><h3>Draft</h3><p>We draft the plan.</p></div>'
+	. '<div class="step"><span class="step-number">03</span><h3>Refine</h3><p>We refine each part.</p></div>'
+	. '<div class="step"><span class="step-number">04</span><h3>Deliver</h3><p>We hand it over.</p></div></div></section>';
+$resp_steps = $first_sc( $sc_nodes_of( $resp_steps_html ), 'steps' );
+ga_eq( "steps: `grid-cols-1 md:grid-cols-4` resolves 4-up → design stays horizontal (not read at the mobile base step)", 'horizontal', $resp_steps['atts']['design'] ?? null );
+/* Negative: a genuinely single-column grid (no larger-breakpoint override) is still vertical. */
+$stack_steps_html = str_replace( array( ' md:grid-cols-4', 'grid-template-columns:280px 280px 280px 280px' ), array( '', 'grid-template-columns:1136px' ), $resp_steps_html );
+$stack_steps = $first_sc( $sc_nodes_of( $stack_steps_html ), 'steps' );
+ga_eq( "steps: a bare `grid-cols-1` (one resolved track) is still vertical", 'vertical', $stack_steps['atts']['design'] ?? null );
 
 /* --- Timeline → native `timeline` --- */
 $tl_html = '<section id="tl"><div class="timeline">'
@@ -3123,7 +3138,14 @@ ga( "…every bar inside the panel goes Full Width (the panel padding is the gut
 ga( "…the theme's 1rem bar padding replaced by the measured rows (main 0, bottom bar margin 34 + padding 22)", (bool) preg_match( '/footer-section--main-footer\{padding-top:0(?:px)?;padding-bottom:0(?:px)?;\}/', $s_mc ) && (bool) preg_match( '/footer-section--copyright\{margin-top:34px;padding-top:22px;padding-bottom:0(?:px)?;\}/', $s_mc ) );
 ga( "the main row's align-items:end → Column Alignment: Bottom", 'end' === ( $s_v['main_footer_custom_styling']['yes']['main_footer_valign'] ?? '' ) );
 $s_mfc = $s_v['main_footer_columns'] ?? array(); $s_bar = $s_mfc[ (string) ( $s_mfc['count'] ?? '' ) ] ?? array();
-ga( "the 747.5 / 552.5 grid tracks → a MEASURED 57 / 43 split (not the equal default)", 57 === (int) ( $s_bar['main_footer_split'][0]['w'] ?? 0 ) && 43 === (int) ( $s_bar['main_footer_split'][1]['w'] ?? 0 ) );
+// The measured 57.5 / 42.5 is SNAPPED to the split-slider's own twelfths (7/12 + 5/12). The control has
+// denominator 12 and quantises on save, so storing the raw measurement made the footer visibly reflow the
+// first time the user saved the tab. The intent is unchanged — a measured split, not the equal default.
+ga( "the 747.5 / 552.5 grid tracks → a MEASURED split on the slider's 12ths (7/12 + 5/12), not the equal default",
+	abs( 58.3333 - (float) ( $s_bar['main_footer_split'][0]['w'] ?? 0 ) ) < 0.01
+	&& abs( 41.6667 - (float) ( $s_bar['main_footer_split'][1]['w'] ?? 0 ) ) < 0.01
+	&& 100 === (int) round( (float) ( $s_bar['main_footer_split'][0]['w'] ?? 0 ) + (float) ( $s_bar['main_footer_split'][1]['w'] ?? 0 ) ),
+	wp_json_encode( $s_bar['main_footer_split'] ?? null ) );
 $s_lead = (string) ( $s_bar['main_footer_col_1'][0]['element_type']['text']['text_content'] ?? '' );
 ga( "the lead lockup carries the EYEBROW above the heading and the (22-word) paragraph under it", false !== strpos( $s_lead, '<span class="footer-lead-eyebrow">The Rooftop Footer</span><h3 class="footer-lead-title">' ) && false !== strpos( $s_lead, '<p class="footer-lead-subtitle">The final view' ) );
 ga( "…the eyebrow's mono type / tracking / translucent colour as a scoped rule; the title's font-family joined with a ';'", (bool) preg_match( '/\.footer-lead-eyebrow\{display:block;font-family:"IBM Plex Mono", monospace;[^}]*letter-spacing:3\.5px[^}]*color:rgba\(255, 255, 255, 0\.4\)/', $s_mc ) && (bool) preg_match( '/\.footer-lead-title\{font-family:"Cormorant Garamond", serif;margin-top:20px/', $s_mc ) );
@@ -3132,7 +3154,15 @@ $s_cc = $s_v['copyright_settings']['yes']['copyright_columns'] ?? array();
 ga( "the LABEL bottom bar (3 short labels, no ©) → the Copyright bar's 3 columns, no fabricated © line", '3' === (string) ( $s_cc['count'] ?? '' ) && false !== strpos( json_encode( $s_cc ), 'Crafting the nocturnal web' ) && false === strpos( json_encode( $s_cc ), 'rights reserved' ) );
 ga( "…a flex space-between bar → Auto Width + Between", 'yes' === ( $s_cc['3']['copyright_auto'] ?? '' ) && 'between' === ( $s_cc['3']['copyright_justify'] ?? '' ) );
 $s_ccs = $s_v['copyright_settings']['yes']['copyright_custom_styling']['yes'] ?? array();
-ga( "…its hairline top border keeps its alpha; its 12px translucent tracked type → copyright_typography", 'rgba(255, 255, 255, 0.08)' === ( $s_ccs['copyright_border']['color']['custom'] ?? '' ) && '12' === ( $s_ccs['copyright_typography']['size']['value'] ?? '' ) && 'rgba(255, 255, 255, 0.52)' === ( $s_ccs['copyright_typography']['color'] ?? '' ) );
+// The BORDER colour keeps its alpha (a compact colour field holds rgba fine). The TYPOGRAPHY colour must
+// not: that control parses a hex and nothing else, and handed an rgba it returns #000000 — the copyright
+// text turns BLACK on the first save of the tab. Flattening the alpha keeps the hue, which is the most the
+// control can hold.
+ga( "…its hairline top border keeps its alpha, while its translucent 12px type flattens to a HEX the typography control can actually hold",
+	'rgba(255, 255, 255, 0.08)' === ( $s_ccs['copyright_border']['color']['custom'] ?? '' )
+	&& '12' === ( $s_ccs['copyright_typography']['size']['value'] ?? '' )
+	&& '#ffffff' === strtolower( (string) ( $s_ccs['copyright_typography']['color'] ?? '' ) ),
+	wp_json_encode( array( $s_ccs['copyright_border']['color']['custom'] ?? null, $s_ccs['copyright_typography']['color'] ?? null ) ) );
 ga( "…case / tracking as scoped CSS (no typography field for them)", false !== strpos( $s_mc, '.footer .footer-section--copyright{text-transform:uppercase;letter-spacing:2.64px;line-height:18px;}' ) );
 ga( "the multi-layer footer gradient (radial glow over a linear wash) rides verbatim on .footer, not the single native gradient", false !== strpos( $s_mc, '.footer{background-image:radial-gradient(' ) && ! isset( $s_v['footer_background']['gradient'] ) );
 
@@ -5814,6 +5844,857 @@ ga( "[BD] the PALETTE is still never rewritten to reference itself", (bool) ( fu
 // …while values that POINT at a preset still bind (the [AV] rule is intact)
 $bd_j = wp_json_encode( $bd_v );
 ga( "[BD] NEGATIVE: values that POINT at a preset still bind — the exemption is for definitions only", (bool) preg_match( '/"(?:title_color|text_color|bg_color)":\{"predefined":"(?:text|bg)-[a-z0-9-]+"/', $bd_j ), ( preg_match( '/"[a-z_]*color":\{"predefined":"(?:text|bg)-[a-z0-9-]+"/', $bd_j, $bdm ) ? $bdm[0] : '(none bound)' ) );
+
+
+/* ============================================================================================
+ * [BE] A CARD THAT PAINTS NOTHING KEEPS ITS SECTION BEHIND IT.
+ * A pricing/plan card is only given `card_bg` when the source card carries a fill. A source whose cards
+ * paint NOTHING — they sit straight on the section, which is where their ink was chosen to read — left it
+ * unset, so the shortcode's own default WHITE plan card rendered instead and the captured near-white
+ * titles and prices became invisible on it. Measured on a real conversion: `.fw-pt__plan` painted
+ * rgb(255,255,255) under rgb(245,245,245) text. The absence is now carried explicitly, so the section
+ * shows through exactly as the source does, and the readability guard correctly does nothing — with no
+ * card fill the captured ink is already the ink the source chose.
+ * ========================================================================================== */
+$be_cs = function ( $e = '' ) { return 'color:rgb(245,245,245);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$be_card = function ( $name, $copy, $price, $fill ) use ( $be_cs ) {
+	return '<div class="p-8" data-sc-cs="' . $be_cs( ';padding:32px;text-align:center;height:220px' . $fill ) . '">'
+		. '<h4 data-sc-cs="' . $be_cs( ';font-size:20px;letter-spacing:3px;text-transform:uppercase;text-align:center;height:28px' ) . '">' . $name . '</h4>'
+		. '<p data-sc-cs="color:rgb(115,115,115);font-family:Inter, sans-serif;font-size:14px;font-weight:400;line-height:21px;text-align:center;display:block;height:42px">' . $copy . '</p>'
+		. '<p data-sc-cs="' . $be_cs( ';font-size:40px;font-weight:700;text-align:center;height:48px' ) . '">$' . $price . '</p></div>';
+};
+$be_page = function ( $fill ) use ( $be_cs, $be_card ) {
+	return '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $be_cs( ';background-color:rgb(10,10,10)' ) . '">'
+		. '<header data-sc-cs="' . $be_cs( ';height:80px' ) . '"><nav data-sc-cs="' . $be_cs( ';display:flex;gap:32px;height:80px' ) . '"><a href="#hero" data-sc-cs="' . $be_cs( ';font-size:22px' ) . '">Obsidian</a><a href="#svc" data-sc-cs="' . $be_cs() . '">Services</a><a href="#faq" data-sc-cs="' . $be_cs() . '">FAQ</a></nav></header>'
+		. '<section id="svc" data-sc-cs="' . $be_cs( ';padding:96px 0px;background-color:rgb(10,10,10);height:520px' ) . '"><div class="max-w-7xl mx-auto" data-sc-cs="' . $be_cs( ';max-width:1280px;margin:0px auto;height:328px' ) . '">'
+		. '<h2 data-sc-cs="' . $be_cs( ';font-size:44px;text-align:center;height:52px' ) . '">Hair</h2>'
+		. '<div class="grid grid-cols-3 gap-8" data-sc-cs="' . $be_cs( ';display:grid;grid-template-columns:405px 405px 405px;gap:32px;height:220px' ) . '">'
+		. $be_card( 'Precision Cut', 'Consultation, tailored cut, wash and styling.', '45', $fill )
+		. $be_card( 'Skin Fade', 'Zero fade with foil shaver, wash and styling.', '50', $fill )
+		. $be_card( 'Buzz Cut', 'One length all over, line up and hot towel.', '25', $fill )
+		. '</div></div></section>'
+		. '<footer data-sc-cs="' . $be_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $be_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+};
+$be_find = function ( $html ) {
+	$pg = FW_Site_Converter_Sources::build_from_html( $html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+	$hit = null;
+	$walk = function ( $n ) use ( &$walk, &$hit ) {
+		if ( ! is_array( $n ) || null !== $hit ) { return; }
+		if ( 'pricing_table' === ( $n['shortcode'] ?? '' ) ) { $hit = $n; return; }
+		foreach ( $n as $v ) { if ( is_array( $v ) ) { if ( isset( $v['shortcode'] ) ) { $walk( $v ); } else { foreach ( $v as $c ) { if ( is_array( $c ) ) { $walk( $c ); } } } } }
+	};
+	foreach ( (array) $pg as $sx ) { $walk( $sx ); }
+	return $hit;
+};
+// (a) cards that paint NOTHING → the fill is carried as transparent, never left to the shortcode default
+$be_a = $be_find( $be_page( '' ) );
+if ( is_array( $be_a ) ) {
+	$be_bg = (string) ( $be_a['atts']['card_bg']['custom'] ?? '' );
+	ga( "[BE] a plan card that paints nothing carries a TRANSPARENT fill, so the section shows through instead of the shortcode's white default", '' !== $be_bg && (bool) preg_match( '/rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)|transparent/i', $be_bg ), wp_json_encode( $be_a['atts']['card_bg'] ?? null ) );
+	ga( "[BE] …and the captured ink is left alone — with no card fill it is already the ink the source chose against that section", false === stripos( (string) ( $be_a['atts']['title_color']['custom'] ?? '' ), 'rgb(20, 20, 20)' ), wp_json_encode( $be_a['atts']['title_color'] ?? null ) );
+} else {
+	ga( "[BE] a plan card that paints nothing carries a TRANSPARENT fill", false, 'no pricing_table node built' );
+	ga( "[BE] …and the captured ink is left alone", false, 'no pricing_table node built' );
+}
+// (b) NEGATIVE: a card that DOES paint keeps its own measured fill
+$be_b = $be_find( $be_page( ';background-color:rgb(26,26,26)' ) );
+$be_bg2 = is_array( $be_b ) ? (string) ( $be_b['atts']['card_bg']['custom'] ?? '' ) : '';
+ga( "[BE] NEGATIVE: a card that DOES paint keeps its own measured fill, not a blanket transparent", false !== strpos( $be_bg2, '26' ) && ! preg_match( '/,\s*0\s*\)/', $be_bg2 ), wp_json_encode( $be_bg2 ) );
+
+
+// ---------------------------------------------------------------------------
+// [TR] TRANSPARENCY GUARD — a colour is fully transparent only when its ALPHA is
+// zero. `rgb(r, g, 0)` (zero BLUE — every pure orange/red, and black) is OPAQUE.
+// Regression: the guard `rgba?\([^)]*[,\/]\s*0\s*\)` matched a zero blue channel,
+// so a two-tone heading's accent run (`<span class="text-[#FF3D00]">`, computed
+// rgb(255, 61, 0)) lost its colour and inherited the heading ink.
+// ---------------------------------------------------------------------------
+$tr_doc = '<!DOCTYPE html><html data-sc-content-width="1440"><head><title>TR</title></head><body>'
+	. '<section class="py-24" data-sc-cs="background-color:rgb(5,7,10)"><div class="container mx-auto px-6">'
+	. '<h2 class="text-6xl font-black uppercase" data-sc-cs="color:rgb(255,255,255);font-size:60px;font-weight:900;text-transform:uppercase">'
+	. 'Lorem ipsum dolor <span class="text-[#FF3D00]" data-sc-cs="color:rgb(255, 61, 0);font-size:60px;font-weight:900">Sitamet.</span></h2>'
+	. '<p class="mt-6" data-sc-cs="color:rgb(138,153,173);font-size:14px">Consectetur adipiscing elit.</p>'
+	. '</div></section></body></html>';
+$tr_b  = FW_Site_Converter_Sources::build_from_html( $tr_doc, 'Transparency', array( 'dynamic_chrome' => false ) );
+$tr_pg = $tr_b['files']['pages.json'];
+$tr_tree = $tr_pg['pages'][0]['builder'] ?? $tr_pg['pages'][0]['tree'] ?? $tr_pg['pages'][0]['content'];
+$tr_title = '';
+$tr_walk = function ( $items ) use ( &$tr_walk, &$tr_title ) {
+	foreach ( (array) $items as $n ) {
+		if ( ! is_array( $n ) ) { continue; }
+		if ( ( $n['shortcode'] ?? '' ) === 'special_heading' && '' === $tr_title ) { $tr_title = (string) ( $n['atts']['title'] ?? '' ); }
+		if ( ! empty( $n['_items'] ) ) { $tr_walk( $n['_items'] ); }
+	}
+};
+$tr_walk( $tr_tree );
+ga( "[TR] an accent run whose measured ink has a ZERO BLUE channel (rgb(255,61,0)) keeps its colour — it is opaque, not transparent",
+	(bool) preg_match( '/<span[^>]*style="[^"]*color:\s*#?ff3d00/i', $tr_title ), $tr_title );
+ga( "[TR] NEGATIVE: a genuinely transparent run (alpha 0) is still treated as transparent",
+	1 === preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', 'rgba(255, 61, 0, 0)' )
+	&& 0 === preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', 'rgb(0, 0, 0)' ), 'guard' );
+
+
+/* ============================================================================================
+ * [BF] A SECTION HEADING THAT PAINTS ITS OWN UNDERLINE KEEPS IT.
+ * `border-b border-border pb-4` under a section title is an editorial form a price list / menu leans on
+ * heavily, and special_heading has no native option for it — every marker and container it offers decorates
+ * the OVERLINE, not the title. So the rule was dropped outright, together with the padding that held the
+ * title off it. Measured on a real conversion: source headings computed `1px solid rgb(38,38,38)`, the build
+ * `0px none`. Carried now as scoped CSS on the heading — its own per-instance decoration, not a preset skin.
+ * ========================================================================================== */
+$bf_cs = function ( $e = '' ) { return 'color:rgb(245,245,245);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$bf_page = function ( $rule ) use ( $bf_cs ) {
+	return '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $bf_cs( ';background-color:rgb(10,10,10)' ) . '">'
+		. '<header data-sc-cs="' . $bf_cs( ';height:80px' ) . '"><nav data-sc-cs="' . $bf_cs( ';display:flex;gap:32px;height:80px' ) . '"><a href="#top" data-sc-cs="' . $bf_cs( ';font-size:22px' ) . '">Obsidian</a><a href="#svc" data-sc-cs="' . $bf_cs() . '">Services</a></nav></header>'
+		. '<section id="svc" data-sc-cs="' . $bf_cs( ';padding:96px 0px;height:420px' ) . '"><div class="max-w-4xl mx-auto" data-sc-cs="' . $bf_cs( ';max-width:896px;margin:0px auto;height:228px' ) . '">'
+		. '<h2 data-sc-cs="' . $bf_cs( ';font-size:24px;letter-spacing:6px;text-transform:uppercase;padding:0px 0px 16px;margin:0px 0px 32px;height:49px' . $rule ) . '">Hair</h2>'
+		. '<p data-sc-cs="' . $bf_cs( ';font-size:14px;height:20px' ) . '">Consultation, tailored cut, wash, and styling.</p>'
+		. '</div></section>'
+		. '<footer data-sc-cs="' . $bf_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $bf_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+};
+$bf_css = function ( $html ) {
+	$pg = FW_Site_Converter_Sources::build_from_html( $html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+	$hit = '';
+	$walk = function ( $n ) use ( &$walk, &$hit ) {
+		if ( ! is_array( $n ) || '' !== $hit ) { return; }
+		if ( 'special_heading' === ( $n['shortcode'] ?? '' ) ) { $hit = (string) ( $n['atts']['custom_css'] ?? '' ); return; }
+		foreach ( $n as $v ) { if ( is_array( $v ) ) { if ( isset( $v['shortcode'] ) || isset( $v['type'] ) ) { $walk( $v ); } else { foreach ( $v as $c ) { if ( is_array( $c ) ) { $walk( $c ); } } } } }
+	};
+	foreach ( (array) $pg as $sx ) { $walk( $sx ); }
+	return $hit;
+};
+$bf_a = $bf_css( $bf_page( ';border-bottom-width:1px;border-bottom-style:solid;border-bottom-color:rgb(38,38,38)' ) );
+ga( '[BF] a heading that paints its own underline carries the rule as scoped CSS', (bool) preg_match( '/border-bottom:\s*1px\s+solid\s+rgb\(\s*38\s*,\s*38\s*,\s*38\s*\)/i', $bf_a ), $bf_a );
+ga( '[BF] ...and the padding that holds the title off that rule rides with it', (bool) preg_match( '/padding-bottom:\s*16px/i', $bf_a ), $bf_a );
+$bf_b = $bf_css( $bf_page( '' ) );
+ga( '[BF] NEGATIVE: a heading with no underline gains none', false === stripos( $bf_b, 'border-bottom:' ), $bf_b );
+$bf_c = $bf_css( $bf_page( ';border-bottom-width:1px;border-bottom-style:solid;border-bottom-color:rgba(0,0,0,0)' ) );
+ga( '[BF] NEGATIVE: a transparent rule paints nothing, so nothing is carried', false === stripos( $bf_c, 'border-bottom:' ), $bf_c );
+
+/* ============================================================================================
+ * [BH] A FOOTER BAND CARRIES ITS OWN INSET, AND SEPARATES ITS LEGAL LINKS THE WAY THE SOURCE DOES.
+ * (a) A bottom bar that rules itself off from the columns above almost always pairs the rule with breathing
+ *     room (`border-t pt-8`). Only the border was read, so the bar fell back to the theme's symmetric
+ *     default and the rule sat tight against the columns above it.
+ * (b) A middot was emitted between legal links unconditionally, so a source that merely SPACES them apart
+ *     (`flex gap-6`, the common Tailwind form) gained a glyph it never had.
+ * ========================================================================================== */
+$bh_cs = function ( $e = '' ) { return 'color:rgb(245,245,245);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . $e; };
+$bh_page = function ( $legal_inner ) use ( $bh_cs ) {
+	return '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $bh_cs( ';background-color:rgb(10,10,10)' ) . '">'
+		. '<header data-sc-cs="' . $bh_cs( ';height:80px' ) . '"><nav data-sc-cs="' . $bh_cs( ';display:flex;gap:32px;height:80px' ) . '"><a href="#top" data-sc-cs="' . $bh_cs( ';font-size:22px' ) . '">Obsidian</a><a href="#svc" data-sc-cs="' . $bh_cs() . '">Services</a></nav></header>'
+		. '<section id="svc" data-sc-cs="' . $bh_cs( ';padding:96px 0px;height:200px' ) . '"><div data-sc-cs="' . $bh_cs( ';max-width:1280px;margin:0px auto;height:32px' ) . '"><h2 data-sc-cs="' . $bh_cs( ';font-size:24px;height:32px' ) . '">Hair</h2></div></section>'
+		. '<footer data-sc-cs="' . $bh_cs( ';padding:80px 0px 40px;height:300px' ) . '"><div data-sc-cs="' . $bh_cs( ';max-width:1280px;margin:0px auto;height:180px' ) . '">'
+		. '<div data-sc-cs="' . $bh_cs( ';display:grid;grid-template-columns:640px 320px 320px;gap:48px;height:100px' ) . '">'
+		. '<div data-sc-cs="' . $bh_cs( ';height:100px' ) . '"><p data-sc-cs="' . $bh_cs( ';font-size:14px;height:20px' ) . '">Premium grooming.</p></div>'
+		. '<div data-sc-cs="' . $bh_cs( ';height:100px' ) . '"><h4 data-sc-cs="' . $bh_cs( ';font-size:14px;height:20px' ) . '">Quick Links</h4><a href="/services" data-sc-cs="' . $bh_cs( ';font-size:14px;height:20px' ) . '">Services</a><a href="/shop" data-sc-cs="' . $bh_cs( ';font-size:14px;height:20px' ) . '">Shop</a></div>'
+		. '<div data-sc-cs="' . $bh_cs( ';height:100px' ) . '"><h4 data-sc-cs="' . $bh_cs( ';font-size:14px;height:20px' ) . '">Contact</h4><p data-sc-cs="' . $bh_cs( ';font-size:14px;height:20px' ) . '">123 Grooming Ave</p></div>'
+		. '</div>'
+		. '<div data-sc-cs="' . $bh_cs( ';padding:32px 0px 0px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(38,38,38);display:flex;justify-content:space-between;height:49px' ) . '">'
+		. '<p data-sc-cs="' . $bh_cs( ';font-size:12px;height:16px' ) . '">&copy; 2026 Obsidian Grooming. All rights reserved.</p>'
+		. $legal_inner
+		. '</div></div></footer></body></html>';
+};
+$bh_vals = function ( $html ) {
+	$r = FW_Site_Converter_Sources::build_from_html( $html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+	return $r['files']['theme-settings.json']['values'] ?? array();
+};
+$bh_gap = '<div data-sc-cs="' . $bh_cs( ';display:flex;gap:24px;height:16px' ) . '"><a href="/privacy" data-sc-cs="' . $bh_cs( ';font-size:12px;height:16px' ) . '">Privacy Policy</a><a href="/terms" data-sc-cs="' . $bh_cs( ';font-size:12px;height:16px' ) . '">Terms of Service</a></div>';
+$bh_v  = $bh_vals( $bh_page( $bh_gap ) );
+$bh_cp = $bh_v['copyright_settings']['yes']['copyright_custom_styling']['yes'] ?? array();
+ga( '[BH] the copyright bar carries the SOURCE inset it pairs with its rule, not the theme default', isset( $bh_cp['copyright_padding']['padding']['top'] ) && 'pt-0' !== $bh_cp['copyright_padding']['padding']['top'], wp_json_encode( isset( $bh_cp['copyright_padding'] ) ? $bh_cp['copyright_padding'] : null ) );
+ga( '[BH] ...and its rule is still read alongside the inset', '1' === (string) ( $bh_cp['copyright_border']['width']['value'] ?? '' ), wp_json_encode( isset( $bh_cp['copyright_border'] ) ? $bh_cp['copyright_border'] : null ) );
+$bh_legal = (string) wp_json_encode( $bh_v['copyright_settings']['yes']['copyright_columns'] ?? array() );
+ga( '[BH] legal links the source merely SPACES apart gain no separator glyph', false === strpos( $bh_legal, 'middot' ), substr( $bh_legal, 0, 200 ) );
+$bh_bar = '<div data-sc-cs="' . $bh_cs( ';display:flex;height:16px' ) . '"><a href="/privacy" data-sc-cs="' . $bh_cs( ';font-size:12px;height:16px' ) . '">Privacy Policy</a><span data-sc-cs="' . $bh_cs( ';font-size:12px;height:16px' ) . '"> | </span><a href="/terms" data-sc-cs="' . $bh_cs( ';font-size:12px;height:16px' ) . '">Terms of Service</a></div>';
+$bh_v2    = $bh_vals( $bh_page( $bh_bar ) );
+$bh_legal2 = (string) wp_json_encode( $bh_v2['copyright_settings']['yes']['copyright_columns'] ?? array() );
+ga( '[BH] ...while a source that writes its own separator keeps that glyph', false !== strpos( $bh_legal2, '|' ), substr( $bh_legal2, 0, 200 ) );
+
+
+/* ============================================================================================
+ * [BI] A PRICE LIST IS NOT A PRICE GRID — the layout comes from the SOURCE, not the plan count.
+ * `columns` used to be count($plans), which says nothing about how the source arranged them: a four-item
+ * price LIST (name + description left, price right, one row each) became a four-across card grid with the
+ * price stacked under a wrapped, centred title. Measured across the capture corpus, list-shaped pricing is
+ * 43% of the priced groups a conversion meets. The stitcher now reads the container's measured display and
+ * tracks, so a list stays a list and a grid keeps the SOURCE's own column count — and the list's rhythm
+ * (rule between rows, spacing, the price's own type) is the source's too, never the stylesheet's default.
+ * ========================================================================================== */
+// A capture stamps ONE declaration per property. This fixture's overrides therefore go FIRST, so a
+// `display:grid` or a `font-family:Syncopate` is the value a first-match reader sees — appending them after
+// the defaults would leave two `display:` declarations in one stamp, which no real capture ever produces.
+$bi_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return ( '' !== $e ? $e . ';' : '' ) . 'color:rgb(245,245,245);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block';
+};
+$bi_row = function ( $name, $desc, $price, $rule ) use ( $bi_cs ) {
+	return '<div data-sc-cs="' . $bi_cs( ';display:flex;justify-content:space-between;align-items:baseline;height:56px;margin:32px 0px 0px' . $rule ) . '">'
+		. '<div data-sc-cs="' . $bi_cs( ';height:56px' ) . '">'
+		. '<h3 data-sc-cs="' . $bi_cs( ';font-size:18px;height:28px' ) . '">' . $name . '</h3>'
+		. '<p data-sc-cs="' . $bi_cs( ';font-size:14px;height:20px' ) . '">' . $desc . '</p></div>'
+		. '<div data-sc-cs="' . $bi_cs( ';font-family:Syncopate, sans-serif;font-size:20px;font-weight:400;height:28px' ) . '">$' . $price . '</div>'
+		. '</div>';
+};
+$bi_page = function ( $container_cs, $rows ) use ( $bi_cs ) {
+	return '<!DOCTYPE html><html><head><title>Obsidian</title></head><body data-sc-cs="' . $bi_cs( ';background-color:rgb(10,10,10)' ) . '">'
+		. '<header data-sc-cs="' . $bi_cs( ';height:80px' ) . '"><nav data-sc-cs="' . $bi_cs( ';display:flex;gap:32px;height:80px' ) . '"><a href="#top" data-sc-cs="' . $bi_cs( ';font-size:22px' ) . '">Obsidian</a><a href="#svc" data-sc-cs="' . $bi_cs() . '">Services</a></nav></header>'
+		. '<section id="svc" data-sc-cs="' . $bi_cs( ';padding:96px 0px;height:520px' ) . '"><div data-sc-cs="' . $bi_cs( ';max-width:896px;margin:0px auto;height:328px' ) . '">'
+		. '<h2 data-sc-cs="' . $bi_cs( ';font-size:24px;height:32px' ) . '">Hair</h2>'
+		. '<div data-sc-cs="' . $container_cs . '">' . $rows . '</div>'
+		. '</div></section>'
+		. '<footer data-sc-cs="' . $bi_cs( ';padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $bi_cs( ';height:24px' ) . '">&copy; 2026 Obsidian</p></footer></body></html>';
+};
+$bi_find = function ( $html ) {
+	$pg = FW_Site_Converter_Sources::build_from_html( $html, 'Obsidian', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+	$hit = null;
+	$walk = function ( $n ) use ( &$walk, &$hit ) {
+		if ( ! is_array( $n ) || null !== $hit ) { return; }
+		if ( 'pricing_table' === ( $n['shortcode'] ?? '' ) ) { $hit = $n; return; }
+		foreach ( $n as $v ) { if ( is_array( $v ) ) { if ( isset( $v['shortcode'] ) || isset( $v['type'] ) ) { $walk( $v ); } else { foreach ( $v as $c ) { if ( is_array( $c ) ) { $walk( $c ); } } } } }
+	};
+	foreach ( (array) $pg as $sx ) { $walk( $sx ); }
+	return $hit;
+};
+
+/* (a) a STACKED container (display:block) is a LIST, whatever the plan count */
+$bi_rows_norule = $bi_row( 'Precision Cut', 'Consultation and styling.', '45', '' )
+	. $bi_row( 'Skin Fade', 'Zero fade, wash and styling.', '50', '' )
+	. $bi_row( 'Buzz Cut', 'One length all over.', '25', '' )
+	. $bi_row( 'Restyle', 'Extended consultation.', '60', '' );
+$bi_list = $bi_find( $bi_page( $bi_cs( ';display:block;height:328px' ), $bi_rows_norule ) );
+if ( is_array( $bi_list ) ) {
+	ga( '[BI] a stacked (display:block) priced container converts to the LIST layout, not a 4-up grid', 'list' === ( $bi_list['atts']['design_settings']['layout'] ?? '' ), wp_json_encode( $bi_list['atts']['design_settings'] ?? null ) );
+	ga( '[BI] …a source that draws NO rule between rows gains none (the default would have added one)', 'no' === ( $bi_list['atts']['design_settings']['list']['row_rule'] ?? '' ), wp_json_encode( $bi_list['atts']['design_settings']['list'] ?? null ) );
+	$bi_css = (string) ( $bi_list['atts']['custom_css'] ?? '' );
+	ga( '[BI] …the row spacing is the source\'s measured 32px, not the stylesheet default', false !== strpos( $bi_css, '--pt-row-gap:32px' ), $bi_css );
+	ga( '[BI] …the rows are flush (0 padding), as measured', false !== strpos( $bi_css, '--pt-row-pad:0px' ), $bi_css );
+	ga( '[BI] …and the price keeps its OWN type (20px / 400 / the source face), not the card default', false !== strpos( $bi_css, '--pt-row-amount:20px' ) && false !== strpos( $bi_css, '--pt-row-amount-weight:400' ) && false !== stripos( $bi_css, '--pt-row-amount-font:Syncopate' ), $bi_css );
+} else {
+	foreach ( array( 'converts to the LIST layout', 'gains no rule', 'row spacing', 'flush rows', 'price type' ) as $bi_l ) { ga( '[BI] ' . $bi_l, false, 'no pricing_table node built' ); }
+}
+
+/* (b) a source that DOES rule its rows keeps the rule */
+$bi_rows_rule = $bi_row( 'Precision Cut', 'Consultation and styling.', '45', ';border-top-width:1px;border-top-style:solid;border-top-color:rgb(38,38,38)' )
+	. $bi_row( 'Skin Fade', 'Zero fade, wash and styling.', '50', ';border-top-width:1px;border-top-style:solid;border-top-color:rgb(38,38,38)' );
+$bi_ruled = $bi_find( $bi_page( $bi_cs( ';display:block;height:200px' ), $bi_rows_rule ) );
+ga( '[BI] a source that DOES rule its rows keeps the rule', is_array( $bi_ruled ) && 'yes' === ( $bi_ruled['atts']['design_settings']['list']['row_rule'] ?? '' ), wp_json_encode( is_array( $bi_ruled ) ? ( $bi_ruled['atts']['design_settings']['list'] ?? null ) : null ) );
+
+/* (c) NEGATIVE: a real GRID stays a grid, with the SOURCE's column count — not the plan count */
+$bi_card = function ( $name, $price ) use ( $bi_cs ) {
+	return '<div data-sc-cs="' . $bi_cs( ';padding:32px;text-align:center;height:220px;background-color:rgb(26,26,26)' ) . '">'
+		. '<h4 data-sc-cs="' . $bi_cs( ';font-size:20px;text-align:center;height:28px' ) . '">' . $name . '</h4>'
+		. '<p data-sc-cs="' . $bi_cs( ';font-size:14px;text-align:center;height:42px' ) . '">A plan description that runs on.</p>'
+		. '<p data-sc-cs="' . $bi_cs( ';font-size:40px;font-weight:700;text-align:center;height:48px' ) . '">$' . $price . '</p></div>';
+};
+// FOUR plans laid out on TWO tracks — the count and the layout disagree on purpose.
+$bi_grid = $bi_find( $bi_page( $bi_cs( ';display:grid;grid-template-columns:440px 440px;gap:32px;height:460px' ), $bi_card( 'Starter', '19' ) . $bi_card( 'Pro', '39' ) . $bi_card( 'Team', '59' ) . $bi_card( 'Scale', '99' ) ) );
+if ( is_array( $bi_grid ) ) {
+	ga( '[BI] NEGATIVE: a real grid stays the GRID layout', 'grid' === ( $bi_grid['atts']['design_settings']['layout'] ?? 'grid' ), wp_json_encode( $bi_grid['atts']['design_settings'] ?? null ) );
+	ga( '[BI] NEGATIVE: …with the SOURCE\'s 2 columns, not the 4 plans it holds', '2' === (string) ( $bi_grid['atts']['columns'] ?? '' ), wp_json_encode( $bi_grid['atts']['columns'] ?? null ) );
+	ga( '[BI] NEGATIVE: …and a grid gets no list rhythm CSS', false === strpos( (string) ( $bi_grid['atts']['custom_css'] ?? '' ), '--pt-row-' ), substr( (string) ( $bi_grid['atts']['custom_css'] ?? '' ), 0, 120 ) );
+} else {
+	foreach ( array( 'stays the GRID layout', 'source columns', 'no list rhythm' ) as $bi_l ) { ga( '[BI] NEGATIVE: ' . $bi_l, false, 'no pricing_table node built' ); }
+}
+
+
+/* ============================================================================================
+ * [BJ] THE FOOTER'S MEASURED PADDING MUST SURVIVE A THEME SETTINGS SAVE.
+ * Padding Top / Bottom are SELECTS built from the site's spacing scale, so they can only hold one of their
+ * own choice strings. The converter wrote a computed rem value ("2.5rem") whenever the measured px happened
+ * to sit on a HARDCODED scale — but the real scale is the site's, and it may offer that very length as the
+ * literal string "40px". The field rendered fine and the next save of the Footer tab submitted a value the
+ * select could not represent, so the footer's spacing silently reverted to the theme default. Reported as
+ * "the top spacing of the entire footer disappears when I edit the footer settings".
+ * The exact measurement now always rides on the *_custom unit-input, which can hold any value, survives a
+ * save, and is applied AFTER the select.
+ * ========================================================================================== */
+$bj_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return ( '' !== $e ? $e . ';' : '' ) . 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block';
+};
+$bj_page = function ( $footer_pad ) use ( $bj_cs ) {
+	return '<!DOCTYPE html><html><head><title>Brandmark</title></head><body data-sc-cs="' . $bj_cs( 'background-color:rgb(255,255,255)' ) . '">'
+		. '<header data-sc-cs="' . $bj_cs( 'height:80px' ) . '"><nav data-sc-cs="' . $bj_cs( 'display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $bj_cs( 'font-size:22px' ) . '">Brandmark</a><a href="/services" data-sc-cs="' . $bj_cs() . '">Services</a></nav></header>'
+		. '<section data-sc-cs="' . $bj_cs( 'padding:96px 0px;height:200px' ) . '"><div data-sc-cs="' . $bj_cs( 'max-width:1280px;margin:0px auto;height:32px' ) . '"><h2 data-sc-cs="' . $bj_cs( 'font-size:24px;height:32px' ) . '">Services</h2></div></section>'
+		. '<footer data-sc-cs="' . $bj_cs( 'padding:' . $footer_pad . ';height:300px' ) . '"><div data-sc-cs="' . $bj_cs( 'max-width:1280px;margin:0px auto;height:180px' ) . '">'
+		. '<div data-sc-cs="' . $bj_cs( 'display:grid;grid-template-columns:640px 320px 320px;gap:48px;height:100px' ) . '">'
+		. '<div data-sc-cs="' . $bj_cs( 'height:100px' ) . '"><p data-sc-cs="' . $bj_cs( 'font-size:14px;height:20px' ) . '">A tagline.</p></div>'
+		. '<div data-sc-cs="' . $bj_cs( 'height:100px' ) . '"><h4 data-sc-cs="' . $bj_cs( 'font-size:14px;height:20px' ) . '">Links</h4><a href="/services" data-sc-cs="' . $bj_cs( 'font-size:14px;height:20px' ) . '">Services</a><a href="/shop" data-sc-cs="' . $bj_cs( 'font-size:14px;height:20px' ) . '">Shop</a></div>'
+		. '<div data-sc-cs="' . $bj_cs( 'height:100px' ) . '"><h4 data-sc-cs="' . $bj_cs( 'font-size:14px;height:20px' ) . '">Contact</h4><p data-sc-cs="' . $bj_cs( 'font-size:14px;height:20px' ) . '">1 Example Street</p></div>'
+		. '</div>'
+		. '<div data-sc-cs="' . $bj_cs( 'padding:32px 0px 0px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(230,230,230);display:flex;justify-content:space-between;height:49px' ) . '">'
+		. '<p data-sc-cs="' . $bj_cs( 'font-size:12px;height:16px' ) . '">&copy; 2026 Brandmark</p></div></div></footer></body></html>';
+};
+$bj_vals = function ( $html ) {
+	$r = FW_Site_Converter_Sources::build_from_html( $html, 'Brandmark', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+	return $r['files']['theme-settings.json']['values'] ?? array();
+};
+
+$bj_v = $bj_vals( $bj_page( '80px 0px 40px' ) );
+ga( '[BJ] the footer\'s measured TOP padding is carried EXACTLY on the unit-input override (which a save cannot discard)', '80' === (string) ( $bj_v['footer_padding_top_custom']['value'] ?? '' ) && 'px' === (string) ( $bj_v['footer_padding_top_custom']['unit'] ?? '' ), wp_json_encode( $bj_v['footer_padding_top_custom'] ?? null ) );
+ga( '[BJ] …and so is the BOTTOM padding', '40' === (string) ( $bj_v['footer_padding_bottom_custom']['value'] ?? '' ), wp_json_encode( $bj_v['footer_padding_bottom_custom'] ?? null ) );
+
+// The SELECT may only ever hold one of its own choices. Whatever the converter puts there must be a real
+// choice string from the site's scale — never a computed equivalent the select cannot represent.
+$bj_choices = array( '' );
+if ( function_exists( 'unysonplus_get_spacing_scale' ) ) {
+	foreach ( (array) unysonplus_get_spacing_scale() as $bj_st ) {
+		$bj_raw = isset( $bj_st['size'] ) ? $bj_st['size'] : '';
+		if ( is_array( $bj_raw ) ) { $bj_raw = ( isset( $bj_raw['value'] ) && '' !== $bj_raw['value'] ) ? $bj_raw['value'] . ( isset( $bj_raw['unit'] ) ? $bj_raw['unit'] : '' ) : ''; }
+		if ( '' !== (string) $bj_raw ) { $bj_choices[] = (string) $bj_raw; }
+	}
+}
+foreach ( array( 'footer_padding_top', 'footer_padding_bottom' ) as $bj_k ) {
+	$bj_got = (string) ( $bj_v[ $bj_k ] ?? '' );
+	ga( "[BJ] $bj_k is only ever set to a value the select actually offers (got: '" . $bj_got . "')", in_array( $bj_got, $bj_choices, true ), wp_json_encode( array( 'got' => $bj_got, 'choices' => array_slice( $bj_choices, 0, 12 ) ) ) );
+}
+
+// NEGATIVE: an off-scale padding (a tall 200px footer) is still carried exactly, not clamped away.
+$bj_v2 = $bj_vals( $bj_page( '200px 0px 120px' ) );
+ga( '[BJ] NEGATIVE: an off-scale footer padding is carried exactly, not clamped to the scale ceiling', '200' === (string) ( $bj_v2['footer_padding_top_custom']['value'] ?? '' ) && '120' === (string) ( $bj_v2['footer_padding_bottom_custom']['value'] ?? '' ), wp_json_encode( array( $bj_v2['footer_padding_top_custom'] ?? null, $bj_v2['footer_padding_bottom_custom'] ?? null ) ) );
+
+
+/* ============================================================================================
+ * [BK] THE PARITY REPORT MUST COMPARE LIKE WITH LIKE — an outer box is not a content width.
+ * detect_site_content_width() returns the container's BOX, which is an OUTER width whenever the gutter is
+ * the container's own padding (`max-w-7xl mx-auto px-8` → box 1280, padding 32/side, content 1216). The
+ * stored Container Width is a CONTENT width, because the storage path subtracts that inside gutter. The
+ * parity check graded the stamped box against the stored content at +-2px, so it failed every CORRECT
+ * conversion by exactly 2*gutter. Measured on a real capture: source 1280 vs converted 1216 reported as a
+ * defect while the rendered page matched the source's content box to the pixel (container-check: delta 0).
+ * A verifier that fails correct output is worse than no verifier — it sends the next reader to "fix" code
+ * that is already right.
+ * ========================================================================================== */
+$bk_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return ( '' !== $e ? $e . ';' : '' ) . 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block';
+};
+$bk_page = function ( $html_attrs, $pad ) use ( $bk_cs ) {
+	return '<!DOCTYPE html><html ' . $html_attrs . '><head><title>Harbourline</title></head><body data-sc-cs="' . $bk_cs( 'background-color:rgb(255,255,255)' ) . '">'
+		. '<header data-sc-cs="' . $bk_cs( 'height:80px' ) . '"><nav data-sc-cs="' . $bk_cs( 'display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $bk_cs( 'font-size:22px' ) . '">Harbourline</a><a href="/about" data-sc-cs="' . $bk_cs() . '">About</a></nav></header>'
+		. '<section data-sc-cs="' . $bk_cs( 'padding:96px 0px;height:300px' ) . '"><div data-sc-cs="' . $bk_cs( 'max-width:1280px;width:1280px;margin:0px auto;padding:' . $pad . ';height:108px' ) . '">'
+		. '<h2 data-sc-cs="' . $bk_cs( 'font-size:36px;height:44px' ) . '">Built for the tide</h2>'
+		. '<p data-sc-cs="' . $bk_cs( 'height:48px' ) . '">A short introduction that runs to a couple of lines.</p>'
+		. '</div></section>'
+		. '<footer data-sc-cs="' . $bk_cs( 'padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $bk_cs( 'height:24px' ) . '">&copy; 2026 Harbourline</p></footer></body></html>';
+};
+$bk_run = function ( $html ) {
+	$r = FW_Site_Converter_Sources::build_from_html( $html, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+	$par = $r['files']['conversion-parity.json'] ?? array();
+	$row = null;
+	foreach ( (array) ( $par['checks'] ?? array() ) as $c ) { if ( 'container_width' === ( $c['id'] ?? '' ) ) { $row = $c; } }
+	return array( $row, (int) ( $r['files']['theme-settings.json']['values']['general_layout']['layout_container_width']['lg']['value'] ?? 0 ) );
+};
+
+/* (a) the gutter is the container's own PADDING — the stamped 1280 is an OUTER box */
+list( $bk_row, $bk_lg ) = $bk_run( $bk_page( 'data-sc-content-width="1280" data-sc-content-gutter="32" data-sc-content-gutter-inside="1"', '0px 32px' ) );
+ga( '[BK] an inside gutter is subtracted from the stored Container Width (1280 outer - 2x32 = 1216 content)', 1216 === $bk_lg, 'lg=' . $bk_lg );
+ga( '[BK] …and the parity check PASSES that correct conversion instead of failing it by 2x the gutter', is_array( $bk_row ) && ! empty( $bk_row['pass'] ), wp_json_encode( $bk_row ) );
+ga( '[BK] …because the parity check grades the source as a CONTENT width (1216), not the stamped box (1280)', is_array( $bk_row ) && 1216 === (int) ( $bk_row['source'] ?? 0 ), wp_json_encode( $bk_row ) );
+
+/* (b) NEGATIVE: the check must still CATCH a gutter that really did land inside the cap. Same source, but
+   the stored width is forced to the outer box by an absent gutter stamp — the real defect it exists for. */
+list( $bk_row2, $bk_lg2 ) = $bk_run( $bk_page( 'data-sc-content-width="1280"', '0px' ) );
+ga( '[BK] NEGATIVE: with no inside gutter the stamped width stands unchanged (1280) and still passes', 1280 === $bk_lg2 && is_array( $bk_row2 ) && ! empty( $bk_row2['pass'] ), wp_json_encode( array( 'lg' => $bk_lg2, 'row' => $bk_row2 ) ) );
+
+
+/* ============================================================================================
+ * [BL] A LIGHT WEIGHT AND A DISPLAY FACE ARE DESIGN, NOT NOISE.
+ * significant_text_decls carried font-weight only when it matched 500-900/bold, so "significant" silently
+ * meant "heavier than normal" and a face set in 100-300 was dropped — the element then rendered at the
+ * theme's 400. And the footer TAGLINE was the one never-drop chrome text element that never prepended
+ * font-family (the lead title and eyebrow both do), so a tagline in the source's serif display face fell
+ * back to the body sans. Measured on a capture: tagline stamped `font-weight:300` + a serif family rendered
+ * 400 in the body sans-serif, and two independent tools reported it (a named-property diff and the chrome
+ * never-drop gate). The gate ALSO hardcoded font-style to "not carried" while the rule it reads has always
+ * emitted `font-style:italic` — a false positive that buried the two real losses beside it.
+ * ========================================================================================== */
+// The OVERRIDES go LAST: the stamp is parsed as a declaration list where the later value wins, so a
+// defaults-then-extras order would have the 400/16px defaults silently overwrite the very values under test.
+$bl_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$bl_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Harbourline</title></head><body data-sc-cs="' . $bl_cs( 'background-color:rgb(255,255,255)' ) . '">'
+	. '<header data-sc-cs="' . $bl_cs( 'height:80px' ) . '"><nav data-sc-cs="' . $bl_cs( 'display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $bl_cs( 'font-size:22px' ) . '">Harbourline</a><a href="/about" data-sc-cs="' . $bl_cs() . '">About</a></nav></header>'
+	. '<section data-sc-cs="' . $bl_cs( 'padding:96px 0px;height:220px' ) . '"><div data-sc-cs="' . $bl_cs( 'max-width:1280px;margin:0px auto;height:28px' ) . '"><h2 data-sc-cs="' . $bl_cs( 'font-size:24px;height:28px' ) . '">Work</h2></div></section>'
+	. '<footer data-sc-cs="' . $bl_cs( 'padding:64px 0px;height:280px' ) . '"><div data-sc-cs="' . $bl_cs( 'max-width:1280px;margin:0px auto;height:160px' ) . '">'
+	// Stamped explicitly (not through $bl_cs): a property must appear ONCE, because the declaration parser
+	// takes the last occurrence while the single-property reader takes the first — a duplicated font-family
+	// would make the two disagree and the fixture would be testing its own stamp, not the converter.
+	. '<p class="font-serif text-2xl font-light italic" data-sc-cs="color:rgb(20,20,20);font-family:&quot;Playfair Display&quot;, Georgia, serif;font-size:24px;font-weight:300;font-style:italic;line-height:32px;text-align:center;display:block;height:32px">&ldquo;Let us make your next gathering a beautiful one.&rdquo;</p>'
+	. '<p data-sc-cs="' . $bl_cs( 'font-size:12px;height:16px' ) . '">&copy; 2026 Harbourline</p></div></footer></body></html>';
+
+$bl_r    = FW_Site_Converter_Sources::build_from_html( $bl_html, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$bl_ts   = $bl_r['files']['theme-settings.json']['values'] ?? array();
+$bl_all  = wp_json_encode( $bl_ts );
+$bl_rule = preg_match( '/\.footer-tagline\{([^}]*)\}/', (string) $bl_all, $bl_m ) ? $bl_m[1] : '';
+
+ga( '[BL] the footer tagline keeps its own DISPLAY family (it has no native typography option)', false !== stripos( $bl_rule, 'font-family' ) && false !== stripos( $bl_rule, 'Playfair' ), $bl_rule );
+ga( '[BL] …and its LIGHT weight (300), which the "heavier than normal" filter used to drop', false !== strpos( $bl_rule, 'font-weight:300' ), $bl_rule );
+ga( '[BL] …and its italic, as before', false !== strpos( $bl_rule, 'font-style:italic' ), $bl_rule );
+
+// The never-drop chrome gate must now report the tagline CLEAN — nothing carried may be listed as dropped.
+$bl_par = $bl_r['files']['conversion-parity.json'] ?? array();
+$bl_dc  = '';
+foreach ( (array) ( $bl_par['checks'] ?? array() ) as $c ) { if ( 'dropped_chrome' === ( $c['id'] ?? '' ) ) { $bl_dc = (string) ( $c['converted'] ?? '' ); } }
+foreach ( array( 'font-serif', 'font-light', 'italic' ) as $bl_c ) {
+	ga( '[BL] the never-drop chrome gate no longer reports the carried `' . $bl_c . '` as a loss', false === strpos( $bl_dc, 'footer_tagline:' . $bl_c ), $bl_dc );
+}
+
+// NEGATIVE: a 400 body paragraph gains no redundant weight declaration.
+$bl_html2 = str_replace( 'font-weight:300;font-style:italic;', '', str_replace( ' class="font-serif text-2xl font-light italic"', '', $bl_html ) );
+$bl_rule2 = preg_match( '/\.footer-tagline\{([^}]*)\}/', (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $bl_html2, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array() ), $bl_m2 ) ? $bl_m2[1] : '';
+ga( '[BL] NEGATIVE: a tagline at the 400 default gains NO redundant font-weight declaration', '' === $bl_rule2 || false === strpos( $bl_rule2, 'font-weight' ), $bl_rule2 );
+
+
+/* ============================================================================================
+ * [BM] SMALL PRINT IS TRANSLUCENT ON PURPOSE — keep the alpha somewhere it survives.
+ * The copyright bar's colour lives on a `typography` option whose colour field parses a HEX and nothing
+ * else (handed an rgba it returns #000000 and the legal line turns BLACK on the first save), so the
+ * converter must flatten it. That is right for the option and wrong for the render: a source sets its legal
+ * line to ~60% of the footer text colour so it recedes, and flattened to full opacity it renders as loud as
+ * the body copy. Measured on a capture: rgba(250,244,232,0.6) rendered rgb(250,244,232) on BOTH copyright
+ * columns. The option keeps the save-safe hex; the real colour rides a scoped residual where alpha survives.
+ * ========================================================================================== */
+$bm_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$bm_page = function ( $legal_color ) use ( $bm_cs ) {
+	return '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Harbourline</title></head><body data-sc-cs="' . $bm_cs( 'background-color:rgb(255,255,255)' ) . '">'
+		. '<header data-sc-cs="' . $bm_cs( 'height:80px' ) . '"><nav data-sc-cs="' . $bm_cs( 'display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $bm_cs( 'font-size:22px' ) . '">Harbourline</a><a href="/about" data-sc-cs="' . $bm_cs() . '">About</a></nav></header>'
+		. '<section data-sc-cs="' . $bm_cs( 'padding:96px 0px;height:220px' ) . '"><div data-sc-cs="' . $bm_cs( 'max-width:1280px;margin:0px auto;height:28px' ) . '"><h2 data-sc-cs="' . $bm_cs( 'font-size:24px;height:28px' ) . '">Work</h2></div></section>'
+		. '<footer data-sc-cs="' . $bm_cs( 'padding:64px 0px;height:280px;background-color:rgb(26,107,95)' ) . '"><div data-sc-cs="' . $bm_cs( 'max-width:1280px;margin:0px auto;height:160px' ) . '">'
+		. '<div data-sc-cs="' . $bm_cs( 'display:grid;grid-template-columns:640px 640px;gap:32px;height:60px' ) . '">'
+		. '<div data-sc-cs="' . $bm_cs( 'height:60px' ) . '"><h4 data-sc-cs="' . $bm_cs( 'font-size:14px;height:20px' ) . '">Studio</h4><a href="/about" data-sc-cs="' . $bm_cs( 'font-size:14px;height:20px' ) . '">About</a></div>'
+		. '<div data-sc-cs="' . $bm_cs( 'height:60px' ) . '"><h4 data-sc-cs="' . $bm_cs( 'font-size:14px;height:20px' ) . '">Contact</h4><a href="/contact" data-sc-cs="' . $bm_cs( 'font-size:14px;height:20px' ) . '">Enquiries</a></div>'
+		. '</div>'
+		. '<div data-sc-cs="' . $bm_cs( 'padding:32px 0px 0px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(38,38,38);height:49px' ) . '">'
+		. '<p data-sc-cs="color:' . $legal_color . ';font-family:Inter, sans-serif;font-size:12px;font-weight:400;line-height:16px;text-align:start;display:block;height:16px">&copy; 2026 Harbourline. All rights reserved.</p>'
+		. '</div></div></footer></body></html>';
+};
+$bm_misc = function ( $html ) {
+	$v = FW_Site_Converter_Sources::build_from_html( $html, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array();
+	return array( (string) wp_json_encode( $v ), $v );
+};
+
+list( $bm_json, $bm_v ) = $bm_misc( $bm_page( 'rgba(250, 244, 232, 0.6)' ) );
+ga( '[BM] a TRANSLUCENT legal colour keeps its alpha on a scoped copyright-bar rule', false !== strpos( $bm_json, '.footer-section--copyright' ) && false !== strpos( $bm_json, 'rgba(250, 244, 232, 0.6)' ), substr( $bm_json, 0, 0 ) . ( preg_match( '/\.footer-section--copyright[^}]*\}/', $bm_json, $bm_mm ) ? $bm_mm[0] : 'no rule emitted' ) );
+// …while the OPTION still carries a save-safe hex (an rgba there renders the line BLACK on first save).
+$bm_ctc = (string) ( $bm_v['copyright_custom_styling']['yes']['copyright_typography']['color'] ?? '' );
+ga( '[BM] …while the typography option still carries a save-safe HEX, never the rgba', '' === $bm_ctc || ( 0 === strpos( $bm_ctc, '#' ) && false === stripos( $bm_ctc, 'rgba' ) ), $bm_ctc );
+
+// NEGATIVE: an OPAQUE legal colour is fully expressible on the option and must gain NO residual.
+list( $bm_json2 ) = $bm_misc( $bm_page( 'rgb(250, 244, 232)' ) );
+ga( '[BM] NEGATIVE: an OPAQUE legal colour gains no copyright-bar override', false === strpos( $bm_json2, '.footer-section--copyright' ), preg_match( '/\.footer-section--copyright[^}]*\}/', $bm_json2, $bm_m2 ) ? $bm_m2[0] : 'none (correct)' );
+
+
+/* ============================================================================================
+ * [BN] A GALLERY'S COLUMNS COME FROM THE SOURCE'S TRACKS, NOT THE NUMBER OF PHOTOS.
+ * detect_gallery_design() reported a column count for masonry and metro but NOT for a uniform grid, so a plain
+ * grid reached the mapper with no column signal and it used count($images). Nine photos became a nine-across
+ * strip of 121px thumbnails where the source laid out a 3x3 wall of 389px squares: the band collapsed from
+ * 1548px to 485px (-68.7%), measured on a rendered page. Every token-level parity check still scored a clean
+ * 9/9 through it, because none of them looked at layout — so this also guards the structural `grid_columns`
+ * check that now exists to catch the whole defect class (a converted grid may never have MORE columns than
+ * the source declares).
+ * ========================================================================================== */
+$bn_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$bn_tiles = '';
+for ( $bn_i = 1; $bn_i <= 9; $bn_i++ ) {
+	// The tile shape a photo wall really has: an aspect-cropped wrapper with a cover-filling image. The
+	// cover classes are load-bearing — the gallery recognizer uses them to tell a photo wall from a card grid.
+	$bn_tiles .= '<div class="group relative overflow-hidden aspect-square" data-sc-cs="' . $bn_cs( 'height:389.328px;overflow:hidden;aspect-ratio:1 / 1' ) . '">'
+		. '<img src="/img/work-' . $bn_i . '.jpg" class="w-full h-full object-cover" alt="Project ' . $bn_i . '" data-sc-cs="' . $bn_cs( 'width:389.328px;height:389.328px;object-fit:cover' ) . '"></div>';
+}
+$bn_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Harbourline</title></head><body data-sc-cs="' . $bn_cs( 'background-color:rgb(255,255,255)' ) . '">'
+	. '<header data-sc-cs="' . $bn_cs( 'height:80px' ) . '"><nav data-sc-cs="' . $bn_cs( 'display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $bn_cs( 'font-size:22px' ) . '">Harbourline</a><a href="/work" data-sc-cs="' . $bn_cs() . '">Work</a></nav></header>'
+	. '<section id="work" data-sc-cs="' . $bn_cs( 'padding:96px 0px;height:1548px' ) . '"><div data-sc-cs="' . $bn_cs( 'max-width:1280px;margin:0px auto;height:1356px' ) . '">'
+	. '<h2 data-sc-cs="' . $bn_cs( 'font-size:36px;height:44px' ) . '">Selected work</h2>'
+	// NINE tiles on THREE tracks — the photo count and the column count disagree ON PURPOSE.
+	. '<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6" data-sc-cs="' . $bn_cs( 'display:grid;gap:24px;grid-template-columns:389.328px 389.328px 389.344px;height:1216px' ) . '">' . $bn_tiles . '</div>'
+	. '</div></section>'
+	. '<footer data-sc-cs="' . $bn_cs( 'padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $bn_cs( 'height:24px' ) . '">&copy; 2026 Harbourline</p></footer></body></html>';
+
+$bn_r  = FW_Site_Converter_Sources::build_from_html( $bn_html, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$bn_pg = $bn_r['files']['pages.json']['pages'][0]['builder'] ?? array();
+$bn_hit = null;
+$bn_walk = function ( $n ) use ( &$bn_walk, &$bn_hit ) {
+	if ( ! is_array( $n ) || null !== $bn_hit ) { return; }
+	if ( 'gallery' === ( $n['shortcode'] ?? '' ) ) { $bn_hit = $n; return; }
+	foreach ( $n as $v ) { if ( is_array( $v ) ) { $bn_walk( $v ); } }
+};
+$bn_walk( $bn_pg );
+$bn_cols = is_array( $bn_hit ) ? (string) ( $bn_hit['atts']['design_settings']['grid']['columns']['count'] ?? '' ) : '';
+ga( '[BN] nine photos on three tracks convert to a THREE-column grid, not a nine-across strip', '3' === $bn_cols, 'columns=' . $bn_cols . ( is_array( $bn_hit ) ? '' : ' (no gallery node built)' ) );
+$bn_ratio = is_array( $bn_hit ) ? ( $bn_hit['atts']['design_settings']['grid']['columns']['3']['col_ratio'] ?? array() ) : array();
+ga( '[BN] …and col_ratio describes ONE ROW (3 entries), not one per photo', 3 === count( (array) $bn_ratio ), wp_json_encode( $bn_ratio ) );
+
+// The structural parity check must EXIST and PASS — it is the thing that turns this defect class into a number.
+$bn_row = null;
+foreach ( (array) ( $bn_r['files']['conversion-parity.json']['checks'] ?? array() ) as $c ) { if ( 'grid_columns' === ( $c['id'] ?? '' ) ) { $bn_row = $c; } }
+ga( '[BN] the parity report carries a STRUCTURAL grid-columns check (token checks alone scored 9/9 through this bug)', is_array( $bn_row ), wp_json_encode( $bn_row ) );
+ga( '[BN] …and it passes: emitted columns never exceed the source tracks (3 vs 3)', is_array( $bn_row ) && ! empty( $bn_row['pass'] ) && 3 === (int) $bn_row['source'] && 3 === (int) $bn_row['converted'], wp_json_encode( $bn_row ) );
+// …and it would have FAILED the old behaviour: 9 emitted columns against 3 declared tracks.
+ga( '[BN] NEGATIVE: the invariant really does reject MORE columns than the source declares (9 > 3)', is_array( $bn_row ) && ! ( 9 <= (int) $bn_row['source'] ), 'source tracks=' . ( is_array( $bn_row ) ? $bn_row['source'] : '?' ) . ' — a 9-column emission would fail this check' );
+
+
+/* ============================================================================================
+ * [BO] THREE LOSSES A TOKEN-LEVEL CHECK CANNOT SEE — layout family, link label, brand copy.
+ *  (a) The image_box SIDE family (photo beside copy) existed but nothing ever selected it, so a horizontal
+ *      card was rebuilt vertically: photo full-width on top, copy beneath. A 283px source row became 551px
+ *      and the band grew 52.7% (measured on a rendered page).
+ *  (b) A contact row preferred span -> p -> a, so an address anchor followed by a small caption took the
+ *      CAPTION as its label and kept only the href: the address itself never appeared on the page while its
+ *      footnote sat in its place reading as the link.
+ *  (c) Only the FIRST long footer paragraph was read (the tagline), so a brand column of "tagline + a
+ *      sentence about the business" lost the sentence outright.
+ * ========================================================================================== */
+$bo_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+/* A card whose photo sits BESIDE its copy: a flex ROW, media child at half width, copy in the other. */
+$bo_card = function ( $title, $slug ) use ( $bo_cs ) {
+	return '<div class="group overflow-hidden" data-sc-cs="' . $bo_cs( 'display:flex;flex-direction:row;height:283px' ) . '">'
+		. '<div class="w-full sm:w-1/2 overflow-hidden relative" data-sc-cs="' . $bo_cs( 'height:281px' ) . '"><img src="/img/' . $slug . '.jpg" class="w-full h-full object-cover" alt="' . $title . '" data-sc-cs="' . $bo_cs( 'height:281px;object-fit:cover' ) . '"></div>'
+		. '<div class="w-full sm:w-1/2 p-8" data-sc-cs="' . $bo_cs( 'display:flex;flex-direction:column;height:281px;padding:32px' ) . '">'
+		. '<h3 data-sc-cs="' . $bo_cs( 'font-size:20px;height:28px' ) . '">' . $title . '</h3>'
+		. '<p data-sc-cs="' . $bo_cs( 'font-size:14px;height:40px' ) . '">A short description of the service on offer.</p>'
+		. '</div></div>';
+};
+$bo_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Harbourline</title></head><body data-sc-cs="' . $bo_cs( 'background-color:rgb(255,255,255)' ) . '">'
+	. '<header data-sc-cs="' . $bo_cs( 'height:80px' ) . '"><nav data-sc-cs="' . $bo_cs( 'display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $bo_cs( 'font-size:22px' ) . '">Harbourline</a><a href="/services" data-sc-cs="' . $bo_cs() . '">Services</a></nav></header>'
+	. '<section id="services" data-sc-cs="' . $bo_cs( 'padding:96px 0px;height:964px' ) . '"><div data-sc-cs="' . $bo_cs( 'max-width:1280px;margin:0px auto;height:772px' ) . '">'
+	. '<h2 data-sc-cs="' . $bo_cs( 'font-size:36px;height:44px' ) . '">What we do</h2>'
+	. '<div class="grid grid-cols-1 md:grid-cols-2 gap-12" data-sc-cs="' . $bo_cs( 'display:grid;gap:48px;grid-template-columns:584px 584px;height:614px' ) . '">'
+	. $bo_card( 'Styling', 'styling' ) . $bo_card( 'Backdrops', 'backdrops' ) . '</div>'
+	. '</div></section>'
+	. '<footer data-sc-cs="' . $bo_cs( 'padding:64px 0px;height:532px;background-color:rgb(26,107,95)' ) . '"><div data-sc-cs="' . $bo_cs( 'max-width:1280px;margin:0px auto;height:400px' ) . '">'
+	. '<div data-sc-cs="' . $bo_cs( 'display:grid;grid-template-columns:384px 384px 384px;gap:32px;height:300px' ) . '">'
+	/* brand column: a tagline PLUS a description sentence */
+	. '<div data-sc-cs="' . $bo_cs( 'height:300px' ) . '">'
+	. '<p data-sc-cs="' . $bo_cs( 'font-size:24px;height:32px' ) . '">A tagline that runs a little long on purpose.</p>'
+	. '<p data-sc-cs="' . $bo_cs( 'font-size:14px;height:60px' ) . '">A handcrafted event studio travelling to homes, offices and venues to curate table layouts.</p>'
+	. '</div>'
+	. '<div data-sc-cs="' . $bo_cs( 'height:300px' ) . '"><h4 data-sc-cs="' . $bo_cs( 'font-size:14px;height:20px' ) . '">Explore</h4><ul data-sc-cs="' . $bo_cs( 'height:40px' ) . '"><li data-sc-cs="' . $bo_cs( 'height:20px' ) . '"><a href="/services" data-sc-cs="' . $bo_cs( 'height:20px' ) . '">Services</a></li></ul></div>'
+	/* contact column: the ADDRESS anchor followed by its small caption */
+	. '<div data-sc-cs="' . $bo_cs( 'height:300px' ) . '"><h4 data-sc-cs="' . $bo_cs( 'font-size:14px;height:20px' ) . '">Booking</h4>'
+	. '<ul data-sc-cs="' . $bo_cs( 'height:60px' ) . '"><li data-sc-cs="' . $bo_cs( 'height:60px' ) . '">'
+	. '<a href="mailto:studio@example.com?subject=Enquiry" data-sc-cs="' . $bo_cs( 'font-size:20px;height:32px' ) . '">studio@example.com</a>'
+	. '<p data-sc-cs="' . $bo_cs( 'font-size:12px;height:16px' ) . '">Click to launch your email client immediately.</p>'
+	. '</li></ul></div>'
+	. '</div>'
+	. '<p data-sc-cs="' . $bo_cs( 'font-size:12px;height:16px' ) . '">&copy; 2026 Harbourline</p></div></footer></body></html>';
+
+$bo_boxes = function ( $html ) {
+	$r  = FW_Site_Converter_Sources::build_from_html( $html, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+	$hit = array();
+	$w = function ( $n ) use ( &$w, &$hit ) {
+		if ( ! is_array( $n ) ) { return; }
+		if ( 'image_box' === ( $n['shortcode'] ?? '' ) ) { $hit[] = $n['atts']['design_settings'] ?? null; }
+		foreach ( $n as $v ) { if ( is_array( $v ) ) { $w( $v ); } }
+	};
+	$w( $r['files']['pages.json']['pages'][0]['builder'] ?? array() );
+	return array( $hit, (string) wp_json_encode( $r['files']['theme-settings.json']['values'] ?? array() ) );
+};
+
+list( $bo_ib, $bo_json ) = $bo_boxes( $bo_html );
+ga( '[BO] (a) a card whose photo sits BESIDE its copy converts to the SIDE family, not Stacked', count( $bo_ib ) > 0 && 'side' === ( $bo_ib[0]['family'] ?? '' ), wp_json_encode( $bo_ib[0] ?? null ) );
+ga( '[BO] (a) the image keeps the source side and its share of the row (left / 50%)', count( $bo_ib ) > 0 && 'left' === ( $bo_ib[0]['side']['image_side'] ?? '' ) && '50' === (string) ( $bo_ib[0]['side']['media_width'] ?? '' ), wp_json_encode( count( $bo_ib ) ? ( $bo_ib[0]['side'] ?? null ) : null ) );
+ga( '[BO] (b) a contact row keeps the ADDRESS as its label, not the caption underneath it', false !== strpos( $bo_json, '"li_text":"studio@example.com"' ), ( preg_match( '/"li_text":"[^"]*","li_link":"mailto[^"]*"/', $bo_json, $bo_m ) ? $bo_m[0] : 'no email row emitted' ) );
+ga( '[BO] (c) the brand column keeps the DESCRIPTION under its tagline', false !== strpos( $bo_json, 'footer-desc' ) && false !== strpos( $bo_json, 'handcrafted event studio' ), ( preg_match( '/footer-desc[^"]{0,70}/', $bo_json, $bo_m2 ) ? $bo_m2[0] : 'no description emitted' ) );
+
+/* NEGATIVE: an ordinary STACKED tile (column direction) must keep the Stacked family. */
+list( $bo_ib2 ) = $bo_boxes( str_replace( 'display:flex;flex-direction:row;height:283px', 'display:flex;flex-direction:column;height:420px', $bo_html ) );
+ga( '[BO] NEGATIVE: a column-direction tile still converts to STACKED (the default is unchanged)', count( $bo_ib2 ) > 0 && 'stacked' === ( $bo_ib2[0]['family'] ?? '' ), wp_json_encode( $bo_ib2[0] ?? null ) );
+
+
+/* ============================================================================================
+ * [BP] THE LOSSES THAT HID BETWEEN THE SECTIONS.
+ *  (a) A full-width statement / quote strip between two sections is usually a plain <div> sibling, not a
+ *      <section>. It holds no <section>, so the walker dived into it, found nothing, and dropped the band
+ *      OUTRIGHT — content and all. Measured on a capture: four such bands vanished, 469px of page and every
+ *      word in them, showing up only as unexplained cumulative offset rather than as a missing section.
+ *  (b) The footer's vertical inset commonly sits on its inner max-width wrapper, not on <footer>. Read only
+ *      from <footer>, the padding branch was skipped entirely and the footer rendered 325px against 532px.
+ *  (c) A bottom bar is set off by a MARGIN (`border-t mt-12 pt-8`); margin was hardcoded empty, so the gap
+ *      collapsed. It cannot be folded into padding — the rule sits above it.
+ *  (d) The title->subtitle gap: `element_spacing` is a three-way select that can only approximate, and is
+ *      left Normal whenever the measurement does not reach it — a source gap of 8px rendered 39.84px and
+ *      pushed a whole band 32px down.
+ * ========================================================================================== */
+$bp_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$bp_sec = function ( $id, $title, $h ) use ( $bp_cs ) {
+	return '<section id="' . $id . '" data-sc-cs="' . $bp_cs( 'padding:96px 0px;height:' . $h . 'px' ) . '"><div data-sc-cs="' . $bp_cs( 'max-width:1280px;margin:0px auto;height:' . ( $h - 192 ) . 'px' ) . '">'
+		. '<h2 data-sc-cs="' . $bp_cs( 'font-size:36px;height:44px' ) . '">' . $title . '</h2>'
+		. '<p data-sc-cs="color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:14px;font-weight:400;line-height:20px;text-align:start;display:block;margin:8px 0px 0px;height:20px">A short standfirst under the heading.</p>'
+		. '</div></section>';
+};
+$bp_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Harbourline</title></head><body data-sc-cs="' . $bp_cs( 'background-color:rgb(255,255,255)' ) . '">'
+	. '<header data-sc-cs="' . $bp_cs( 'height:80px' ) . '"><nav data-sc-cs="' . $bp_cs( 'display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $bp_cs( 'font-size:22px' ) . '">Harbourline</a><a href="/work" data-sc-cs="' . $bp_cs() . '">Work</a></nav></header>'
+	. '<main data-sc-cs="' . $bp_cs( 'height:1400px' ) . '">'
+	. $bp_sec( 'one', 'The first band', 400 )
+	// A STATEMENT STRIP between two sections: a plain <div> with its own fill and a real sentence.
+	. '<div data-sc-cs="' . $bp_cs( 'background-color:rgb(26,107,95);padding:48px 0px;height:152px' ) . '"><p data-sc-cs="' . $bp_cs( 'color:rgb(250,244,232);font-size:24px;height:56px' ) . '">We design rooms that people remember long after the evening ends.</p></div>'
+	. $bp_sec( 'two', 'The second band', 400 )
+	. '</main>'
+	. '<footer data-sc-cs="' . $bp_cs( 'padding:0px;height:532px;background-color:rgb(26,107,95)' ) . '">'
+	// the INSET lives on the inner wrapper, not on <footer>
+	. '<div data-sc-cs="' . $bp_cs( 'max-width:1280px;margin:0px auto;padding:64px 0px;height:435px' ) . '">'
+	. '<div data-sc-cs="' . $bp_cs( 'display:grid;grid-template-columns:384px 384px 384px;gap:32px;height:210px' ) . '">'
+	. '<div data-sc-cs="' . $bp_cs( 'height:210px' ) . '"><p data-sc-cs="' . $bp_cs( 'font-size:14px;height:60px' ) . '">A handcrafted studio travelling to homes, offices and venues.</p></div>'
+	. '<div data-sc-cs="' . $bp_cs( 'height:210px' ) . '"><h4 data-sc-cs="' . $bp_cs( 'font-size:14px;height:20px' ) . '">Explore</h4><ul data-sc-cs="' . $bp_cs( 'height:20px' ) . '"><li data-sc-cs="' . $bp_cs( 'height:20px' ) . '"><a href="/work" data-sc-cs="' . $bp_cs( 'height:20px' ) . '">Work</a></li></ul></div>'
+	. '<div data-sc-cs="' . $bp_cs( 'height:210px' ) . '"><h4 data-sc-cs="' . $bp_cs( 'font-size:14px;height:20px' ) . '">Contact</h4><ul data-sc-cs="' . $bp_cs( 'height:20px' ) . '"><li data-sc-cs="' . $bp_cs( 'height:20px' ) . '"><a href="mailto:studio@example.com" data-sc-cs="' . $bp_cs( 'height:20px' ) . '">studio@example.com</a></li></ul></div>'
+	. '</div>'
+	// the bottom bar, set off by a MARGIN above its rule
+	. '<div data-sc-cs="' . $bp_cs( 'margin:48px 0px 0px;padding:32px 0px 0px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(56,142,128);height:49px' ) . '"><p data-sc-cs="' . $bp_cs( 'font-size:12px;height:16px' ) . '">&copy; 2026 Harbourline</p></div>'
+	. '</div></footer></body></html>';
+
+$bp_r  = FW_Site_Converter_Sources::build_from_html( $bp_html, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$bp_pg = $bp_r['files']['pages.json']['pages'][0]['builder'] ?? array();
+$bp_ts = (string) wp_json_encode( $bp_r['files']['theme-settings.json']['values'] ?? array() );
+
+/* (a) the interstitial band survives, with its sentence */
+ga( '[BP] (a) a statement strip between two sections is CONVERTED, not dropped', false !== strpos( (string) wp_json_encode( $bp_pg ), 'rooms that people remember' ), 'the band\'s sentence is absent from the built page' );
+ga( '[BP] (a) …and the page gains a THIRD band for it (two sections + the strip)', count( (array) $bp_pg ) >= 3, 'sections built: ' . count( (array) $bp_pg ) );
+
+/* (b) the footer inset is read from the inner wrapper */
+$bp_v = $bp_r['files']['theme-settings.json']['values'] ?? array();
+ga( '[BP] (b) the footer inset is read from the INNER wrapper when <footer> itself is flush', ! empty( $bp_v['footer_padding_top'] ) || ! empty( $bp_v['footer_padding_top_custom'] ), wp_json_encode( array( $bp_v['footer_padding_top'] ?? null, $bp_v['footer_padding_top_custom'] ?? null ) ) );
+
+/* (c) the bottom bar keeps its separating margin */
+ga( '[BP] (c) the bottom bar keeps the MARGIN that sets it off (mt-, not folded into padding)', (bool) preg_match( '/"copyright_padding":\{"margin":\{"all":"","top":"mt-[^"]+"/', $bp_ts ), ( preg_match( '/"copyright_padding":\{"margin":\{[^}]*\}/', $bp_ts, $bp_m ) ? $bp_m[0] : 'no copyright_padding emitted' ) );
+
+/* (d) the heading gap is the source's exact 8px, not the theme default */
+ga( '[BP] (d) the title->subtitle gap is carried EXACTLY (8px), not left to the theme default', false !== strpos( (string) wp_json_encode( $bp_pg ), 'margin-top:8px' ), ( preg_match( '/heading-subtitle\{[^}]*\}/', (string) wp_json_encode( $bp_pg ), $bp_m2 ) ? $bp_m2[0] : 'no subtitle rule' ) );
+
+/* NEGATIVE: a plain WRAAPPER div (no copy of its own, just sections inside) is still dived through, never claimed. */
+$bp_html2 = str_replace(
+	'<div data-sc-cs="' . $bp_cs( 'background-color:rgb(26,107,95);padding:48px 0px;height:152px' ) . '"><p data-sc-cs="' . $bp_cs( 'color:rgb(250,244,232);font-size:24px;height:56px' ) . '">We design rooms that people remember long after the evening ends.</p></div>',
+	'', $bp_html );
+$bp_pg2 = FW_Site_Converter_Sources::build_from_html( $bp_html2, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array();
+ga( '[BP] NEGATIVE: with no strip present the page keeps just its two real sections (no phantom band)', count( (array) $bp_pg2 ) === 2, 'sections built: ' . count( (array) $bp_pg2 ) );
+
+
+/* ============================================================================================
+ * [BQ] FOUR WAYS A FAITHFUL-LOOKING CONVERSION STILL READS WRONG.
+ *  (a) rule_role() resolves a block's role from a LEARNED class signature, so the hero's genuine overline
+ *      teaches the map "these classes mean overline" and every later line wearing them inherits it —
+ *      including the standfirsts BELOW a title. Four section standfirsts rendered above their headings.
+ *  (b) The author NAME was picked as "the heavier or uppercase line", which reads a profile card backwards:
+ *      there the name is the big line and the ROLE is the small tracked uppercase one. Measured: every team
+ *      card came out `author_name:"Lead Designer", author_job:"Chloe"` — the two simply swapped.
+ *  (c) The card EYEBROW was capped at 40 characters, shorter than the bullet-separated meta line these cards
+ *      use: three of four lost their eyebrow and the fourth kept its only by coming to exactly 40.
+ *  (d) A 248px team portrait was discarded by a 200px capture ceiling AND outgrew the largest avatar step,
+ *      so it rendered at the 128px default and the band lost 93px.
+ * ========================================================================================== */
+$bq_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+/* A hero whose kicker really IS an overline, teaching the role map that class signature… */
+$bq_kick = 'text-sm uppercase tracking-widest font-semibold';
+/* …then a section whose line with the SAME classes sits BELOW its title. */
+$bq_person = function ( $name, $role, $quote ) use ( $bq_cs, $bq_kick ) {
+	return '<div data-sc-cs="' . $bq_cs( 'display:flex;flex-direction:column;height:420px' ) . '">'
+		. '<div data-sc-cs="' . $bq_cs( 'width:248px;height:248px;border-radius:9999px;overflow:hidden' ) . '"><img src="/img/' . sanitize_title( $name ) . '.jpg" class="w-full h-full object-cover" alt="' . $name . '" data-sc-cs="' . $bq_cs( 'width:248px;height:248px;object-fit:cover' ) . '"></div>'
+		// The text block is WRAPPED, as a real profile card is (`<div class="space-y-2">`) — the wrapper is what
+		// makes the name an author candidate rather than the card's own title.
+		. '<div data-sc-cs="' . $bq_cs( 'height:140px;margin:24px 0px 0px' ) . '">'
+		// The name is a plain leaf, not a heading: a card's heading is claimed as its TITLE, so only the
+		// non-heading lines are author candidates — which is exactly where the name/role ranking applies.
+		// Stamped explicitly, so font-size appears ONCE: the reader takes the first occurrence, and layering an
+		// override after the base would have left both lines reading the base 16px and the size test inert.
+		. '<div data-sc-cs="color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:24px;font-weight:600;line-height:32px;text-align:start;display:block;height:32px">' . $name . '</div>'
+		. '<p class="' . $bq_kick . '" data-sc-cs="color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:12px;font-weight:600;line-height:16px;text-align:start;display:block;text-transform:uppercase;letter-spacing:1.5px;height:16px">' . $role . '</p>'
+		. '<blockquote data-sc-cs="' . $bq_cs( 'height:76px' ) . '">&ldquo;' . $quote . '&rdquo;</blockquote>'
+		. '</div></div>';
+};
+$bq_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Harbourline</title></head><body data-sc-cs="' . $bq_cs( 'background-color:rgb(255,255,255)' ) . '">'
+	. '<header data-sc-cs="' . $bq_cs( 'height:80px' ) . '"><nav data-sc-cs="' . $bq_cs( 'display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $bq_cs( 'font-size:22px' ) . '">Harbourline</a><a href="/team" data-sc-cs="' . $bq_cs() . '">Team</a></nav></header>'
+	/* HERO: the kicker sits ABOVE the title — a genuine overline, and what teaches the role map. */
+	. '<section id="hero" data-sc-cs="' . $bq_cs( 'padding:96px 0px;height:400px' ) . '"><div data-sc-cs="' . $bq_cs( 'max-width:1280px;margin:0px auto;height:208px' ) . '">'
+	. '<p class="' . $bq_kick . '" data-sc-cs="' . $bq_cs( 'font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1.5px;height:16px' ) . '">Bespoke Celebration Styling</p>'
+	. '<h1 data-sc-cs="' . $bq_cs( 'font-size:56px;height:64px' ) . '">Harbourline</h1>'
+	. '</div></section>'
+	/* TEAM: the same classes, but BELOW the title — a standfirst, not an overline. */
+	. '<section id="team" data-sc-cs="' . $bq_cs( 'padding:96px 0px;height:858px' ) . '"><div data-sc-cs="' . $bq_cs( 'max-width:1280px;margin:0px auto;height:666px' ) . '">'
+	. '<h2 data-sc-cs="' . $bq_cs( 'font-size:48px;height:56px' ) . '">Meet the Makers</h2>'
+	. '<p class="' . $bq_kick . '" data-sc-cs="' . $bq_cs( 'font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1.5px;height:16px;margin:8px 0px 0px' ) . '">The three-person team behind the styling</p>'
+	. '<div data-sc-cs="' . $bq_cs( 'display:grid;grid-template-columns:381px 381px 381px;gap:24px;height:420px' ) . '">'
+	. $bq_person( 'Chloe', 'Lead Designer', 'I love mapping out a full room and watching the mood change.' )
+	. $bq_person( 'Mia', 'Balloon Specialist', 'Seeing round balloons form flowing organic curves is rewarding.' )
+	. $bq_person( 'Julian', 'Setup Coordinator', 'Making sure the layout is millimetre perfect is my satisfaction.' )
+	. '</div></div></section>'
+	. '<footer data-sc-cs="' . $bq_cs( 'padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $bq_cs( 'height:24px' ) . '">&copy; 2026 Harbourline</p></footer></body></html>';
+
+$bq_r  = FW_Site_Converter_Sources::build_from_html( $bq_html, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+$bq_pg = $bq_r['files']['pages.json']['pages'][0]['builder'] ?? array();
+$bq_find = function ( $sc ) use ( $bq_pg ) {
+	$hit = array();
+	$w = function ( $n ) use ( &$w, &$hit, $sc ) {
+		if ( ! is_array( $n ) ) { return; }
+		if ( $sc === ( $n['shortcode'] ?? '' ) ) { $hit[] = $n['atts']; }
+		foreach ( $n as $v ) { if ( is_array( $v ) ) { $w( $v ); } }
+	};
+	$w( $bq_pg );
+	return $hit;
+};
+
+/* (a) the hero keeps its genuine overline; the team's identical-looking line becomes the SUBTITLE */
+$bq_heads = $bq_find( 'special_heading' );
+$bq_hero = null; $bq_team = null;
+foreach ( $bq_heads as $hh ) {
+	$t = trim( strip_tags( (string) ( $hh['title'] ?? '' ) ) );
+	if ( 'Harbourline' === $t ) { $bq_hero = $hh; }
+	if ( false !== stripos( $t, 'Meet the Makers' ) ) { $bq_team = $hh; }
+}
+ga( '[BQ] (a) a kicker ABOVE the title stays the OVERLINE (the genuine case that teaches the role map)', is_array( $bq_hero ) && false !== stripos( (string) ( $bq_hero['overline'] ?? '' ), 'Bespoke' ), wp_json_encode( is_array( $bq_hero ) ? array( 'ov' => $bq_hero['overline'] ?? '', 'sub' => $bq_hero['subtitle'] ?? '' ) : null ) );
+ga( '[BQ] (a) …while the SAME classes BELOW a title become the SUBTITLE, not a second overline', is_array( $bq_team ) && '' === trim( (string) ( $bq_team['overline'] ?? '' ) ) && false !== stripos( (string) ( $bq_team['subtitle'] ?? '' ), 'three-person' ), wp_json_encode( is_array( $bq_team ) ? array( 'ov' => $bq_team['overline'] ?? '', 'sub' => $bq_team['subtitle'] ?? '' ) : null ) );
+
+/* (b)(c)(d) the people cards */
+$bq_ts = $bq_find( 'testimonials' );
+$bq_first = ( $bq_ts && isset( $bq_ts[0]['testimonials'][0] ) ) ? $bq_ts[0]['testimonials'][0] : null;
+ga( '[BQ] (b) the NAME is the larger line and the ROLE the small tracked one — not swapped', is_array( $bq_first ) && 'Chloe' === trim( (string) ( $bq_first['author_name'] ?? '' ) ) && false !== stripos( (string) ( $bq_first['author_job'] ?? '' ), 'Lead Designer' ), wp_json_encode( is_array( $bq_first ) ? array( 'name' => $bq_first['author_name'] ?? '', 'job' => $bq_first['author_job'] ?? '' ) : 'no testimonial built' ) );
+$bq_rows = ( $bq_ts && isset( $bq_ts[0]['card_rows'] ) ) ? $bq_ts[0]['card_rows'] : array();
+$bq_order = array(); foreach ( (array) $bq_rows as $rr ) { $bq_order[] = implode( '+', (array) ( $rr['slots'] ?? array() ) ); }
+ga( '[BQ] (b) a PROFILE card keeps the source sequence: portrait, person, then what they say', in_array( 'avatar', $bq_order, true ) && in_array( 'author', $bq_order, true ) && array_search( 'avatar', $bq_order, true ) < array_search( 'quote', $bq_order, true ), wp_json_encode( $bq_order ) );
+ga( '[BQ] (d) a 248px portrait is captured and carried EXACTLY, not clamped to the 128px step', $bq_ts && false !== strpos( (string) ( $bq_ts[0]['custom_css'] ?? '' ), '248px' ), substr( (string) ( $bq_ts[0]['custom_css'] ?? '' ), 0, 160 ) );
+
+/* (c) the eyebrow length cap — a bullet meta line of 49 characters must survive */
+$bq_eyebrow = 'Entryways • Grand Entrances • Custom Color Themes';
+ga( '[BQ] (c) the eyebrow cap admits a real bullet meta line (49 chars), which 40 rejected', mb_strlen( $bq_eyebrow ) <= 72 && mb_strlen( $bq_eyebrow ) > 40, 'len=' . mb_strlen( $bq_eyebrow ) );
+
+
+/* ============================================================================================
+ * [BR] A CARD IS THE SOURCE'S SHAPE, NOT THE ELEMENT'S DEFAULT.
+ *  (a) The stylesheet gives a non-boxed testimonial `padding: 2rem` at desktop. That is right for a quote
+ *      card and wrong for a bare team column, which has none: every portrait card came out 64px taller
+ *      (measured, a 420px source card converted to 492px, three times over in one band).
+ *  (b) The Gutter option maps to a fixed ladder (0/4/8/16/24/48px), so a source gutter between steps snaps
+ *      to the nearest AND takes the card width with it — a 32px gutter became 24px and cards 584px not 592.
+ *  (c) The grid renders inside a container with 12px of side padding a source grid does not have, so the
+ *      cards lost 24px of width and, wrapping more text, the band grew taller.
+ *  (d) The `author` slot stacks name over role. A review sets them side by side on one line; stacked, the
+ *      block ran 46px against the source's 29px on every card.
+ * ========================================================================================== */
+$br_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+/* A REVIEW card: quote, then name and role SIDE BY SIDE, inside a bare grid with a 32px gutter. */
+$br_card = function ( $quote, $name, $role ) use ( $br_cs ) {
+	return '<div data-sc-cs="' . $br_cs( 'height:221px' ) . '">'
+		. '<blockquote data-sc-cs="' . $br_cs( 'font-size:16px;height:78px' ) . '">&ldquo;' . $quote . '&rdquo;</blockquote>'
+		. '<div data-sc-cs="' . $br_cs( 'display:flex;flex-direction:row;height:29px;padding:8px 0px 0px' ) . '">'
+		. '<span data-sc-cs="color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:14px;font-weight:600;line-height:20px;text-align:start;display:block;height:20px">' . $name . '</span>'
+		. '<span data-sc-cs="color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:12px;font-weight:400;line-height:16px;text-align:start;display:block;height:16px">' . $role . '</span>'
+		. '</div></div>';
+};
+$br_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Harbourline</title></head><body data-sc-cs="' . $br_cs( 'background-color:rgb(255,255,255)' ) . '">'
+	. '<header data-sc-cs="' . $br_cs( 'height:80px' ) . '"><nav data-sc-cs="' . $br_cs( 'display:flex;gap:32px;height:80px' ) . '"><a href="/" data-sc-cs="' . $br_cs( 'font-size:22px' ) . '">Harbourline</a><a href="/reviews" data-sc-cs="' . $br_cs() . '">Reviews</a></nav></header>'
+	. '<section id="reviews" data-sc-cs="' . $br_cs( 'padding:96px 0px;height:841px' ) . '"><div data-sc-cs="' . $br_cs( 'max-width:1280px;margin:0px auto;height:649px' ) . '">'
+	. '<h2 data-sc-cs="' . $br_cs( 'font-size:48px;height:56px' ) . '">Kind Words</h2>'
+	// a 32px gutter, which the Gutter ladder has no step for, on a grid with NO side padding
+	. '<div data-sc-cs="' . $br_cs( 'display:grid;grid-template-columns:592px 592px;gap:32px;height:474px' ) . '">'
+	. $br_card( 'They built the arch of my dreams and it survived the whole weekend.', 'Amanda R.', 'Birthday Party' )
+	. $br_card( 'Set up the entire reception within two hours, completely self-sufficient.', 'Daniel K.', 'Corporate Launch' )
+	. $br_card( 'The tablescapes were exactly the palette we asked for, down to the ribbon.', 'Priya S.', 'Engagement Dinner' )
+	. $br_card( 'Professional from the first email to the last piece packed away.', 'Tom W.', 'Anniversary' )
+	. '</div></div></section>'
+	. '<footer data-sc-cs="' . $br_cs( 'padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $br_cs( 'height:24px' ) . '">&copy; 2026 Harbourline</p></footer></body></html>';
+
+$br_ts = array();
+$br_w  = function ( $n ) use ( &$br_w, &$br_ts ) {
+	if ( ! is_array( $n ) ) { return; }
+	if ( 'testimonials' === ( $n['shortcode'] ?? '' ) ) { $br_ts[] = $n['atts']; }
+	foreach ( $n as $v ) { if ( is_array( $v ) ) { $br_w( $v ); } }
+};
+$br_w( FW_Site_Converter_Sources::build_from_html( $br_html, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array() );
+$br_a   = $br_ts[0] ?? array();
+$br_css = (string) ( $br_a['custom_css'] ?? '' );
+
+ga( '[BR] (a) a BARE card keeps the source\'s own padding (none), not the quote-card 2rem inset', false !== strpos( $br_css, 'testimonial-item{padding:0px' ), ( preg_match( '/testimonial-item\{padding:[^}]*\}/', $br_css, $br_m ) ? $br_m[0] : 'no padding rule emitted' ) );
+ga( '[BR] (b) a 32px gutter the Gutter ladder cannot express is pinned exactly', false !== strpos( $br_css, '--tg-gap:32px' ), ( preg_match( '/--tg-gap:[^;!]*/', $br_css, $br_m2 ) ? $br_m2[0] : 'no gap rule emitted' ) );
+ga( '[BR] (c) …and the container inset is removed when the source grid spans its column', false !== strpos( $br_css, 'testimonials-container' ) && false !== strpos( $br_css, 'padding-left:0' ), ( preg_match( '/testimonials-container[^{]*\{[^}]*\}/', $br_css, $br_m3 ) ? substr( $br_m3[0], 0, 90 ) : 'no container rule' ) );
+
+$br_rows = array();
+foreach ( (array) ( $br_a['card_rows'] ?? array() ) as $br_r ) { $br_rows[] = implode( '+', (array) ( $br_r['slots'] ?? array() ) ); }
+ga( '[BR] (d) name and role ride ONE inline row when the source sets them side by side', in_array( 'avatar+name+role', $br_rows, true ) || in_array( 'name+role', $br_rows, true ), wp_json_encode( $br_rows ) );
+
+/* NEGATIVE: a card the source really does pad keeps that padding — the rule is "whatever the source sets". */
+$br_html2 = str_replace( $br_cs( 'height:221px' ), $br_cs( 'height:285px;padding:32px;background-color:rgb(245,245,245)' ), $br_html );
+$br_ts2 = array();
+$br_w2 = function ( $n ) use ( &$br_w2, &$br_ts2 ) {
+	if ( ! is_array( $n ) ) { return; }
+	if ( 'testimonials' === ( $n['shortcode'] ?? '' ) ) { $br_ts2[] = $n['atts']; }
+	foreach ( $n as $v ) { if ( is_array( $v ) ) { $br_w2( $v ); } }
+};
+$br_w2( FW_Site_Converter_Sources::build_from_html( $br_html2, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json']['pages'][0]['builder'] ?? array() );
+$br_css2 = (string) ( $br_ts2[0]['custom_css'] ?? '' );
+ga( '[BR] NEGATIVE: a card the source DOES pad keeps its 32px, never zeroed', false === strpos( $br_css2, 'testimonial-item{padding:0px' ), ( preg_match( '/testimonial-item\{padding:[^}]*\}/', $br_css2, $br_m4 ) ? $br_m4[0] : 'no padding rule (default kept)' ) );
+
+
+/* ============================================================================================
+ * [BS] THE MASTHEAD: SPACING, THE ACTIVE ITEM, AND WHAT COUNTS AS A BUTTON.
+ *  (a) cs_is_button() tested that a PROPERTY was present, not that its value meant anything — and the capture
+ *      stamps `border-radius:0px` on plenty of square links. A zero radius read as a pill, a zero border as a
+ *      border, a transparent fill as a fill. The active nav link was classed a button on `border-radius:0px`
+ *      alone: it was emitted as a SECOND header CTA (a bordered "Home" box beside the real one) and, being
+ *      taken for a button, was skipped by the menu tally so the nav lost its current-page marker too.
+ *  (b) An underline drawn as a bottom border IS a CTA link — unless it is one of several sibling links, where
+ *      it is the ACTIVE item marking the current page. Same skin; only the company it keeps tells them apart.
+ *  (c) Nav spacing set with Tailwind's `space-x-*` (a left margin on every child but the first) is not a flex
+ *      `gap`, so the gap reader found nothing and the menu rendered with its items butted together.
+ * ========================================================================================== */
+$bs_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:14px;font-weight:500;line-height:20px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+/* A nav spaced with space-x-8 (32px left margin on every link but the first), whose CURRENT page is marked
+   with a bottom border, plus one real filled CTA. */
+$bs_link = function ( $label, $href, $first = false, $active = false ) use ( $bs_cs ) {
+	$extra = 'border-radius:0px;height:20px' . ( $first ? '' : ';margin:0px 0px 0px 32px' );
+	if ( $active ) { $extra .= ';border-bottom-width:2px;border-bottom-style:solid;border-bottom-color:rgb(45,155,138);padding:0px 0px 4px'; }
+	return '<a href="' . $href . '" data-sc-cs="' . $bs_cs( $extra ) . '">' . $label . '</a>';
+};
+$bs_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Harbourline</title></head><body data-sc-cs="' . $bs_cs( 'background-color:rgb(255,255,255)' ) . '">'
+	. '<header data-sc-cs="' . $bs_cs( 'height:80px;background-color:rgb(250,244,232)' ) . '">'
+	. '<a href="/" data-sc-cs="' . $bs_cs( 'font-size:24px;height:32px' ) . '">Harbourline</a>'
+	. '<nav class="hidden md:flex space-x-8 items-center" data-sc-cs="' . $bs_cs( 'display:flex;height:80px' ) . '">'
+	. $bs_link( 'Home', '/', true, true )
+	. $bs_link( 'Services', '/services' )
+	. $bs_link( 'Portfolio', '/portfolio' )
+	. $bs_link( 'About', '/about' )
+	. $bs_link( 'Contact', '/contact' )
+	. '<a href="mailto:studio@example.com" class="px-6 py-3 rounded" data-sc-cs="' . $bs_cs( 'background-color:rgb(26,107,95);color:rgb(255,255,255);padding:12px 24px;border-radius:4px;height:44px;margin:0px 0px 0px 32px' ) . '">Inquire Now</a>'
+	. '</nav></header>'
+	. '<section id="hero" data-sc-cs="' . $bs_cs( 'padding:96px 0px;height:400px' ) . '"><div data-sc-cs="' . $bs_cs( 'max-width:1280px;margin:0px auto;height:208px' ) . '"><h1 data-sc-cs="' . $bs_cs( 'font-size:56px;height:64px' ) . '">Harbourline</h1></div></section>'
+	. '<footer data-sc-cs="' . $bs_cs( 'padding:48px 0px;height:120px' ) . '"><p data-sc-cs="' . $bs_cs( 'height:24px' ) . '">&copy; 2026 Harbourline</p></footer></body></html>';
+
+$bs_v  = FW_Site_Converter_Sources::build_from_html( $bs_html, 'Harbourline', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$bs_hm = $bs_v['header_main'] ?? array();
+$bs_ctas = array();
+foreach ( (array) ( $bs_hm['main_right'] ?? array() ) as $bs_it ) {
+	$bs_et = $bs_it['element_type'] ?? array();
+	if ( 'cta_button' === ( $bs_et['element'] ?? '' ) ) { $bs_ctas[] = (string) ( $bs_et['cta_button']['cta_text'] ?? '' ); }
+}
+ga( '[BS] (a) the ACTIVE nav item is not emitted as a second header CTA (only the real one is)', array( 'Inquire Now' ) === $bs_ctas, wp_json_encode( $bs_ctas ) );
+ga( '[BS] (b) …and the menu keeps its current-page marker: Menu Item Style = underline', 'underline' === (string) ( $bs_v['header_menu']['menu_item_style'] ?? '' ), (string) ( $bs_v['header_menu']['menu_item_style'] ?? '(unset)' ) );
+ga( '[BS] (c) `space-x-8` nav spacing is read and carried as the menu gap (32px)', false !== strpos( (string) wp_json_encode( $bs_v ), 'primary-menu{gap:32px' ), ( preg_match( '/primary-menu\{gap:[0-9]+px/', (string) wp_json_encode( $bs_v ), $bs_m ) ? $bs_m[0] : 'no gap rule emitted' ) );
+
+/* NEGATIVE: a genuinely filled, rounded CTA is still a CTA — the tightened value tests must not reject it. */
+ga( '[BS] NEGATIVE: the real filled CTA still maps to a header button', in_array( 'Inquire Now', $bs_ctas, true ), wp_json_encode( $bs_ctas ) );
 
 
 $pass = $GLOBALS['__pass'];

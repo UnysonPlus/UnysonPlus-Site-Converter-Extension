@@ -115,6 +115,30 @@ class FW_Site_Converter_Sources {
 	 * @param string $title
 	 * @return array bundle with `source` => the identity.
 	 */
+	/**
+	 * Build ONE bundle from EVERY page of a site.
+	 *
+	 * A site is one conversion, not one per page: the pages share a single design system, header and footer,
+	 * and converting them separately makes each import re-derive — and overwrite — that shared design, so the
+	 * last page converted decides how the whole site looks. The identity of the source (which builder made it)
+	 * is read from the FRONT page, since every page of a site comes from the same generator.
+	 *
+	 * @param array[] $screens Each: { html, url, slug, front }.
+	 * @param string  $title   Fallback title for a screen that carries none.
+	 * @param array   $opts
+	 * @return array|null bundle
+	 */
+	public static function build_from_screens( array $screens, $title = 'Home', array $opts = array() ) {
+		if ( ! $screens ) { return null; }
+		$front = $screens[0];
+		foreach ( $screens as $sc ) { if ( ! empty( $sc['front'] ) ) { $front = $sc; break; } }
+		$id     = self::identify_html( (string) ( $front['html'] ?? '' ) );
+		$bundle = call_user_func( self::builder_for( $id['key'] ), array_merge( array( 'screens' => $screens, 'title' => $title ), $opts ) );
+		if ( is_array( $bundle ) ) { $bundle['source'] = $id; }
+
+		return $bundle;
+	}
+
 	public static function build_from_html( $html, $title = 'Home', array $opts = array() ) {
 		$id     = self::identify_html( $html );
 		$bundle = call_user_func( self::builder_for( $id['key'] ), array_merge( array( 'html' => $html, 'title' => $title ), $opts ) );

@@ -58,9 +58,10 @@ class FW_Site_Converter_Media {
 			return new WP_Error( 'data_uri', __( 'Skipped inline data: URI (no fetch needed).', 'fw' ) );
 		}
 
-		// De-dup #1 (no download): same source URL imported before → reuse it.
+		// De-dup #1 (no download): same source URL imported before → reuse it, but ONLY if its file is
+		// still on disk (see attachment_file_present).
 		$existing = self::find_by_source( $url );
-		if ( $existing ) {
+		if ( $existing && self::attachment_file_present( $existing ) ) {
 			self::$last_reused = true;
 			return $existing;
 		}
@@ -79,6 +80,7 @@ class FW_Site_Converter_Media {
 		$hash = @md5_file( $tmp );
 		if ( $hash ) {
 			$dupe = self::find_by_hash( $hash );
+			if ( $dupe && ! self::attachment_file_present( $dupe ) ) { $dupe = 0; } // the record survived, the file did not
 			if ( $dupe ) {
 				if ( file_exists( $tmp ) ) {
 					@unlink( $tmp );
@@ -404,6 +406,30 @@ class FW_Site_Converter_Media {
 			return new WP_Error( 'write_failed', __( 'Could not write the downloaded file.', 'fw' ) );
 		}
 		return $tmp2;
+	}
+
+	/**
+	 * Is this attachment's file actually on disk?
+	 *
+	 * The de-dup lookups match an attachment POST, but a post outlives its file: an uploads folder emptied
+	 * between runs, a partial restore, a media cleanup. When that happens the importer hands back a record
+	 * whose URL 404s, reports `reused` (so the run shows `failed: 0` — a clean bill of health), and the page
+	 * renders broken images. Measured on a real conversion: a product grid reported "reused 4 / failed 0"
+	 * while every product image 404'd. A reuse is only valid if there is a file behind it.
+	 *
+	 * An attachment with NO local path (an offload/CDN plugin serving it remotely) is left alone — we can't
+	 * see its storage, and re-importing every such file on every run would be worse than the bug.
+	 *
+	 * @param int $id Attachment ID.
+	 * @return bool
+	 */
+	private static function attachment_file_present( $id ) {
+		$id = (int) $id;
+		if ( $id <= 0 ) { return false; }
+		$file = get_attached_file( $id );
+		if ( ! is_string( $file ) || '' === $file ) { return true; }  // nothing local to check → trust it
+		if ( preg_match( '#^https?://#i', $file ) ) { return true; }  // offloaded to a remote store
+		return file_exists( $file );
 	}
 
 	/**

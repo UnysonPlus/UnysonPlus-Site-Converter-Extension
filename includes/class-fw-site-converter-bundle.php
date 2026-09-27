@@ -207,6 +207,10 @@ class FW_Site_Converter_Bundle {
 
 		$dir = self::locate_root( $dir );
 
+		// A bundle that carries its own reports and never gets rebuilt still has something to tell the user;
+		// the rebuild path overwrites this a moment later with the PHP engine's numbers.
+		self::remember_result( $dir );
+
 		// CLEAN UP THE PREVIOUS CONVERSION — a conversion must not leave the last one's artifacts behind. Each
 		// conversion sideloads its media and generates a child theme; without cleanup those pile up forever (a
 		// heavily-reconverted install had grown to ~11k posts / ~888 MB of attachment meta, which then OOM'd the
@@ -256,6 +260,23 @@ class FW_Site_Converter_Bundle {
 		$opt = function ( $k ) use ( $opts ) { return ! isset( $opts[ $k ] ) || ! empty( $opts[ $k ] ); };
 		$do_media  = $opt( 'media' );
 		$do_theme  = $opt( 'theme' );
+
+		// AN INNER PAGE CONTRIBUTES CONTENT, NOT A SITE DESIGN.
+		//
+		// The generated theme is named after the capture, so converting `/services`, `/shop` and `/about`
+		// built themes called "Services", "Shop" and "About" and ACTIVATED each one in turn. A site's design
+		// belongs to the SITE — it is established when its front page is converted — so each inner page was
+		// silently replacing the whole site's chrome with a theme generated from one sub-page, and the last
+		// page converted decided how every page looked. Measured: three inner-page conversions produced three
+		// new themes minutes apart, and the home page then rendered inside a theme from an unrelated capture.
+		//
+		// So: when this capture is an INNER page AND a converter-generated theme is already active, the theme
+		// phase is skipped. A first conversion — front page, or an inner page on a site that has no converted
+		// theme yet — still generates and activates one, so nothing that used to work stops working.
+		if ( $do_theme && self::capture_is_inner_page( $dir ) && self::converter_theme_active() ) {
+			$do_theme = false;
+			$out['theme'] = array( 'skipped' => 'inner-page', 'active' => get_stylesheet() );
+		}
 		$do_header = $opt( 'header' );
 		$do_footer = $opt( 'footer' );
 
@@ -297,7 +318,10 @@ class FW_Site_Converter_Bundle {
 		if ( $do_design && ! $scoped && $theme !== null && class_exists( 'FW_Site_Converter_Theme_Settings' ) ) {
 			// A full (non-scoped) design import OWNS the chrome — pass replace_chrome so stale header/
 			// footer columns from a previous conversion cannot survive into this one.
-			$out['theme_settings'] = FW_Site_Converter_Theme_Settings::import( $theme, true );
+			// `force_chrome` re-applies even settings the user edited since the last conversion. Off by
+			// default: converting a SECOND page of the same site must not silently revert header/footer
+			// text the user corrected after the first one (see Theme_Settings::user_edited_keys).
+			$out['theme_settings'] = FW_Site_Converter_Theme_Settings::import( $theme, true, ! empty( $opts['force_chrome'] ) );
 			$out['sections'][]     = 'theme-settings';
 		}
 
@@ -492,6 +516,19 @@ class FW_Site_Converter_Bundle {
 			$out['sections'][] = 'pages';
 		}
 
+		// --- Phase 4b: THE REST OF THE SITE'S PAGES (a multi-page bundle) ---
+		// A site is ONE conversion. The site-level phases above (media, presets, theme settings, the theme,
+		// the style guide) have run exactly once, on the front page's evidence; each remaining page now
+		// contributes only its own body. This runs BEFORE menus so that every page a nav item points at
+		// already exists, and its created pages join $out['pages'] so the permalink check below sees them.
+		if ( $do_pages && $scope_sections ) {
+			$extra = self::import_page_snapshots( $dir, $out );
+			if ( $extra ) {
+				$out['extra_pages'] = $extra;
+				$out['sections'][]  = 'pages:multi';
+			}
+		}
+
 		// --- Any sections recognized but not yet applied ---
 		foreach ( self::DEFERRED as $name => $file ) {
 			$present = is_file( trailingslashit( $dir ) . $file )
@@ -684,6 +721,33 @@ class FW_Site_Converter_Bundle {
 			@file_put_contents( rtrim( $dir, '/\\' ) . '/import-summary.json', wp_json_encode( $summary, JSON_PRETTY_PRINT ) );
 		}
 
+		// An inner page that 404s is not converted. When this run CREATED one, make sure the site's
+		// permalink structure can actually serve it (see ensure_inner_pages_reachable).
+		$made_inner = false;
+		foreach ( (array) ( $out['pages']['pages'] ?? array() ) as $pg ) {
+			if ( ! empty( $pg['created'] ) && empty( $pg['front_page'] ) ) { $made_inner = true; break; }
+		}
+		if ( $made_inner ) {
+			$new_structure = self::ensure_inner_pages_reachable();
+			if ( '' !== $new_structure ) {
+				$out['permalinks'] = $new_structure;
+				$out['sections'][] = 'permalinks';
+			}
+		}
+
+		// Re-stamp the settings this conversion imported, now that EVERY phase has run. Theme generation
+		// and the page pass can rewrite a value after the theme-settings phase fingerprinted it; without
+		// this the next conversion would read that as a user edit and protect it permanently, so a key the
+		// converter itself changed would never update again.
+		if ( ! empty( $out['theme_settings']['imported'] ) && class_exists( 'FW_Site_Converter_Theme_Settings' )
+			&& method_exists( 'FW_Site_Converter_Theme_Settings', 'refresh_fingerprints' ) ) {
+			FW_Site_Converter_Theme_Settings::refresh_fingerprints( array_merge(
+				(array) ( $out['theme_settings']['imported'] ?? array() ),
+				(array) ( $out['theme_settings']['cleared'] ?? array() ),
+				(array) ( $out['theme_settings']['skipped'] ?? array() )
+			) );
+		}
+
 		return $out;
 	}
 
@@ -701,6 +765,167 @@ class FW_Site_Converter_Bundle {
 	 *
 	 * @param string $dir bundle root (writable temp dir)
 	 */
+	/**
+	 * Convert and import every NON-FRONT page snapshot a multi-page bundle carries.
+	 *
+	 * The capture writes one DOM snapshot per page under `pages/<slug>/rendered.html` and lists them in
+	 * `pages-manifest.json`. A single-page bundle has no manifest and this is a no-op, so nothing that
+	 * worked before changes.
+	 *
+	 * Each snapshot is rebuilt with the SAME engine the front page went through (build_from_html on the
+	 * captured DOM), then imported as a page — and ONLY as a page. The design system is not re-derived:
+	 * re-deriving it per page is precisely what made the last page converted decide the whole site's look.
+	 *
+	 * Pages created here are merged into $out['pages']['pages'] so the permalink check that follows treats
+	 * them like any other created inner page.
+	 *
+	 * @param string $dir capture-out directory
+	 * @param array  $out the running import result (mutated: created pages are merged in)
+	 * @return array one row per extra page: { slug, ok, id?, created?, error? }
+	 */
+	private static function import_page_snapshots( $dir, array &$out ) {
+		$manifest = self::read_json( $dir, array( 'pages-manifest.json' ) );
+		$list     = ( is_array( $manifest ) && isset( $manifest['pages'] ) && is_array( $manifest['pages'] ) ) ? $manifest['pages'] : array();
+		if ( ! $list || ! class_exists( 'FW_Site_Converter_Sources' ) || ! class_exists( 'FW_Site_Converter_Pages' ) ) { return array(); }
+
+		$rows = array();
+		foreach ( $list as $pg ) {
+			if ( ! is_array( $pg ) || ! empty( $pg['front'] ) ) { continue; } // the front page already ran, above
+			$slug = trim( (string) ( $pg['slug'] ?? '' ) );
+			$rel  = trim( (string) ( $pg['rendered'] ?? '' ) );
+			if ( '' === $slug || '' === $rel ) { continue; }
+
+			// stay inside the bundle: a manifest is data, and a path in it is not a licence to read the disk
+			$rel = str_replace( '\\', '/', $rel );
+			if ( '' !== $rel && ( 0 === strpos( $rel, '/' ) || false !== strpos( $rel, '..' ) || preg_match( '#^[a-z]:#i', $rel ) ) ) {
+				$rows[] = array( 'slug' => $slug, 'ok' => false, 'error' => 'unsafe path in pages-manifest.json' );
+				continue;
+			}
+			$file = trailingslashit( $dir ) . $rel;
+			if ( ! is_file( $file ) ) {
+				$rows[] = array( 'slug' => $slug, 'ok' => false, 'error' => 'snapshot missing' );
+				continue;
+			}
+			$html = (string) @file_get_contents( $file );
+			if ( '' === trim( $html ) || false === stripos( $html, 'data-sc-cs' ) ) {
+				$rows[] = array( 'slug' => $slug, 'ok' => false, 'error' => 'snapshot carries no captured styles' );
+				continue;
+			}
+
+			// the page's own URL drives its slug + front/inner decision inside the build
+			$url   = (string) ( $pg['url'] ?? '' );
+			$title = ucwords( trim( preg_replace( '/[^a-z0-9]+/i', ' ', $slug ) ) );
+			if ( '' === $title ) { $title = $slug; }
+
+			$res = FW_Site_Converter_Sources::build_from_html( $html, $title, array(
+				'dynamic_chrome' => true,
+				'hifi_css'       => true,
+				'source_url'     => $url,
+			) );
+			$built = ( is_array( $res ) && isset( $res['files']['pages.json'] ) ) ? $res['files']['pages.json'] : null;
+			if ( ! is_array( $built ) ) {
+				$rows[] = array( 'slug' => $slug, 'ok' => false, 'error' => 'build produced no page' );
+				continue;
+			}
+
+			$imp = FW_Site_Converter_Pages::import( $built );
+			$row = array( 'slug' => $slug, 'ok' => true, 'result' => $imp );
+			// merge the created pages into the main result so the permalink check sees them
+			foreach ( (array) ( $imp['pages'] ?? array() ) as $p ) {
+				if ( ! isset( $out['pages'] ) || ! is_array( $out['pages'] ) ) { $out['pages'] = array( 'pages' => array() ); }
+				if ( ! isset( $out['pages']['pages'] ) || ! is_array( $out['pages']['pages'] ) ) { $out['pages']['pages'] = array(); }
+				$out['pages']['pages'][] = $p;
+				if ( ! empty( $p['created'] ) ) { $row['created'] = true; }
+				if ( isset( $p['id'] ) ) { $row['id'] = $p['id']; }
+			}
+			$rows[] = $row;
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * Is this capture an INNER page rather than the site's front page?
+	 *
+	 * Read from the URL the capture recorded (design-capture.json -> url, else the bundle manifest's
+	 * `source`): a path of `/`, empty, or an index file is the front page; anything else is an inner page.
+	 * A capture with NO recorded URL is treated as a front page, which is the old behaviour.
+	 *
+	 * @param string $dir capture-out directory
+	 * @return bool
+	 */
+	private static function capture_is_inner_page( $dir ) {
+		$url  = '';
+		$meta = self::read_json( $dir, self::FILE_MANIFEST );
+		if ( is_array( $meta ) && ! empty( $meta['source'] ) ) { $url = (string) $meta['source']; }
+		if ( '' === $url ) {
+			$dc = self::read_json( $dir, array( 'design-capture.json' ) );
+			foreach ( array( 'url', 'source_url', 'page_url' ) as $k ) {
+				if ( is_array( $dc ) && ! empty( $dc[ $k ] ) && preg_match( '#^https?://#i', (string) $dc[ $k ] ) ) {
+					$url = (string) $dc[ $k ];
+					break;
+				}
+			}
+		}
+		if ( '' === $url || ! function_exists( 'wp_parse_url' ) ) { return false; }
+		$path = trim( (string) wp_parse_url( $url, PHP_URL_PATH ), '/' );
+
+		return '' !== $path && ! preg_match( '#^(index\.[a-z0-9]+|home)$#i', $path );
+	}
+
+	/** Is the ACTIVE theme one the Site Converter generated (so a site design is already established)? */
+	private static function converter_theme_active() {
+		if ( ! function_exists( 'wp_get_theme' ) ) { return false; }
+		$t = wp_get_theme();
+		if ( ! $t || ! $t->exists() ) { return false; }
+
+		return 'Site Converter' === (string) $t->get( 'Author' );
+	}
+
+	/**
+	 * An INNER page has to be reachable. Make sure the permalink structure can serve one.
+	 *
+	 * WordPress falls back to the PATHINFO structure (`/index.php/%year%/…`) whenever it decides at install
+	 * time that mod_rewrite is unavailable, and to the plain `?p=` structure on some hosts. Either is fine
+	 * for a one-page conversion, where everything lives at `/`. The moment a conversion creates INNER pages
+	 * it is not: the converted menus and in-page links point at `/services`, `/shop`, `/about`, and every
+	 * one of them 404s while the page itself sits at `/index.php/services/`. Reported exactly that way.
+	 *
+	 * Only a structure that ALREADY cannot serve clean URLs is changed — empty (plain) or `/index.php`
+	 * prefixed. A site with its own clean scheme (`/%category%/%postname%/`, a dated one, anything custom)
+	 * is never touched: its permalinks are a deliberate, SEO-bearing choice and not ours to rewrite.
+	 *
+	 * The change is reported in the import result rather than made silently.
+	 *
+	 * @return string the new structure when changed, '' when left alone
+	 */
+	private static function ensure_inner_pages_reachable() {
+		if ( ! function_exists( 'get_option' ) || ! function_exists( 'flush_rewrite_rules' ) ) { return ''; }
+
+		$current = (string) get_option( 'permalink_structure' );
+
+		// already serving clean URLs → leave the site's own scheme alone
+		if ( '' !== $current && 0 !== strpos( $current, '/index.php' ) ) { return ''; }
+
+		$structure = '/%postname%/';
+
+		// Set it through $wp_rewrite, not update_option(). The global keeps its OWN copy of the structure, so
+		// writing only the option leaves it stale and the flush that follows regenerates the rules for the
+		// structure we just replaced — the pages stay 404 until something flushes a second time. Measured:
+		// a full import reported the new structure and every inner page still 404'd; one later flush fixed
+		// all three. set_permalink_structure() updates the option AND the object, so one flush is enough.
+		global $wp_rewrite;
+		if ( isset( $wp_rewrite ) && is_object( $wp_rewrite ) && method_exists( $wp_rewrite, 'set_permalink_structure' ) ) {
+			$wp_rewrite->set_permalink_structure( $structure );
+			$wp_rewrite->flush_rules( true );
+		} else {
+			update_option( 'permalink_structure', $structure );
+			flush_rewrite_rules( true );
+		}
+
+		return $structure;
+	}
+
 	private static function maybe_reconvert_with_php( $dir, $do_media = true ) {
 		if ( ! class_exists( 'FW_Site_Converter_Sources' ) || ! method_exists( 'FW_Site_Converter_Sources', 'build_from_html' ) ) { return; }
 
@@ -719,6 +944,21 @@ class FW_Site_Converter_Bundle {
 		// manifest lacks it (an older bundle, or a lossy unzip that dropped bundle.json) — otherwise every
 		// same-origin SVG (Need Help icons, the hero illustration) falls back to a relative /assets 404.
 		$src_url = ( is_array( $meta ) && ! empty( $meta['source'] ) ) ? (string) $meta['source'] : '';
+		// The capture RECORDS the page it captured (design-capture.json → `url`). Use it before falling back
+		// to anything derived: the PHP rebuild reads this URL's PATH to decide whether the page is the site's
+		// front page or an inner one, and the media fallback below yields only an ORIGIN — often a CDN host
+		// that has nothing to do with the page. With an origin, the path is empty, every capture looked like
+		// the site root, and converting `…/services` REPLACED the home page instead of creating a services
+		// page. Keeping the real URL also keeps the inner page's slug (`/services` → `services`).
+		if ( '' === $src_url ) {
+			$dc = self::read_json( $dir, array( 'design-capture.json' ) );
+			foreach ( array( 'url', 'source_url', 'page_url' ) as $k ) {
+				if ( is_array( $dc ) && ! empty( $dc[ $k ] ) && preg_match( '#^https?://#i', (string) $dc[ $k ] ) ) {
+					$src_url = (string) $dc[ $k ];
+					break;
+				}
+			}
+		}
 		if ( '' === $src_url ) {
 			$media = self::read_json( $dir, array( 'media.json' ) );
 			$urls  = ( is_array( $media ) && isset( $media['urls'] ) && is_array( $media['urls'] ) ) ? $media['urls'] : array();
@@ -726,6 +966,18 @@ class FW_Site_Converter_Bundle {
 				if ( is_string( $u ) && preg_match( '#^(https?://[^/]+)/#i', $u, $mm ) ) { $src_url = $mm[1]; break; }
 			}
 		}
+		// An INNER page is not named after the site. `$meta['name']` is the site/bundle name, so every
+		// sub-page arrived titled "Home" beside the real home page. When the source URL has a path, take
+		// the title from that path segment instead ("/services" -> "Services").
+		if ( '' !== $src_url && function_exists( 'wp_parse_url' ) ) {
+			$sp = trim( (string) wp_parse_url( $src_url, PHP_URL_PATH ), '/' );
+			if ( '' !== $sp && ! preg_match( '#^(index\.[a-z0-9]+|home)$#i', $sp ) ) {
+				$seg   = preg_replace( '/\.[a-z0-9]+$/i', '', basename( $sp ) );
+				$seg   = trim( preg_replace( '/[^a-z0-9]+/i', ' ', $seg ) );
+				if ( '' !== $seg ) { $title = ucwords( $seg ); }
+			}
+		}
+
 		// Carry the Convert panel's "Add entrance animations" (+ "Refine with AI") checkboxes into this
 		// re-convert — WITHOUT this, capture-service (URL) conversions re-run through the PHP engine here but
 		// with hardcoded opts, so the sequential-reveal pass never ran and the boxes appeared to do nothing.
@@ -818,6 +1070,59 @@ class FW_Site_Converter_Bundle {
 		self::write_executed_report( $dir, $files );
 	}
 
+	/**
+	 * REMEMBER THE RESULT so the admin can tell the user what to look at.
+	 *
+	 * Every conversion already measures itself — the parity checks, the dropped-element tally — and then the
+	 * numbers sat in JSON files inside a capture folder the user never opens. The results screen had nothing
+	 * to say beyond "imported", so a conversion that knew about its own weak spots reported none of them and
+	 * the user discovered them by scrolling.
+	 *
+	 * Kept deliberately small (scores, failed checks, counts — no markup, no page data) and non-autoloaded,
+	 * because it is read on exactly one screen.
+	 *
+	 * @param string     $dir   the capture / bundle folder
+	 * @param array|null $files the just-built file set, when the PHP engine rebuilt it (authoritative)
+	 */
+	public static function remember_result( $dir, $files = null ) {
+		$parity = ( is_array( $files ) && isset( $files['conversion-parity.json'] ) ) ? $files['conversion-parity.json'] : self::read_json( $dir, array( 'conversion-parity.json' ) );
+		$drops  = ( is_array( $files ) && isset( $files['conversion-drops.json'] ) )  ? $files['conversion-drops.json']  : self::read_json( $dir, array( 'conversion-drops.json' ) );
+		if ( ! is_array( $parity ) && ! is_array( $drops ) ) { return; }
+
+		$fails = array();
+		foreach ( (array) ( $parity['checks'] ?? array() ) as $c ) {
+			if ( ! is_array( $c ) || ! empty( $c['pass'] ) ) { continue; }
+			$fails[] = array(
+				'id'        => (string) ( $c['id'] ?? '' ),
+				'label'     => (string) ( $c['label'] ?? '' ),
+				'source'    => is_scalar( $c['source'] ?? null ) ? (string) $c['source'] : '',
+				'converted' => is_scalar( $c['converted'] ?? null ) ? (string) $c['converted'] : '',
+				// some checks put the readable explanation here and use source/converted as a count-vs-sample
+				// pair, which reads backwards on its own; the note is what a human can act on.
+				'note'      => is_scalar( $c['note'] ?? null ) ? (string) $c['note'] : '',
+			);
+		}
+
+		$td      = ( is_array( $files ) && isset( $files['theme-design.json'] ) ) ? $files['theme-design.json'] : self::read_json( $dir, array( 'theme-design.json' ) );
+		$src_url = ( is_array( $td ) && ! empty( $td['source_url'] ) ) ? (string) $td['source_url'] : '';
+
+		update_option( 'fw_sc_last_result', wp_json_encode( array(
+			'at'         => time(),
+			// the capture's own record of where it came from; there is no option holding this.
+			'source_url' => $src_url,
+			'dir'        => (string) $dir,
+			'score'      => isset( $parity['score'] ) ? (int) $parity['score'] : null,
+			'passed'     => isset( $parity['passed'] ) ? (int) $parity['passed'] : null,
+			'total'      => isset( $parity['total'] ) ? (int) $parity['total'] : null,
+			'fails'      => $fails,
+			'drops'      => array(
+				'total'      => (int) ( $drops['total'] ?? 0 ),
+				'salvaged'   => (int) ( $drops['rescued'] ?? 0 ),
+				'decorative' => (int) ( $drops['decorative'] ?? 0 ),
+			),
+		) ), false );
+	}
+
 	/** conversion-report-php.csv (+ conversion-drops.json / class-coverage.json / conversion-parity.json) into the capture folder. */
 	private static function write_executed_report( $dir, array $files ) {
 		$dir = rtrim( (string) $dir, '/\\' );
@@ -846,6 +1151,8 @@ class FW_Site_Converter_Bundle {
 		foreach ( array( 'conversion-drops.json', 'class-coverage.json', 'conversion-parity.json' ) as $fn ) {
 			if ( isset( $files[ $fn ] ) ) { @file_put_contents( $dir . '/' . $fn, wp_json_encode( $files[ $fn ], JSON_PRETTY_PRINT ) ); }
 		}
+		// the PHP engine's own numbers are the ones the user's site was built from
+		self::remember_result( $dir, $files );
 	}
 
 	/**

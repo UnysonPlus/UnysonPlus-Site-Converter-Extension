@@ -4378,7 +4378,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		$bits = array();
 		$c = $pick( 'color' );
 		// (the string form adds `!important` so a decomposed card's own colour beats a section-level heading-colour rule)
-		if ( '' !== $c && stripos( $c, 'var(' ) === false && 'inherit' !== $c && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $c ) ) { $bits['color'] = $c; }
+		if ( '' !== $c && stripos( $c, 'var(' ) === false && 'inherit' !== $c && ! preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', $c ) ) { $bits['color'] = $c; }
 		$fs = $pick( 'font-size' );      if ( preg_match( '/^[0-9.]+(px|rem|em)$/', $fs ) ) { $bits['font-size'] = $fs; }
 		$fw = $pick( 'font-weight' );    if ( preg_match( '/^(?:[5-9]00|bold)$/', trim( $fw ) ) ) { $bits['font-weight'] = trim( $fw ); }
 		$ta = strtolower( $pick( 'text-align' ) );     if ( in_array( $ta, array( 'center', 'right' ), true ) ) { $bits['text-align'] = $ta; }
@@ -5301,7 +5301,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 	 * rating defaults to 5 (the shortcode default). The avatar carries the source URL only — the
 	 * media phase localizes it to the imported attachment (the view renders from `url`).
 	 */
-	private static function n_testimonials( array $rows, $design = null, $card_box = null, $align = '' ) {
+	private static function n_testimonials( array $rows, $design = null, $card_box = null, $align = '', $grid_gap = 0, $grid_padx = -1 ) {
 		$items = array();
 		$any_extra = false;
 		foreach ( $rows as $r ) {
@@ -5345,7 +5345,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		// on the native option (the theme's muted ink had made it invisible), and the quote / name / role / footer
 		// stat typography + the footer's rhythm as scoped rules on the rendered parts. JS: testimonialLookCss.
 		$look = null; foreach ( $rows as $r ) { if ( ! empty( $r['look'] ) && is_array( $r['look'] ) ) { $look = $r['look']; break; } }
-		$avatar_size = 'avatar-lg'; $job_color = self::empty_color();
+		$avatar_size = 'avatar-lg'; $job_color = self::empty_color(); $avatar_exact = 0;
 		if ( is_array( $look ) ) {
 			$safe = function ( $d ) { return preg_replace( '/[^a-z0-9()%.,#"\'\s:;-]/i', '', (string) $d ); };
 			$lcss = '';
@@ -5359,6 +5359,11 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			if ( ! empty( $look['avatarPx'] ) ) {
 				$px = (int) $look['avatarPx'];
 				$avatar_size = $px <= 80 ? 'avatar-sm' : ( $px <= 112 ? 'avatar-md' : 'avatar-lg' );
+				// The scale STOPS at 128px (avatar-lg), so anything larger is pinned to 128 and the card loses the
+				// difference — a 248px team portrait rendered at half size. The select keeps the nearest real step
+				// (it always renders something sane) and the exact measurement rides a scoped rule, the same
+				// belt-and-braces used for the other off-scale measurements.
+				if ( $px > 140 ) { $avatar_exact = $px; }
 				$lcss .= 'selector .testimonial-avatar img{width:' . $px . 'px !important;height:' . $px . 'px !important;}';
 			}
 			$parts = array( 'quoteCs' => '.testimonial-quote,selector .testimonial-quote p', 'nameCs' => '.testimonial-author', 'jobCs' => '.testimonial-job', 'extraLabelCs' => '.ts-card__extra-label', 'extraValueCs' => '.ts-card__extra-value' );
@@ -5377,6 +5382,37 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			// the role line's own size must win over the view's `.small` wrapper
 			$lcss = str_replace( 'selector .testimonial-job{', 'selector .testimonial-meta.small .testimonial-job{', $lcss );
 			if ( '' !== $lcss ) { $custom_css = trim( $custom_css . "\n" . $lcss ); }
+			// The GRID's measured gutter, pinned when the Gutter ladder has no step for it (see gridGap).
+			$ts_gap_px = (int) $grid_gap;
+			if ( $ts_gap_px > 0 && ! in_array( $ts_gap_px, array( 0, 4, 8, 16, 24, 48 ), true ) ) {
+				$custom_css = trim( $custom_css . "\nselector .testimonials-grid{--tg-gap:" . $ts_gap_px . 'px !important;}' );
+			}
+			// …and the container's side inset, when the source grid spans its column without one. The element
+			// renders its grid inside a Bootstrap-ish container with 12px of side padding; a source grid that has
+			// none came out 24px narrower, which wrapped more text and grew the whole band.
+			if ( 0 === (int) $grid_padx ) {
+				$custom_css = trim( $custom_css . "
+selector .testimonials-container,selector .testimonials-container--fluid{padding-left:0 !important;padding-right:0 !important;}" );
+			}
+			// The card's own PADDING, so a bare column is not given the quote-card inset (see cardPad).
+			if ( ! empty( $look['cardPad'] ) ) { $custom_css = trim( $custom_css . "\nselector .testimonial-item{padding:" . $look['cardPad'] . ' !important;}' ); }
+			// …and the portrait's own TREATMENT: the filter it is rendered through and the ring around it.
+			$av_skin = '';
+			if ( ! empty( $look['avatarFilter'] ) ) { $av_skin .= 'filter:' . $look['avatarFilter'] . ' !important;'; }
+			if ( '' !== $av_skin ) { $custom_css = trim( $custom_css . "\nselector .testimonial-avatar img{" . $av_skin . '}' ); }
+			if ( ! empty( $look['avatarRing'] ) ) {
+				// …and the frame's ROUNDING, or the ring draws as a square around a circular photo.
+				$ring = 'border:' . $look['avatarRing'] . ' !important;';
+				if ( ! empty( $look['avatarRingRadius'] ) ) { $ring .= 'border-radius:' . $look['avatarRingRadius'] . ' !important;'; }
+				$custom_css = trim( $custom_css . "
+selector .testimonial-avatar{" . $ring . '}' );
+			}
+			// A portrait bigger than the largest avatar step (128px) keeps its MEASURED size here, since the
+			// select cannot say it. Both the frame and the image, so a circular crop stays circular.
+			if ( $avatar_exact > 0 ) {
+				$custom_css = trim( $custom_css . "
+selector .testimonial-avatar,selector .testimonial-avatar img{width:" . (int) $avatar_exact . 'px !important;height:' . (int) $avatar_exact . 'px !important;}' );
+			}
 		}
 		// DESIGN — mirror the source testimonial's presentation (Classic single/grid/carousel, Marquee, …)
 		// when the converter classified it (detect_testimonial_design); else the Classic default. Only the
@@ -5407,6 +5443,26 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			'text_align'      => ( in_array( $align, array( 'left', 'start' ), true ) ? 'text-left' : ( 'right' === $align || 'end' === $align ? 'text-right' : 'text-center' ) ),
 			'avatar_shape'    => 'rounded-circle',
 			'avatar_size'     => $avatar_size,
+			// A PROFILE card keeps the source's own sequence: portrait, then the person, then what they say.
+			// The Card Rows default is the classic testimonial order (quote first, attribution under it), which
+			// put every team member's quote above their own photo and name.
+			'card_rows'       => ! empty( $look['profileOrder'] )
+				? array(
+					array( 'slots' => array( 'avatar' ), 'direction' => 'stack', 'justify' => 'center', 'align' => 'center' ),
+					array( 'slots' => array( 'author' ), 'direction' => 'stack', 'justify' => 'center', 'align' => 'center' ),
+					array( 'slots' => array( 'quote' ),  'direction' => 'stack', 'justify' => 'start',  'align' => 'center' ),
+					array( 'slots' => array( 'extra' ),  'direction' => 'stack', 'justify' => 'start',  'align' => 'center' ),
+				)
+				: array(
+					array( 'slots' => array( 'rating' ),           'direction' => 'inline', 'justify' => 'center', 'align' => 'center' ),
+					array( 'slots' => array( 'quote' ),            'direction' => 'stack',  'justify' => 'start',  'align' => 'center' ),
+					// `author` stacks the name over the role; a source that sets them side by side gets them side
+					// by side, as two slots on one inline row (see authorInline).
+					! empty( $look['authorInline'] )
+						? array( 'slots' => array( 'avatar', 'name', 'role' ), 'direction' => 'inline', 'justify' => 'center', 'align' => 'center' )
+						: array( 'slots' => array( 'avatar', 'author' ),       'direction' => 'inline', 'justify' => 'center', 'align' => 'center' ),
+					array( 'slots' => array( 'extra' ),            'direction' => 'stack',  'justify' => 'start',  'align' => 'center' ),
+				),
 			'show_rating'     => 'yes',
 			'text_color'      => self::empty_color(), 'bg_color' => self::empty_color(), 'font_size_preset' => '',
 			'title_color'     => self::empty_color(), 'quote_color' => self::empty_color(),
@@ -5424,11 +5480,24 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		// (a real-site audit).
 		$j = in_array( $align, array( 'left', 'start' ), true ) ? 'start' : ( ( 'right' === $align || 'end' === $align ) ? 'end' : 'center' );
 		if ( $any_extra || 'center' !== $j ) {
-			$rows_pin = array(
-				array( 'slots' => array( 'rating' ),           'direction' => 'inline', 'justify' => $j,      'align' => 'center' ),
-				array( 'slots' => array( 'quote' ),            'direction' => 'stack',  'justify' => 'start', 'align' => $j ),
-				array( 'slots' => array( 'avatar', 'author' ), 'direction' => 'inline', 'justify' => $j,      'align' => 'center' ),
-			);
+			// RE-JUSTIFY, DON'T RE-ORDER. This rebuilt the row list from scratch in the classic testimonial
+			// sequence, so a PROFILE card (portrait, person, then what they say) that had just been ordered from
+			// the source was silently handed back the quote-first order the moment it was anything but centred —
+			// the alignment fix quietly undid the ordering fix. Keep whichever sequence was chosen above and
+			// change only the justification.
+			$rows_pin = ! empty( $look['profileOrder'] )
+				? array(
+					array( 'slots' => array( 'avatar' ), 'direction' => 'stack', 'justify' => $j,      'align' => 'center' ),
+					array( 'slots' => array( 'author' ), 'direction' => 'stack', 'justify' => $j,      'align' => $j ),
+					array( 'slots' => array( 'quote' ),  'direction' => 'stack', 'justify' => 'start', 'align' => $j ),
+				)
+				: array(
+					array( 'slots' => array( 'rating' ),           'direction' => 'inline', 'justify' => $j,      'align' => 'center' ),
+					array( 'slots' => array( 'quote' ),            'direction' => 'stack',  'justify' => 'start', 'align' => $j ),
+					! empty( $look['authorInline'] )
+						? array( 'slots' => array( 'avatar', 'name', 'role' ), 'direction' => 'inline', 'justify' => $j, 'align' => 'center' )
+						: array( 'slots' => array( 'avatar', 'author' ),       'direction' => 'inline', 'justify' => $j, 'align' => 'center' ),
+				);
 			// the Extra Texts slot only when there IS one — an empty footer row would draw its divider for nothing
 			if ( $any_extra ) { $rows_pin[] = array( 'slots' => array( 'extra' ), 'direction' => 'stack', 'justify' => 'start', 'align' => $j ); }
 			$atts['card_rows'] = $rows_pin;
@@ -6046,8 +6115,35 @@ selector.fw-fl--orient-horizontal{" . implode( ';', $rd ) . ';}' ); }
 				// The gallery view reads the desktop column COUNT from INSIDE `columns` ({ count:'N', 'N':{…} }) — a
 				// sibling `count` is ignored, so without it the grid fell back to the default and stacked the tiles
 				// full-width. Put count inside columns (the sibling stays, harmless) so the N-col grid renders.
-				$atts['design_settings']['grid']['count']   = (string) $count;
-				$atts['design_settings']['grid']['columns'] = array( 'count' => (string) $count, (string) $count => array( 'col_ratio' => $ratio ) );
+				// THE SOURCE'S TRACKS DECIDE THE COLUMNS, NOT THE NUMBER OF PHOTOS. This used the image count, which
+				// says nothing about how the source arranged them: nine images became a nine-across strip of 121px
+				// thumbnails where the source laid out a 3x3 wall of 389px squares — the band collapsed from 1548px
+				// to 485px (measured). The masonry and metro branches below have always used the detected source
+				// count; only the uniform grid guessed. Fall back to the image count when the source has no
+				// readable track list (a single row really is N columns then).
+				$src_cols = ( ! empty( $gd['columns'] ) && (int) $gd['columns'] >= 2 ) ? (int) $gd['columns'] : 0;
+				$cols     = ( $src_cols > 0 && $src_cols <= 12 && $src_cols < $count ) ? $src_cols : $count;
+				if ( $cols !== $count ) {
+					// col_ratio describes ONE ROW, so rebuild it from the spans of the first row only — a featured
+					// tile that spans two tracks keeps its width, and a plain wall comes out even.
+					$row = array(); $acc = 0;
+					foreach ( $spans as $sp ) {
+						$sp = max( 1, (int) $sp );
+						if ( $acc + $sp > $cols ) { break; }
+						$row[] = $sp; $acc += $sp;
+						if ( $acc >= $cols ) { break; }
+					}
+					if ( $acc < $cols ) { $row = array_merge( $row, array_fill( 0, $cols - $acc, 1 ) ); }
+					$rtot = array_sum( $row ); if ( $rtot < 1 ) { $rtot = $cols; }
+					$ratio = array();
+					foreach ( $row as $sp ) { $ratio[] = array( 'w' => (int) round( $sp / $rtot * 100 ) ); }
+				}
+				$atts['design_settings']['grid']['count']   = (string) $cols;
+				$atts['design_settings']['grid']['columns'] = array( 'count' => (string) $cols, (string) $cols => array( 'col_ratio' => $ratio ) );
+				// The source's own GUTTER. Left unset, the shortcode's `--gap-3` (16px) stood in for every source,
+				// and because the tiles divide the remaining width that also changed their SIZE (measured: 395px
+				// tiles where the source has 389px).
+				if ( isset( $gd['gapSlug'] ) && '' !== (string) $gd['gapSlug'] ) { $atts['design_settings']['grid']['gap'] = (string) $gd['gapSlug']; }
 			} elseif ( in_array( $dkey, array( 'masonry', 'metro' ), true ) ) {
 				// Column-count designs use the nested `columns` shape `{ count:'N', 'N':{} }` + a gap default.
 				$n = ! empty( $gd['columns'] ) ? (string) $gd['columns'] : '3';
@@ -6316,7 +6412,7 @@ selector.fw-fl--orient-horizontal{" . implode( ';', $rd ) . ';}' ); }
 			$lc = '';
 			foreach ( array( 'border-top-color', 'color' ) as $ck ) {
 				$cv = isset( $cs[ $ck ] ) ? trim( (string) $cs[ $ck ] ) : '';
-				if ( '' !== $cv && stripos( $cv, 'var(' ) === false && stripos( $cv, 'transparent' ) === false && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $cv ) ) { $lc = $cv; break; }
+				if ( '' !== $cv && stripos( $cv, 'var(' ) === false && stripos( $cv, 'transparent' ) === false && ! preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', $cv ) ) { $lc = $cv; break; }
 			}
 		}
 		if ( '' !== $lc ) { $atts['line_color'] = array( 'predefined' => '', 'custom' => $lc ); }
@@ -7066,7 +7162,7 @@ selector.fw-steps .fw-steps__item{padding:" . $dz['box']['padding'] . ';}' ); } 
 				$bd = self::cs_decls( $bcs, array( 'background-color', 'border-top-width', 'border-top-color', 'color', 'font-size', 'font-weight', 'font-family', 'letter-spacing' ) );
 				$md = array();
 				$bg = (string) ( $bd['background-color'] ?? '' );
-				$md[] = ( '' !== $bg && ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)|transparent/i', $bg ) ) ? 'background:' . $bg : 'background:transparent';
+				$md[] = ( '' !== $bg && ! preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))|transparent/i', $bg ) ) ? 'background:' . $bg : 'background:transparent';
 				if ( ! empty( $bd['border-top-width'] ) && (float) $bd['border-top-width'] > 0 && ! empty( $bd['border-top-color'] ) ) { $md[] = 'border:' . $bd['border-top-width'] . ' solid ' . $bd['border-top-color']; }
 				foreach ( array( 'color', 'font-size', 'font-weight', 'font-family', 'letter-spacing' ) as $k ) {
 					if ( ! empty( $bd[ $k ] ) && preg_match( '/^[a-z0-9(),.%\s#\/\'"-]+$/i', (string) $bd[ $k ] ) ) { $md[] = $k . ':' . $bd[ $k ]; }
@@ -7203,8 +7299,37 @@ selector.fw-steps .fw-steps__item{padding:" . $dz['box']['padding'] . ';}' ); } 
 			);
 		}
 		if ( count( $plans ) < 2 ) { return self::n_code( '' ); }
-		$cols    = (string) max( 2, min( 5, count( $plans ) ) );
-		$overlay = array( 'plans' => $plans, 'columns' => $cols );
+		// LAYOUT + COLUMNS COME FROM THE SOURCE, NOT FROM THE PLAN COUNT.
+		//
+		// `columns` used to be count($plans), which says nothing about how the source arranged them — a
+		// four-item price LIST became a four-across card grid with the price stacked under a wrapped,
+		// centred title. The stitcher now reads the container's measured display and tracks, so a list
+		// stays a list (one full-width row per plan, price on the right) and a grid keeps the source's
+		// OWN column count. Absent geometry falls back to the old count, so an older capture is unchanged.
+		$layout  = ( isset( $b['layout'] ) && 'list' === $b['layout'] ) ? 'list' : 'grid';
+		$src_cols = isset( $b['cols'] ) ? (int) $b['cols'] : 0;
+		$cols    = (string) ( $src_cols >= 1 ? min( 5, $src_cols ) : max( 2, min( 5, count( $plans ) ) ) );
+		$overlay = array( 'plans' => $plans, 'columns' => $cols, 'design_settings' => array( 'layout' => $layout ) );
+		// A LIST's row rhythm is the source's, not the shortcode's default: whether a rule separates the
+		// rows, how far apart they sit, and whether a row pads itself. Defaulting these made a flush,
+		// rule-less menu render with a hairline on every row and 16px of padding it never had.
+		if ( 'list' === $layout ) {
+			$rows = ( isset( $b['rows'] ) && is_array( $b['rows'] ) ) ? $b['rows'] : array();
+			$overlay['design_settings']['list'] = array( 'row_rule' => ! empty( $rows['rule'] ) ? 'yes' : 'no' );
+			$decl = array();
+			if ( isset( $rows['gap'] ) && (int) $rows['gap'] > 0 ) { $decl[] = '--pt-row-gap:' . (int) $rows['gap'] . 'px'; }
+			if ( isset( $rows['pad'] ) ) { $decl[] = '--pt-row-pad:' . (int) $rows['pad'] . 'px'; }
+			if ( ! empty( $rows['price_size'] ) )   { $decl[] = '--pt-row-amount:' . (int) $rows['price_size'] . 'px'; }
+			if ( ! empty( $rows['price_weight'] ) ) { $decl[] = '--pt-row-amount-weight:' . (int) $rows['price_weight']; }
+			// a font STACK from the capture ("Syncopate, sans-serif") — letters, digits, spaces, quotes,
+			// commas and hyphens only, so nothing from the source can break out into the CSS
+			if ( ! empty( $rows['price_font'] ) && preg_match( '/^[a-z0-9 ",-]+$/i', (string) $rows['price_font'] ) ) {
+				$decl[] = '--pt-row-amount-font:' . str_replace( '"', "'", (string) $rows['price_font'] );
+			}
+			if ( $decl ) {
+				$overlay['custom_css'] = trim( (string) ( $overlay['custom_css'] ?? '' ) . 'selector .fw-pt__list{' . implode( ';', $decl ) . ';}' );
+			}
+		}
 		if ( isset( $b['design'] ) && in_array( $b['design'], array( 'classic', 'modern', 'minimal', 'gradient', 'dark', 'outline' ), true ) ) {
 			$overlay['design'] = (string) $b['design'];
 		}
@@ -7218,6 +7343,16 @@ selector.fw-steps .fw-steps__item{padding:" . $dz['box']['padding'] . ';}' ); } 
 				$overlay['card_bg'] = array( 'predefined' => '', 'custom' => $cbg );
 			}
 		}
+		// NO CARD FILL READ AT ALL → the cards sit directly on the section, which is where their ink was
+		// chosen to read. Left unset, the shortcode's own default (a WHITE plan card) renders instead, and a
+		// dark source's near-white plan titles and prices are invisible on it — measured on a real
+		// conversion, `.fw-pt__plan` painted rgb(255,255,255) under rgb(245,245,245) text. Carry the absence
+		// explicitly so the section shows through, exactly as the source does. The readability guard below
+		// then correctly does nothing: with no card fill the captured ink is already the right ink.
+		if ( ! isset( $overlay['card_bg'] ) ) {
+			$overlay['card_bg'] = array( 'predefined' => '', 'custom' => 'rgba(0, 0, 0, 0)' );
+		}
+
 		// Brand ACCENT (the featured highlight + price + button background) — the source's brand green.
 		$acc = trim( (string) ( $b['accent'] ?? '' ) );
 		if ( '' !== $acc && preg_match( '/^(#[0-9a-f]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\))$/i', $acc ) ) {
@@ -8116,8 +8251,21 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 				foreach ( $ld as $lk => $lv ) { if ( '' !== $lv && preg_match( '/^[a-z0-9()%.,\s#-]+$/i', $lv ) ) { $lo[] = $lk . ':' . $lv . ' !important'; } }
 				// `.imgbox__link` only exists in the LINK style; in the Button style the anchor itself is
 				// `.imgbox__btn`, so the measured type landed on nothing and the label rendered at the theme's
-				// 16px instead of the source's 11px tracked caps. Scope both.
-				if ( $lo ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__link,selector .imgbox__btn{" . implode( ';', $lo ) . ';}' ); }
+				// 16px instead of the source's 11px tracked caps. Scope both — but NOT when `.imgbox__link` is
+				// the CARD-WIDE anchor.
+				//
+				// A linked card wraps its whole contents in `.imgbox__link`, so putting the CTA's own type there
+				// cascaded it over the title and the body: measured, a source whose cards read "Balloon Arches /
+				// Impactful entry arches…" in sentence case rendered ENTIRELY IN CAPS, because its "VIEW DETAILS"
+				// link is uppercase and that `text-transform` inherited down the card. The card-wide anchor is the
+				// one that contains the title, so exclude exactly that; a bare CTA link contains no title and
+				// still gets its skin. Emitted as TWO rules rather than one selector list, because an unsupported
+				// `:has()` would otherwise invalidate the button rule alongside it.
+				if ( $lo ) {
+					$lo_css = implode( ';', $lo );
+					$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__btn{" . $lo_css . ';}'
+						. "\nselector .imgbox__link:not(:has(.imgbox__title)){" . $lo_css . ';}' );
+				}
 			}
 		}
 		$box_href = $cta_href !== '' ? $cta_href : (string) ( $link['href'] ?? '' );
@@ -8126,9 +8274,41 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 			$atts['link_url']      = $box_href;
 			$atts['link_target']   = '_self';
 		}
-		// Design family — image-on-top + title/text below = the Stacked family (img → title → text). (Overlay
-		// / Side families are not auto-selected yet; Stacked is the faithful default for a photo-topped tile.)
+		// Design family — image-on-top + title/text below = the Stacked family (img → title → text): the faithful
+		// default for a photo-topped tile, and the fallback when neither family below matches.
 		$atts['design_settings'] = array( 'family' => 'stacked', 'stacked' => array( 'stacking' => 'img-title-text' ) );
+		// …the SIDE family when the source lays the photo BESIDE the copy (a flex row: media one side, text the
+		// other). The shortcode has always had this family; nothing selected it, so a horizontal card was rebuilt
+		// vertically and each row grew from the source's 283px to 551px (+52.7% on the band, measured).
+		if ( ! empty( $img['sideBySide'] ) ) {
+			$atts['design_settings'] = array(
+				'family' => 'side',
+				'side'   => array(
+					'image_side'  => ( 'right' === ( $img['imageSide'] ?? 'left' ) ) ? 'right' : 'left',
+					'media_width' => (string) ( $img['mediaWidth'] ?? '50' ),
+				),
+			);
+			// …and the row's own GAP / ALIGNMENT when they differ from the family's defaults (24px / center).
+			// A split card butts its halves together and stretches the media to full height; inheriting the
+			// default gap stole 24px from the copy column, wrapping the title and adding 36px to every row.
+			$side_css = '';
+			$sgap = isset( $img['sideGap'] ) ? (int) $img['sideGap'] : 24;
+			$sal  = (string) ( $img['sideAlign'] ?? 'center' );
+			if ( 24 !== $sgap ) { $side_css .= 'gap:' . $sgap . 'px !important;'; }
+			if ( 'center' !== $sal && '' !== $sal ) { $side_css .= 'align-items:' . $sal . ' !important;'; }
+			// A STRETCHED media column is filled by its photo. The row stretches the frame to the card's full
+			// height, but the IMAGE keeps its crop ratio inside it — measured, a 291x281 frame held a 291x218
+			// photo and the remaining 63px showed as a band of card fill under every picture. The source's photo
+			// covers its half outright, so let it fill the frame it was stretched into.
+			if ( 'stretch' === $sal ) {
+				$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+selector .imgbox__media,selector .imgbox__media-inner,selector .imgbox__img{height:100% !important;aspect-ratio:auto !important;}" );
+			}
+			if ( '' !== $side_css ) {
+				$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "
+selector .imgbox__row{" . $side_css . "}" );
+			}
+		}
 		// …the OVERLAY family when the source lays its title INSIDE the photo (an absolute layer over a gradient scrim — a
 		// collection tile); the scrim / inset ride as scoped CSS on the overlay layer
 		if ( ! empty( $img['textOverlay'] ) ) {
@@ -8190,9 +8370,18 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 			$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__media{height:" . (int) round( (float) $img['frameHeight'] ) . "px !important;aspect-ratio:auto !important;}selector .imgbox__img{width:100%;height:100%;object-fit:cover;}" );
 		}
 		// The card's ICON (a lucide svg in a 64px circle tile above the title) → the box icon (it was dropped: `icon.type none`).
+		//
+		// AN ARROW BELONGS TO THE LINK IT POINTS WITH, not to the card. The card's lucide is collected from any
+		// icon in the card, so a "Read more ->" CTA lent its chevron to the box: every tile grew a 32px glyph
+		// above its title (plus its margin) that the source never had, while the CTA still drew its own arrow
+		// below — the same mark twice, and ~42px of height per row. Measured on a capture: `lucide/chevron-right`
+		// as the box icon on four cards whose source has no icon at all. Only skipped when the card really does
+		// carry a CTA for the arrow to belong to; a card whose own icon happens to be an arrow keeps it.
 		if ( isset( $atts['icon'] ) && is_array( $atts['icon'] ) ) {
-			if ( ! empty( $card['lucide'] ) ) { $atts['icon'] = array_merge( $atts['icon'], array( 'type' => 'svg', 'svg-source' => 'library', 'svg-id' => (string) $card['lucide'] ) ); }
-			elseif ( ! empty( $card['icon'] ) ) { $atts['icon'] = self::icon_value( (string) $card['icon'] ); }
+			$card_lucide = (string) ( $card['lucide'] ?? '' );
+			if ( '' !== $card_lucide && $btn && preg_match( '~/(?:arrow|chevron)-~i', $card_lucide ) ) { $card_lucide = ''; }
+			if ( '' !== $card_lucide ) { $atts['icon'] = array_merge( $atts['icon'], array( 'type' => 'svg', 'svg-source' => 'library', 'svg-id' => $card_lucide ) ); }
+			elseif ( ! empty( $card['icon'] ) && ! ( $btn && preg_match( '~(?:arrow|chevron)-~i', (string) $card['icon'] ) ) ) { $atts['icon'] = self::icon_value( (string) $card['icon'] ); }
 		}
 		// The card IMAGE's own treatment (filter / object-position / aspect-ratio, capture >= 1.10.95) → its <img>. JS twin: imageBoxNode.
 		if ( ! empty( $card['image']['extra'] ) && preg_match( '/^[a-z0-9()%.,:;\s#\/-]+$/i', (string) $card['image']['extra'] ) ) {
@@ -8929,7 +9118,7 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 			if ( ! preg_match( '/\bclass="([^"]*)"/', $whole, $cm ) || ! ( preg_match( $tok, ' ' . $cm[1] . ' ' ) || preg_match( $arb, ' ' . $cm[1] . ' ' ) ) ) { return $whole; }
 			if ( ! preg_match( '/\bdata-sc-cs="[^"]*(?<![\w-])color:\s*([^;"]+)/i', $whole, $ccm ) ) { return $whole; }
 			$cv = trim( $ccm[1] );
-			if ( $cv === '' || stripos( $cv, 'transparent' ) !== false || preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $cv ) ) { return $whole; }
+			if ( $cv === '' || stripos( $cv, 'transparent' ) !== false || preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', $cv ) ) { return $whole; }
 			$hex = self::rgb_to_hex( $cv );
 			if ( $hex === '' ) { return $whole; }
 			// Merge additively into any existing style="".
@@ -9475,6 +9664,14 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 			// title — a card's `label → h3 → p` group — so the three fold into ONE special_heading (overline + title +
 			// subtitle) instead of three separate headings. Only when an overline is waiting; a bare h3 stays a heading.
 			if ( $role === 'heading' && $head !== null && '' === (string) ( $head['title'] ?? '' ) && '' !== (string) ( $head['overline'] ?? '' ) ) { $role = 'title'; }
+			// AN OVERLINE PRECEDES ITS TITLE. rule_role() resolves a block's role from a LEARNED class signature,
+			// so a kicker that legitimately sits ABOVE the hero title teaches the map "this class combo means
+			// overline" — and every later line wearing those same classes inherits it, including the ones that
+			// sit BELOW a title, which are standfirsts. Measured on a capture: four section standfirsts
+			// ("Handcrafted Decoration Solutions", "Reviews from past host celebrations", …) rendered ABOVE
+			// their headings instead of beneath them, because the hero's genuine overline shared their classes.
+			// Position beats the learned signature: once the title is in hand, the next small line is a subtitle.
+			if ( 'overline' === $role && $head !== null && '' !== (string) ( $head['title'] ?? '' ) && '' === (string) ( $head['subtitle'] ?? '' ) ) { $role = 'subtitle'; }
 			if ( $role === 'text' && $head !== null && '' !== (string) ( $head['title'] ?? '' ) && '' === (string) ( $head['subtitle'] ?? '' )
 				&& self::is_heading_subtitle( $b ) ) {
 				$role = 'subtitle';
@@ -10119,6 +10316,38 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 	 * and letter-spacing fell back to the theme's — the card grew 16px. Carry both from the title's own computed style
 	 * as scoped .heading-title CSS. A FLUID title carries its RELATIVE metrics instead (title_lh_decl / title_ls_decl).
 	 */
+	/**
+	 * NEVER-DROP a title's own UNDERLINE RULE.
+	 *
+	 * A section heading that rules itself off from the content below (`border-b border-border pb-4` — an
+	 * editorial form a menu / price list leans on heavily) has no native option: special_heading's markers
+	 * and containers all decorate the OVERLINE, not the title. So the rule was simply dropped, and with it
+	 * the padding that held the title off it. Carry both as scoped CSS on the heading itself; this is the
+	 * heading's own per-instance decoration, not a skin any preset owns.
+	 *
+	 * @param array $h The stitched heading block.
+	 * @return string scoped CSS, or ''.
+	 */
+	private static function heading_rule_css( $h ) {
+		if ( '' === trim( (string) ( $h['title'] ?? '' ) ) ) { return ''; }
+		$cs = (string) ( $h['title_cs'] ?? '' );
+		if ( '' === $cs ) { return ''; }
+		$d = self::cs_decls( $cs, array( 'border-bottom-width', 'border-bottom-style', 'border-bottom-color', 'padding-bottom' ) );
+		$w = trim( (string) ( $d['border-bottom-width'] ?? '' ) );
+		$y = strtolower( trim( (string) ( $d['border-bottom-style'] ?? '' ) ) );
+		$c = trim( (string) ( $d['border-bottom-color'] ?? '' ) );
+		if ( ! preg_match( '/^([0-9.]+)px$/', $w, $m ) || (float) $m[1] <= 0 ) { return ''; }
+		if ( '' === $y || 'none' === $y || 'hidden' === $y ) { return ''; }
+		// a fully transparent rule paints nothing, however wide it is declared
+		if ( '' === $c || preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', $c ) ) { return ''; }
+
+		$out = array( 'border-bottom:' . $w . ' ' . $y . ' ' . $c . ' !important' );
+		$pb = trim( (string) ( $d['padding-bottom'] ?? '' ) );
+		if ( preg_match( '/^[0-9.]+px$/', $pb ) && (float) $pb > 0 ) { $out[] = 'padding-bottom:' . $pb . ' !important'; }
+
+		return 'selector .heading-title{' . implode( ';', $out ) . ';}';
+	}
+
 	private static function heading_metrics_css( $h ) {
 		if ( '' === trim( (string) ( $h['title'] ?? '' ) ) || ! empty( $h['title_fs_decl'] ) ) { return ''; }
 		$cs = (string) ( $h['title_cs'] ?? '' );
@@ -10192,7 +10421,24 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 		if ( ! empty( $d['font-style'] ) && 'italic' === $d['font-style'] ) { $out[] = 'font-style:italic'; }
 		$tf = (string) ( $h['title_cs'] ?? $h['cs'] ?? '' ); $td = self::cs_decls( $tf, array( 'font-family' ) );
 		if ( ! empty( $d['font-family'] ) && preg_match( '/^[a-z0-9 ,"\'-]+$/i', $d['font-family'] ) && strtolower( trim( $d['font-family'] ) ) !== strtolower( trim( (string) ( $td['font-family'] ?? '' ) ) ) ) { $out[] = 'font-family:' . $d['font-family']; }
-		return $out ? 'selector .heading-subtitle{' . implode( ' !important;', $out ) . ' !important;}' : '';
+		$css = $out ? 'selector .heading-subtitle{' . implode( ' !important;', $out ) . ' !important;}' : '';
+
+		// THE TITLE->SUBTITLE GAP, exactly as measured. `element_spacing` is a three-way select (Normal /
+		// Tight 4px / Relaxed 16px), so it can only ever approximate, and it is left at Normal whenever the
+		// measurement does not reach it — which is the common case, because only some heading branches record
+		// the subtitle's margin. Normal then uses the theme's font-size-relative default: measured on a capture,
+		// a source gap of 8px rendered 39.84px, pushing the whole band 32px down and every tile with it (the
+		// section came out 1580px against the source's 1548px, and a pixel diff read ~29% drift on a band whose
+		// content was otherwise identical). The gap lives on the TITLE's bottom margin in the stylesheet, so
+		// zero that and put the source's own value on the subtitle, where this composer can see it.
+		$smt = null;
+		if ( preg_match( '/(?:^|;)\s*margin-top:\s*([0-9.]+)px/i', $cs, $mm ) ) { $smt = (float) $mm[1]; }
+		elseif ( preg_match( '/(?:^|;)\s*margin:\s*([0-9.]+)px/i', $cs, $mm ) ) { $smt = (float) $mm[1]; }
+		if ( null !== $smt && $smt >= 0 && $smt <= 120 ) {
+			$css .= 'selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:' . (int) round( $smt ) . 'px !important;}';
+		}
+
+		return $css;
 	}
 
 	private static function overline_typography_css( $h ) {
@@ -10625,6 +10871,7 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 				// Re-assert each part's SOURCE font-weight on its own element (wins over the theme's
 				// hN.heading-title tag rule when no heading-weight token is set) — parity with JS to-pages.
 				'custom_css' => self::heading_weight_css( $h )
+				. self::heading_rule_css( $h ) // NEVER-DROP: a title that paints its own underline rule (`border-b pb-4`)
 				. self::heading_metrics_css( $h ) // NEVER-DROP: the title's computed line-height / letter-spacing (a nested heading has no section-scoped rule)
 				. self::heading_family_css( $h ) // NEVER-DROP: a sub-heading's own secondary font (differs from the global heading font)
 				. self::heading_text_fx_css( $h ) // NEVER-DROP: a glow text-shadow / a resting skew on the title or subtitle
@@ -11174,6 +11421,9 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 		$out = array();
 		$pages = isset( $mapping['pages'] ) && is_array( $mapping['pages'] ) ? $mapping['pages'] : array();
 		foreach ( $pages as $page ) {
+			// The reviewer dropped this whole page ("Omit page"). Mirrors build_section()'s section-level
+			// omit: the page contributes nothing and is never created, while its siblings are unaffected.
+			if ( ! empty( $page['omit'] ) ) { continue; }
 			$builder = array();
 			if ( ! empty( $page['mainClass'] ) || ! empty( $page['mainCs'] ) ) { self::main_style( (string) ( $page['mainClass'] ?? '' ), (string) ( $page['mainCs'] ?? '' ) ); } // carry the source <main>'s padding + container width — BEFORE the bands map, so build_section sees whether #main is the container
 			$sections = isset( $page['sections'] ) && is_array( $page['sections'] ) ? $page['sections'] : array();
@@ -12793,6 +13043,30 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 			if ( isset( $b['include'] ) && ! $b['include'] ) { continue; } // unchecked → omit
 			$role = isset( $b['role'] ) ? $b['role'] : 'code';
 			if ( $role === 'skip' ) { continue; }
+
+			/**
+			 * CLAIM A BLOCK and supply its builder nodes yourself, bypassing the built-in mapping below.
+			 *
+			 * The mapping is an ordered if/continue chain rather than one dispatch table, so this is the one
+			 * point where a block can be intercepted without editing the chain. Return null (the default) to
+			 * leave the block to the built-ins; return an array of builder nodes to use instead. An empty
+			 * array claims the block and emits nothing — which is how you deliberately DROP one.
+			 *
+			 * Anything returned goes into its own full-width column, and the pending text buffer is flushed
+			 * first so the nodes land in source order rather than ahead of the text above them.
+			 *
+			 * @since 1.10.12
+			 * @param array|null $nodes   null to fall through; an array of builder nodes to claim the block.
+			 * @param array      $b       the stitched block.
+			 * @param string     $css_id  the section's css id.
+			 */
+			$claimed = apply_filters( 'fw_site_converter_block_nodes', null, $b, $css_id );
+			if ( is_array( $claimed ) ) {
+				$flush_buf();
+				if ( $claimed ) { $items[] = self::n_column( '1_1', array_values( $claimed ) ); }
+				continue;
+			}
+
 			self::collect_section_style( $css_id, $b ); // unified element styler: section-scoped prose styling
 			if ( ! empty( $b['mtAuto'] ) ) { $flush_buf(); $mt_auto_col = true; } // an `mt-auto` wrapper's first block starts its own pushed column
 
@@ -12831,7 +13105,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 			// (the shortcode renders its own container_type). Content only; design not preserved.
 			if ( ( $b['t'] ?? '' ) === 'testimonials' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
 				$flush_buf();
-				$node = self::n_testimonials( $b['items'], isset( $b['design'] ) && is_array( $b['design'] ) ? $b['design'] : null, isset( $b['cardBox'] ) && is_array( $b['cardBox'] ) ? $b['cardBox'] : null, (string) ( $b['align'] ?? '' ) );
+				$node = self::n_testimonials( $b['items'], isset( $b['design'] ) && is_array( $b['design'] ) ? $b['design'] : null, isset( $b['cardBox'] ) && is_array( $b['cardBox'] ) ? $b['cardBox'] : null, (string) ( $b['align'] ?? '' ), (int) ( $b['gridGap'] ?? 0 ), (int) ( $b['gridPadX'] ?? -1 ) );
 				self::apply_block_anim( $node, $b );
 				$items[] = self::n_column( '1_1', array( $node ) );
 				continue;
@@ -12973,6 +13247,14 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 			// …and a heading that FOLLOWS a pending eyebrow (an overline with no title yet) is that eyebrow's TITLE — the band-header
 			// pair (a small mono kicker over the real headline, transform_kicker_headings) folds into ONE special_heading.
 			if ( $role === 'heading' && $head !== null && '' === (string) ( $head['title'] ?? '' ) && '' !== (string) ( $head['overline'] ?? '' ) ) { $role = 'title'; }
+			// AN OVERLINE PRECEDES ITS TITLE. rule_role() resolves a block's role from a LEARNED class signature,
+			// so a kicker that legitimately sits ABOVE the hero title teaches the map "this class combo means
+			// overline" — and every later line wearing those same classes inherits it, including the ones that
+			// sit BELOW a title, which are standfirsts. Measured on a capture: four section standfirsts
+			// ("Handcrafted Decoration Solutions", "Reviews from past host celebrations", …) rendered ABOVE
+			// their headings instead of beneath them, because the hero's genuine overline shared their classes.
+			// Position beats the learned signature: once the title is in hand, the next small line is a subtitle.
+			if ( 'overline' === $role && $head !== null && '' !== (string) ( $head['title'] ?? '' ) && '' === (string) ( $head['subtitle'] ?? '' ) ) { $role = 'subtitle'; }
 			if ( 'heading' === (string) ( $b['t'] ?? '' ) && ( $wm = self::watermark_of( $b ) ) ) { // (see build_cell_items)
 				$flush_head();
 				$buf[] = self::n_watermark_heading( $b, $wm );
@@ -13832,7 +14114,7 @@ selector{max-width:100% !important;}" ); } // (#main's gutter is the gutter — 
 			if ( $has_bw && ! $bc_ok ) {
 				$sec_cs_b = (string) ( $sec['sectionCs'] ?? '' );
 				if ( preg_match( '/(?:^|;)\s*border-top-color:\s*(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $sec_cs_b, $bcm )
-					&& ! preg_match( '/rgba?\([^)]*[,\/]\s*0\s*\)/i', $bcm[1] ) ) {
+					&& ! preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', $bcm[1] ) ) {
 					// Drop the unresolvable var()-based colours so the clean shorthand wins regardless of emit order.
 					foreach ( array( 'border-color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color' ) as $bck ) {
 						if ( isset( $cont[ $bck ] ) && stripos( (string) $cont[ $bck ], 'var(' ) !== false ) { unset( $cont[ $bck ] ); }
