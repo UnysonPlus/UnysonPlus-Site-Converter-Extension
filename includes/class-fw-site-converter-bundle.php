@@ -302,7 +302,12 @@ class FW_Site_Converter_Bundle {
 				: ( self::is_list( $media ) ? $media : array() );
 			$urls    = array_slice( array_values( array_filter( array_map( 'trim', array_map( 'strval', (array) $urls ) ) ) ), 0, 500 );
 			FW_Site_Converter_Progress::step( 'media' );
-			$results = $urls ? FW_Site_Converter_Media::import_urls( $urls ) : array();
+			// `local` maps a source URL to a file the CAPTURE already normalised (an undecodable video
+			// transcoded, its poster cut) and shipped in the bundle. Passing it lets the import use that file
+			// rather than re-fetching the remote original, which is what gets the benefit onto hosts with no
+			// ffmpeg. Absent on every older bundle, and then this is exactly the call it always was.
+			$local   = ( isset( $media['local'] ) && is_array( $media['local'] ) ) ? $media['local'] : array();
+			$results = $urls ? FW_Site_Converter_Media::import_urls( $urls, 0, $local, (string) $dir ) : array();
 			$out['media']      = self::summarize_media( $results );
 			$out['sections'][] = 'media';
 		}

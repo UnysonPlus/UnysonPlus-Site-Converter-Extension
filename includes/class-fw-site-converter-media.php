@@ -281,6 +281,29 @@ class FW_Site_Converter_Media {
 		@unlink( $poster );
 	}
 
+	/**
+	 * Resolve a bundle-relative media path, refusing anything that escapes the bundle directory.
+	 *
+	 * The path comes out of a JSON file that arrived with an uploaded zip, so it is untrusted input: a
+	 * `../../wp-config.php` must not resolve. Both sides are realpath-ed and the result has to still sit
+	 * under the bundle.
+	 *
+	 * @param string $dir  the bundle directory
+	 * @param string $rel  path relative to it
+	 * @return string absolute readable path, or '' when it is missing or escapes
+	 */
+	private static function bundle_path( $dir, $rel ) {
+		$slash = function ( $p ) { return str_replace( DIRECTORY_SEPARATOR, '/', (string) $p ); };
+		$rel   = trim( $slash( $rel ) );
+		if ( '' === $rel ) { return ''; }
+		$root = realpath( (string) $dir );
+		$full = realpath( rtrim( $slash( $dir ), '/' ) . '/' . ltrim( $rel, '/' ) );
+		if ( ! $root || ! $full || ! is_file( $full ) || ! is_readable( $full ) ) { return ''; }
+		$rootn = rtrim( $slash( $root ), '/' ) . '/';
+		if ( 0 !== strpos( $slash( $full ), $rootn ) ) { return ''; }
+		return $full;
+	}
+
 	public static function sideload( $url, $post_id = 0, $desc = '' ) {
 		self::$last_reused = false;
 		self::stretch_time_limit();
@@ -574,7 +597,7 @@ class FW_Site_Converter_Media {
 	 * @param string $desc     Optional description/title.
 	 * @return int|WP_Error Attachment ID, or WP_Error.
 	 */
-	public static function sideload_upload( $name, $tmp_path, $post_id = 0, $desc = '' ) {
+	public static function sideload_upload( $name, $tmp_path, $post_id = 0, $desc = '', $source_url = '', $already_normalized = false ) {
 		self::$last_reused = false;
 		$name = sanitize_file_name( (string) $name );
 		if ( $name === '' || ! is_string( $tmp_path ) || ! is_readable( $tmp_path ) ) {
@@ -618,7 +641,9 @@ class FW_Site_Converter_Media {
 		// A video gets normalised first: a codec many browsers cannot decode becomes H.264, and a poster
 		// frame is cut so the slot is never blank while the file arrives. A no-op without ffmpeg, and a
 		// no-op for anything that is not a video — so the poster's own sideload short-circuits here.
-		$poster_tmp = self::normalize_video( $file );
+		// …unless the CAPTURE already did it. Re-cutting a poster for a file the bundle shipped normalised is
+		// pure duplicated work on the one machine that did not need the help.
+		$poster_tmp = $already_normalized ? '' : self::normalize_video( $file );
 
 		// Only the sizes a converted asset needs — the bulk of the media phase is resizing (see trim_image_sizes).
 		$_trim = self::trim_image_sizes();
@@ -642,6 +667,10 @@ class FW_Site_Converter_Media {
 			return $id;
 		}
 		update_post_meta( (int) $id, self::SOURCE_META, 'upload:' . $name );
+		// A file that CAME FROM a URL (a bundle shipping a pre-normalised video) also carries that URL, so
+		// find_by_source() de-dupes against it and localize() rewrites every reference to it. Without this the
+		// page would keep pointing at the remote original even though the file is already in the library.
+		if ( '' !== trim( (string) $source_url ) ) { add_post_meta( (int) $id, self::SOURCE_META, esc_url_raw( trim( (string) $source_url ) ) ); }
 		if ( $hash ) { update_post_meta( (int) $id, self::HASH_META, $hash ); }
 		return (int) $id;
 	}
@@ -799,7 +828,7 @@ class FW_Site_Converter_Media {
 	 * @param int      $post_id
 	 * @return array[] One row per URL: { source, ok, id?, url?, reused?, message? }.
 	 */
-	public static function import_urls( array $urls, $post_id = 0 ) {
+	public static function import_urls( array $urls, $post_id = 0, array $local = array(), $dir = '' ) {
 		$seen = array();
 		$out  = array();
 
@@ -836,7 +865,27 @@ class FW_Site_Converter_Media {
 				continue;
 			}
 
-			$id = self::sideload( $url, $post_id );
+			// A BUNDLE MAY ALREADY CARRY THIS ASSET, NORMALISED.
+			//
+			// The capture service transcodes an undecodable video and cuts its poster, because it runs on a
+			// machine that has ffmpeg — which a shared WordPress host usually does not. When the bundle ships
+			// the result, use it instead of fetching the remote original: the host then gets a small H.264 file
+			// and a poster whatever is installed on it. Anything missing falls straight through to the download.
+			$id = null;
+			if ( isset( $local[ $url ] ) && is_array( $local[ $url ] ) && '' !== (string) $dir ) {
+				$lf = self::bundle_path( $dir, (string) ( $local[ $url ]['file'] ?? '' ) );
+				if ( '' !== $lf ) {
+					$id = self::sideload_upload( basename( $lf ), $lf, $post_id, '', $url, true );
+					if ( ! is_wp_error( $id ) && (int) $id > 0 ) {
+						$pf = self::bundle_path( $dir, (string) ( $local[ $url ]['poster'] ?? '' ) );
+						if ( '' !== $pf && ! get_post_meta( (int) $id, '_sc_video_poster', true ) ) {
+							$pid = self::sideload_upload( basename( $pf ), $pf, $post_id );
+							if ( ! is_wp_error( $pid ) && (int) $pid > 0 ) { update_post_meta( (int) $id, '_sc_video_poster', (int) $pid ); }
+						}
+					}
+				}
+			}
+			if ( null === $id || is_wp_error( $id ) ) { $id = self::sideload( $url, $post_id ); }
 
 			if ( is_wp_error( $id ) ) {
 				$out[] = array( 'source' => $url, 'ok' => false, 'message' => $id->get_error_message() );
