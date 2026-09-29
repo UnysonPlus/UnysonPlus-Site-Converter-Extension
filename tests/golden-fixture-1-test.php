@@ -7090,6 +7090,54 @@ ga( '[VP] NEGATIVE: a clip the visitor must START still defers its bytes',
 	'a click-to-play clip was made to preload in full' );
 
 
+/* ==========================================================================================
+ * [RB] A RULE'S THICKNESS IS A MEASUREMENT, NOT A CLASS NAME.
+ *  n_rule_bar() read the bar height only from the class table. Tailwind's `h-px` (a one-pixel height) is
+ *  not in it, so a rule written that way scored ZERO thickness, was refused, fell through to the empty-dot
+ *  path and shipped as a raw code_block — uneditable, one per rule. Measured: 39 across 6 pages, 21 of them
+ *  on a single A–Z glossary where every letter's rule became its own block. Corpus after:
+ *  code_block 105 -> 83, divider 7 -> 29 — an exact swap, nothing lost.
+ *
+ *  Asserted on the PREDICATE. An end-to-end fixture was tried first and produced no divider at all: the
+ *  rule only reaches n_rule_bar() from inside a MIRRORED subtree, and a small hand-built page decomposes
+ *  natively instead, so the fixture never exercised the code that changed. It would have failed for a
+ *  reason unrelated to the rule — which is worse than not testing it.
+ * ========================================================================================== */
+$rb_m = new ReflectionMethod( 'FW_Site_Converter_Mapper', 'n_rule_bar' );
+$rb_m->setAccessible( true );
+$rb_el = function ( $class, $cs ) {
+	$doc = new DOMDocument();
+	$prev = libxml_use_internal_errors( true );
+	$doc->loadHTML( '<?xml encoding="utf-8"?><body><div class="' . $class . '" data-sc-cs="' . $cs . '"></div></body>' );
+	libxml_clear_errors();
+	libxml_use_internal_errors( $prev );
+	return $doc->getElementsByTagName( 'div' )->item( 0 );
+};
+
+/* A hairline rule: its thickness exists ONLY as a computed height — `h-px` is not in the class table. */
+ga( '[RB] (a) a rule whose thickness is only in the stamp is recognised as a rule',
+	is_array( $rb_m->invoke( null, $rb_el( 'flex-1 h-px bg-border',
+		'background-color:rgb(220,229,224);height:1px;border-radius:0px' ) ) ),
+	'the computed height was ignored, so the rule was refused' );
+
+/* NEGATIVE: a round DOT must stay a dot — the radius guard is what separates them, and a thickness
+   fallback must not quietly turn every small painted box into a divider. */
+ga( '[RB] NEGATIVE: a small ROUND dot is not a rule',
+	null === $rb_m->invoke( null, $rb_el( 'w-1 h-1 rounded-full bg-border',
+		'background-color:rgb(220,229,224);width:4px;height:4px;border-radius:9999px' ) ),
+	'a round dot was mistaken for a rule' );
+
+/* NEGATIVE: the thickness gate still applies — a tall painted box is a box, not a hairline. */
+ga( '[RB] NEGATIVE: a tall painted box is not a rule',
+	null === $rb_m->invoke( null, $rb_el( 'bg-border',
+		'background-color:rgb(220,229,224);width:400px;height:64px;border-radius:0px' ) ),
+	'a 64px-tall box was read as a rule' );
+
+/* NEGATIVE: no paint, no rule. An invisible box must not become a visible divider. */
+ga( '[RB] NEGATIVE: an unpainted hairline is not a rule',
+	null === $rb_m->invoke( null, $rb_el( 'h-px', 'height:1px;border-radius:0px' ) ),
+	'a transparent box was turned into a visible divider' );
+
 $pass = $GLOBALS['__pass'];
 $fail = $GLOBALS['__fail'];
 echo "\n========================================\n";

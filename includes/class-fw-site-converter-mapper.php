@@ -6399,6 +6399,17 @@ selector.fw-fl--orient-horizontal{" . implode( ';', $rd ) . ';}' ); }
 		// so a px-only guard silently dropped every rem-valued accent bar — the "Our Menu" underline vanishing).
 		// px_of() normalises px/rem/unitless → px. A rule is thin (≤12px); 0/none disqualifies it.
 		$hpx = self::px_of( $h );
+		// …and when the CLASS does not yield one, the measurement does. `h-px` (Tailwind's one-pixel height)
+		// is not in the class table, so a rule written that way scored zero thickness and was refused here --
+		// then fell through to the empty-dot path and shipped as a raw code block. Measured: 39 of them across
+		// 6 pages, 21 on a single A-Z glossary where every letter's rule became its own uneditable block.
+		//
+		// Reading a class name where a computed value is already stamped is the recurring shape of this whole
+		// corpus's defects; the stamp is the fact, the class is one way of expressing it.
+		if ( $hpx <= 0 ) {
+			$hcs = self::cs_decls( (string) $el->getAttribute( 'data-sc-cs' ), array( 'height' ) );
+			$hpx = self::px_of( trim( (string) ( $hcs['height'] ?? '' ) ) );
+		}
 		if ( $hpx <= 0 || $hpx > 12 ) { return null; }
 		// A DOT is not a rule: a round box (radius ≥ half its height / `rounded-full`), or one no wider than twice its height (a
 		// window dot, a status LED, a label separator) — a rule is a thin WIDE bar. Width from the class, else the computed stamp.
