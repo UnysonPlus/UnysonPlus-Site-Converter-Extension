@@ -262,5 +262,54 @@ $ok( false !== strpos( $ch_lost, 'only ever recorded' ),
 	'[CH] NEGATIVE: text present only in conversion_map / raw_chrome is STILL reported missing',
 	'the haystack was widened until nothing can be reported lost; lost=' . mb_substr( $ch_lost, 0, 170 ) );
 
+
+/* ==========================================================================================
+ * [WM] A SITE-BUILDER WATERMARK IS NOT THE CUSTOMER'S CONTENT.
+ *  Several builders pin a small "made with …" badge to the page, linking back to themselves. The converter
+ *  deliberately drops it — carrying it would advertise the tool the customer is leaving — so the audit
+ *  should say "deliberately not carried" rather than count it as content we lost. Measured: 24 of the 29
+ *  remaining overlay-on-media losses, spread across 26 pages, which made it look like the most systematic
+ *  archetype left when it was one badge repeated.
+ *  Narrow on purpose, per the consent-banner lesson above: BOTH an attribution phrasing AND a container
+ *  that calls itself branding/watermark. Either alone is far too broad.
+ * ========================================================================================== */
+$wm_dom = function ( $html ) {
+	$d = new DOMDocument();
+	$p = libxml_use_internal_errors( true );
+	$d->loadHTML( '<?xml encoding="utf-8"?><body>' . $html . '</body>' );
+	libxml_clear_errors();
+	libxml_use_internal_errors( $p );
+	return $d;
+};
+$wm_leaf = function ( $doc, $text ) {
+	foreach ( $doc->getElementsByTagName( '*' ) as $e ) {
+		if ( $e->getElementsByTagName( '*' )->length ) { continue; }
+		if ( trim( preg_replace( '/\s+/u', ' ', $e->textContent ) ) === $text ) { return $e; }
+	}
+	return null;
+};
+$wm_oos = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'coverage_out_of_scope' );
+$wm_oos->setAccessible( true );
+
+/* the badge: an attribution phrase inside a container that names itself branding */
+$wm_badge = $wm_leaf( $wm_dom( '<div id="site-branding-badge" class="pill" role="link"><span>Made with Example Builder</span></div>' ), 'Made with Example Builder' );
+$ok( $wm_badge && '' !== (string) $wm_oos->invoke( null, $wm_badge ),
+	'[WM] a builder watermark is reported as deliberately not carried, not as lost content',
+	'reason=' . ( $wm_badge ? var_export( $wm_oos->invoke( null, $wm_badge ), true ) : 'leaf not found' ) );
+
+/* NEGATIVE 1 — the same phrasing in an ordinary container is real content. A product really can say
+   "Made in Italy", and a `badge` class is far too common to mean anything on its own. */
+$wm_prod = $wm_leaf( $wm_dom( '<div class="product-badge"><span>Made in Italy by hand</span></div>' ), 'Made in Italy by hand' );
+$ok( $wm_prod && '' === (string) $wm_oos->invoke( null, $wm_prod ),
+	'[WM] NEGATIVE: the same phrasing in an ordinary badge is still content',
+	'reason=' . ( $wm_prod ? var_export( $wm_oos->invoke( null, $wm_prod ), true ) : 'leaf not found' ) );
+
+/* NEGATIVE 2 — a branding container alone is not enough either. A site's own branding block holds the
+   business name, which is exactly the content a conversion must keep. */
+$wm_brand = $wm_leaf( $wm_dom( '<div class="site-branding"><span>Bakehouse and Coffee Bar</span></div>' ), 'Bakehouse and Coffee Bar' );
+$ok( $wm_brand && '' === (string) $wm_oos->invoke( null, $wm_brand ),
+	'[WM] NEGATIVE: a branding container alone does not excuse text from the audit',
+	'reason=' . ( $wm_brand ? var_export( $wm_oos->invoke( null, $wm_brand ), true ) : 'leaf not found' ) );
+
 echo "\n" . ( $fails ? "✗ {$fails} FAIL" : '✓ ALL PASS — title derivation + coverage audit guarded' ) . "\n";
 exit( $fails ? 1 : 0 );

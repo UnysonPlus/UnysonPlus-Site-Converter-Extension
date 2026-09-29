@@ -4609,8 +4609,8 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			// the band's height drifted (592x740 rendered 608x608 — reported on three sites).
 			$icss = (string) $img->getAttribute( 'data-sc-cs' );
 			$h    = 0.0;
-			if ( preg_match( '/h-\[([0-9.]+)px\]/', $icls, $hm ) ) { $h = (float) $hm[1]; }
-			elseif ( preg_match( '/h-(\d{1,3})(?:\s|$)/', $icls, $hm ) ) { $h = (int) $hm[1] * 4; }
+			if ( preg_match( '/\bh-\[([0-9.]+)px\]/', $icls, $hm ) ) { $h = (float) $hm[1]; }
+			elseif ( preg_match( '/\bh-(\d{1,3})(?:\s|$)/', $icls, $hm ) ) { $h = (int) $hm[1] * 4; }
 			elseif ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $icss, $hm ) ) { $h = (float) $hm[1]; }
 			if ( $h < 80 || $h > 1600 ) { return ''; }
 			$own = 'selector img{width:100%;height:' . (int) round( $h ) . 'px;object-fit:cover;display:block;';

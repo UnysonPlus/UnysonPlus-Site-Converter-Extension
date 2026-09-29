@@ -3737,7 +3737,7 @@ class FW_Site_Converter_Stitch {
 							foreach ( $ctl->getElementsByTagName( 'svg' ) as $sv3 ) { $g3 = $sv3; break; }
 							if ( $g3 instanceof DOMElement && $ctl->ownerDocument ) {
 								$gm3 = self::strip_cs( trim( (string) $ctl->ownerDocument->saveHTML( $g3 ) ) );
-								if ( '' !== $gm3 && strlen( $gm3 ) <= 4000 && ! preg_match( '/<(?:script|foreignObject)/i', $gm3 ) ) {
+								if ( '' !== $gm3 && strlen( $gm3 ) <= 4000 && ! preg_match( '/<(?:script|foreignObject)\b/i', $gm3 ) ) {
 									$gid3 = self::detect_lucide_in( $ctl );
 									$li3['li_icon'] = ( '' !== $gid3 )
 										? array( 'type' => 'svg', 'svg-source' => 'library', 'svg-id' => $gid3 )
@@ -14788,7 +14788,7 @@ class FW_Site_Converter_Stitch {
 			$bxw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', (string) $box->getAttribute( 'data-sc-cs' ), $bxwm ) ? (float) $bxwm[1] : ( preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', (string) $img->getAttribute( 'data-sc-cs' ), $bxim ) ? (float) $bxim[1] : 0.0 );
 			$bndw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $scs, $bndm ) ? (float) $bndm[1] : 1440.0;
 			if ( $bxw > 0 && $bxw < $bndw * 0.7 ) { continue; }
-			$sibling_boxes = 0; foreach ( $node->getElementsByTagName( 'img' ) as $oi ) { $ob = $oi->parentNode; if ( $ob instanceof DOMElement && ( preg_match( '/aspect-(?:\[|video|square)/', ' ' . strtolower( self::cls( $ob ) ) . ' ' ) || preg_match( '/(?:^|;)\s*aspect-ratio:/', (string) $ob->getAttribute( 'data-sc-cs' ) ) ) ) { $sibling_boxes++; } }
+			$sibling_boxes = 0; foreach ( $node->getElementsByTagName( 'img' ) as $oi ) { $ob = $oi->parentNode; if ( $ob instanceof DOMElement && ( preg_match( '/\baspect-(?:\[|video|square)/', ' ' . strtolower( self::cls( $ob ) ) . ' ' ) || preg_match( '/(?:^|;)\s*aspect-ratio:/', (string) $ob->getAttribute( 'data-sc-cs' ) ) ) ) { $sibling_boxes++; } }
 			if ( $sibling_boxes >= 2 ) { continue; }
 			$src = trim( (string) $img->getAttribute( 'src' ) );
 			if ( $src === '' ) { $src = trim( (string) $img->getAttribute( 'data-src' ) ); }
@@ -16759,7 +16759,7 @@ class FW_Site_Converter_Stitch {
 		if ( preg_match( '/^0\d$/', $num_raw ) ) { return null; }
 		// A TIME or a RANGE ("4–10 PM", "11:30 AM–10 PM", "9:00 - 17:00", "Mon–Fri") is opening hours, not a statistic — the
 		// hours tiles had become counter sub-cards (a real-site audit)
-		if ( preg_match( '/^\s*(?::\d{2}|\s*[–—-]\s*\d|\s*(?:am|pm))/iu', $after ) || preg_match( '/[–—-]\s*$/u', $before ) ) { return null; }
+		if ( preg_match( '/^\s*(?::\d{2}|\s*[–—-]\s*\d|\s*(?:am|pm)\b)/iu', $after ) || preg_match( '/[–—-]\s*$/u', $before ) ) { return null; }
 		$prefix  = '';
 		// a comparison / approximation sign reads as the stat's prefix too ("< 1.2ms", "> 99%", "≈ 40", "~ 3x")
 		if ( preg_match( '/([$€£¥+~<>≈≤≥])\s*$/u', $before, $pm ) ) { $prefix = $pm[1]; $before = preg_replace( '/([$€£¥+~<>≈≤≥])\s*$/u', '', $before ); }
@@ -22941,6 +22941,23 @@ class FW_Site_Converter_Stitch {
 				if ( false !== strpos( $sig, 'skip-link' ) || false !== strpos( $sig, 'skip-to' ) || false !== strpos( $sig, 'screen-reader-text' ) ) {
 					return 'accessibility affordance the theme provides itself';
 				}
+				// A SITE-BUILDER WATERMARK IS NOT THE CUSTOMER'S CONTENT.
+				//
+				// Several builders pin a small "made with …" badge to the page linking back to themselves. Carrying
+				// it into someone's WordPress site would be wrong -- it advertises the tool they are leaving -- so
+				// the converter deliberately drops it, and the audit should say so rather than count it as content
+				// we lost. Measured across the corpus it was 24 of the 29 remaining overlay-on-media "losses",
+				// spread over 26 pages, which made it look like the most systematic archetype left.
+				//
+				// Narrow on purpose, per the lesson above: BOTH an attribution phrasing AND a container that calls
+				// itself branding/watermark. Either alone is far too broad -- "Made in USA" on a product card is
+				// real content, and plenty of innocent elements carry a `badge` class.
+				if ( preg_match( '/\b(?:branding|watermark)\b/', str_replace( '-', ' ', $sig ) ) ) {
+					$own = trim( preg_replace( '/\s+/u', ' ', (string) self::text( $el ) ) );
+					if ( preg_match( '/^(?:made|built|created|designed|powered)\s+(?:in|with|by|on)\b/iu', $own ) ) {
+						return 'a site-builder watermark injected by the source tool, not page content';
+					}
+				}
 			}
 		}
 		return '';
@@ -26421,14 +26438,14 @@ class FW_Site_Converter_Stitch {
 				$painted_fr = ( '' !== $fbg && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent/i', $fbg ) ) || ( (float) self::sc_css( $fr, 'border-top-width' ) >= 1 );
 				$fh2 = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $fcs, $fh2m ) ? (float) $fh2m[1] : 0.0;
 				$icls2 = ' ' . self::cls( $im ) . ' ';
-				$contained = ( false !== strpos( $icls2, ' object-contain ' ) ) || 'contain' === trim( (string) self::sc_css( $im, 'object-fit' ) ) || preg_match( '/max-h-\[[0-9.]+px\]/', $icls2 );
+				$contained = ( false !== strpos( $icls2, ' object-contain ' ) ) || 'contain' === trim( (string) self::sc_css( $im, 'object-fit' ) ) || preg_match( '/\bmax-h-\[[0-9.]+px\]/', $icls2 );
 				if ( $painted_fr && $fh2 >= 80 && $contained ) {
 					$image['frameHeight'] = $fh2;
 					$image['frameBg'] = $fbg;
 					$image['frameContain'] = true;
 					$ih2 = trim( (string) self::sc_css( $im, 'height' ) );
 					if ( preg_match( '/^([0-9.]+)px$/', $ih2, $ih2m ) && (float) $ih2m[1] >= 40 ) { $image['imgMaxH'] = (float) $ih2m[1]; }
-					elseif ( preg_match( '/max-h-\[([0-9.]+)px\]/', $icls2, $mh2 ) ) { $image['imgMaxH'] = (float) $mh2[1]; }
+					elseif ( preg_match( '/\bmax-h-\[([0-9.]+)px\]/', $icls2, $mh2 ) ) { $image['imgMaxH'] = (float) $mh2[1]; }
 					$fpad = trim( (string) self::sc_css( $fr, 'padding' ) );
 					if ( preg_match( '/^[0-9.]+px(?:\s+[0-9.]+px){0,3}$/', $fpad ) && '0px' !== $fpad ) { $image['framePad'] = $fpad; }
 				}
