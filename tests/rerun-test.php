@@ -29,8 +29,15 @@ $ok = function ( $c, $what, $d = '' ) use ( &$pass, &$fail ) {
 	else { $fail++; echo "  \xE2\x9C\x97 FAIL: {$what}" . ( '' !== $d ? " -- {$d}" : '' ) . "\n"; }
 };
 
-$count_pages = function () {
-	return count( get_posts( array( 'post_type' => 'page', 'post_status' => 'any', 'numberposts' => -1, 'fields' => 'ids' ) ) );
+// The SET of page ids, not a count. The suites run in parallel across installs to keep the loop short,
+// so any other suite creating or deleting a page moves a count underneath this one -- which is exactly how
+// `no extra page was created` failed about one run in three while passing alone every time. Comparing sets
+// and asking only what was ADDED answers the real question and is immune to what anyone else does.
+$page_ids = function () {
+	return array_map( 'intval', (array) get_posts( array( 'post_type' => 'page', 'post_status' => 'any', 'numberposts' => -1, 'fields' => 'ids' ) ) );
+};
+$count_pages = function () use ( $page_ids ) {
+	return count( $page_ids() );
 };
 
 // A minimal captured page: the computed-style stamps are what make it a RENDER rather than a raw fetch.
@@ -65,13 +72,14 @@ if ( $pid ) {
 	/* --------------------------------------------- the re-run itself -------- */
 	echo "\n=== Re-running writes, and writes to THAT page ===\n";
 
-	$n_before = $count_pages();
+	$ids_before = $page_ids();
 	$res = FW_Site_Converter_Rerun::rebuild( $pid, $html );
 	$ok( ! empty( $res['ok'] ), 'the re-run reported success', wp_json_encode( $res ) );
 	// Proof, not absence of error: the first version reported success while writing nothing.
 	$ok( (int) ( $res['id'] ?? 0 ) === $pid, 'it rebuilt THAT page rather than creating another',
 		'id=' . ( $res['id'] ?? 'none' ) . ' expected=' . $pid );
-	$ok( $count_pages() === $n_before, 'no extra page was created', $n_before . ' -> ' . $count_pages() );
+	$added = array_values( array_diff( $page_ids(), $ids_before ) );
+	$ok( array() === $added, 'no extra page was created', 'added: ' . wp_json_encode( $added ) );
 	$json = (string) get_post_meta( $pid, 'fw:opt:ext:pb:page-builder:json', true );
 	$ok( strlen( $json ) > 20, 'a builder tree was actually written', strlen( $json ) . ' chars' );
 	$ok( 'https://example.test/rerun-fixture' === get_post_meta( $pid, '_upw_source_url', true ),
@@ -106,7 +114,11 @@ if ( $pid ) {
 	$ok( empty( $r3['ok'] ), 'NEGATIVE: an unknown page id is refused' );
 
 	wp_delete_post( $pid, true );
-	$ok( $count_pages() === $before_count, 'the fixture cleaned up after itself' );
+	// Scoped to THIS fixture's own post, not to the install's page COUNT. The count form failed whenever any
+	// other suite ran beside it -- the suites are run in parallel across installs to keep the loop short -- so it
+	// reported a cleanup defect that was really another test doing its job. An assertion about global state
+	// cannot tell its own leak from someone else's work.
+	$ok( ! get_post( $pid ), 'the fixture cleaned up after itself' );
 }
 
 /* ------------------------------------------- scoping a refine to ONE page -- */

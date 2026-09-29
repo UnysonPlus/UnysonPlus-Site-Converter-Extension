@@ -481,7 +481,42 @@ class FW_Site_Converter_Pages {
 		foreach ( $node as $k => $v ) {
 			$node[ $k ] = self::resolve_upload_ids( $v );
 		}
+
+		// A BACKGROUND VIDEO GETS THE POSTER ITS SIDELOAD CUT FOR IT.
+		//
+		// The mapper runs long before any media exists, so it cannot set a poster the source never had --
+		// and a converted backdrop with no poster shows nothing at all while the file downloads. The media
+		// layer cuts one frame per video and links it by `_sc_video_poster`; this is where that becomes the
+		// option value. Only fills an EMPTY poster, so a source that supplied its own always wins.
+		self::fill_video_poster( $node );
+
 		return $node;
+	}
+
+	/**
+	 * Give a video option value the poster its sideload produced, when it has none of its own.
+	 *
+	 * Handles both shapes the converter emits: the section/site Background-Pro video
+	 * ({ source_mp4, source_webm, poster }) and the media_video shortcode's self-hosted source
+	 * ({ video_mp4, video_webm, poster }).
+	 *
+	 * @param array $node option subtree, by reference
+	 * @return void
+	 */
+	private static function fill_video_poster( array &$node ) {
+		if ( ! array_key_exists( 'poster', $node ) ) { return; }
+		$have = is_array( $node['poster'] ) ? trim( (string) ( $node['poster']['url'] ?? '' ) ) : trim( (string) $node['poster'] );
+		if ( '' !== $have ) { return; }                                   // the source had one — leave it
+		$vid = 0;
+		foreach ( array( 'source_mp4', 'video_file', 'video_mp4', 'source_webm', 'video_webm' ) as $k ) {
+			if ( ! empty( $node[ $k ]['attachment_id'] ) ) { $vid = (int) $node[ $k ]['attachment_id']; break; }
+		}
+		if ( $vid <= 0 ) { return; }
+		$pid = (int) get_post_meta( $vid, '_sc_video_poster', true );
+		if ( $pid <= 0 ) { return; }
+		$url = wp_get_attachment_url( $pid );
+		if ( ! $url ) { return; }
+		$node['poster'] = array( 'attachment_id' => (string) $pid, 'url' => preg_replace( '#^https?://#', '//', $url ) );
 	}
 
 	/**

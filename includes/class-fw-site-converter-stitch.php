@@ -11805,7 +11805,13 @@ class FW_Site_Converter_Stitch {
 			'footer' => array(
 				'brand'       => true,
 				'widget_area' => false,
-				'copyright'   => 'All rights reserved.',
+				// The SOURCE's own copyright line, not a boilerplate literal. This field was hardcoded to
+				// 'All rights reserved.' while detect_footer_copyright() -- which reads the real line, normalises
+				// the year to {{current_year}} and repairs the © mojibake -- already existed and was already used
+				// by the theme-settings path. It simply was never wired in here. Footers are 27.7% of all text the
+				// corpus still loses, and this one field accounted for most of it, on essentially every page.
+				'copyright'   => ( '' !== self::detect_footer_copyright( (string) $html ) )
+					? self::detect_footer_copyright( (string) $html ) : 'All rights reserved.',
 				'menu'        => self::design_menu( (string) $html, 'footer' ),
 			),
 			'background' => array( 'dotted' => false, 'canvas' => $bg !== '' ? $bg : '#ffffff' ),
@@ -13175,11 +13181,11 @@ class FW_Site_Converter_Stitch {
 	 * @param array  $pages  the built pages
 	 * @return array array( 'conversion-parity.json' => …, 'conversion-drops.json' => … )
 	 */
-	public static function self_assessment( $html, array $values, array $pages ) {
+	public static function self_assessment( $html, array $values, array $pages, array $design = array() ) {
 		$drops = self::build_drop_report();
 		// The coverage audit rides inside the drop report because it answers the question that report
 		// claims to answer — what did we lose? — for the cases the drop log structurally cannot see.
-		$drops['text_coverage'] = self::build_text_coverage( (string) $html, $values, $pages );
+		$drops['text_coverage'] = self::build_text_coverage( (string) $html, $values, $pages, $design );
 		return array(
 			'conversion-parity.json' => self::build_parity_report( (string) $html, $values, $pages ),
 			'conversion-drops.json'  => $drops,
@@ -15239,6 +15245,19 @@ class FW_Site_Converter_Stitch {
 		return 't-' . substr( md5( mb_substr( $t, 0, 200 ) ), 0, 12 );
 	}
 
+	/**
+	 * How many <section> elements the whole document carries. Used to tell a page that HAS sections (where a
+	 * band-shaped <div> among them is an interstitial) from one that has NONE (where the <div>s ARE the bands).
+	 *
+	 * @param DOMNode $node any node in the document
+	 * @return int
+	 */
+	private static function doc_section_count( $node ) {
+		$doc = ( $node instanceof DOMDocument ) ? $node : $node->ownerDocument;
+		if ( ! $doc ) { return 0; }
+		return (int) $doc->getElementsByTagName( 'section' )->length;
+	}
+
 	private static function section_roots( $body ) {
 		// Scan from <body>, not <main>. walk_section_roots() dives THROUGH <main> as a transparent
 		// wrapper (it only claims <section> + hero <header> and skips nav/footer), so a body scope still
@@ -15371,10 +15390,36 @@ class FW_Site_Converter_Stitch {
 			if ( 'div' === $tag && 0 === $ch->getElementsByTagName( 'section' )->length && '' !== trim( self::text( $ch ) ) ) {
 				$sib_sections = 0;
 				foreach ( $node->childNodes as $sib ) { if ( XML_ELEMENT_NODE === $sib->nodeType && 'section' === strtolower( $sib->nodeName ) ) { $sib_sections++; } }
+				// ON A PAGE WITH NO <section> AT ALL, THE GUARD CAN NEVER BE SATISFIED.
+				//
+				// The `>= 2 sibling sections` test assumes a page that HAS sections and asks whether this div sits
+				// among them. A WordPress BLOCK THEME emits none: the bands are `div.wp-block-group` siblings of a
+				// <main> that itself wraps only one of them. Every such band failed the guard, was dived into, yielded
+				// nothing, and was dropped outright. Measured on a captured block-theme page: ONE section survived out
+				// of six, and the page read 11.8% coverage -- header, hero, services, product grid and footer all gone.
+				//
+				// So when the document carries no <section> anywhere, count BAND-SHAPED SIBLINGS instead. Same question
+				// -- is this div one of a run of bands? -- asked in the vocabulary the page actually uses. The walk is
+				// top-down, so the OUTERMOST qualifying level claims and never descends, which is what keeps this from
+				// re-splitting the same content further in.
+				if ( $sib_sections < 2 && 0 === self::doc_section_count( $ch ) ) {
+					$sib_bands = 0;
+					foreach ( $node->childNodes as $sib ) {
+						if ( XML_ELEMENT_NODE !== $sib->nodeType ) { continue; }
+						if ( ! in_array( strtolower( $sib->nodeName ), array( 'div', 'main', 'article' ), true ) ) { continue; }
+						$sh = 0.0;
+						if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $sib->getAttribute( 'data-sc-cs' ), $shm ) ) { $sh = (float) $shm[1]; }
+						$has_body = '' !== trim( self::text( $sib ) ) || $sib->getElementsByTagName( 'img' )->length || $sib->getElementsByTagName( 'video' )->length;
+						if ( $has_body && ( $sh >= 40.0 || 0.0 === $sh ) ) { $sib_bands++; }
+					}
+					if ( $sib_bands >= 2 ) { $sib_sections = 2; }
+				}
 				if ( $sib_sections >= 2 ) {
 					$bh = 0.0;
 					if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $ch->getAttribute( 'data-sc-cs' ), $bhm ) ) { $bh = (float) $bhm[1]; }
-					if ( $bh >= 40.0 ) { $out[] = $ch; continue; }
+					// An UNSTAMPED wrapper (0.0) is not a short one: a block theme's band carries no measured height at
+					// all, and treating that as "under 40px" dropped bands holding a thousand characters of copy.
+					if ( $bh >= 40.0 || 0.0 === $bh ) { $out[] = $ch; continue; }
 				}
 			}
 			self::walk_section_roots( $ch, $masthead_path, $out );                // dive through wrappers to reach sections
@@ -22917,7 +22962,7 @@ class FW_Site_Converter_Stitch {
 	 * @param array $values  the theme-settings values
 	 * @param array $pages   the built pages
 	 */
-	private static function build_text_coverage_all( array $screens, array $values, array $pages ) {
+	private static function build_text_coverage_all( array $screens, array $values, array $pages, array $design = array() ) {
 		$checked = 0;
 		$missing = 0;
 		$items   = array();
@@ -22928,7 +22973,7 @@ class FW_Site_Converter_Stitch {
 			if ( '' === trim( $html ) ) { continue; }
 			$label = is_array( $sc ) ? (string) ( $sc['slug'] ?? $sc['title'] ?? '' ) : '';
 			if ( '' === $label ) { $label = 'page-' . ( count( $by_page ) + 1 ); }
-			$r = self::build_text_coverage( $html, $values, $pages );
+			$r = self::build_text_coverage( $html, $values, $pages, $design );
 			$checked += (int) $r['checked'];
 			$missing += (int) $r['missing'];
 			foreach ( (array) $r['items'] as $it )        { $it['page'] = $label; if ( count( $items ) < 200 ) { $items[] = $it; } }
@@ -22951,7 +22996,7 @@ class FW_Site_Converter_Stitch {
 		);
 	}
 
-	private static function build_text_coverage( $html, array $values, array $pages ) {
+	private static function build_text_coverage( $html, array $values, array $pages, array $design = array() ) {
 		// Compare on letters, digits and single spaces only: the output legitimately re-punctuates and
 		// re-cases text (a heading upper-cased by CSS, a curly quote normalised), and none of that is
 		// content loss. Anything stricter reports typography as a defect.
@@ -22968,6 +23013,22 @@ class FW_Site_Converter_Stitch {
 		};
 		$flat( $pages, $flat );
 		$flat( $values, $flat );
+		// THE CHROME IS CARRIED IN theme-design, NOT IN THE PAGE TREE.
+		//
+		// The converted header and footer are built from theme-design.json, so a nav label present there IS
+		// carried -- but the audit read only the pages and the theme settings and reported every one of them
+		// LOST. Same blind spot as the snippet reference above, one indirection further out.
+		//
+		// NAMED KEYS ONLY, and this is the whole care of it. theme-design also carries `conversion_map` (a
+		// RECORD of the source, body copy included) and 85 KB of `custom_css`. Flattening the file wholesale
+		// would put the source's own text into the haystack the source is being checked against, and the audit
+		// would then approve of anything -- measured: body phrases the page genuinely dropped were found in
+		// `conversion_map` and would have scored as carried. `raw_chrome` is excluded for the same reason: it is
+		// a copy of the capture, so counting it would hide a header that was never converted into real settings.
+		// Only `header`, `footer` and `site_title` are OUTPUT the converted site renders.
+		foreach ( array( 'header', 'footer', 'site_title' ) as $dk ) {
+			if ( isset( $design[ $dk ] ) ) { $flat( $design[ $dk ], $flat ); }
+		}
 		// A RICH TAB PANEL IS NOT IN THE PAGE -- IT IS A SNIPPET THE PAGE REFERENCES.
 		//
 		// n_tabs() moves a large panel into a `snippet` CPT and leaves `[snippet id="N"]` behind, so the panel's
@@ -22983,6 +23044,12 @@ class FW_Site_Converter_Stitch {
 				$flat( fw_get_db_post_option( (int) $sid ), $flat );
 			}
 		}
+		// RESOLVE THE TOKENS THE RENDERER RESOLVES. A carried copyright is stored as
+		// `&copy; {{current_year}} <name>.` -- deliberately, so the year stays live -- and the audit compared
+		// that literal against the source's `© 2026 <name>.` and called it lost. The site really does render
+		// the year, so the audit should read what renders. (A capture whose source year is NOT the current one
+		// will still report a miss; that is the substitution being visible, which is the honest result.)
+		$hay = str_replace( '{{current_year}}', gmdate( 'Y' ), $hay );
 		$hay = $norm( wp_specialchars_decode( wp_strip_all_tags( $hay ), ENT_QUOTES ) );
 
 		// ---- the needles: the source's own visible phrases ---------------------------------------------
@@ -24721,6 +24788,17 @@ class FW_Site_Converter_Stitch {
 		if ( mb_strlen( $t ) < 30 ) { return false; }
 		if ( preg_match( '/["“”«»‘’]/u', $t ) ) { return true; }
 		if ( self::testimonial_rating( $k ) !== null ) { return true; }
+		// A dash before a capitalised word. This is a WEAK signal -- it is equally the shape of a feature row
+		// (`Fast global payments — Use your card worldwide with competitive interbank rates.`), and on a captured
+		// page it made four FEATURE PANELS read as a testimonials grid, each yielding one “quote” while its
+		// sibling rows were discarded.
+		//
+		// Tightening it was TRIED and REVERTED, and the measurement is the reason: requiring the dash to be
+		// followed by a short, name-shaped tail in the last 40% of the text correctly rejected those panels --
+		// and the page got WORSE, 80.8% -> 73.3%, because the path a rejected panel falls to keeps less than the
+		// wrong-but-partial claim did. Corpus-wide it was a wash (87.8% -> 87.7%). So the real defect is not this
+		// predicate: it is that CLAIMING a card discards its siblings, and that is where a fix belongs. Do not
+		// re-tighten this without first making the fallback at least as good as the claim.
 		if ( preg_match( '/(^|\s)[—–-]\s*[A-Z][a-z]+/u', $t ) ) { return true; }
 		// …or the card ENDS in an author block (a portrait / initials disc beside a heavier name line over a lighter
 		// role line). Plenty of sources quote without quotation marks, a rating or a dash, so the attribution is the
@@ -27319,7 +27397,8 @@ class FW_Site_Converter_Stitch {
 			$files['conversion-drops.json']['text_coverage'] = self::build_text_coverage_all(
 				(array) $screens,
 				(array) ( $files['theme-settings.json'] ?? array() ),
-				(array) ( $files['pages.json'] ?? array() )
+				(array) ( $files['pages.json'] ?? array() ),
+				(array) ( $files['theme-design.json'] ?? array() )
 			);
 		}
 		$out['files']   = $files;

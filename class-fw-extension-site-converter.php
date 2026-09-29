@@ -2502,7 +2502,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				(string) ( $stash['html'] ?? '' ),
 				isset( $files['theme-settings.json']['values'] ) && is_array( $files['theme-settings.json']['values'] )
 					? $files['theme-settings.json']['values'] : array(),
-				$pages
+				$pages,
+				(array) ( $files['theme-design.json'] ?? array() )
 			) );
 		}
 

@@ -85,6 +85,202 @@ class FW_Site_Converter_Media {
 		@set_time_limit( 300 );
 	}
 
+	/* ---------------------------------------------------------------------------------------------
+	 * VIDEO NORMALISATION — a converted background video must be playable and must not stare back blank.
+	 *
+	 * Measured on a real conversion: the source's hero loop was HEVC (H.265), 1280x720, 5s, 4.2 Mbps,
+	 * 2.6 MB, and the converter copied it byte for byte. Two consequences:
+	 *
+	 *   · HEVC-in-MP4 decodes in Safari, but Chrome and Firefox only manage it on some platforms, so on
+	 *     many machines the background simply never plays;
+	 *   · 2.6 MB at 4.2 Mbps is a long wait on modest hosting — the same file took 0.7s from the source's
+	 *     CDN and 12.7s from a shared LiteSpeed host over the same connection — and with no poster there
+	 *     is nothing on screen while it arrives.
+	 *
+	 * So on sideload: transcode a NOT-BROADLY-PLAYABLE codec to H.264, and extract a poster frame for
+	 * every video. An already-H.264 file is left alone — re-encoding it would cost quality for little.
+	 *
+	 * Entirely optional. ffmpeg missing, exec disabled, or any failure at all → the original file is used
+	 * exactly as before. A conversion must never fail because a host has no ffmpeg.
+	 * --------------------------------------------------------------------------------------------- */
+
+	/** Codecs every current browser can decode. Anything else is a candidate for transcoding. */
+	private static function video_safe_codecs() {
+		return (array) apply_filters( 'fw_sc_video_safe_codecs', array( 'h264', 'avc1', 'vp8', 'vp9' ) );
+	}
+
+	/**
+	 * Path to an ffmpeg-family binary, or '' when it cannot be run here.
+	 *
+	 * @param string $which 'ffmpeg' or 'ffprobe'
+	 * @return string
+	 */
+	private static function ff_bin( $which ) {
+		$which = ( 'ffprobe' === $which ) ? 'ffprobe' : 'ffmpeg';
+		$set   = apply_filters( 'fw_sc_' . $which . '_path', null );
+		if ( is_string( $set ) && '' !== trim( $set ) ) { return trim( $set ); }
+		if ( ! function_exists( 'exec' ) || false !== stripos( (string) ini_get( 'disable_functions' ), 'exec' ) ) { return ''; }
+		$probe = ( 0 === stripos( PHP_OS, 'WIN' ) ) ? 'where' : 'command -v';
+		$out   = array();
+		$code  = 1;
+		@exec( $probe . ' ' . $which . ' 2>&1', $out, $code );
+		if ( 0 !== (int) $code || ! $out ) { return ''; }
+		$path = trim( (string) $out[0] );
+		return ( '' !== $path && @is_file( $path ) ) ? $path : '';
+	}
+
+	/**
+	 * The video's codec + pixel size, read with ffprobe.
+	 *
+	 * @param string $path local file
+	 * @return array{codec:string,width:int,height:int}
+	 */
+	private static function video_meta( $path ) {
+		$none = array( 'codec' => '', 'width' => 0, 'height' => 0 );
+		$bin  = self::ff_bin( 'ffprobe' );
+		if ( '' === $bin || ! @is_file( $path ) ) { return $none; }
+		$cmd = escapeshellarg( $bin ) . ' -v error -select_streams v:0'
+			. ' -show_entries stream=codec_name,width,height -of default=noprint_wrappers=1:nokey=0 '
+			. escapeshellarg( $path ) . ' 2>&1';
+		$out = array();
+		$code = 1;
+		@exec( $cmd, $out, $code );
+		if ( 0 !== (int) $code ) { return $none; }
+		$m = $none;
+		foreach ( (array) $out as $line ) {
+			if ( preg_match( '/^codec_name=(.+)$/', trim( (string) $line ), $mm ) ) { $m['codec']  = strtolower( trim( $mm[1] ) ); }
+			if ( preg_match( '/^width=(\d+)$/',      trim( (string) $line ), $mm ) ) { $m['width']  = (int) $mm[1]; }
+			if ( preg_match( '/^height=(\d+)$/',     trim( (string) $line ), $mm ) ) { $m['height'] = (int) $mm[1]; }
+		}
+		return $m;
+	}
+
+	/**
+	 * Transcode when the codec is not broadly playable, and extract a poster frame.
+	 *
+	 * Mutates $file in place (tmp_name / name / type) when a transcode succeeded. Returns the poster's
+	 * temp path, or '' when none could be made. Never throws; every failure leaves $file untouched.
+	 *
+	 * @param array $file the media_handle_sideload file array (tmp_name, name, type)
+	 * @return string poster temp path, or ''
+	 */
+	private static function normalize_video( array &$file ) {
+		if ( ! apply_filters( 'fw_sc_video_normalize', true ) ) { return ''; }
+		$tmp = isset( $file['tmp_name'] ) ? (string) $file['tmp_name'] : '';
+		$name = isset( $file['name'] ) ? (string) $file['name'] : '';
+		if ( '' === $tmp || ! @is_file( $tmp ) ) { return ''; }
+		if ( ! preg_match( '/\.(mp4|m4v|mov|webm|ogv)$/i', $name ) ) { return ''; }
+
+		$ffmpeg = self::ff_bin( 'ffmpeg' );
+		if ( '' === $ffmpeg ) { return ''; }                       // no ffmpeg → leave everything as it was
+		$meta = self::video_meta( $tmp );
+
+		// (a) TRANSCODE, only when the codec is one many browsers cannot decode.
+		if ( '' !== $meta['codec'] && ! in_array( $meta['codec'], self::video_safe_codecs(), true ) ) {
+			$out = trailingslashit( (string) get_temp_dir() ) . 'sc-h264-' . wp_generate_password( 8, false ) . '.mp4';
+			// CRF 24 + a 1080p cap: a decorative loop does not need a 4 Mbps master, and `faststart` moves
+			// the moov atom to the front so playback can begin before the file has finished arriving.
+			$cmd = escapeshellarg( $ffmpeg ) . ' -y -loglevel error -i ' . escapeshellarg( $tmp )
+				. ' -c:v libx264 -profile:v main -pix_fmt yuv420p -crf ' . (int) apply_filters( 'fw_sc_video_crf', 24 )
+				. ' -preset veryfast -movflags +faststart'
+				. ' -vf ' . escapeshellarg( "scale='min(1920,iw)':-2" )
+				. ' -an ' . escapeshellarg( $out ) . ' 2>&1';
+			$o = array(); $code = 1;
+			@exec( $cmd, $o, $code );
+			if ( 0 === (int) $code && @is_file( $out ) && @filesize( $out ) > 1024 ) {
+				@unlink( $tmp );
+				$file['tmp_name'] = $out;
+				$file['name']     = preg_replace( '/\.(m4v|mov|webm|ogv)$/i', '.mp4', $name );
+				$file['type']     = 'video/mp4';
+				$tmp              = $out;
+			}
+			// a failed transcode is not an error: the original file is still there and still gets imported
+		}
+
+		// (b) POSTER — one frame, so the slot is never blank while the video loads. Half a second in,
+		// because frame 0 of a fade-in loop is frequently pure black.
+		$poster = trailingslashit( (string) get_temp_dir() ) . 'sc-poster-' . wp_generate_password( 8, false ) . '.jpg';
+		$cmd = escapeshellarg( $ffmpeg ) . ' -y -loglevel error -ss 0.5 -i ' . escapeshellarg( $tmp )
+			. ' -frames:v 1 -q:v 4 ' . escapeshellarg( $poster ) . ' 2>&1';
+		$o = array(); $code = 1;
+		@exec( $cmd, $o, $code );
+		if ( 0 === (int) $code && @is_file( $poster ) && @filesize( $poster ) > 512 ) { return $poster; }
+		@unlink( $poster );
+		return '';
+	}
+
+	/**
+	 * Bring a video attachment imported BEFORE video normalisation existed up to the same standard.
+	 *
+	 * The de-dup path reuses an attachment by source URL, so a site converted earlier keeps whatever was
+	 * copied verbatim at the time — an HEVC file many browsers cannot decode, and no poster. Re-converting
+	 * would never fix it, because the reuse short-circuits before any of the new work runs.
+	 *
+	 * Doing it HERE rather than as a separate migration tool means an existing site is repaired by the next
+	 * conversion, with nothing to discover or run. Idempotent: once transcoded the codec is safe, and once a
+	 * poster exists the meta is set, so a second pass does nothing.
+	 *
+	 * Conservative on purpose:
+	 *   · the file is rewritten IN PLACE, keeping its name, so every URL already stored in a page still
+	 *     resolves — a converted site is full of references to it;
+	 *   · which means only a `.mp4` is transcoded (HEVC-in-mp4 is the case worth fixing). Re-containering a
+	 *     `.webm` would change the extension, and with it the URL;
+	 *   · the replacement is written to a temp file first and only moved over the original once ffmpeg has
+	 *     succeeded, so a failed transcode cannot leave a site with a truncated video.
+	 *
+	 * @param int $id attachment id
+	 * @return void
+	 */
+	private static function top_up_video( $id ) {
+		$id = (int) $id;
+		if ( $id <= 0 || ! apply_filters( 'fw_sc_video_normalize', true ) ) { return; }
+		$path = get_attached_file( $id );
+		if ( ! $path || ! @is_file( $path ) || ! preg_match( '/\.(mp4|m4v|mov|webm|ogv)$/i', $path ) ) { return; }
+		if ( '' === self::ff_bin( 'ffmpeg' ) ) { return; }
+
+		// (a) an undecodable codec, replaced in place — .mp4 only, so the filename never changes
+		if ( preg_match( '/\.mp4$/i', $path ) ) {
+			$meta = self::video_meta( $path );
+			if ( '' !== $meta['codec'] && ! in_array( $meta['codec'], self::video_safe_codecs(), true ) ) {
+				$tmp = trailingslashit( (string) get_temp_dir() ) . 'sc-topup-' . wp_generate_password( 8, false ) . '.mp4';
+				$cmd = escapeshellarg( self::ff_bin( 'ffmpeg' ) ) . ' -y -loglevel error -i ' . escapeshellarg( $path )
+					. ' -c:v libx264 -profile:v main -pix_fmt yuv420p -crf ' . (int) apply_filters( 'fw_sc_video_crf', 24 )
+					. ' -preset veryfast -movflags +faststart'
+					. ' -vf ' . escapeshellarg( "scale='min(1920,iw)':-2" )
+					. ' -an ' . escapeshellarg( $tmp ) . ' 2>&1';
+				$o = array(); $code = 1;
+				@exec( $cmd, $o, $code );
+				if ( 0 === (int) $code && @is_file( $tmp ) && @filesize( $tmp ) > 1024 ) {
+					if ( @rename( $tmp, $path ) || ( @copy( $tmp, $path ) && @unlink( $tmp ) ) ) {
+						// the stored metadata carries the old filesize; regenerate so WP reports the real one
+						if ( function_exists( 'wp_create_image_subsizes' ) || function_exists( 'wp_generate_attachment_metadata' ) ) {
+							require_once ABSPATH . 'wp-admin/includes/image.php';
+							$m = wp_generate_attachment_metadata( $id, $path );
+							if ( is_array( $m ) ) { wp_update_attachment_metadata( $id, $m ); }
+						}
+					} else {
+						@unlink( $tmp );
+					}
+				} else {
+					@unlink( $tmp );
+				}
+			}
+		}
+
+		// (b) a missing poster — the reason an older conversion shows an empty rectangle while it loads
+		if ( (int) get_post_meta( $id, '_sc_video_poster', true ) > 0 ) { return; }
+		$poster = trailingslashit( (string) get_temp_dir() ) . 'sc-poster-' . wp_generate_password( 8, false ) . '.jpg';
+		$cmd = escapeshellarg( self::ff_bin( 'ffmpeg' ) ) . ' -y -loglevel error -ss 0.5 -i ' . escapeshellarg( $path )
+			. ' -frames:v 1 -q:v 4 ' . escapeshellarg( $poster ) . ' 2>&1';
+		$o = array(); $code = 1;
+		@exec( $cmd, $o, $code );
+		if ( 0 === (int) $code && @is_file( $poster ) && @filesize( $poster ) > 512 ) {
+			$pid = self::sideload_upload( 'poster.jpg', $poster, (int) wp_get_post_parent_id( $id ), '' );
+			if ( ! is_wp_error( $pid ) && (int) $pid > 0 ) { update_post_meta( $id, '_sc_video_poster', (int) $pid ); }
+		}
+		@unlink( $poster );
+	}
+
 	public static function sideload( $url, $post_id = 0, $desc = '' ) {
 		self::$last_reused = false;
 		self::stretch_time_limit();
@@ -112,6 +308,10 @@ class FW_Site_Converter_Media {
 		$existing = self::find_by_source( $url );
 		if ( $existing && self::attachment_file_present( $existing ) ) {
 			self::$last_reused = true;
+			// A video imported before normalisation existed is still whatever was copied verbatim then. The
+			// reuse short-circuits every new step, so an existing site could never be repaired by re-converting.
+			// Top it up here instead: idempotent, in place, and a no-op without ffmpeg.
+			self::top_up_video( (int) $existing );
 			return $existing;
 		}
 
@@ -201,11 +401,26 @@ class FW_Site_Converter_Media {
 		// the guard still runs its sanitiser; only the admin gate is lifted.
 		if ( $is_svg ) { add_filter( 'fw_sc_svg_upload_allowed', '__return_true', 99 ); }
 
+		// A video gets normalised first: a codec many browsers cannot decode becomes H.264, and a poster
+		// frame is cut so the slot is never blank while the file arrives. A no-op without ffmpeg, and a
+		// no-op for anything that is not a video — so the poster's own sideload short-circuits here.
+		$poster_tmp = self::normalize_video( $file );
+
 		// Only the sizes a converted asset needs — the bulk of the media phase is resizing (see trim_image_sizes).
 		$_trim = self::trim_image_sizes();
 		add_filter( 'intermediate_image_sizes_advanced', $_trim, 99 );
 		$id = media_handle_sideload( $file, (int) $post_id, $desc !== '' ? $desc : null );
 		remove_filter( 'intermediate_image_sizes_advanced', $_trim, 99 );
+
+		// The poster rides as an attachment of its own, linked from the video by meta. The mapper runs long
+		// before any of this, so it cannot know a poster will exist; the import fills it in (resolve_upload_ids).
+		if ( '' !== $poster_tmp ) {
+			if ( ! is_wp_error( $id ) && (int) $id > 0 ) {
+				$pid = self::sideload_upload( 'poster.jpg', $poster_tmp, (int) $post_id, $desc );
+				if ( ! is_wp_error( $pid ) && (int) $pid > 0 ) { update_post_meta( (int) $id, '_sc_video_poster', (int) $pid ); }
+			}
+			@unlink( $poster_tmp );
+		}
 
 		if ( $is_svg ) { remove_filter( 'fw_sc_svg_upload_allowed', '__return_true', 99 ); }
 		remove_filter( 'wp_check_filetype_and_ext', $accept_modern, 99 );
@@ -400,11 +615,26 @@ class FW_Site_Converter_Media {
 			return $m;
 		};
 		add_filter( 'upload_mimes', $allow_av, 99 );
+		// A video gets normalised first: a codec many browsers cannot decode becomes H.264, and a poster
+		// frame is cut so the slot is never blank while the file arrives. A no-op without ffmpeg, and a
+		// no-op for anything that is not a video — so the poster's own sideload short-circuits here.
+		$poster_tmp = self::normalize_video( $file );
+
 		// Only the sizes a converted asset needs — the bulk of the media phase is resizing (see trim_image_sizes).
 		$_trim = self::trim_image_sizes();
 		add_filter( 'intermediate_image_sizes_advanced', $_trim, 99 );
 		$id = media_handle_sideload( $file, (int) $post_id, $desc !== '' ? $desc : null );
 		remove_filter( 'intermediate_image_sizes_advanced', $_trim, 99 );
+
+		// The poster rides as an attachment of its own, linked from the video by meta. The mapper runs long
+		// before any of this, so it cannot know a poster will exist; the import fills it in (resolve_upload_ids).
+		if ( '' !== $poster_tmp ) {
+			if ( ! is_wp_error( $id ) && (int) $id > 0 ) {
+				$pid = self::sideload_upload( 'poster.jpg', $poster_tmp, (int) $post_id, $desc );
+				if ( ! is_wp_error( $pid ) && (int) $pid > 0 ) { update_post_meta( (int) $id, '_sc_video_poster', (int) $pid ); }
+			}
+			@unlink( $poster_tmp );
+		}
 		remove_filter( 'upload_mimes', $allow_av, 99 );
 
 		if ( is_wp_error( $id ) ) {

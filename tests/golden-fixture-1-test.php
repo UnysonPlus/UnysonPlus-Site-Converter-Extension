@@ -6886,9 +6886,217 @@ ga( '[BG] NEGATIVE: a bare disc with NO icon is still an author block (a CSS bac
 	'a background-image avatar stopped being recognised' );
 
 
+/* ==========================================================================================
+ * [NT] A RECOGNIZER BLOCK NESTED IN A CELL MUST STILL BE BUILT.
+ *  build_cell_items() dispatches a nested widget by its `t` through a hand-kept list, and anything absent
+ *  from it takes the role-router's default of 'code' -- which, for a block carrying `items` and no `html`,
+ *  emits an EMPTY code block. A testimonials wall one level down (inside a stack, beside the band's own
+ *  heading) vanished entirely that way: every quote, name and job title. Measured on a captured page, that
+ *  one block was 8,906 characters and its section kept 2 of its 12 phrases; after, the page went
+ *  57.5% -> 80.8% coverage (missing 51 -> 23).
+ * ========================================================================================== */
+$nt_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$nt_card = function ( $quote, $name, $role ) use ( $nt_cs ) {
+	return '<div data-sc-cs="' . $nt_cs( 'padding:24px;border-radius:12px;height:220px' ) . '">'
+		. '<p data-sc-cs="' . $nt_cs( 'height:96px' ) . '">&ldquo;' . $quote . '&rdquo;</p>'
+		. '<div data-sc-cs="' . $nt_cs( 'display:flex;flex-direction:row;height:48px' ) . '">'
+		. '<img src="https://fixture-01.example/a.jpg" alt="" data-sc-cs="' . $nt_cs( 'border-radius:9999px;width:40px;height:40px' ) . '">'
+		. '<div data-sc-cs="' . $nt_cs( 'height:44px' ) . '">'
+		. '<span data-sc-cs="font-weight:600;font-size:16px;color:rgb(20,20,20);height:24px">' . $name . '</span>'
+		. '<span data-sc-cs="font-weight:400;font-size:14px;color:rgb(90,90,90);height:20px">' . $role . '</span>'
+		. '</div></div></div>';
+};
+/* The band is a STACK: its own heading row, then the quote wall as a sibling one level down. */
+$nt_band = '<section id="say" data-sc-cs="' . $nt_cs( 'padding:80px 0px;height:640px' ) . '">'
+	. '<div data-sc-cs="' . $nt_cs( 'max-width:1280px;margin:0px auto;display:flex;flex-direction:column;gap:32px;height:560px' ) . '">'
+	. '<div data-sc-cs="' . $nt_cs( 'display:flex;flex-direction:row;height:56px' ) . '">'
+	. '<h2 data-sc-cs="' . $nt_cs( 'font-size:36px;height:44px' ) . '">What Our Customers Say</h2></div>'
+	. '<div data-sc-cs="' . $nt_cs( 'display:grid;grid-template-columns:400px 400px 400px;gap:24px;height:240px' ) . '">'
+	. $nt_card( 'The integration was seamless and our checkout conversion climbed within a week.', 'Ada Farrow', 'CTO, Northwind' )
+	. $nt_card( 'Settlement used to take days. Now the money is there before the call ends.', 'Bram Odell', 'Finance Lead, Kestrel' )
+	. $nt_card( 'Support answered in minutes and the migration cost us no downtime at all.', 'Cleo Nardi', 'Founder, Tiderace' )
+	. '</div></div></section>';
+$nt_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Fixture NT</title></head>'
+	. '<body data-sc-cs="' . $nt_cs( 'background-color:rgb(255,255,255)' ) . '">' . $nt_band . '</body></html>';
+$nt_json = (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $nt_html, 'Fixture NT', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json'] ?? array() );
+
+ga( '[NT] (a) a nested quote wall still becomes a testimonials shortcode',
+	false !== strpos( $nt_json, '"shortcode":"testimonials"' ),
+	'the nested testimonials block was dropped into an empty code block' );
+ga( '[NT] (b) …and every quote survives, not just the first',
+	false !== strpos( $nt_json, 'checkout conversion climbed' )
+	&& false !== strpos( $nt_json, 'before the call ends' )
+	&& false !== strpos( $nt_json, 'no downtime at all' ),
+	'a nested wall lost quotes' );
+ga( '[NT] (c) …with the names and roles the shortcode renders natively',
+	false !== strpos( $nt_json, 'Bram Odell' ) && false !== strpos( $nt_json, 'Finance Lead' ),
+	'the attribution was lost' );
+ga( '[NT] (d) …and the band keeps its own heading beside it',
+	false !== strpos( $nt_json, 'What Our Customers Say' ),
+	'the section heading was swallowed' );
+
+/* ==========================================================================================
+ * [BT] ON A PAGE WITH NO <section> AT ALL, THE <div>s ARE THE BANDS.
+ *  walk_section_roots() claims a band-shaped <div> only when it sits among `>= 2` sibling <section>
+ *  elements — a guard that asks "is this an interstitial between real sections?" and so can never be
+ *  satisfied by a page that has none. A WordPress BLOCK THEME emits none: its bands are
+ *  `div.wp-block-group` siblings of a <main> that itself wraps only one of them. Measured on a captured
+ *  block-theme page, ONE section survived out of six and the page read 11.8% coverage — hero, services,
+ *  product grid and footer content all dropped outright. After: 73.5%, five sections, and the census
+ *  gained counters / images / image boxes rather than loose text, so the structure came back too.
+ * ========================================================================================== */
+$bt_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$bt_band = function ( $h, $p ) use ( $bt_cs ) {
+	return '<div class="wp-block-group" data-sc-cs="' . $bt_cs( 'padding:64px 0px;height:320px' ) . '">'
+		. '<h2 data-sc-cs="' . $bt_cs( 'font-size:32px;height:40px' ) . '">' . $h . '</h2>'
+		. '<p data-sc-cs="' . $bt_cs( 'height:48px' ) . '">' . $p . '</p></div>';
+};
+/* The block-theme shape: no <section> anywhere; <main> wraps ONE band; the rest are div siblings. */
+$bt_body = '<div class="wp-site-blocks" data-sc-cs="' . $bt_cs( 'height:1600px' ) . '">'
+	. '<header data-sc-cs="' . $bt_cs( 'height:80px' ) . '"><a href="/">Home</a></header>'
+	. '<main data-sc-cs="' . $bt_cs( 'height:320px' ) . '">' . $bt_band( 'Browse Our Categories', 'Every category we stock, in one place.' ) . '</main>'
+	. $bt_band( 'Free Shipping On Orders', 'Delivered anywhere in the country at no cost.' )
+	. $bt_band( 'Our Popular Products', 'The items customers reorder the most.' )
+	. $bt_band( 'What Our Buyers Report', 'Feedback gathered over the last twelve months.' )
+	. '<footer data-sc-cs="' . $bt_cs( 'height:120px' ) . '"><p>All rights reserved.</p></footer></div>';
+$bt_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Fixture BT</title></head>'
+	. '<body data-sc-cs="' . $bt_cs( 'background-color:rgb(255,255,255)' ) . '">' . $bt_body . '</body></html>';
+$bt_json = (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $bt_html, 'Fixture BT', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json'] ?? array() );
+
+ga( '[BT] (a) a band that is a div sibling of <main> keeps its heading',
+	false !== strpos( $bt_json, 'Free Shipping On Orders' ) && false !== strpos( $bt_json, 'Our Popular Products' ),
+	'a section-less band was dived into and dropped' );
+ga( '[BT] (b) …and its copy, not only its heading',
+	false !== strpos( $bt_json, 'Delivered anywhere in the country' )
+	&& false !== strpos( $bt_json, 'customers reorder the most' )
+	&& false !== strpos( $bt_json, 'over the last twelve months' ),
+	'a section-less band lost its body copy' );
+ga( '[BT] (c) …and the one band that DOES sit inside <main> still survives',
+	false !== strpos( $bt_json, 'Browse Our Categories' ),
+	'the <main> band regressed' );
+
+/* NEGATIVE: a page that HAS sections must not gain extra bands. Over-claiming here is how a six-section
+   page once became twenty-four, so the wrapper divs around real sections must still be dived through. */
+$bt_sec = function ( $h ) use ( $bt_cs ) {
+	return '<section data-sc-cs="' . $bt_cs( 'padding:64px 0px;height:300px' ) . '">'
+		. '<div data-sc-cs="' . $bt_cs( 'max-width:1280px;margin:0px auto;height:180px' ) . '">'
+		. '<h2 data-sc-cs="' . $bt_cs( 'font-size:32px;height:40px' ) . '">' . $h . '</h2>'
+		. '<p data-sc-cs="' . $bt_cs( 'height:48px' ) . '">Copy that belongs to this band alone.</p>'
+		. '</div></section>';
+};
+$bt_html2 = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Fixture BT2</title></head>'
+	. '<body data-sc-cs="' . $bt_cs( 'background-color:rgb(255,255,255)' ) . '">'
+	. '<main data-sc-cs="' . $bt_cs( 'height:900px' ) . '">'
+	. $bt_sec( 'The First Real Band' ) . $bt_sec( 'The Second Real Band' ) . $bt_sec( 'The Third Real Band' )
+	. '</main></body></html>';
+$bt_pages2 = FW_Site_Converter_Sources::build_from_html( $bt_html2, 'Fixture BT2', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json'] ?? array();
+$bt_n2 = preg_match_all( '/"shortcode":"section"/', (string) wp_json_encode( $bt_pages2 ) );
+ga( '[BT] NEGATIVE: a page that HAS sections is not re-split into more',
+	$bt_n2 <= 3, 'a sectioned page gained bands: ' . $bt_n2 . ' sections for 3 in the source' );
+
+
+/* ==========================================================================================
+ * [FC] THE FOOTER CARRIES THE SOURCE'S OWN COPYRIGHT, NOT A BOILERPLATE LITERAL.
+ *  theme-design's footer.copyright was hardcoded to 'All rights reserved.' — while
+ *  detect_footer_copyright(), which reads the real line, normalises the year to {{current_year}} and
+ *  repairs the © mojibake, already existed and was already used by the theme-settings path. It was simply
+ *  never wired in here. Measured: footers were 27.7% of every phrase the corpus still lost, and this one
+ *  field was most of that, appearing on essentially every page. Corpus mean 90.2% -> 91.8%, and the number
+ *  of pages under 95% fell from 50 to 33 — the signature of a per-page fix rather than a per-corpus one.
+ * ========================================================================================== */
+$fc_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$fc_page = function ( $footer_inner ) use ( $fc_cs ) {
+	return '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Fixture FC</title></head>'
+		. '<body data-sc-cs="' . $fc_cs( 'background-color:rgb(255,255,255)' ) . '">'
+		. '<section data-sc-cs="' . $fc_cs( 'padding:64px 0px;height:300px' ) . '">'
+		. '<h1 data-sc-cs="' . $fc_cs( 'font-size:40px;height:48px' ) . '">A Page With A Footer</h1>'
+		. '<p data-sc-cs="' . $fc_cs( 'height:24px' ) . '">Body copy so the page is not empty.</p></section>'
+		. '<footer data-sc-cs="' . $fc_cs( 'padding:32px 0px;height:160px' ) . '">' . $footer_inner . '</footer>'
+		. '</body></html>';
+};
+$fc_design = function ( $html ) {
+	$b = FW_Site_Converter_Sources::build_from_html( $html, 'Fixture FC', array( 'dynamic_chrome' => true, 'hifi_css' => true ) );
+	return (array) ( $b['files']['theme-design.json']['footer'] ?? array() );
+};
+
+$fc_have = $fc_design( $fc_page(
+	'<div data-sc-cs="' . $fc_cs( 'height:40px' ) . '"><p data-sc-cs="' . $fc_cs( 'height:20px' ) . '">&copy; 2019 Fixture Bakehouse. All rights reserved.</p></div>'
+) );
+$fc_copy = (string) ( $fc_have['copyright'] ?? '' );
+
+ga( '[FC] (a) the footer carries the SOURCE copyright, not the boilerplate literal',
+	false !== strpos( $fc_copy, 'Fixture Bakehouse' ), 'copyright=' . $fc_copy );
+ga( '[FC] (b) …with the year tokenised so it stays live',
+	false !== strpos( $fc_copy, '{{current_year}}' ) && false === strpos( $fc_copy, '2019' ),
+	'the literal year was stored instead of the token; copyright=' . $fc_copy );
+
+/* NEGATIVE: a footer with no copyright line at all must still get the literal — wiring the detector in
+   must not leave the field EMPTY on a source that simply never had one. */
+$fc_none = $fc_design( $fc_page(
+	'<div data-sc-cs="' . $fc_cs( 'height:40px' ) . '"><p data-sc-cs="' . $fc_cs( 'height:20px' ) . '">Open daily from nine until five.</p></div>'
+) );
+ga( '[FC] NEGATIVE: a footer with no copyright still gets the fallback, never an empty field',
+	'' !== trim( (string) ( $fc_none['copyright'] ?? '' ) ),
+	'copyright=' . wp_json_encode( $fc_none['copyright'] ?? null ) );
+
+
+/* ==========================================================================================
+ * [VP] AN AUTOPLAYING CLIP DOES NOT DEFER ITS OWN BYTES.
+ *  n_video() emitted preload="metadata" for every converted video, background clips included. A clip that
+ *  autoplays starts the moment it can, so `metadata` buys nothing and costs the whole wait: the browser
+ *  fetches the header, stops, and only then goes back for the media — with no poster, that is a blank
+ *  backdrop. Measured on a real conversion over a 205 KB/s host: 12.4s of empty hero.
+ *  A clip the visitor must press play on still defers; there is no reason to spend their bandwidth first.
+ *  JS twin: to-pages.mjs (preload from b.autoplay).
+ * ========================================================================================== */
+$vp_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(255,255,255);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$vp_page = function ( $vattrs ) use ( $vp_cs ) {
+	return '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Fixture VP</title></head>'
+		. '<body data-sc-cs="' . $vp_cs( 'background-color:rgb(10,10,10)' ) . '">'
+		. '<section data-sc-cs="' . $vp_cs( 'padding:96px 0px;height:600px;position:relative' ) . '">'
+		. '<video ' . $vattrs . ' data-sc-cs="' . $vp_cs( 'position:absolute;top:0px;left:0px;height:600px;object-fit:cover;filter:contrast(1.25) sepia(0.15)' ) . '">'
+		. '<source src="https://fixture-01.example/backdrop.mp4" type="video/mp4"></video>'
+		. '<h1 data-sc-cs="' . $vp_cs( 'font-size:48px;height:56px' ) . '">A Hero Over A Clip</h1>'
+		. '<p data-sc-cs="' . $vp_cs( 'height:24px' ) . '">Copy that sits above the backdrop.</p>'
+		. '</section></body></html>';
+};
+$vp_auto = (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html(
+	$vp_page( 'autoplay muted loop playsinline' ), 'Fixture VP', array( 'dynamic_chrome' => true, 'hifi_css' => true )
+)['files']['pages.json'] ?? array() );
+$vp_click = (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html(
+	$vp_page( 'controls playsinline' ), 'Fixture VP2', array( 'dynamic_chrome' => true, 'hifi_css' => true )
+)['files']['pages.json'] ?? array() );
+
+/* Assert the key is PRESENT and correct. An earlier version of this golden used
+   `no metadata OR has auto`, which passes when the fixture emits no preload key at all — and it did
+   exactly that, so the golden went green with the fix disabled and guarded nothing. */
+ga( '[VP] (a) an AUTOPLAYING clip preloads in full — it is going to play regardless',
+	false !== strpos( $vp_auto, '"preload":"auto"' ) && false === strpos( $vp_auto, '"preload":"metadata"' ),
+	'preload stayed metadata on an autoplaying clip' );
+ga( '[VP] NEGATIVE: a clip the visitor must START still defers its bytes',
+	false !== strpos( $vp_click, '"preload":"metadata"' ) && false === strpos( $vp_click, '"preload":"auto"' ),
+	'a click-to-play clip was made to preload in full' );
+
+
 $pass = $GLOBALS['__pass'];
 $fail = $GLOBALS['__fail'];
 echo "\n========================================\n";
+
+
+
 echo "GOLDEN FIXTURE RESULT: " . ( $fail === 0 ? "PASS" : "FAIL" ) . "   ($pass passed, $fail failed)\n";
+
 echo "========================================\n";
 exit( $fail === 0 ? 0 : 1 );

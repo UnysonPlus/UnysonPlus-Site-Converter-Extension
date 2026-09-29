@@ -232,5 +232,35 @@ if ( function_exists( 'post_type_exists' ) && post_type_exists( 'snippet' ) && f
 	$ok( false, '[SN] the snippet post type is available to test against', 'snippet CPT or fw_set_db_post_option missing — the case could not be exercised' );
 }
 
+
+/* ==========================================================================================
+ * [CH] THE CHROME IS CARRIED IN theme-design, NOT IN THE PAGE TREE — BUT ONLY SOME OF IT IS OUTPUT.
+ *  The converted header/footer are built from theme-design.json, so a nav label there IS carried; the
+ *  audit read only pages + theme-settings and reported every one LOST. Measured on a captured block-theme
+ *  page, that alone accounted for several of its misses.
+ *  The NEGATIVE is the point of the whole entry: theme-design ALSO carries `conversion_map` (a record of
+ *  the SOURCE, body copy included) and 85 KB of `custom_css`. Flattening the file whole would feed the
+ *  source's own text into the haystack the source is checked against, and the audit would approve of
+ *  anything — measured: phrases the page genuinely dropped were present in `conversion_map`.
+ * ========================================================================================== */
+$ch_src = '<body><section>'
+	. '<p>A nav label that the header carries.</p>'
+	. '<p>A body phrase that was only ever recorded.</p>'
+	. '</section></body>';
+$ch_design = array(
+	'header'         => array( 'menu' => array( array( 'label' => 'A nav label that the header carries.' ) ) ),
+	'conversion_map' => array( 'notes' => 'A body phrase that was only ever recorded.' ),
+	'raw_chrome'     => '<div>A body phrase that was only ever recorded.</div>',
+);
+$ch_cov  = $m->invokeArgs( null, array( $ch_src, array(), array( 'pages' => array() ), $ch_design ) );
+$ch_lost = wp_json_encode( $ch_cov['items'] ?? array() );
+
+$ok( false === strpos( $ch_lost, 'nav label that the header carries' ),
+	'[CH] a label carried in theme-design header is NOT reported missing',
+	'lost=' . mb_substr( $ch_lost, 0, 170 ) );
+$ok( false !== strpos( $ch_lost, 'only ever recorded' ),
+	'[CH] NEGATIVE: text present only in conversion_map / raw_chrome is STILL reported missing',
+	'the haystack was widened until nothing can be reported lost; lost=' . mb_substr( $ch_lost, 0, 170 ) );
+
 echo "\n" . ( $fails ? "✗ {$fails} FAIL" : '✓ ALL PASS — title derivation + coverage audit guarded' ) . "\n";
 exit( $fails ? 1 : 0 );

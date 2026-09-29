@@ -4747,7 +4747,11 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 				'loop'        => isset( $b['loop'] ) ? (string) $b['loop'] : 'no',
 				'controls'    => isset( $b['controls'] ) ? (string) $b['controls'] : 'yes',
 				'playsinline' => isset( $b['playsinline'] ) ? (string) $b['playsinline'] : 'yes',
-				'preload'     => 'metadata',
+				// An AUTOPLAYING clip starts the moment it can, so `metadata` buys nothing and costs the wait:
+				// the browser fetches the header, stops, and only then goes back for the media. Measured on a real
+				// conversion that was several seconds of empty backdrop. A clip the visitor has to press play on
+				// still defers -- there is no reason to spend their bandwidth before they ask.
+				'preload'     => ( isset( $b['autoplay'] ) && 'yes' === (string) $b['autoplay'] ) ? 'auto' : 'metadata',
 				// A cover-fill source (`object-cover`, e.g. a portrait reel) should FILL the ratio box, not
 				// letterbox inside it — carry object-fit so it matches the source instead of black bars.
 				'object_fit'  => ! empty( $b['cover'] ) ? 'cover' : 'contain',
@@ -9829,6 +9833,20 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 			$bt = isset( $b['t'] ) ? (string) $b['t'] : '';
 			if ( $bt === 'feature_list' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
 				$node = self::n_feature_list( $b ); self::apply_block_anim( $node, $b ); $items[] = $node; continue;
+			}
+			// …and a TESTIMONIALS collection, for exactly the same reason. A quote wall nested one level down --
+			// inside a stack, beside the band's own heading row -- carries no `role`, so it fell through to the
+			// empty code block and the whole wall vanished: every quote, name and job title. Measured on a captured
+			// page, that one block was 8,906 characters, and the section it sat in kept 2 of its 12 phrases.
+			// Unwrapped here (no n_column) because a cell's items are already inside one.
+			if ( $bt === 'testimonials' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
+				$node = self::n_testimonials(
+					$b['items'],
+					isset( $b['design'] ) && is_array( $b['design'] ) ? $b['design'] : null,
+					isset( $b['cardBox'] ) && is_array( $b['cardBox'] ) ? $b['cardBox'] : null,
+					(string) ( $b['align'] ?? '' ), (int) ( $b['gridGap'] ?? 0 ), (int) ( $b['gridPadX'] ?? -1 )
+				);
+				self::apply_block_anim( $node, $b ); $items[] = $node; continue;
 			}
 			// A card HEADER block (icon + title + description parsed from a card cell whose nested feature list
 			// was split off into its own feature_list block, e.g. the "Loan Types Available" card) → one icon_box.
