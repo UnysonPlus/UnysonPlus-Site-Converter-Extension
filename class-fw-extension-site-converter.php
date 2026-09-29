@@ -46,6 +46,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sandbox.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-kit.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-progress.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-intro.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-rerun.php' );
 
 		// The site's OWN corrections, applied before anything converts. Boot happens on every request, not
 		// only in admin, because a conversion can be driven from the REST endpoint too.
@@ -60,6 +62,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		// FRONT-END: viewport-lock CSS for a "Duplicate as landing page" mirror (front-end only — never
 		// in the builder editor, so the admin UI isn't affected).
+		// A converted trail says what the SOURCE's trail said. The breadcrumbs extension builds crumbs from
+		// page titles, which is right in general and wrong for a conversion: the source titled a page 'Prefab
+		// Home Manufacturers' and crumbed it 'Manufacturers'. Where the conversion recorded the source's own
+		// crumb label for a page, use it; otherwise leave the crumb exactly as the extension built it.
+		add_filter( 'fw_ext_breadcrumbs_build', array( $this, '_filter_crumb_labels' ) );
 		add_action( 'wp_head', array( 'FW_Site_Converter_Landing', 'frontend_head' ), 100 );
 		// Re-write a landing mirror's served file when its page is saved (so Code Block edits take effect).
 		add_action( 'save_post_page', array( 'FW_Site_Converter_Landing', 'on_save' ), 20 );
@@ -91,6 +98,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			add_action( 'wp_ajax_fw_sc_convert_build', array( $this, '_ajax_convert_build' ) );
 			// Read while the build POST is still running, from a second request — see the Progress class.
 			add_action( 'wp_ajax_fw_sc_progress', array( $this, '_ajax_progress' ) );
+			add_action( 'wp_ajax_fw_sc_rerun_page', array( $this, '_ajax_rerun_page' ) );
+			add_action( 'wp_ajax_fw_sc_apply_page_css', array( $this, '_ajax_apply_page_css' ) );
+			add_action( 'wp_ajax_fw_sc_intro_dismiss', array( 'FW_Site_Converter_Intro', '_ajax_dismiss' ) );
+			// A converted site is not a new site — see the callback.
+			add_filter( 'unysonplus_show_onboarding_notice', array( $this, '_filter_theme_onboarding' ) );
 			add_action( 'wp_ajax_fw_sc_upload_assets', array( $this, '_ajax_upload_assets' ) );
 			add_action( 'wp_ajax_fw_sc_export_rules', array( $this, '_ajax_export_rules' ) );
 			add_action( 'wp_ajax_fw_sc_import_rules', array( $this, '_ajax_import_rules' ) );
@@ -738,6 +750,86 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	}
 
 	/**
+	 * The AI Assistant route, in whichever of its four states this site is in.
+	 *
+	 * The assistant ships INACTIVE, so "not activated" is the default a first-time user meets -- not an
+	 * edge case. Each state gets its own copy because they ask for different things: switch it on, finish
+	 * setting it up, or go. The fourth state is "declined", which stops the offer becoming a nag on every
+	 * later conversion.
+	 *
+	 * Note what this never does: activate the extension for the user. Silently switching on something that
+	 * ships an MCP server and five write abilities is how a plugin spends trust it cannot earn back, and
+	 * the friction saved is about two seconds.
+	 */
+	private static function render_assistant_route( $r ) {
+		$uid = get_current_user_id();
+		if ( $uid && get_user_meta( $uid, 'fw_sc_ai_offer_declined', true ) ) {
+			echo ' <span class="description" style="margin-left:.6em">'
+				. esc_html__( 'The AI Assistant can finish these for you.', 'fw' ) . ' '
+				. '<a href="' . esc_url( admin_url( 'admin.php?page=fw-ai-assistant' ) ) . '">' . esc_html__( 'Open it', 'fw' ) . '</a>'
+				. '</span>';
+			return;
+		}
+
+		$ready = class_exists( 'FW_AI_Settings' ) && method_exists( 'FW_AI_Settings', 'update' );
+
+		if ( ! $ready ) {
+			// Not active (or too old to write Theme Settings). One click, user-initiated, reversible.
+			$url = admin_url( 'admin.php?page=fw-extensions' );
+			echo ' <a class="button" href="' . esc_url( $url ) . '">'
+				. esc_html__( 'Enable the AI Assistant', 'fw' ) . '</a>'
+				. ' <span class="description" style="margin-left:.6em">'
+				. esc_html__( 'It can change these Theme Settings and edit the converted pages for you. Your list is saved — it will be waiting once the assistant is on.', 'fw' )
+				. '</span>';
+			return;
+		}
+
+		echo ' <a class="button" href="' . esc_url( admin_url( 'admin.php?page=fw-ai-assistant' ) ) . '">'
+			. esc_html__( 'Fix these with the AI Assistant', 'fw' ) . '</a>'
+			. ' <span class="description" style="margin-left:.6em">'
+			. esc_html__( 'Every change it makes can be undone. It is best at targeted changes — for a whole-site pass, the brief below suits an AI agent better.', 'fw' )
+			. '</span>';
+	}
+
+	/**
+	 * Queue the conversion's findings as a job for the assistant.
+	 *
+	 * Called whether or not the assistant is active, deliberately: the queue lives in core precisely so a
+	 * suggestion made while it is switched off survives until the user switches it on. Guarding this on the
+	 * assistant existing would lose the suggestion in the one case that matters -- the user clicks "Enable
+	 * the AI Assistant", the page reloads with it on, and the panel is empty.
+	 */
+	private static function queue_assistant_suggestion( $r ) {
+		if ( ! function_exists( 'fw_ai_suggest' ) ) { return; }
+		$fails = ( isset( $r['fails'] ) && is_array( $r['fails'] ) ) ? $r['fails'] : array();
+		if ( ! $fails ) { return; }
+
+		$lines = array();
+		foreach ( $fails as $f ) {
+			$note    = trim( (string) ( $f['note'] ?? '' ) );
+			$lines[] = '- ' . (string) ( $f['label'] ?? $f['id'] ?? '' )
+				. ' (source: ' . (string) ( $f['source'] ?? '?' ) . ', converted: ' . (string) ( $f['converted'] ?? '?' ) . ')'
+				. ( '' !== $note ? ' - ' . $note : '' );
+		}
+
+		fw_ai_suggest( array(
+			'id'     => 'site_converter_finish',
+			'source' => 'site-converter',
+			'title'  => sprintf(
+				/* translators: %d: number of findings */
+				_n( 'Finish the conversion — %d thing to review', 'Finish the conversion — %d things to review', count( $fails ), 'fw' ),
+				count( $fails )
+			),
+			'prompt' => sprintf(
+				/* translators: 1: source URL, 2: the findings list */
+				__( "This site was just converted from %1\$s. The converter graded its own work and flagged these:\n\n%2\$s\n\nFix them through Theme Settings options first and scoped custom CSS only where no option can express the value. Change one thing at a time and tell me what you changed. Do not edit plugin or parent-theme files.", 'fw' ),
+				(string) ( $r['source_url'] ?? __( 'a source site', 'fw' ) ),
+				implode( "\n", $lines )
+			),
+		) );
+	}
+
+	/**
 	 * The NEXT STEPS panel, rendered under the import notice.
 	 *
 	 * Every conversion already grades itself (the parity checks, the dropped-element tally) and the numbers
@@ -754,6 +846,299 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 * set expectations, and a panel that says the same thing to a good and a bad result teaches the reader
 	 * to ignore it.
 	 */
+	/**
+	 * PER-PAGE ACTIONS — redo or refine ONE page, rather than the whole site.
+	 *
+	 * A conversion used to be all-or-nothing: one page wrong meant hand-fixing it (lost on the next
+	 * conversion) or reconverting everything (which re-derives the design system and discards every other
+	 * page's state). Neither is proportionate to "this one page is wrong", and neither helps after a
+	 * converter fix, which is the common case — today's container work, for instance, only appears in a
+	 * page once that page is rebuilt.
+	 *
+	 * Two actions, and the difference between them is the point:
+	 *   RE-RUN  — the DETERMINISTIC converter, on a fresh capture of that page's own source URL. No AI.
+	 *             Repeatable, and the right tool after the converter improves.
+	 *   REFINE  — the AI pass in the dashboard, which writes CSS on top and keeps it only when the measured
+	 *             drift improves. The right tool for what the converter cannot express.
+	 *
+	 * The re-run overwrites that page's builder content, so it says so plainly before running rather than
+	 * discovering it for the reader afterwards.
+	 */
+	/**
+	 * Is this URL a LOCAL development site?
+	 *
+	 * Mirrors the capture service's own boundary (local-site.mjs) so the admin can grey out what the
+	 * service would refuse anyway. Compared LABEL-WISE against the hostname, never by searching the URL
+	 * string: `localhost.evil.com` contains "localhost" and is not local, and neither is
+	 * `https://evil.com/?host=localhost`.
+	 */
+	private static function is_local_site_url( $url ) {
+		$host = strtolower( (string) wp_parse_url( (string) $url, PHP_URL_HOST ) );
+		if ( '' === $host ) { return false; }
+		$bare = trim( $host, '[]' );
+		if ( in_array( $bare, array( 'localhost', '127.0.0.1', '::1', '0.0.0.0' ), true ) ) { return true; }
+		$labels = explode( '.', $host );
+		$tld    = end( $labels );
+		if ( count( $labels ) >= 2 && in_array( $tld, array( 'localhost', 'local', 'test', 'localdomain', 'invalid', 'example' ), true ) ) { return true; }
+		if ( preg_match( '/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/', $host ) ) { return true; }
+		if ( preg_match( '/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/', $host ) ) { return true; }
+		if ( preg_match( '/^192\.168\.\d{1,3}\.\d{1,3}$/', $host ) ) { return true; }
+		if ( preg_match( '/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/', $host ) ) { return true; }
+		return false;
+	}
+
+	private static function render_page_rerun() {
+		if ( ! class_exists( 'FW_Site_Converter_Rerun' ) ) { return; }
+		$pages = FW_Site_Converter_Rerun::pages();
+		if ( ! $pages ) { return; }
+
+		echo '<div style="margin:.8em 0 .4em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;background:var(--sc-panel,#fff)">';
+		echo '<div style="padding:.5em .8em;border-bottom:1px solid var(--sc-border,#f0f0f1);display:flex;align-items:center;gap:.6em;flex-wrap:wrap">';
+		echo '<strong style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#646970">'
+			. esc_html__( 'Redo a single page', 'fw' ) . '</strong>';
+		echo '<span style="font-size:12px;color:#646970">'
+			. esc_html__( 'Re-runs the converter on that page only — the design, header, footer and your other pages are untouched.', 'fw' )
+			. '</span>';
+		// WHICH AI IS ACTUALLY ON. Without this the button is a coin toss: the same click runs a tools-enabled
+		// agent, a small local model, or nothing at all, and the outcomes are not comparable. The legend reads
+		// the capture service's own /health rather than a stored setting, so it reports what WOULD run now.
+		echo '<span style="flex:1"></span><span id="fw-sc-ai-legend" style="font-size:12px;color:#646970" title="">'
+			. esc_html__( 'checking AI…', 'fw' ) . '</span>';
+		echo '</div>';
+		echo '<div style="max-height:260px;overflow:auto;padding:.3em .8em .5em">';
+		foreach ( $pages as $p ) {
+			echo '<div class="fw-sc-rerun-row" data-id="' . (int) $p['id'] . '" data-src="' . esc_attr( $p['source_url'] ) . '"'
+				. ' data-url="' . esc_attr( $p['url'] ) . '"'
+				. ' style="display:flex;align-items:center;gap:.5em;padding:.25em 0;font-size:12px;border-bottom:1px solid #f6f7f7">';
+			echo '<span style="flex:1;min-width:0"><strong>' . esc_html( $p['title'] ) . '</strong>'
+				. ( $p['is_front'] ? ' <span style="color:#2271b1">' . esc_html__( 'front page', 'fw' ) . '</span>' : '' )
+				. '<br><span style="color:#8c8f94">' . esc_html( $p['source_url'] ) . '</span></span>';
+			echo '<a class="button button-small" target="_blank" rel="noopener" href="' . esc_url( $p['url'] ) . '">'
+				. esc_html__( 'View', 'fw' ) . '</a>';
+			echo '<button type="button" class="button button-small fw-sc-rerun-btn">'
+				. esc_html__( 'Re-run', 'fw' ) . '</button>';
+			// The other tool, next to it and clearly not the same one: re-run is the deterministic
+			// converter, refine is the AI writing CSS on top and keeping it only when drift measurably
+			// dropped. Naming it "Refine (AI)" rather than hiding the distinction behind one button
+			// matters — they fail differently and are worth reaching for at different times.
+			// ONE button, not two. "Refine" and "Agent fix" were the same intention — close the gap on this
+			// page with AI — split by an implementation detail the reader should not have to reason about.
+			// What actually differs is decided by what is AVAILABLE: with Claude and a local destination it
+			// runs the tools-enabled agent, otherwise the single-pass CSS refine. The button says the same
+			// thing either way; the CONFIRM says what is really about to happen, because the two routes have
+			// very different blast radius — one edits the site, the other writes scoped CSS it then measures.
+			echo '<button type="button" class="button button-small fw-sc-ai-btn" data-local="' . ( self::is_local_site_url( $p['url'] ) ? '1' : '0' ) . '">'
+				. esc_html__( 'Improve with AI', 'fw' ) . '</button>';
+			echo '<span class="fw-sc-rerun-msg" style="min-width:8em;color:#646970"></span>';
+			echo '</div>';
+		}
+		echo '</div></div>';
+		?>
+		<script>
+		( function () {
+			var NONCE = '<?php echo esc_js( wp_create_nonce( self::NONCE ) ); ?>';
+			function svcBase() {
+				var el = document.getElementById( 'fw-sc-ai-svcurl' ) || document.getElementById( 'fw-sc-an-svcurl' );
+				return ( ( el && el.value ) || 'http://localhost:8787' ).replace( /\/+$/, '' );
+			}
+			/* WHICH AI IS ON — read from the service, not from a stored setting.
+			 *
+			 * The same button runs a tools-enabled agent, a small local model, or refuses, and those are not
+			 * comparable outcomes. A stored preference would say what was CHOSEN; /health says what would
+			 * actually run right now, which is the only version worth showing. The tooltip carries the setup
+			 * instructions for whichever one is missing, so "none" is never a dead end.
+			 */
+			( function fwSCAiLegend() {
+				var el = document.getElementById( 'fw-sc-ai-legend' );
+				if ( ! el ) { return; }
+				var SETUP_CLAUDE = '<?php echo esc_js( __( 'Claude: install the Claude Code CLI and sign in (`claude` on PATH), or set ANTHROPIC_API_KEY before starting the capture service.', 'fw' ) ); ?>';
+				var SETUP_LOCAL  = '<?php echo esc_js( __( 'Local AI: install Ollama, run `ollama serve`, then pull a model (e.g. `ollama pull qwen3:8b`) and pick it in the dashboard.', 'fw' ) ); ?>';
+				fetch( svcBase() + '/health', { mode: 'cors' } )
+					.then( function ( r ) { return r.json(); } )
+					.then( function ( h ) {
+						window._fwSCAi = {
+							ready: !! ( h && h.aiReady ),
+							backend: ( h && h.aiBackend ) || '',
+							model: ( h && h.aiModel ) || '',
+							// An OLDER capture service does not send `aiTools` at all, and absent is not the same
+							// as false: treating it as false labelled a Claude Code backend "API - single pass",
+							// which is the opposite of what it can do. Infer from the backend when the field is
+							// missing, and believe the field when it is present.
+							tools: ( h && typeof h.aiTools !== 'undefined' ) ? !! h.aiTools : ( !!h && h.aiBackend === 'claude-code' )
+						};
+						var a = window._fwSCAi;
+						if ( ! a.ready ) {
+							el.innerHTML = '<span style="color:#b26200">&#9679; <?php echo esc_js( __( 'AI: none', 'fw' ) ); ?></span>';
+							el.title = SETUP_CLAUDE + '\n\n' + SETUP_LOCAL;
+							return;
+						}
+						if ( a.backend === 'ollama' ) {
+							// Named, because "local AI" covers models that differ enormously in what they can do.
+							el.innerHTML = '<span style="color:#1a7f37">&#9679;</span> <?php echo esc_js( __( 'AI: Local', 'fw' ) ); ?> ('
+								+ String( a.model || 'local' ).replace( /[<>]/g, '' ) + ')';
+							el.title = '<?php echo esc_js( __( 'A local model writes scoped CSS for one page at a time. It cannot use tools, so it cannot measure its own work - the converter measures for it and keeps the CSS only when the drift drops. Claude, when available, is used first and can do more.', 'fw' ) ); ?>'
+								+ '\n\n' + SETUP_CLAUDE;
+							return;
+						}
+						el.innerHTML = '<span style="color:#1a7f37">&#9679;</span> <?php echo esc_js( __( 'AI: Claude', 'fw' ) ); ?>'
+							+ ( a.tools ? ' <?php echo esc_js( __( '(agent - can use tools)', 'fw' ) ); ?>' : ' <?php echo esc_js( __( '(API - single pass)', 'fw' ) ); ?>' );
+						el.title = a.tools
+							? '<?php echo esc_js( __( 'Claude Code is available, so a LOCAL destination gets the full agent: it opens both pages, measures them, edits Theme Settings and scoped CSS, and measures again. A live destination falls back to the single CSS pass - the agent has file and shell access and is never pointed at a live site from a button.', 'fw' ) ); ?>'
+							: '<?php echo esc_js( __( 'An API key is set, so the AI runs as a single pass: it writes CSS, which is then measured and kept only if the drift drops. Install the Claude Code CLI to unlock the tools-using agent on local sites.', 'fw' ) ); ?>';
+					} )
+					.catch( function () {
+						el.innerHTML = '<span style="color:#b26200">&#9679; <?php echo esc_js( __( 'AI: unknown - capture service not reachable', 'fw' ) ); ?></span>';
+						el.title = '<?php echo esc_js( __( 'Start the capture service (the AI Dev Kit launcher, or `node serve.mjs`) and reload.', 'fw' ) ); ?>';
+					} );
+			} )();
+
+			document.addEventListener( 'click', function ( ev ) {
+				/* ONE AI ACTION, BEST AVAILABLE ROUTE.
+				 *
+				 * Which route runs is decided by what is actually available, not by which button was pressed:
+				 *   - Claude Code + a LOCAL destination → the tools-enabled agent. It opens both pages,
+				 *     measures, changes the site's Theme Settings and CSS, and measures again.
+				 *   - anything else → the single-pass CSS refine, which writes scoped CSS and keeps it only
+				 *     when the measured drift actually dropped.
+				 * The button reads the same either way; the CONFIRM does not, because one route edits the
+				 * site and the other cannot. Hiding that behind a shared label would be the wrong kind of
+				 * simplicity.
+				 */
+				var xb = ev.target;
+				if ( xb && xb.classList && xb.classList.contains( 'fw-sc-ai-btn' ) && ! xb.disabled ) {
+					ev.preventDefault();
+					var xrow = xb.closest( '.fw-sc-rerun-row' );
+					if ( ! xrow ) { return; }
+					var xmsg   = xrow.querySelector( '.fw-sc-rerun-msg' );
+					var xsrc   = xrow.getAttribute( 'data-src' );
+					var xconv  = xrow.getAttribute( 'data-url' );
+					var xid    = xrow.getAttribute( 'data-id' );
+					var canAgent = xrow.querySelector( '.fw-sc-ai-btn' ).getAttribute( 'data-local' ) === '1'
+						&& window._fwSCAi && window._fwSCAi.tools;
+
+					if ( ! window._fwSCAi || ! window._fwSCAi.ready ) {
+						if ( xmsg ) { xmsg.style.color = '#b26200'; xmsg.textContent = '<?php echo esc_js( __( 'No AI is configured — see the legend above.', 'fw' ) ); ?>'; }
+						return;
+					}
+					var ask = canAgent
+						? '<?php echo esc_js( __( 'Hand this page to the AI agent? It measures both pages and CHANGES this site\u2019s Theme Settings and CSS to close the gap. Several minutes.', 'fw' ) ); ?>'
+						: '<?php echo esc_js( __( 'Ask the AI for CSS that closes the gap on this page? One pass, measured before and after, kept only if the drift drops — and confined to this page. About a minute.', 'fw' ) ); ?>';
+					if ( ! window.confirm( ask ) ) { return; }
+
+					xb.disabled = true;
+					if ( xmsg ) {
+						xmsg.style.color = '#646970';
+						xmsg.textContent = canAgent
+							? '<?php echo esc_js( __( 'Agent working… (minutes)', 'fw' ) ); ?>'
+							: '<?php echo esc_js( __( 'Measuring + refining…', 'fw' ) ); ?>';
+					}
+
+					var done = function () { xb.disabled = false; };
+					var fail = function ( e ) { if ( xmsg ) { xmsg.style.color = '#b32d2e'; xmsg.textContent = String( e.message || e ); } };
+
+					if ( canAgent ) {
+						fetch( svcBase() + '/refine-agent', {
+							method: 'POST', mode: 'cors', headers: { 'content-type': 'application/json' },
+							body: JSON.stringify( { source_url: xsrc, converted_url: xconv } ),
+						} )
+							.then( function ( r ) { return r.json(); } )
+							.then( function ( j ) {
+								if ( ! j || j.error ) { throw new Error( ( j && j.error ) || 'agent failed' ); }
+								if ( xmsg ) {
+									xmsg.style.color = '#1a7f37';
+									xmsg.textContent = '<?php echo esc_js( __( 'Agent finished — reload to see the result', 'fw' ) ); ?>';
+									xmsg.title = String( j.report || '' ).slice( 0, 1200 );
+								}
+							} )
+							.catch( fail ).then( done );
+						return;
+					}
+
+					fetch( svcBase() + '/refine-visual', {
+						method: 'POST', mode: 'cors', headers: { 'content-type': 'application/json' },
+						body: JSON.stringify( { source_url: xsrc, converted_url: xconv } ),
+					} )
+						.then( function ( r ) { return r.json(); } )
+						.then( function ( j ) {
+							if ( ! j || j.error ) { throw new Error( ( j && j.error ) || 'refine failed' ); }
+							if ( ! j.improved || ! j.css ) {
+								// Say the NUMBER. "no gain" alone reads as "the tool did nothing", when what
+								// happened is that CSS was written, re-rendered, re-measured and discarded.
+								if ( xmsg ) {
+									xmsg.style.color = '#646970';
+									var aim = ( j.aimed_at && j.aimed_at.length )
+										? ( ' \u00b7 <?php echo esc_js( __( 'tried band', 'fw' ) ); ?> ' + j.aimed_at[0].band + ' (' + j.aimed_at[0].drift_pct + '%)' ) : '';
+									xmsg.textContent = '<?php echo esc_js( __( 'drift', 'fw' ) ); ?> ' + j.before_drift_pct + '% \u2014 '
+										+ '<?php echo esc_js( __( 'unchanged, nothing kept', 'fw' ) ); ?>' + aim;
+									xmsg.title = ( j.before_drift_pct < 5 )
+										? '<?php echo esc_js( __( 'This page is already close. A drift this low is usually spread evenly across the page (type, spacing, antialiasing) rather than one missing block, which is the kind of gap CSS can close.', 'fw' ) ); ?>'
+										: '<?php echo esc_js( __( 'The AI wrote CSS against this page\u2019s real selectors, it was re-rendered and re-measured, and the drift did not drop — so it was discarded rather than written.', 'fw' ) ); ?>';
+								}
+								return null;
+							}
+							var fd = new FormData();
+							fd.append( 'action', 'fw_sc_apply_page_css' );
+							fd.append( '_ajax_nonce', NONCE );
+							fd.append( 'post_id', xid );
+							fd.append( 'css', j.css );
+							return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } )
+								.then( function ( r ) { return r.json(); } )
+								.then( function ( a ) {
+									if ( ! a || ! a.success ) { throw new Error( ( a && a.data && a.data.message ) || 'could not save the CSS' ); }
+									if ( xmsg ) {
+										xmsg.style.color = '#1a7f37';
+										xmsg.textContent = '<?php echo esc_js( __( 'drift', 'fw' ) ); ?> ' + j.before_drift_pct + '% \u2192 ' + j.after_drift_pct + '%';
+									}
+								} );
+						} )
+						.catch( fail ).then( done );
+					return;
+				}
+
+				var btn = ev.target;
+				if ( ! btn || ! btn.classList || ! btn.classList.contains( 'fw-sc-rerun-btn' ) ) { return; }
+				ev.preventDefault();
+				var row = btn.closest( '.fw-sc-rerun-row' );
+				if ( ! row ) { return; }
+				var msg = row.querySelector( '.fw-sc-rerun-msg' );
+				var id  = row.getAttribute( 'data-id' );
+				var src = row.getAttribute( 'data-src' );
+				// Said before it happens, not discovered afterwards: this replaces the page's content.
+				if ( ! window.confirm( '<?php echo esc_js( __( 'Re-run this page from its source? Its current builder content is replaced — any hand edits to this page are lost. Other pages, the design and Theme Settings are untouched.', 'fw' ) ); ?>' ) ) { return; }
+				btn.disabled = true;
+				if ( msg ) { msg.style.color = '#646970'; msg.textContent = '<?php echo esc_js( __( 'Capturing…', 'fw' ) ); ?>'; }
+				// The BROWSER captures (it already talks to the service) and posts the HTML in. The admin
+				// endpoint never fetches a URL of its own accord.
+				fetch( svcBase() + '/capture?url=' + encodeURIComponent( src ) + '&html=1&single=1', { mode: 'cors' } )
+					.then( function ( r ) { if ( ! r.ok ) { throw new Error( 'capture failed (HTTP ' + r.status + ')' ); } return r.text(); } )
+					.then( function ( html ) {
+						if ( msg ) { msg.textContent = '<?php echo esc_js( __( 'Rebuilding…', 'fw' ) ); ?>'; }
+						var body = new FormData();
+						body.append( 'action', 'fw_sc_rerun_page' );
+						body.append( '_ajax_nonce', NONCE );
+						body.append( 'post_id', id );
+						body.append( 'html', html );
+						return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: body } );
+					} )
+					.then( function ( r ) { return r.json(); } )
+					.then( function ( j ) {
+						if ( ! j || ! j.success ) { throw new Error( ( j && j.data && j.data.message ) || 'rebuild failed' ); }
+						if ( msg ) {
+							msg.style.color = '#1a7f37';
+							msg.textContent = '<?php echo esc_js( __( 'Rebuilt', 'fw' ) ); ?>'
+								+ ( j.data && j.data.sections ? ' \u00b7 ' + j.data.sections + ' <?php echo esc_js( __( 'sections', 'fw' ) ); ?>' : '' );
+						}
+					} )
+					.catch( function ( e ) {
+						if ( msg ) { msg.style.color = '#b32d2e'; msg.textContent = String( e.message || e ); }
+					} )
+					.then( function () { btn.disabled = false; } );
+			} );
+		} )();
+		</script>
+		<?php
+	}
+
 	private static function render_next_steps() {
 		$raw = get_option( 'fw_sc_last_result', '' );
 		$r   = is_string( $raw ) && '' !== $raw ? json_decode( $raw, true ) : null;
@@ -778,6 +1163,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		$clean   = empty( $fails );
 		$ts_url  = admin_url( 'admin.php?page=fw-settings' );
+
+		// Queue the findings for the assistant NOW, before knowing whether it is even installed.
+		self::queue_assistant_suggestion( $r );
 		// Test for the WRITE surface, not merely the extension: an assistant that cannot write Theme
 		// Settings cannot close a chrome gap, and most of what lands in this list IS chrome. Offering it
 		// as the fix for a container-width finding would be a promise the button cannot keep.
@@ -805,15 +1193,15 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			echo '</ul>';
 		}
 
+		// THREE ROUTES, ranked by the job rather than by which is "the" feature. Presenting the agent brief
+		// as a fallback for people without the assistant mis-ranks it: for a whole-site pass an external
+		// agent that can measure both pages and iterate is the better tool, and the in-product assistant is
+		// better for targeted changes. Whichever the reader picks, the punch list above still works alone.
 		echo '<p style="margin:.2em 0 .8em"><a class="button" href="' . esc_url( $ts_url ) . '">'
 			. esc_html__( 'Open Theme Settings', 'fw' ) . '</a>';
-		if ( $ai_on ) {
-			echo ' <a class="button" href="' . esc_url( admin_url( 'admin.php?page=fw-ai-assistant' ) ) . '">'
-				. esc_html__( 'Fix it with the AI Assistant', 'fw' ) . '</a>'
-				. ' <span class="description" style="margin-left:.6em">'
-				. esc_html__( 'It can change these Theme Settings and edit the converted pages directly, and every change it makes can be undone.', 'fw' )
-				. '</span>';
-		}
+
+		self::render_assistant_route( $r );
+
 		echo '</p>';
 
 		// THE AGENT BRIEF — pre-filled with this conversion's own numbers, so the agent starts with the
@@ -843,6 +1231,15 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			. "  (wp-content/uploads/unysonplus/asset-optimizer/*, .../unysonplus/css/*) or you will read a\n"
 			. "  stale stylesheet. A box can be the right size with entirely wrong type inside it, so look at\n"
 			. "  each region as well as measuring it.\n"
+			. "\n"
+			. "YOUR EYES: measure both pages in a real browser rather than reasoning about them. If you have the\n"
+			. "UnysonPlus AI Dev Kit, tools/measure/props.mjs (named-property diffs), container-check.mjs and the\n"
+			. "capture service's verify.mjs (per-band drift, header/footer type) are built for exactly this.\n"
+			. "\n"
+			. "YOUR HANDS: this site can be edited over MCP. In WP admin, Unyson+ -> AI Assistant -> Connect an\n"
+			. "agent creates a connection for you; use those tools (update-theme-settings, save-preset,\n"
+			. "update-element, render-check, undo) rather than editing files. Ask the site owner for the\n"
+			. "connection details -- they are shown once and must not be pasted into a shared prompt.\n"
 			. "- Report at the end anything you could NOT fix with an option or scoped CSS, with the source's\n"
 			. "  HTML fragment and what was produced instead.\n"
 			. "\n"
@@ -1893,6 +2290,90 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 * No nonce check beyond the capability, because a failing poll must never be able to break a build that
 	 * is already running, and the payload is a list of step labels the user is watching anyway.
 	 */
+	/**
+	 * Suppress the parent theme's first-run welcome once this site has been converted.
+	 *
+	 * The theme's checklist is written for a site with nothing set up. A conversion builds the menu, the
+	 * homepage and the footer, so after one the checklist greets its owner with items already ticked and
+	 * points at generic setup -- while the conversion's own results panel is sitting right there with the
+	 * specific list of what needs attention. Only one of those should own that moment, and it is the one
+	 * that knows what is actually wrong.
+	 *
+	 * Keyed on a conversion having happened at all rather than on a time window: the checklist's premise
+	 * ("your new site") does not become true again a week later. Getting Started is still reachable from
+	 * Appearance; this removes the nag, not the feature.
+	 *
+	 * @internal
+	 */
+	public function _filter_theme_onboarding( $show ) {
+		return get_option( 'fw_sc_last_result', '' ) ? false : $show;
+	}
+
+	/**
+	 * Rebuild ONE converted page from a fresh capture of its own source URL.
+	 *
+	 * The browser does the capturing (it already holds the capture-service connection) and posts the HTML
+	 * here. Deliberately so: a WordPress admin endpoint that fetches an arbitrary URL because a form said
+	 * to is an SSRF report waiting to happen, and fetching is the capture service's job, not this one's.
+	 * The page's own recorded source URL is what gets re-run — this endpoint takes a post id, never a URL.
+	 */
+	public function _ajax_rerun_page() {
+		check_ajax_referer( self::NONCE );
+		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 ); }
+		if ( ! class_exists( 'FW_Site_Converter_Rerun' ) ) { wp_send_json_error( array( 'message' => __( 'Re-run is unavailable.', 'fw' ) ) ); }
+
+		$post_id = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		$html    = isset( $_POST['html'] ) ? (string) wp_unslash( $_POST['html'] ) : '';
+		$res     = FW_Site_Converter_Rerun::rebuild( $post_id, $html );
+		if ( empty( $res['ok'] ) ) { wp_send_json_error( array( 'message' => (string) ( $res['error'] ?? __( 'Re-run failed.', 'fw' ) ) ) ); }
+		wp_send_json_success( $res );
+	}
+
+	/**
+	 * Persist an AI refine pass's CSS for ONE page, confined to that page.
+	 *
+	 * The refine loop measures a single page and returns CSS that reduced THAT page's drift — and only
+	 * keeps it when the measurement improved. Writing it unscoped would apply it to every page on the site,
+	 * where it was never measured and can only make things worse; a pass that improves one page by 4% and
+	 * quietly degrades eight others is not an improvement, and nothing downstream would notice.
+	 *
+	 * So every selector is prefixed with the page's own body class before it is written. The block is
+	 * labelled per page and replaced on a re-run rather than stacked, so repeated refines of the same page
+	 * converge instead of accumulating dead rules.
+	 *
+	 * @internal
+	 */
+	public function _ajax_apply_page_css() {
+		check_ajax_referer( self::NONCE );
+		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 ); }
+		if ( ! class_exists( 'FW_Site_Converter_Rerun' ) ) { wp_send_json_error( array( 'message' => __( 'Unavailable.', 'fw' ) ) ); }
+
+		$post_id = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		$css     = isset( $_POST['css'] ) ? (string) wp_unslash( $_POST['css'] ) : '';
+		if ( ! $post_id || ! get_post( $post_id ) ) { wp_send_json_error( array( 'message' => __( 'That page no longer exists.', 'fw' ) ) ); }
+		// Nothing to write is a no-op success: the refine pass keeps CSS only when it measurably helped, so
+		// "it helped with nothing" is a normal outcome, not a failure to report as one.
+		if ( '' === trim( $css ) ) { wp_send_json_success( array( 'written' => 0, 'note' => 'no css' ) ); }
+
+		$scoped = FW_Site_Converter_Rerun::scope_css( $css, 'body.page-id-' . $post_id );
+		if ( '' === trim( $scoped ) ) { wp_send_json_error( array( 'message' => __( 'The returned CSS could not be confined to this page, so it was not written.', 'fw' ) ) ); }
+
+		$style = trailingslashit( get_stylesheet_directory() ) . 'style.css';
+		if ( ! is_readable( $style ) || ! is_writable( $style ) ) {
+			wp_send_json_error( array( 'message' => __( 'The active theme has no writable style.css.', 'fw' ) ) );
+		}
+		$current = (string) @file_get_contents( $style );
+		$start   = '/* AI page refine — page ' . $post_id . ' — START (scoped to this page; safe to edit) */';
+		$end     = '/* AI page refine — page ' . $post_id . ' — END */';
+		// Idempotent: drop any previous block for THIS page so repeated refines converge.
+		$current = preg_replace( '#\n*' . preg_quote( $start, '#' ) . '.*?' . preg_quote( $end, '#' ) . '\n*#s', "\n", $current );
+		$block   = "\n\n" . $start . "\n" . $scoped . $end . "\n";
+		if ( false === @file_put_contents( $style, $current . $block ) ) {
+			wp_send_json_error( array( 'message' => __( 'Could not write to the theme stylesheet.', 'fw' ) ) );
+		}
+		wp_send_json_success( array( 'written' => strlen( $scoped ) ) );
+	}
+
 	public function _ajax_progress() {
 		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array(), 403 ); }
 		$p = class_exists( 'FW_Site_Converter_Progress' ) ? FW_Site_Converter_Progress::read() : null;
@@ -2013,6 +2494,17 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			$files['theme-settings.json']['values'] = $tv;
 		}
 		if ( $pages )                                 { $files['pages.json'] = array( 'pages' => $pages ); }
+
+		// SELF-ASSESSMENT for this path. build_bundle() emits these as a side effect and this path does not
+		// use it, so without this the results panel has nothing to report and renders nothing at all.
+		if ( $pages ) {
+			$files = array_merge( $files, FW_Site_Converter_Stitch::self_assessment(
+				(string) ( $stash['html'] ?? '' ),
+				isset( $files['theme-settings.json']['values'] ) && is_array( $files['theme-settings.json']['values'] )
+					? $files['theme-settings.json']['values'] : array(),
+				$pages
+			) );
+		}
 
 		// NATIVE-CHROME AI REFINEMENT: when Use AI mapped the header/footer into Theme-Settings JSON
 		// (capture service /translate-chrome → translateHeader/translateFooter), layer that OVER the
@@ -2935,6 +3427,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$menus_prefill = ( $stage === 'menus_scanned' && isset( $data['prefill'] ) ) ? (string) $data['prefill'] : '';
 		?>
 		<div class="wrap fw-ext-site-converter">
+			<?php
+			// The first-run briefing, deferred to the FOOTER rather than printed here.
+			//
+			// WordPress relocates every admin notice into `.wrap`, immediately after the first heading it
+			// finds. Rendered inline this modal was that first heading, so unrelated notices -- the theme's
+			// own welcome, update nags -- were injected INSIDE the dialog box, which looked like the
+			// converter was showing someone else's message in its own briefing. A fixed-position overlay has
+			// no business inside `.wrap` anyway; in the footer nothing can be moved into it.
+			add_action( 'admin_footer', array( 'FW_Site_Converter_Intro', 'render' ) );
+			?>
 			<h1 class="wp-heading-inline">
 				<?php esc_html_e( 'Convert — AI Site Importer', 'fw' ); ?>
 				<span class="fw-sc-beta"
@@ -2983,7 +3485,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 			<div class="fw-sc-panel is-active" id="panel-convert">
 
-				<div style="margin:0 0 1.1em;padding:.7em .9em;background:#fef7e6;border:1px solid #f0d98c;border-left:4px solid #dba617;border-radius:4px">
+				<div style="margin:0 0 1.1em;padding:.7em .9em;background:var(--sc-note-bg,#fef7e6);border:1px solid var(--sc-note-bd,#f0d98c);border-left:4px solid #dba617;border-radius:4px">
 					<p style="margin:0;font-weight:600;color:#7a5c00">
 						<span class="dashicons dashicons-warning" style="vertical-align:text-bottom;color:#dba617"></span>
 						<?php esc_html_e( 'The Site Converter is in Beta.', 'fw' ); ?>
@@ -3002,7 +3504,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			<details class="fw-sc-setup">
 				<summary><span class="dashicons dashicons-admin-tools"></span> <?php esc_html_e( 'Start the capture service — one click with the AI Dev Kit', 'fw' ); ?></summary>
 				<div class="fw-sc-setup-body">
-					<p style="margin:.2em 0 .6em;padding:.5em .7em;background:#fcf9e8;border:1px solid #f0e6a6;border-radius:4px">
+					<p style="margin:.2em 0 .6em;padding:.5em .7em;background:var(--sc-note-bg,#fcf9e8);border:1px solid var(--sc-note-bd,#f0e6a6);border-radius:4px">
 						<?php echo wp_kses_post( __( '<strong>Optional.</strong> You only need this for the <strong>URL</strong> source in <strong>Convert</strong> below, and for the <strong>Use AI</strong> option. A <strong>file</strong> source converts on its own — no download, no Node.', 'fw' ) ); ?>
 					</p>
 					<div class="fw-sc-why">
@@ -3019,7 +3521,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						</p>
 					</div>
 					<style>.fw-sc-code{position:relative}.fw-sc-copy{position:absolute;top:.35em;right:.4em;border:0;background:transparent;cursor:pointer;color:#646970;padding:2px;line-height:1}.fw-sc-copy:hover{color:var(--fw-accent, #3858e9)}.fw-sc-copy .dashicons{font-size:18px;width:18px;height:18px}</style>
-					<p style="margin:.2em 0 .6em;padding:.5em .7em;background:#eaf6ee;border:1px solid #b6ddc2;border-radius:4px;color:#1a5c33">
+					<p style="margin:.2em 0 .6em;padding:.5em .7em;background:var(--sc-ok-bg,#eaf6ee);border:1px solid var(--sc-ok-bd,#b6ddc2);border-radius:4px;color:var(--sc-ok-ink,#1a5c33)">
 						<span class="dashicons dashicons-yes-alt" style="vertical-align:text-bottom"></span>
 						<?php echo wp_kses_post( __( '<strong>The easy way — the AI Dev Kit.</strong> One launcher starts the capture service <em>and</em> the live dashboard for you, and downloads everything it needs on first run. No manual <code>npm install</code>, no <code>node serve.mjs</code>.', 'fw' ) ); ?>
 					</p>
@@ -3027,18 +3529,18 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						<li style="margin-bottom:.9em">
 							<strong><?php esc_html_e( 'Get the AI Dev Kit.', 'fw' ); ?></strong><br>
 							<span class="description"><?php echo wp_kses_post( __( 'Download it from GitHub — <a href="https://github.com/UnysonPlus/UnysonPlus-AI-Dev-Kit" target="_blank" rel="noopener">UnysonPlus/UnysonPlus-AI-Dev-Kit</a>. Clone it (recommended, so <code>git pull</code> updates it later):', 'fw' ) ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-AI-Dev-Kit.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-AI-Dev-Kit.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							<span class="description"><?php echo wp_kses_post( __( '…or use the green <strong>Code → Download ZIP</strong> button on that page and unzip it.', 'fw' ) ); ?></span>
 						</li>
 						<li style="margin-bottom:.9em">
 							<strong><?php esc_html_e( 'Install the prerequisites.', 'fw' ); ?></strong><br>
 							<span class="description"><?php echo wp_kses_post( __( 'You need <a href="https://nodejs.org/" target="_blank" rel="noopener">Node.js 20 or newer</a> and <a href="https://www.google.com/chrome/" target="_blank" rel="noopener">Google Chrome</a> (the service uses your system Chrome to render). Confirm Node is installed:', 'fw' ) ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">node -v</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">node -v</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 						</li>
 						<li style="margin-bottom:.4em">
 							<strong><?php esc_html_e( 'Run the launcher.', 'fw' ); ?></strong><br>
 							<span class="description"><?php echo wp_kses_post( __( 'In the kit folder, double-click <code>start-converter.bat</code> (Windows) — or run <code>./start-converter.command</code> on macOS. Keep the window open while you convert sites.', 'fw' ) ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">start-converter.bat</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">start-converter.bat</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							<span class="description"><?php echo wp_kses_post( __( '<strong>First run</strong> auto-downloads the capture service, its dependencies, and (for the optional local-AI models) the Ollama runtime — all self-contained inside the kit folder, so deleting the kit removes everything cleanly. Then it starts:', 'fw' ) ); ?></span>
 							<ul style="margin:.35em 0 .2em 1.2em;padding:0;list-style:disc;color:#50575e;font-size:13px">
 								<li><?php echo wp_kses_post( __( 'the <strong>capture service</strong> at <code>http://localhost:8787</code> — the status below turns green once it is detected;', 'fw' ) ); ?></li>
@@ -3050,13 +3552,13 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						<summary style="cursor:pointer;color:var(--fw-accent, #3858e9);font-weight:600"><?php esc_html_e( 'Prefer to run it by hand? (manual capture-service setup)', 'fw' ); ?></summary>
 						<ol style="margin:.5em 0 .2em 1.4em;padding:0;color:#50575e;font-size:13px;line-height:1.7">
 							<li><?php echo wp_kses_post( __( 'Clone just the capture service — <a href="https://github.com/UnysonPlus/UnysonPlus-Capture-Service" target="_blank" rel="noopener">UnysonPlus/UnysonPlus-Capture-Service</a>:', 'fw' ) ); ?>
-								<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-Capture-Service.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+								<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">git clone https://github.com/UnysonPlus/UnysonPlus-Capture-Service.git</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							</li>
 							<li><?php echo wp_kses_post( __( 'Open a terminal in the service folder and install its dependencies once:', 'fw' ) ); ?>
-								<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">cd "tools\design-capture" && npm install</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+								<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">cd "tools\design-capture" && npm install</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							</li>
 							<li><?php echo wp_kses_post( __( 'Start it (keep the window open). It serves <code>http://localhost:8787</code>; set a <code>PORT</code> env var for a different port:', 'fw' ) ); ?>
-								<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+								<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							</li>
 						</ol>
 					</details>
@@ -3076,7 +3578,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 								if ( ! h || ! h.ok ) { info.innerHTML = '<span style="color:#646970"><?php echo esc_js( __( 'Service not detected — start it with the steps above.', 'fw' ) ); ?></span>'; return; }
 								var out = '<span style="color:#1a7f37">&#10003; <?php echo esc_js( __( 'Service running', 'fw' ) ); ?></span> — <strong>v' + escH( h.version || '?' ) + '</strong>';
 								if ( h.updateAvailable && h.latest ) {
-									out += ' <span style="background:#fcf0cd;color:#8a6d00;border-radius:9px;padding:1px 8px;font-size:11px">⬆ <?php echo esc_js( __( 'Update available', 'fw' ) ); ?> v' + escH( h.latest ) + '</span> — <?php echo esc_js( __( 'run', 'fw' ) ); ?> <code>git pull &amp;&amp; npm install</code> <?php echo esc_js( __( 'then restart the service', 'fw' ) ); ?>';
+									out += ' <span style="background:var(--sc-note-bg,#fcf0cd);color:#8a6d00;border-radius:9px;padding:1px 8px;font-size:11px">⬆ <?php echo esc_js( __( 'Update available', 'fw' ) ); ?> v' + escH( h.latest ) + '</span> — <?php echo esc_js( __( 'run', 'fw' ) ); ?> <code>git pull &amp;&amp; npm install</code> <?php echo esc_js( __( 'then restart the service', 'fw' ) ); ?>';
 								} else if ( h.latest ) {
 									out += ' <span style="color:#646970"><?php echo esc_js( __( '(up to date)', 'fw' ) ); ?></span>';
 								}
@@ -3100,12 +3602,12 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<h4 style="margin:.9em 0 .2em"><?php esc_html_e( 'Option A — Claude Code (use your Claude subscription; no API key)', 'fw' ); ?> <span style="font-size:11px;background:#1a7f37;color:#fff;border-radius:9px;padding:1px 7px;vertical-align:middle"><?php esc_html_e( 'recommended', 'fw' ); ?></span></h4>
 					<ol style="margin:.4em 0 .4em 1.4em;padding:0">
 						<li style="margin-bottom:.7em"><?php echo wp_kses_post( __( '<strong>Install the Claude Code CLI</strong> with the official native installer (more reliable than <code>npm</code> on Windows):', 'fw' ) ); ?>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">irm https://claude.ai/install.ps1 | iex</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">irm https://claude.ai/install.ps1 | iex</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							<span class="description"><?php esc_html_e( 'macOS / Linux instead:', 'fw' ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">curl -fsSL https://claude.ai/install.sh | bash</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">curl -fsSL https://claude.ai/install.sh | bash</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 						</li>
 						<li style="margin-bottom:.7em"><?php echo wp_kses_post( __( '<strong>Make sure it’s on your PATH.</strong> The Windows installer places it at <code>C:\Users\&lt;you&gt;\.local\bin\claude.exe</code>. If <code>claude --version</code> fails in a <em>new</em> terminal, add that folder to PATH (PowerShell), then open a new terminal:', 'fw' ) ); ?>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">$p=[Environment]::GetEnvironmentVariable('PATH','User'); [Environment]::SetEnvironmentVariable('PATH',"$p;$env:USERPROFILE\.local\bin",'User')</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">$p=[Environment]::GetEnvironmentVariable('PATH','User'); [Environment]::SetEnvironmentVariable('PATH',"$p;$env:USERPROFILE\.local\bin",'User')</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 						</li>
 						<li style="margin-bottom:.7em"><?php echo wp_kses_post( __( '<strong>Sign in</strong> (once): run <code>claude</code>, choose your Claude subscription in the browser, then type <code>/exit</code>.', 'fw' ) ); ?></li>
 						<li><?php echo wp_kses_post( __( '<strong>Restart the capture service</strong> (<code>node serve.mjs</code>) — its log should say <em>“AI ON — Claude Code subscription”</em>.', 'fw' ) ); ?></li>
@@ -3115,9 +3617,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<ol style="margin:.4em 0 .4em 1.4em;padding:0">
 						<li style="margin-bottom:.5em"><?php echo wp_kses_post( __( 'Create a key at <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a> (Settings → API Keys). It needs billing / credits and is <strong>separate from a Claude.ai subscription</strong>.', 'fw' ) ); ?></li>
 						<li><?php echo wp_kses_post( __( 'Start the service with the key (Windows PowerShell):', 'fw' ) ); ?>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">$env:ANTHROPIC_API_KEY="sk-ant-..."; node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">$env:ANTHROPIC_API_KEY="sk-ant-..."; node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							<span class="description"><?php esc_html_e( 'macOS / Linux:', 'fw' ); ?></span>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">ANTHROPIC_API_KEY=sk-ant-... node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">ANTHROPIC_API_KEY=sk-ant-... node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 						</li>
 					</ol>
 					<p class="description" style="color:#1a7f37;margin:.4em 0"><span class="dashicons dashicons-lock" style="vertical-align:text-bottom"></span> <?php esc_html_e( 'Either way, your key / subscription stays in the local service on your machine — it is never sent to or stored in WordPress.', 'fw' ); ?></p>
@@ -3131,7 +3633,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<ul style="margin:.3em 0 .2em 1.4em;padding:0;list-style:disc">
 						<li style="margin-bottom:.5em"><?php echo wp_kses_post( __( '<code>claude --version</code> → <em>“not a valid application for this OS platform”</em> (from an npm install): uninstall the npm copy and use the native installer above — <code>npm uninstall -g @anthropic-ai/claude-code</code>.', 'fw' ) ); ?></li>
 						<li style="margin-bottom:.5em"><?php echo wp_kses_post( __( '<code>claude --version</code> → <em>“not recognized”</em>: the install folder isn’t on PATH. Add it (Option A, step 2) and open a NEW terminal — or skip PATH and point the service straight at the binary:', 'fw' ) ); ?>
-							<div class="fw-sc-code"><pre style="background:#f6f7f7;padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">$env:CLAUDE_CLI="$env:USERPROFILE\.local\bin\claude.exe"; node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">$env:CLAUDE_CLI="$env:USERPROFILE\.local\bin\claude.exe"; node serve.mjs</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 						</li>
 						<li style="margin-bottom:.5em"><?php echo wp_kses_post( __( 'Status says <strong>“service running — no AI backend”</strong>: the service can’t find <code>claude</code>. Run <code>node serve.mjs</code> from a terminal where <code>claude --version</code> works, or use the <code>CLAUDE_CLI</code> line above.', 'fw' ) ); ?></li>
 						<li style="margin-bottom:.5em"><?php echo wp_kses_post( __( 'Status says <strong>“service not detected”</strong>: the capture service isn’t running, or the Service URL / port doesn’t match (see the box above).', 'fw' ) ); ?></li>
@@ -3230,10 +3732,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				$upw_classic        = ( class_exists( 'Classic_Editor' ) || 'classic' === get_option( 'classic-editor-replace' ) );
 				$upw_block_disabled = $upw_pb_active || $upw_classic;
 				?>
-					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
+					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Output', 'fw' ); ?></legend>
 						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'A child theme of the UnysonPlus parent theme, with the body as editable page-builder sections and the full framework — Theme Settings, presets, shortcodes.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="page-builder" checked onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display='none';}"> <?php esc_html_e( 'Unyson+ Page Builder', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'child theme', 'fw' ); ?>)</span></label>
-						<label style="display:block;margin:.2em 0<?php echo $upw_block_disabled ? ';opacity:.5' : ''; ?>" title="<?php echo esc_attr__( 'Generate a standalone WordPress block theme (FSE): theme.json, editable header/footer parts, templates and section patterns, in core blocks — it renders with no plugin dependency. Requires the local capture service, and converts from a URL.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="block-theme" id="fw-sc-target-block"<?php disabled( $upw_block_disabled ); ?> onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display=this.checked?'block':'none';}"> <?php esc_html_e( 'Block Theme', 'fw' ); ?> <span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#8a6d00;background:#fcf3cd;border:1px solid #f0e3a8;border-radius:3px;padding:0 .35em;vertical-align:middle"><?php esc_html_e( 'Experimental', 'fw' ); ?></span> <span style="color:#646970">(<?php esc_html_e( 'standalone FSE, no plugin', 'fw' ); ?>)</span></label>
+						<label style="display:block;margin:.2em 0<?php echo $upw_block_disabled ? ';opacity:.5' : ''; ?>" title="<?php echo esc_attr__( 'Generate a standalone WordPress block theme (FSE): theme.json, editable header/footer parts, templates and section patterns, in core blocks — it renders with no plugin dependency. Requires the local capture service, and converts from a URL.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="block-theme" id="fw-sc-target-block"<?php disabled( $upw_block_disabled ); ?> onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display=this.checked?'block':'none';}"> <?php esc_html_e( 'Block Theme', 'fw' ); ?> <span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#8a6d00;background:var(--sc-note-bg,#fcf3cd);border:1px solid var(--sc-note-bd,#f0e3a8);border-radius:3px;padding:0 .35em;vertical-align:middle"><?php esc_html_e( 'Experimental', 'fw' ); ?></span> <span style="color:#646970">(<?php esc_html_e( 'standalone FSE, no plugin', 'fw' ); ?>)</span></label>
 						<div id="fw-sc-vocab-wrap" style="display:none;margin:.15em 0 0 1.4em">
 							<span style="color:#646970;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em"><?php esc_html_e( 'Blocks', 'fw' ); ?></span>
 							<label style="display:block;margin:.1em 0" title="<?php echo esc_attr__( 'Portable: WordPress core blocks only. The theme runs with no plugin dependency — the broadest-reach option.', 'fw' ); ?>"><input type="radio" name="fw_sc_vocab" value="core" checked> <?php esc_html_e( 'Core blocks', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'portable', 'fw' ); ?>)</span></label>
@@ -3261,16 +3763,16 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						// so a Convert with such a target still runs the Page Builder output. Never set on a public release.
 						$upw_show_all = defined( 'FW_SITE_CONVERTER_ALL' ) && FW_SITE_CONVERTER_ALL;
 						foreach ( $upw_roadmap_targets as $upw_rt_slug => $upw_rt_label ) : ?>
-						<label style="display:block;margin:.2em 0<?php echo $upw_show_all ? '' : ';opacity:.5;cursor:default'; ?>" title="<?php echo $upw_show_all ? '' : esc_attr( sprintf( __( '%s output is on the roadmap — not available yet.', 'fw' ), $upw_rt_label ) ); ?>"><input type="radio" name="fw_sc_target" value="<?php echo esc_attr( $upw_rt_slug ); ?>"<?php echo $upw_show_all ? '' : ' disabled'; ?>> <?php echo esc_html( $upw_rt_label ); ?> <?php if ( ! $upw_show_all ) : ?><span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#646970;background:#f0f0f1;border:1px solid #dcdcde;border-radius:3px;padding:0 .35em;vertical-align:middle"><?php esc_html_e( 'Coming soon', 'fw' ); ?></span><?php endif; ?></label>
+						<label style="display:block;margin:.2em 0<?php echo $upw_show_all ? '' : ';opacity:.5;cursor:default'; ?>" title="<?php echo $upw_show_all ? '' : esc_attr( sprintf( __( '%s output is on the roadmap — not available yet.', 'fw' ), $upw_rt_label ) ); ?>"><input type="radio" name="fw_sc_target" value="<?php echo esc_attr( $upw_rt_slug ); ?>"<?php echo $upw_show_all ? '' : ' disabled'; ?>> <?php echo esc_html( $upw_rt_label ); ?> <?php if ( ! $upw_show_all ) : ?><span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#646970;background:var(--sc-inset,#f0f0f1);border:1px solid var(--sc-border,#dcdcde);border-radius:3px;padding:0 .35em;vertical-align:middle"><?php esc_html_e( 'Coming soon', 'fw' ); ?></span><?php endif; ?></label>
 						<?php endforeach; ?>
 						<?php if ( $upw_pb_active ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme is a standalone, plugin-free output — deactivate the Page Builder extension (Unyson+ → Extensions) to use it.', 'fw' ); ?></p><?php elseif ( $upw_block_disabled ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme needs the block editor — it is disabled while the Classic Editor is enforced.', 'fw' ); ?></p><?php endif; ?>
 					</fieldset>
-					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
+					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Destination', 'fw' ); ?></legend>
 						<label style="display:block;margin:.2em 0;color:#b32d2e" title="<?php echo esc_attr__( 'Wipe the PREVIOUS conversion first, then convert. Resets all Theme Settings (chrome / header / footer / colours / presets) back to defaults and clears the converter CSS caches, so nothing from an earlier converted site lingers. Use when converting a DIFFERENT site over this one. Leaves your pages, media library, and generated child themes in place. Off by default.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-replace"> <?php esc_html_e( 'Replace existing site', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'reset design first', 'fw' ); ?>)</span></label>
 						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Make the converted page your homepage. Auto-ON for a root URL; auto-OFF for an inner page (e.g. /services), which becomes a NEW page under its own slug and leaves your homepage untouched.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-homepage" checked> <?php esc_html_e( 'Set as homepage', 'fw' ); ?></label>
 					</fieldset>
-					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
+					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Capture', 'fw' ); ?></legend>
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-theme" checked> <?php esc_html_e( 'Create child theme', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'off = grab content only', 'fw' ); ?>)</span></label>
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-header" checked> <?php esc_html_e( 'Capture header', 'fw' ); ?></label>
@@ -3280,26 +3782,84 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr( __( 'For a store source: activates the UnysonPlus WooCommerce extension and maps product grids to a live [wc_products] feed. If the WooCommerce plugin is not installed yet, the extension is still activated and a dashboard notice guides you to install it (grids stay as static cards until then). Auto-ticked when the source is detected as a store.', 'fw' ) ); ?>"><input type="checkbox" id="fw-sc-opt-woocommerce"> <?php esc_html_e( 'Map to WooCommerce', 'fw' ); ?><?php if ( ! $upw_wc_active ) : ?> <span style="color:#646970">(<?php esc_html_e( 'not installed', 'fw' ); ?>)</span><?php endif; ?></label>
 						<label style="display:block;margin:.2em 0 .2em 1.6em" title="<?php echo esc_attr__( 'Run the store as a browsable CATALOG — prices are shown, but add-to-cart, cart and checkout are hidden. Ideal for a restaurant menu, a lookbook, or a "call for pricing" showroom. AUTO-ENABLED when the source is detected as a catalog / menu (prices, but no cart); tick to force it. Only applies when Map to WooCommerce is on.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-catalog"> <?php esc_html_e( 'Catalog Mode', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'browse-only, no cart · auto for menus', 'fw' ); ?>)</span></label>
 					</fieldset>
-					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
+					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Enhancements', 'fw' ); ?></legend>
 						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Give the converted page tasteful entrance animations — the elements in each section reveal in sequence as you scroll to them (headings fade up first, then text, then cards cascade). Applied deterministically from each element role; nothing that should stay static is animated. Edit or remove any of them per element in the builder Animations tab afterward. Off by default.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-anim"> <?php esc_html_e( 'Add entrance animations', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'sequential reveal on scroll', 'fw' ); ?>)</span></label>
 						<label id="fw-sc-opt-anim-ai-wrap" style="display:block;margin:.2em 0 .2em 1.6em;opacity:.55" title="<?php echo esc_attr__( 'Refine the entrance animations with your LOCAL AI — it re-picks a fitting effect + timing per element on top of the deterministic base (e.g. a slide-up for a hero CTA, a soft zoom for a feature image). Requires the capture service running with an AI backend (a local model, Claude Code, or an API key). If the AI is unavailable it silently keeps the deterministic animations, so this never breaks a conversion.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-anim-ai" disabled> <?php esc_html_e( 'Refine with AI', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'local AI picks per-element effects', 'fw' ); ?>)</span></label>
 					</fieldset>
-					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid #dcdcde;border-radius:6px;min-width:0">
-						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Pages', 'fw' ); ?></legend>
-						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Convert the WHOLE site: the page you gave plus the pages its navigation links to, in ONE pass. They share one design system, one header and one footer — converting pages separately makes each one re-derive the site design, so the last page converted decides how the whole site looks. You review every page (and can drop any of them) before anything is created.', 'fw' ); ?>"><input type="radio" name="fw_sc_pages_mode" id="fw-sc-pages-site" value="site" checked> <?php esc_html_e( 'This page + linked pages', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'follows the nav', 'fw' ); ?>)</span></label>
-						<label style="display:block;margin:.2em 0 .2em 1.6em;font-size:12px;color:#646970"><?php esc_html_e( 'Max pages', 'fw' ); ?>
-							<select id="fw-sc-pages-max" style="min-height:0;height:auto;min-width:4.5em;padding:.1em 1.6em .1em .5em;font-size:12px;line-height:1.6">
+				</div>
+				<?php
+				/*
+				 * THE PAGE PICKER — full width, because a real site does not fit in a fifth column.
+				 *
+				 * Page scope used to be a guess: "follows the nav", with no way to see what that meant until the
+				 * conversion had finished. On a source publishing 133 URLs in its sitemap, the nav yielded one, so
+				 * the conversion produced 2 pages and reported success — the user found out by counting what they
+				 * got. Discovery now reads the sitemap, the nav, the footer and the page's own links, and this
+				 * panel puts the result in front of the user BEFORE anything is captured.
+				 *
+				 * Grouped by path prefix on purpose: that source's 133 URLs are not 133 equal pages — 107 sit under
+				 * one prefix (one template, many landing pages). A flat list would open with 107 near-identical
+				 * checkboxes and bury the dozen pages that actually differ.
+				 */
+				?>
+				<?php
+				// The slugs this site already holds, so a second batch can MARK what an earlier round converted.
+				// Marked, never hidden: a user may want to re-convert one, and hiding it would look like discovery
+				// had missed it.
+				$upw_done = get_posts( array( 'post_type' => 'page', 'post_status' => 'any', 'numberposts' => 500, 'fields' => 'ids' ) );
+				$upw_slugs = array();
+				foreach ( (array) $upw_done as $upw_pid ) { $upw_slugs[] = get_post_field( 'post_name', $upw_pid ); }
+				?>
+				<script>window.fwSCConverted = <?php echo wp_json_encode( array_values( array_filter( $upw_slugs ) ) ); ?>;</script>
+				<?php
+				/*
+				 * The page controls used to be a fifth column of RADIOS — "this page + linked pages", "just this
+				 * page", "also convert these URLs" — all of which were guesses made before anyone could see what
+				 * the site contained. The picker shows the real list, so the guesses are gone and what remains
+				 * lives where the choosing happens:
+				 *   - "Max pages" MOVED here rather than being deleted: it is the batch cap the picker enforces
+				 *     (the selection limit, the "N not in this batch" note, and the slice actually sent), so
+				 *     removing it would have quietly decapped the whole thing.
+				 *   - "Add a URL" replaces the free-text box, and keeps the one capability discovery cannot
+				 *     have: a TRULY orphan page, in no sitemap and linked from nowhere.
+				 *   - HOME is a selectable row now, which is what makes "just this page" expressible without a
+				 *     radio: untick home, tick one page.
+				 */
+				?>
+				<p style="margin:.2em 0 .6em">
+					<button type="button" class="button button-secondary" id="fw-sc-check-pages" title="<?php echo esc_attr__( 'The page list is fetched automatically when you enter a URL. Press this to fetch it again — after the source has changed, or if the capture service was not running the first time.', 'fw' ); ?>"><?php esc_html_e( 'Re-check pages', 'fw' ); ?></button>
+					<span id="fw-sc-check-pages-msg" style="margin-left:.6em;font-size:12px;color:#646970"><?php esc_html_e( 'The page list loads automatically once you enter a source URL.', 'fw' ); ?></span>
+				</p>
+				<div id="fw-sc-pagepicker" style="display:none;margin:.4em 0 .8em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;background:var(--sc-panel,#fff)">
+					<div style="display:flex;align-items:center;gap:.6em;flex-wrap:wrap;padding:.55em .8em;border-bottom:1px solid var(--sc-border,#f0f0f1)">
+						<strong style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Pages found', 'fw' ); ?></strong>
+						<span id="fw-sc-pp-summary" style="font-size:12px;color:#646970"></span>
+						<span style="flex:1"></span>
+						<label style="font-size:12px;color:#646970" title="<?php echo esc_attr__( 'How many pages one conversion may capture. The rest stay in the list for a later round — your existing pages are kept.', 'fw' ); ?>"><?php esc_html_e( 'Max pages', 'fw' ); ?>
+							<select id="fw-sc-pages-max" style="min-height:0;height:auto;min-width:4.2em;padding:.1em 1.4em .1em .4em;font-size:12px;line-height:1.6">
 								<?php foreach ( array( 3, 5, 10, 15, 25 ) as $upw_pm ) : ?>
 									<option value="<?php echo (int) $upw_pm; ?>"<?php selected( 10, $upw_pm ); ?>><?php echo (int) $upw_pm; ?></option>
 								<?php endforeach; ?>
 							</select>
 						</label>
-						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Convert ONLY the URL you gave. Use this to add a single page to a site you have already converted — the existing design, header and footer are left exactly as they are.', 'fw' ); ?>"><input type="radio" name="fw_sc_pages_mode" id="fw-sc-pages-one" value="one"> <?php esc_html_e( 'Just this page', 'fw' ); ?></label>
-						<label style="display:block;margin:.45em 0 .1em;font-size:12px;color:#646970" title="<?php echo esc_attr__( 'Pages the navigation does not link to — an orphan landing page, for example. One URL per line; they are captured alongside the pages found in the nav.', 'fw' ); ?>"><?php esc_html_e( 'Also convert these URLs', 'fw' ); ?> <span style="color:#8c8f94">(<?php esc_html_e( 'one per line', 'fw' ); ?>)</span></label>
-						<textarea id="fw-sc-pages-extra" rows="2" class="large-text code" style="font-size:11px;margin:0" placeholder="https://example.com/pricing"></textarea>
-					</fieldset>
+						<input type="url" id="fw-sc-pp-add" placeholder="<?php echo esc_attr__( 'add an orphan URL…', 'fw' ); ?>" style="font-size:12px;padding:.1em .4em;min-height:0;width:13em"
+							title="<?php echo esc_attr__( 'A page in no sitemap and linked from nowhere cannot be discovered — add it by hand and it joins the list.', 'fw' ); ?>">
+						<button type="button" class="button button-small" id="fw-sc-pp-addbtn"><?php esc_html_e( 'Add', 'fw' ); ?></button>
+						<button type="button" class="button button-small" id="fw-sc-pp-none"><?php esc_html_e( 'Clear', 'fw' ); ?></button>
+						<button type="button" class="button button-small" id="fw-sc-pp-top"><?php esc_html_e( 'Select top-level', 'fw' ); ?></button>
+					</div>
+					<div id="fw-sc-pp-list" style="max-height:340px;overflow:auto;padding:.4em .8em .6em"></div>
+					<p id="fw-sc-pp-note" style="margin:0;padding:.45em .8em .6em;font-size:12px;color:#646970;border-top:1px solid var(--sc-border,#f0f0f1)"></p>
 				</div>
+				<?php
+				// Redoing ONE page belongs on the Convert panel itself, not on the post-conversion results
+				// screen: that screen only renders right after an import, and a page most often needs
+				// re-running days LATER — after the converter has improved, or once someone notices one page
+				// is wrong. It hangs off its own condition (are there converted pages that know their
+				// source?), so it appears whenever it is useful and stays out of the way when it is not.
+				self::render_page_rerun();
+				?>
 				<p style="margin:.2em 0 .4em;font-size:12px;color:#646970">
 					<span style="display:block;margin-bottom:.25em"><?php esc_html_e( 'Every conversion is high-fidelity: the source is mapped into the shortcode options and Theme Settings as fully as possible, with anything not mappable written to the child theme CSS as an editable, low-priority base (theme settings / presets still override).', 'fw' ); ?></span>
 					<span style="display:block"><?php esc_html_e( 'Runtime-CSS builder exports (Google Stitch / Tailwind CDN, Lovable, v0) are rendered in a real browser automatically when the capture service is running — no option needed. A “source bundle” (.zip of already-rendered HTML + media) always converts offline.', 'fw' ); ?></span>
@@ -3604,6 +4164,31 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					};
 				}
 
+				// A DEAD REQUEST IS NOT A PARSE ERROR.
+				//
+				// When the build dies mid-run -- a PHP fatal, or the request hitting max_execution_time during the
+				// image import -- WordPress replies with its HTML error page. r.json() then throws
+				// "Unexpected token '<'", which the panel showed verbatim: a message about JSON that tells the
+				// reader nothing about what went wrong or what to do. Read the body as text, and when it is not
+				// JSON, say what the page actually is.
+				function readBuildJson( r ) {
+					return r.text().then( function ( t ) {
+						try { return JSON.parse( t ); } catch ( e ) {
+							var msg;
+							if ( /Maximum execution time|max_execution_time/i.test( t ) ) {
+								msg = '<?php echo esc_js( __( 'The server ran out of time while importing images, so the build stopped partway. Raise max_execution_time in php.ini, or re-run with "Import images" unticked.', 'fw' ) ); ?>';
+							} else if ( /Allowed memory size|memory_limit/i.test( t ) ) {
+								msg = '<?php echo esc_js( __( 'The server ran out of memory during the build. Raise memory_limit in php.ini and try again.', 'fw' ) ); ?>';
+							} else if ( /critical error|Fatal error|Parse error/i.test( t ) ) {
+								msg = '<?php echo esc_js( __( 'The server hit a PHP error during the build and returned an error page. The details are in the PHP error log.', 'fw' ) ); ?>';
+							} else {
+								msg = '<?php echo esc_js( __( 'The server returned a page instead of a result, so the build could not finish.', 'fw' ) ); ?>';
+							}
+							throw new Error( msg + ' (HTTP ' + r.status + ')' );
+						}
+					} );
+				}
+
 				function doBuild( mapping, btnEl ) {
 					if ( btnEl ) { btnEl.disabled = true; btnEl.textContent = '<?php echo esc_js( __( 'Building…', 'fw' ) ); ?>'; }
 					var panel = buildPanel( btnEl );
@@ -3611,7 +4196,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					if ( serviceMode ) {
 							var sfd = new FormData(); sfd.append( 'action', 'fw_sc_build_mapping' ); sfd.append( '_wpnonce', nonce ); sfd.append( 'mapping', JSON.stringify( mapping ) );
 							var stEl = document.getElementById( 'fw-sc-opt-theme' ); sfd.append( 'opt_theme', ( ! stEl || stEl.checked ) ? '1' : '0' );
-							return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: sfd } ).then( function ( r ) { return r.json(); } ).then( function ( r2 ) {
+							return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: sfd } ).then( readBuildJson ).then( function ( r2 ) {
 								if ( r2 && r2.success && r2.data && r2.data.redirect ) { window.location.href = r2.data.redirect; return; }
 								throw new Error( ( r2 && r2.data && r2.data.message ) || '<?php echo esc_js( __( 'Build failed.', 'fw' ) ); ?>' );
 							} );
@@ -3643,7 +4228,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							fd.append( 'refine_chrome_source', window.__fwSCSourceUrl );
 							fd.append( 'refine_chrome_svc', svc() );
 						}
-					return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( r2 ) {
+					return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( readBuildJson ).then( function ( r2 ) {
 						if ( r2 && r2.success && r2.data && r2.data.redirect ) { window.location.href = r2.data.redirect; return; }
 						throw new Error( ( r2 && r2.data && r2.data.message ) || '<?php echo esc_js( __( 'Build failed.', 'fw' ) ); ?>' );
 					} );
@@ -3866,9 +4451,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				}
 				function colBreakdown( b, pi, si, bi, roles ) {
 					if ( b.t !== 'row' || ! b.cols || ! b.cols.length ) { return ''; }
-					var h = '<div style="padding:.1em 0 .4em 2.4em;background:#fafbfc">';
+					var h = '<div style="padding:.1em 0 .4em 2.4em;background:var(--sc-inset,#fafbfc)">';
 					b.cols.forEach( function ( c, ci ) {
-						h += '<div style="padding:.32em .7em;border-top:1px dotted #e7e7ea">'
+						h += '<div style="padding:.32em .7em;border-top:1px dotted var(--sc-border,#e7e7ea)">'
 							+ '<div style="display:flex;gap:.5em;align-items:center;flex-wrap:wrap">'
 								+ '<strong style="font-size:12px;color:#50575e"><?php echo esc_js( __( 'Column', 'fw' ) ); ?> ' + ( ci + 1 ) + '</strong>'
 								+ '<label style="font-size:11px;color:#787c82"><?php echo esc_js( __( 'width', 'fw' ) ); ?> ' + colWidthSel( pi, si, bi, ci, c ) + '</label>'
@@ -3903,7 +4488,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							var faint = ind ? 'color:#8a8f94;' : '';
 							return '<div style="' + pad + faint + '"><span style="color:#a7aaad">↳</span> ' + escH( x.replace( /^\s+/, '' ) ) + '</div>';
 						} ).join( '' );
-						return '<div class="fw-sc-chrome" data-region="' + region + '" style="border-top:2px solid #c3c4c7">'
+						return '<div class="fw-sc-chrome" data-region="' + region + '" style="border-top:2px solid var(--sc-border,#c3c4c7)">'
 							+ '<div style="display:flex;flex-wrap:wrap;gap:.4em .9em;align-items:center;padding:.45em .7em;background:#e7ecf3">'
 								+ '<strong>' + label + '</strong>'
 								+ '<span style="font-size:11px;color:#787c82"><?php echo esc_js( __( '(chrome → Theme Settings)', 'fw' ) ); ?></span>'
@@ -3915,14 +4500,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					var aiBadge = ai ? ' <span style="background:#6d28d9;color:#fff;border-radius:9px;padding:1px 7px;font-size:11px">✦ <?php echo esc_js( __( 'AI-refined', 'fw' ) ); ?></span>' : '';
 					var h = '<div class="notice notice-info" style="margin:.3em 0;padding:.7em .9em">'
 						+ '<p style="margin:.1em 0 .5em"><strong><?php echo esc_js( __( 'Detected:', 'fw' ) ); ?> ' + escH( source ) + '</strong>' + aiBadge + ' — <?php echo esc_js( __( 'review each element’s role (or uncheck / omit it), then build.', 'fw' ) ); ?></p>'
-						+ '<div id="fw-sc-file-map" style="border:1px solid #dcdcde;border-radius:6px;background:#fff">';
+						+ '<div id="fw-sc-file-map" style="border:1px solid var(--sc-border,#dcdcde);border-radius:6px;background:var(--sc-panel,#fff)">';
 					h += chromeBlock( 'header', mapping.chrome && mapping.chrome.header ); // header first (top of the site)
 					var pageHtml = [];
 					( mapping.pages || [] ).forEach( function ( pg, pi ) {
 						var ph = '';
 						( pg.sections || [] ).forEach( function ( sc, si ) {
-							ph += '<div class="fw-sc-sec" data-p="' + pi + '" data-s="' + si + '" style="border-top:2px solid #c3c4c7">'
-								+ '<div style="display:flex;flex-wrap:wrap;gap:.4em .9em;align-items:center;padding:.45em .7em;background:#eef0f2">'
+							ph += '<div class="fw-sc-sec" data-p="' + pi + '" data-s="' + si + '" style="border-top:2px solid var(--sc-border,#c3c4c7)">'
+								+ '<div style="display:flex;flex-wrap:wrap;gap:.4em .9em;align-items:center;padding:.45em .7em;background:var(--sc-inset,#eef0f2)">'
 									+ '<strong><?php echo esc_js( __( 'Section', 'fw' ) ); ?> ' + ( si + 1 ) + '</strong>'
 									+ '<label style="font-size:12px"><?php echo esc_js( __( 'CSS ID', 'fw' ) ); ?> <input type="text" class="fw-sc-cssid" data-p="' + pi + '" data-s="' + si + '" value="' + escH( sc.css_id || '' ) + '" style="width:10em"></label>'
 									+ '<label style="font-size:12px;white-space:nowrap;color:#b32d2e"><input type="checkbox" class="fw-sc-omit" data-p="' + pi + '" data-s="' + si + '"' + ( sc.omit ? ' checked' : '' ) + '> <?php echo esc_js( __( 'Omit section', 'fw' ) ); ?></label>'
@@ -3932,14 +4517,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							// multi-column band (its own columns + their elements shown via colBreakdown).
 							var col11 = false;
 							var colHdr = function ( label ) {
-								return '<div style="padding:.32em .7em;background:#f6f7f8;border-top:1px solid #e2e4e7;font-size:12px;font-weight:600;color:#50575e">▸ ' + label + '</div>';
+								return '<div style="padding:.32em .7em;background:var(--sc-inset,#f6f7f8);border-top:1px solid var(--sc-border,#e2e4e7);font-size:12px;font-weight:600;color:#50575e">▸ ' + label + '</div>';
 							};
 							( sc.blocks || [] ).forEach( function ( b, bi ) {
 								var isRow = ( b.t === 'row' );
 								if ( isRow ) { col11 = false; }
 								else if ( ! col11 ) { ph += colHdr( '<?php echo esc_js( __( 'Column', 'fw' ) ); ?> · 1/1' ); col11 = true; }
 								var pad = isRow ? '.3em .7em' : '.3em .7em .3em 2.4em';
-								ph += '<div style="display:flex;gap:.6em;align-items:center;padding:' + pad + ';border-top:1px solid #f3f3f4">'
+								ph += '<div style="display:flex;gap:.6em;align-items:center;padding:' + pad + ';border-top:1px solid var(--sc-border,#f3f3f4)">'
 									+ '<input type="checkbox" class="fw-sc-inc" data-p="' + pi + '" data-s="' + si + '" data-b="' + bi + '"' + ( b.include === false ? '' : ' checked' ) + '>'
 									+ '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + preview( b ) + '</div>'
 									+ '<div style="flex:0 0 auto">' + sel( pi, si, bi, b.role || 'code' ) + '</div></div>'
@@ -3956,13 +4541,13 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					// CHROME IS NOT IN THE TABS: the header and footer are site-level, reviewed once. A per-page
 					// header would invite the "which page's header wins" bug the importer was just fixed for.
 					if ( pageHtml.length > 1 ) {
-						h += '<div class="fw-sc-ptabs" style="display:flex;flex-wrap:wrap;gap:.3em;padding:.5em .7em;background:#f6f7f8;border-top:2px solid #c3c4c7">';
+						h += '<div class="fw-sc-ptabs" style="display:flex;flex-wrap:wrap;gap:.3em;padding:.5em .7em;background:var(--sc-inset,#f6f7f8);border-top:2px solid var(--sc-border,#c3c4c7)">';
 						( mapping.pages || [] ).forEach( function ( pg, pi ) {
 							var nsec = ( pg.sections || [] ).length;
 							var name = escH( pg.title || pg.slug || ( '<?php echo esc_js( __( 'Page', 'fw' ) ); ?> ' + ( pi + 1 ) ) );
 							h += '<button type="button" class="fw-sc-ptab" data-p="' + pi + '"'
-								+ ' style="cursor:pointer;border:1px solid #c3c4c7;border-radius:4px;padding:.25em .6em;font-size:12px;'
-								+ ( pi === 0 ? 'background:#fff;font-weight:600' : 'background:#eef0f2;color:#50575e' ) + '">'
+								+ ' style="cursor:pointer;border:1px solid var(--sc-border,#c3c4c7);border-radius:4px;padding:.25em .6em;font-size:12px;'
+								+ ( pi === 0 ? 'background:var(--sc-panel,#fff);font-weight:600' : 'background:var(--sc-inset,#eef0f2);color:#50575e' ) + '">'
 								+ name + ( pg.front_page ? ' <span title="<?php echo esc_attr_e( 'Front page', 'fw' ); ?>">\u2302</span>' : '' )
 								+ ' <span style="color:#8c8f94">\u00b7 ' + nsec + '</span></button>';
 						} );
@@ -3972,7 +4557,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						// only the first page is rendered up front; the rest fill in when their tab is opened
 						h += '<div class="fw-sc-page" data-p="' + pi + '" style="' + ( pi === 0 ? '' : 'display:none' ) + '">'
 							+ ( pageHtml.length > 1
-								? '<div style="display:flex;gap:.9em;align-items:center;padding:.4em .7em;background:#eef0f2;border-top:2px solid #c3c4c7">'
+								? '<div style="display:flex;gap:.9em;align-items:center;padding:.4em .7em;background:var(--sc-inset,#eef0f2);border-top:2px solid var(--sc-border,#c3c4c7)">'
 									+ '<strong>' + escH( pg.title || pg.slug || '' ) + '</strong>'
 									+ '<span style="font-size:11px;color:#787c82">' + escH( pg.slug ? '/' + pg.slug : '<?php echo esc_js( __( 'front page', 'fw' ) ); ?>' ) + '</span>'
 									+ '<label style="font-size:12px;white-space:nowrap;color:#b32d2e;margin-left:auto"><input type="checkbox" class="fw-sc-omit-page" data-p="' + pi + '"' + ( pg.omit ? ' checked' : '' ) + '> <?php echo esc_js( __( 'Omit page', 'fw' ) ); ?></label>'
@@ -3993,7 +4578,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						var want = +tab.dataset.p;
 						Array.prototype.forEach.call( map.querySelectorAll( '.fw-sc-ptab' ), function ( b ) {
 							var on = ( +b.dataset.p === want );
-							b.style.background = on ? '#fff' : '#eef0f2';
+							b.style.background = on ? 'var(--sc-panel,#fff)' : 'var(--sc-inset,#eef0f2)';
 							b.style.fontWeight = on ? '600' : '';
 							b.style.color = on ? '' : '#50575e';
 						} );
@@ -4256,6 +4841,317 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				}
 				var SVC_STOP = '<?php echo esc_js( __( 'STOP — capture service not running', 'fw' ) ); ?>';
 				var SVC_HINT = '<?php echo esc_js( __( 'start it with the AI Dev Kit launcher or', 'fw' ) ); ?> <code>node serve.mjs</code>';
+				/* ---- THE PAGE PICKER ------------------------------------------------------------
+				 * Discovery, shown to the user, before anything is captured.
+				 *
+				 * The rule this enforces: a batch is capped, and the pages that do not fit are NOT silently
+				 * dropped — they are counted and named as needing another round. Silently converting 2 of a
+				 * site's 133 pages and reporting success is the exact failure this panel exists to end. */
+				var fwSCPages = [];          // every discovered page
+				var fwSCPicked = {};         // url -> true
+				function fwSCBatchCap() {
+					var el = document.getElementById( 'fw-sc-pages-max' );
+					var n = el ? parseInt( el.value, 10 ) : 10;
+					return ( n >= 1 && n <= 50 ) ? n : 10;
+				}
+				function fwSCPickedList() {
+					// Home is excluded from the EXTRA list because a capture always starts there; it is carried
+					// separately by fwSCHomePicked() so a caller can ask for a page WITHOUT it.
+					return fwSCPages.filter( function ( p ) { return ! p.home && fwSCPicked[ p.url ]; } )
+						.map( function ( p ) { return p.url; } );
+				}
+				/** Did the reader keep the home page in this batch? */
+				function fwSCHomePicked() {
+					var h = fwSCPages.filter( function ( p ) { return p.home; } )[0];
+					return h ? !! fwSCPicked[ h.url ] : true;
+				}
+				function fwSCRenderPages() {
+					var list = document.getElementById( 'fw-sc-pp-list' );
+					var sum  = document.getElementById( 'fw-sc-pp-summary' );
+					var note = document.getElementById( 'fw-sc-pp-note' );
+					if ( ! list ) { return; }
+					// Count what is ACTUALLY in the batch, home included. fwSCPickedList() deliberately omits
+					// home (the capture carries it separately), and reusing that number here made the panel
+					// say "9 / 10 selected" with ten boxes ticked — a counter that disagrees with the thing it
+					// is counting teaches the reader to distrust the whole panel.
+					var cap = fwSCBatchCap();
+					var picked = fwSCPages.filter( function ( p ) { return !! fwSCPicked[ p.url ]; } ).length;
+					// Group by path prefix: 107 of one source's 133 URLs share a prefix, and a flat list
+					// would open with 107 near-identical rows and bury the pages that actually differ.
+					var groups = {}, order = [];
+					fwSCPages.forEach( function ( p ) {
+						// HOME IS A ROW NOW. It used to be skipped, which meant the home page was captured
+						// whatever the list said — so "just this page" needed its own radio to express "and
+						// not home too". As an ordinary row it is a choice like any other, and the radio it
+						// replaced is gone.
+						// A TOP-LEVEL page belongs under "Top level", not in a one-row group of its own named
+						// after itself. Grouping purely by first path segment gave /about its own heading and
+						// "select" button, so the dozen pages that matter arrived as a dozen single-item groups
+						// — technically grouped, practically noise. A group is only worth drawing for a sub-tree.
+						var g = ( p.depth <= 1 )
+							? '<?php echo esc_js( __( 'Top level', 'fw' ) ); ?>'
+							: ( p.group || '<?php echo esc_js( __( 'Top level', 'fw' ) ); ?>' );
+						if ( ! groups[ g ] ) { groups[ g ] = []; order.push( g ); }
+						groups[ g ].push( p );
+					} );
+					// Order: the pages that DIFFER first, the big template group last. Sorting by size descending
+					// — the obvious choice, and the first one tried — opened the panel with 107 near-identical
+					// rows from a single prefix and pushed the dozen real pages off screen. That is the exact
+					// failure grouping exists to prevent, reproduced by the sort that was meant to present it.
+					var TOPKEY = '<?php echo esc_js( __( 'Top level', 'fw' ) ); ?>';
+					order.sort( function ( a, b ) {
+						if ( a === TOPKEY ) { return -1; }
+						if ( b === TOPKEY ) { return 1; }
+						var an = groups[ a ].filter( function ( p ) { return p.inNav; } ).length;
+						var bn = groups[ b ].filter( function ( p ) { return p.inNav; } ).length;
+						if ( an !== bn ) { return bn - an; }            // what the nav points at comes first
+						return groups[ a ].length - groups[ b ].length; // then small before huge
+					} );
+					var html = '';
+					order.forEach( function ( g ) {
+						var rows = groups[ g ];
+						html += '<div style="margin:.5em 0 .1em;display:flex;align-items:center;gap:.5em">'
+							+ '<strong style="font-size:12px">' + fwSCEsc( g ) + '</strong>'
+							+ '<span style="font-size:11px;color:#8c8f94">' + rows.length + '</span>'
+							+ '<button type="button" class="button button-small fw-sc-pp-group" data-group="' + fwSCEsc( g ) + '" style="padding:0 .5em;min-height:0;line-height:1.8"><?php echo esc_js( __( 'select', 'fw' ) ); ?></button></div>';
+						// A group of 107 is one template, not 107 decisions. Show a readable slice and say how many
+						// sit behind it; the group's "select" button still takes all of them for anyone who wants it.
+						// …except Top level, which is the group a user actually chooses from — truncating THAT
+						// hides real pages behind a "+4 more" while showing twelve rows of one template below it.
+						var SHOWN = ( g === TOPKEY ) ? 40 : 12;
+						var shownRows = rows.length > SHOWN ? rows.slice( 0, SHOWN ) : rows;
+						shownRows.forEach( function ( p ) {
+							var on = !! fwSCPicked[ p.url ];
+							html += '<label style="display:block;margin:.1em 0 .1em .8em;font-size:12px' + ( p.converted ? ';opacity:.6' : '' ) + '">'
+								+ '<input type="checkbox" class="fw-sc-pp-cb" data-url="' + fwSCEsc( p.url ) + '"' + ( on ? ' checked' : '' ) + '> '
+								// A bare "/" is the home page, but only to someone who already knows that. Now that it
+								// is a row people tick and untick, it says what it is.
+								+ fwSCEsc( p.home ? '<?php echo esc_js( __( '/  (home page)', 'fw' ) ); ?>' : p.path )
+								+ ( p.inNav ? ' <span style="color:#2271b1;font-size:11px"><?php echo esc_js( __( 'in nav', 'fw' ) ); ?></span>' : '' )
+								// The row the user actually asked for, named as such — it is the one page they typed.
+								+ ( p.pasted ? ' <span style="color:#00a32a;font-size:11px"><?php echo esc_js( __( 'the URL you pasted', 'fw' ) ); ?></span>' : '' )
+								// Marked, not hidden: a user may well WANT to re-convert a page from an
+								// earlier round, and hiding it would look like discovery had missed it.
+								+ ( p.converted ? ' <span style="color:#646970;font-size:11px"><?php echo esc_js( __( 'already converted', 'fw' ) ); ?></span>' : '' )
+								+ '</label>';
+						} );
+						if ( rows.length > shownRows.length ) {
+							html += '<div style="margin:.1em 0 .3em .8em;font-size:11px;color:#8c8f94">+ '
+								+ ( rows.length - shownRows.length ) + ' <?php echo esc_js( __( 'more in this group', 'fw' ) ); ?></div>';
+						}
+					} );
+					// TWO COLUMNS once the list is long: a 133-row single column is a scroll, and the panel exists
+					// to be read at a glance. Below the threshold one column reads better — two short ones look
+					// like a mistake.
+					list.style.columnCount = ( fwSCPages.length > 10 ) ? '2' : '';
+					list.style.columnGap   = ( fwSCPages.length > 10 ) ? '1.6em' : '';
+					list.innerHTML = html;
+					if ( sum ) { sum.textContent = fwSCPages.length + ' <?php echo esc_js( __( 'found', 'fw' ) ); ?> \u00b7 ' + picked + ' / ' + cap + ' <?php echo esc_js( __( 'selected', 'fw' ) ); ?>'; }
+					if ( note ) {
+						var over = picked > cap;
+						note.style.color = over ? '#b32d2e' : '#646970';
+						note.textContent = over
+							? '<?php echo esc_js( __( 'More pages are selected than this batch allows — raise Max pages or clear some.', 'fw' ) ); ?>'
+							// `- 1` used to discount home because it was not a row. It is one now, so the total and
+							// the count are finally measured against the same set.
+							: ( fwSCPages.length > picked
+								? ( ( fwSCPages.length - picked ) + ' <?php echo esc_js( __( 'page(s) not in this batch. Convert them in a later round — your existing pages are kept.', 'fw' ) ); ?>' )
+								: '<?php echo esc_js( __( 'Every discovered page is in this batch.', 'fw' ) ); ?>' );
+					}
+					fwSCSyncConvertEnabled();
+				}
+				function fwSCEsc( t ) {
+					return String( t == null ? '' : t ).replace( /&/g, '&amp;' ).replace( /</g, '&lt;' )
+						.replace( />/g, '&gt;' ).replace( /"/g, '&quot;' );
+				}
+				function fwSCSyncConvertEnabled() {
+					// The only thing that blocks Convert is asking for more pages than one batch allows. The
+					// mode radios that used to matter here are gone: the list itself now says what will happen,
+					// so there is no hidden setting left to reconcile against it.
+					var btn = document.getElementById( 'fw-sc-an-go' );
+					if ( ! btn ) { return; }
+					var over = fwSCPickedList().length > fwSCBatchCap();
+					btn.disabled = over;
+					btn.title = over ? '<?php echo esc_js( __( 'Too many pages selected for one batch.', 'fw' ) ); ?>' : '';
+				}
+				( function fwSCPickerWire() {
+					var btn = document.getElementById( 'fw-sc-check-pages' );
+					var msg = document.getElementById( 'fw-sc-check-pages-msg' );
+					var panel = document.getElementById( 'fw-sc-pagepicker' );
+					if ( ! btn ) { return; }
+				/* DISCOVERY RUNS ITSELF.
+				 *
+				 * `Check Pages` was a button because discovery used to be optional — one way of scoping a
+				 * conversion among several radios. It is now the ONLY page control, so leaving it manual makes it a
+				 * step people forget, and the cost of forgetting is a conversion scoped by a default nobody chose.
+				 * It runs when a usable URL appears, and the button remains as a re-check for when the source has
+				 * changed since.
+				 *
+				 * Debounced, and it skips a URL it has already answered: the field fires on every keystroke, and a
+				 * request per character would hammer the service and race its own replies.
+				 */
+				var _fwSCLastChecked = '';
+				var _fwSCChecking = false;
+				var _fwSCDebounce = null;
+				function fwSCCheckPages( url ) {
+					if ( _fwSCChecking ) { return; }
+						// `fw-sc-src-url` is the WRAPPER DIV, not the field — reading `.value` off it yields
+					// undefined and the button silently refuses every URL. The input inside it is the field.
+					var el = document.getElementById( 'fw-sc-an-url' )
+						|| ( document.getElementById( 'fw-sc-src-url' ) || {} ).querySelector
+							&& document.getElementById( 'fw-sc-src-url' ).querySelector( 'input' );
+						var target = url || ( el ? String( el.value || '' ).trim() : '' );
+						if ( ! /^https?:\/\//i.test( target ) ) {
+							if ( msg ) { msg.style.color = '#b32d2e'; msg.textContent = '<?php echo esc_js( __( 'Enter a source URL first.', 'fw' ) ); ?>'; }
+							return;
+						}
+						_fwSCChecking = true;
+						_fwSCLastChecked = target;
+						btn.disabled = true;
+						if ( msg ) { msg.style.color = '#646970'; msg.textContent = '<?php echo esc_js( __( 'Checking\u2026 (reads the site\u2019s sitemap, nav and links)', 'fw' ) ); ?>'; }
+						fetch( svc() + '/pages?url=' + encodeURIComponent( target ), { mode: 'cors' } )
+							.then( function ( r ) { return r.json(); } )
+							.then( function ( d ) {
+								if ( ! d || ! d.ok ) { throw new Error( ( d && d.error ) || 'discovery failed' ); }
+								var known = ( window.fwSCConverted || [] );
+								fwSCPages = ( d.pages || [] ).map( function ( p ) {
+									p.converted = known.indexOf( p.path.replace( /^\//, '' ) ) >= 0;
+									return p;
+								} );
+								// THE PAGE YOU PASTED IS A PAGE. Discovery answers with the SITE's pages — its root and
+								// what the nav points at — and the pasted URL is not among them when it is an inner
+								// route. So a paste of one page offered a list that did not contain it, pre-ticked the
+								// site root and its top-level pages instead, and converted those: a user who asked for
+								// one page got ten, and the extra pages' media came with them (a conversion of a single
+								// article pulled in an asset-library page and its sixty background images).
+								var _norm = function ( u ) {
+									try { var x = new URL( u ); return ( x.origin + x.pathname ).replace( /\/+$/, '' ) + ( x.search || '' ); }
+									catch ( e ) { return String( u || '' ).replace( /\/+$/, '' ); }
+								};
+								var _pasted = _norm( target );
+								var _self = fwSCPages.filter( function ( p ) { return _norm( p.url ) === _pasted; } )[0];
+								if ( ! _self ) {
+									// Put it in the list so it can be seen, ticked and untickd like any other row.
+									var _path = '/';
+									try { var _u = new URL( target ); _path = ( _u.pathname || '/' ) + ( _u.search || '' ); } catch ( e ) {}
+									_self = { url: target, path: _path, depth: 1, group: '', inNav: false, home: false, converted: false, pasted: true };
+									fwSCPages.unshift( _self );
+								}
+								_self.pasted = true;
+
+								fwSCPicked = {};
+								if ( ! _self.home ) {
+									// An INNER page was pasted: that page alone is the batch. Anything else is a decision
+									// the user did not make — and with exactly one page picked and home left out, the
+									// capture runs in single-page mode, which is what pasting one URL means.
+									fwSCPicked[ _self.url ] = true;
+								} else {
+									// The SITE ROOT was pasted: "convert this site" is the sensible reading, so the pages
+									// the site itself treats as primary are pre-ticked, capped. Pre-ticking all 133 would
+									// be a trap dressed as a convenience.
+									var cap = fwSCBatchCap(), n = 0;
+									fwSCPages.forEach( function ( p ) {
+										// Home is pre-ticked and counts against the cap like any other page — it IS a page, and
+										// pretending otherwise made the batch size a lie.
+										if ( p.home ) { fwSCPicked[ p.url ] = true; n++; return; }
+										if ( n >= cap ) { return; }
+										if ( p.inNav || p.depth === 1 ) { fwSCPicked[ p.url ] = true; n++; }
+									} );
+								}
+								if ( panel ) { panel.style.display = ''; }
+								if ( msg ) { msg.textContent = ''; }
+								// A LATER BATCH of the same site: untick "Replace existing site". That reset wipes
+								// Theme Settings back to defaults and rebuilds them from the same source, so on a
+								// second round it is pure churn — and leaving it ticked invites the reading that
+								// each round starts from scratch. It leaves pages alone either way, so nothing from
+								// round one is ever at risk; this is about not repeating work, and not implying
+								// otherwise to someone deciding whether a second round is safe.
+								if ( fwSCPages.some( function ( p ) { return p.converted; } ) ) {
+									var rep = document.getElementById( 'fw-sc-opt-replace' );
+									if ( rep && rep.checked ) {
+										rep.checked = false;
+										if ( msg ) {
+											msg.style.color = '#646970';
+											msg.textContent = '<?php echo esc_js( __( 'Pages from an earlier round detected — “Replace existing site” was unticked so this batch adds to them.', 'fw' ) ); ?>';
+										}
+									}
+								}
+								fwSCRenderPages();
+							} )
+							.catch( function ( e ) {
+								if ( msg ) { msg.style.color = '#b32d2e'; msg.textContent = String( e.message || e ) + ' \u2014 <?php echo esc_js( __( 'is the capture service running?', 'fw' ) ); ?>'; }
+							} )
+							.then( function () { btn.disabled = false; _fwSCChecking = false; } );
+				}
+				btn.addEventListener( 'click', function () { _fwSCLastChecked = ''; fwSCCheckPages( '' ); } );
+				// The URL field drives it. `input` covers typing and paste; `change` covers autofill and blur.
+				( function fwSCWatchUrl() {
+					var f = document.getElementById( 'fw-sc-an-url' );
+					if ( ! f ) { return; }
+					var kick = function () {
+						var v = String( f.value || '' ).trim();
+						if ( ! /^https?:\/\/[^\s]+\.[^\s]/i.test( v ) ) { return; }   // a half-typed URL is not a URL
+						if ( v === _fwSCLastChecked ) { return; }                     // already answered
+						clearTimeout( _fwSCDebounce );
+						_fwSCDebounce = setTimeout( function () { fwSCCheckPages( v ); }, 700 );
+					};
+					f.addEventListener( 'input', kick );
+					f.addEventListener( 'change', kick );
+					kick();   // a URL already in the field (a reload, a prefill) gets checked without a keystroke
+				} )();
+					document.addEventListener( 'change', function ( ev ) {
+						var t = ev.target;
+						if ( t && t.classList && t.classList.contains( 'fw-sc-pp-cb' ) ) {
+							var u = t.getAttribute( 'data-url' );
+							if ( t.checked ) { fwSCPicked[ u ] = true; } else { delete fwSCPicked[ u ]; }
+							fwSCRenderPages();
+						}
+						if ( t && t.id === 'fw-sc-pages-max' ) { fwSCRenderPages(); }
+					} );
+					document.addEventListener( 'click', function ( ev ) {
+						var t = ev.target;
+						if ( ! t || ! t.classList ) { return; }
+						if ( t.classList.contains( 'fw-sc-pp-group' ) ) {
+							ev.preventDefault();
+							var g = t.getAttribute( 'data-group' );
+							fwSCPages.forEach( function ( p ) {
+								var pg = p.group || '<?php echo esc_js( __( 'Top level', 'fw' ) ); ?>';
+								if ( ! p.home && pg === g ) { fwSCPicked[ p.url ] = true; }
+							} );
+							fwSCRenderPages();
+						}
+						if ( t.id === 'fw-sc-pp-addbtn' ) {
+							ev.preventDefault();
+							var inp = document.getElementById( 'fw-sc-pp-add' );
+							var raw = inp ? String( inp.value || '' ).trim() : '';
+							if ( ! /^https?:\/\//i.test( raw ) ) { if ( inp ) { inp.focus(); } return; }
+							// Discovery cannot find a page that is in no sitemap and linked from nowhere. This is the one
+							// way such a page gets in, so it is added AND ticked: someone who typed a URL by hand has
+							// already decided they want it.
+							if ( ! fwSCPages.some( function ( p ) { return p.url === raw; } ) ) {
+								var pth = raw;
+								try { pth = new URL( raw ).pathname || '/'; } catch ( e ) {}
+								fwSCPages.push( { url: raw, path: pth, depth: ( pth.split( '/' ).filter( Boolean ).length || 1 ),
+									group: '', inNav: false, sources: [ 'added' ], added: true } );
+							}
+							fwSCPicked[ raw ] = true;
+							if ( inp ) { inp.value = ''; }
+							fwSCRenderPages();
+						}
+						if ( t.id === 'fw-sc-pp-none' ) { ev.preventDefault(); fwSCPicked = {}; fwSCRenderPages(); }
+						if ( t.id === 'fw-sc-pp-top' ) {
+							ev.preventDefault();
+							fwSCPicked = {};
+							var cap = fwSCBatchCap(), n = 0;
+							fwSCPages.forEach( function ( p ) {
+								if ( p.home || n >= cap ) { return; }
+								if ( p.depth === 1 ) { fwSCPicked[ p.url ] = true; n++; }
+							} );
+							fwSCRenderPages();
+						}
+					} );
+				} )();
+
 				function ping() {
 					signal( 'wait', '<?php echo esc_js( __( 'Checking the capture service…', 'fw' ) ); ?>' );
 					fetch( svc() + '/health', { mode: 'cors' } ).then( function ( r ) { return r.json(); } )
@@ -4327,17 +5223,27 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						// produced (one run, one design system, N pages) — "Just this page" keeps the original
 						// single-HTML request. An older service that does not know `pages=all` answers with a
 						// one-entry list, so this degrades to today's behaviour instead of failing.
-						var pagesOne = !! ( document.getElementById( 'fw-sc-pages-one' ) && document.getElementById( 'fw-sc-pages-one' ).checked );
-						var pagesMaxEl = document.getElementById( 'fw-sc-pages-max' );
-						var pagesExtraEl = document.getElementById( 'fw-sc-pages-extra' );
-						var pagesExtra = pagesExtraEl ? String( pagesExtraEl.value || '' ).split( /[\r\n,]+/ ).map( function ( x ) { return x.trim(); } ).filter( function ( x ) { return /^https?:\/\//i.test( x ); } ) : [];
+						// THE LIST IS THE MODE. There are no radios any more: single-page is simply "home is not in
+						// the batch and exactly one page is", which the reader can SEE rather than predict from a label.
+						// With the picker unused this falls back to the whole-site behaviour, so pressing Convert without
+						// checking pages works exactly as it always did.
+						var pagesPicked = ( typeof fwSCPickedList === 'function' ) ? fwSCPickedList() : [];
+						var homeIn      = ( typeof fwSCHomePicked === 'function' ) ? fwSCHomePicked() : true;
+						var pagesOne    = ( pagesPicked.length === 1 && ! homeIn );
+						var pagesMaxEl  = document.getElementById( 'fw-sc-pages-max' );
+						var pagesExtra  = [];
 						var capUrl = svc() + '/capture?url=' + encodeURIComponent( target );
 						if ( pagesOne ) {
-							capUrl += '&html=1&single=1';
+							// One page, without home: capture exactly THAT url and import content only.
+							capUrl = svc() + '/capture?url=' + encodeURIComponent( pagesPicked[0] ) + '&html=1&single=1';
 						} else {
 							capUrl += '&pages=all';
 							if ( pagesMaxEl && pagesMaxEl.value ) { capUrl += '&max=' + encodeURIComponent( pagesMaxEl.value ); }
 							if ( pagesExtra.length ) { capUrl += '&also=' + encodeURIComponent( pagesExtra.join( ',' ) ); }
+							// A reviewed selection wins over discovery: the user has already been shown this list,
+							// and re-deriving it in the capture could only disagree with what they approved.
+							// `only=` rather than `pages=`, because `pages=all` already means something else here.
+							if ( pagesPicked.length ) { capUrl += '&only=' + encodeURIComponent( pagesPicked.slice( 0, fwSCBatchCap() ).join( ',' ) ); }
 						}
 						fetch( capUrl, { mode: 'cors' } )
 							.then( function ( r ) {
@@ -4458,7 +5364,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<button type="button" class="button button-primary" id="fw-sc-export-rules" data-nonce="<?php echo esc_attr( wp_create_nonce( self::NONCE ) ); ?>"><span class="dashicons dashicons-download" style="vertical-align:text-bottom"></span> <?php esc_html_e( 'Export learned data', 'fw' ); ?></button>
 					<span id="fw-sc-rules-count" style="margin-left:.7em;color:#646970"><?php printf( esc_html__( '%d rules learned', 'fw' ), count( FW_Site_Converter_Stitch::rules_get() ) ); ?></span>
 				</p>
-				<p style="margin-top:1.1em;padding-top:.9em;border-top:1px solid #f0f0f1">
+				<p style="margin-top:1.1em;padding-top:.9em;border-top:1px solid var(--sc-border,#f0f0f1)">
 					<label for="fw-sc-import-rules-file"><strong><?php esc_html_e( 'Import learned data', 'fw' ); ?></strong></label><br>
 					<input type="file" id="fw-sc-import-rules-file" accept=".json,application/json" style="margin:.4em 0">
 					<button type="button" class="button" id="fw-sc-import-rules"><?php esc_html_e( 'Import &amp; merge', 'fw' ); ?></button>
@@ -4851,9 +5757,9 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			 * (html[data-upa-mode="dark"] and system + prefers-dark) flip the values;
 			 * !important is needed to beat the inline styles. Light-mode grays are
 			 * unified to one token, a sub-perceptual change. */
-			.fw-ext-site-converter{--sc-panel:#fff;--sc-inset:#f6f7f7;--sc-border:#dcdcde;--sc-ink:#1d2327;--sc-mut:#646970;--sc-setup-bg:#f3f9ff;--sc-setup-bd:#c3dcf0;--sc-note-bg:#fef7e6;--sc-note-bd:#f0d98c}
-			html[data-upa-mode="dark"] body.upa .fw-ext-site-converter{--sc-panel:#1d1f24;--sc-inset:#16171b;--sc-border:#35373f;--sc-ink:#e5e7ec;--sc-mut:#a1a5ae;--sc-setup-bg:#15202e;--sc-setup-bd:#2a4056;--sc-note-bg:#251d0b;--sc-note-bd:#544619}
-			@media (prefers-color-scheme:dark){html[data-upa-mode="system"] body.upa .fw-ext-site-converter{--sc-panel:#1d1f24;--sc-inset:#16171b;--sc-border:#35373f;--sc-ink:#e5e7ec;--sc-mut:#a1a5ae;--sc-setup-bg:#15202e;--sc-setup-bd:#2a4056;--sc-note-bg:#251d0b;--sc-note-bd:#544619}}
+			.fw-ext-site-converter{--sc-panel:#fff;--sc-inset:#f6f7f7;--sc-border:#dcdcde;--sc-ink:#1d2327;--sc-mut:#646970;--sc-setup-bg:#f3f9ff;--sc-setup-bd:#c3dcf0;--sc-note-bg:#fef7e6;--sc-note-bd:#f0d98c;--sc-ok-bd:#b6ddc2;--sc-ok-bg:#eaf6ee;--sc-ok-ink:#1a5c33}
+			html[data-upa-mode="dark"] body.upa .fw-ext-site-converter{--sc-panel:#1d1f24;--sc-inset:#16171b;--sc-border:#35373f;--sc-ink:#e5e7ec;--sc-mut:#a1a5ae;--sc-setup-bg:#15202e;--sc-setup-bd:#2a4056;--sc-note-bg:#251d0b;--sc-note-bd:#544619;--sc-ok-bd:#2c4a35;--sc-ok-bg:#132218;--sc-ok-ink:#7fd0a0}
+			@media (prefers-color-scheme:dark){html[data-upa-mode="system"] body.upa .fw-ext-site-converter{--sc-panel:#1d1f24;--sc-inset:#16171b;--sc-border:#35373f;--sc-ink:#e5e7ec;--sc-mut:#a1a5ae;--sc-setup-bg:#15202e;--sc-setup-bd:#2a4056;--sc-note-bg:#251d0b;--sc-note-bd:#544619;--sc-ok-bd:#2c4a35;--sc-ok-bg:#132218;--sc-ok-ink:#7fd0a0}}
 			.fw-ext-site-converter .fw-sc-card,.fw-ext-site-converter .fw-sc-why,.fw-ext-site-converter .fw-sc-progress,.fw-ext-site-converter .fw-sc-buildprog{background:var(--sc-panel)!important;border-color:var(--sc-border)!important;color:var(--sc-ink)!important}
 			.fw-ext-site-converter .fw-sc-optgroup,.fw-ext-site-converter .fw-sc-editor .CodeMirror{border-color:var(--sc-border)!important}
 			.fw-ext-site-converter .fw-sc-tabs{border-bottom-color:var(--sc-border)!important}
@@ -5359,6 +6265,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		// WHAT TO LOOK AT NEXT — the conversion measured itself; say so, in the form the reader can act on.
 		self::render_next_steps();
 
+		// (The per-page re-run list lives on the Convert panel itself — see render_page_rerun's call there.
+		// It is deliberately NOT repeated here: this screen renders only immediately after an import, and
+		// showing the same list twice on the one screen someone reaches by converting is noise.)
+
 		// AI header/footer fidelity pass — runs on the RESULTS page (the converted child theme is now active,
 		// so home_url() serves it). Best-effort + time-boxed: calls the capture service's /refine-chrome
 		// (HEADER-first; keeps CSS only if measured chrome drift dropped), then posts the verified CSS back to
@@ -5448,7 +6358,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				</p>
 				<div id="fw-sc-ai-out" style="display:none">
 					<p id="fw-sc-ai-explain" style="margin:.4em 0;font-weight:600"></p>
-					<div id="fw-sc-ai-structural" style="display:none;margin:.4em 0;padding:.5em .7em;border-left:4px solid #dba617;background:#fcf9e8"></div>
+					<div id="fw-sc-ai-structural" style="display:none;margin:.4em 0;padding:.5em .7em;border-left:4px solid #dba617;background:var(--sc-note-bg,#fcf9e8)"></div>
 					<div id="fw-sc-ai-css-wrap" style="display:none">
 						<p style="margin:.3em 0"><label for="fw-sc-ai-css"><strong><?php esc_html_e( 'Proposed CSS (editable):', 'fw' ); ?></strong></label></p>
 						<textarea id="fw-sc-ai-css" rows="8" class="large-text code" style="font-family:Menlo,Consolas,monospace;font-size:12px"></textarea>
@@ -5882,5 +6792,28 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			</table>
 		<?php endif; ?>
 		<?php
+	}
+
+	/**
+	 * Replace a crumb's name with the label the SOURCE's own breadcrumb used for that page.
+	 *
+	 * Matched by the crumb's URL -> page -> `_upw_crumb_label`, so it only touches pages this converter
+	 * created and only where a label was captured. A crumb with no stored label is returned untouched, which
+	 * keeps a hand-built page's trail, and a non-converted site's, exactly as the extension built it.
+	 *
+	 * @param array $items crumbs as built by the breadcrumbs extension
+	 * @return array
+	 */
+	public function _filter_crumb_labels( $items ) {
+		if ( ! is_array( $items ) ) { return $items; }
+		foreach ( $items as $i => $it ) {
+			if ( ! is_array( $it ) || empty( $it['url'] ) ) { continue; }
+			if ( isset( $it['type'] ) && 'front_page' === $it['type'] ) { continue; }   // the root uses homepage-title
+			$id = url_to_postid( (string) $it['url'] );
+			if ( ! $id ) { continue; }
+			$label = (string) get_post_meta( (int) $id, '_upw_crumb_label', true );
+			if ( '' !== $label ) { $items[ $i ]['name'] = $label; }
+		}
+		return $items;
 	}
 }

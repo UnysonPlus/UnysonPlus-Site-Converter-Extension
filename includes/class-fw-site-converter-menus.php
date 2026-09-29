@@ -595,6 +595,11 @@ class FW_Site_Converter_Menus {
 				$label = $url;
 			}
 
+			$children_raw = self::pluck( $item, array( 'children', 'items', 'sub', 'submenu' ), array() );
+			// A DEAD END is not a destination: an entry with nothing to point at and no children below it would
+			// render as a menu link that goes nowhere (an overflow toggle captured from the source nav).
+			if ( ( '' === $url || '#' === $url ) && ! ( is_array( $children_raw ) && $children_raw ) ) { continue; }
+
 			$target = self::resolve_target( $url );
 
 			$args = array(
@@ -666,12 +671,56 @@ class FW_Site_Converter_Menus {
 	}
 
 	/**
+	 * Hosts that count as INTERNAL: this site's, plus the SOURCE site's.
+	 *
+	 * Set by the bundle from theme-design's `source_url`; falls back to the hosts recorded on the converted
+	 * pages themselves (`_upw_source_url`), so the answer is right regardless of import order.
+	 */
+	private static $source_hosts = null;
+
+	/**
+	 * Tell the menu importer which origin the pages were converted FROM.
+	 *
+	 * @param string $url A source URL or origin.
+	 */
+	public static function set_source_origin( $url ) {
+		$host = wp_parse_url( (string) $url, PHP_URL_HOST );
+		if ( ! $host ) { return; }
+		if ( ! is_array( self::$source_hosts ) ) { self::$source_hosts = array(); }
+		$host = strtolower( preg_replace( '/^www\./i', '', $host ) );
+		if ( ! in_array( $host, self::$source_hosts, true ) ) { self::$source_hosts[] = $host; }
+	}
+
+	/** The source hosts, discovered from the converted pages when nobody set them. */
+	private static function source_hosts() {
+		if ( is_array( self::$source_hosts ) ) { return self::$source_hosts; }
+		self::$source_hosts = array();
+		global $wpdb;
+		if ( isset( $wpdb ) && $wpdb ) {
+			$rows = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s LIMIT 50", '_upw_source_url' ) );
+			foreach ( (array) $rows as $u ) { self::set_source_origin( (string) $u ); }
+		}
+		return is_array( self::$source_hosts ) ? self::$source_hosts : array();
+	}
+
+	/**
+	 * Whether $host should be treated as internal (this site, or the site we converted FROM).
+	 *
+	 * WHY THE SOURCE COUNTS. This asked only whether the host matched `home_url()` — the DESTINATION.
+	 * Every link the source site made to its own pages therefore classified as EXTERNAL and was imported
+	 * verbatim, so the converted site's primary menu pointed at the live original: clicking "Financing"
+	 * on the converted site navigated away to the source domain. "Internal" has to be judged against the
+	 * site the markup CAME FROM, not the site it landed on.
+	 *
 	 * @param string $host
-	 * @return bool Whether $host is this site's host.
+	 * @return bool
 	 */
 	private static function same_host( $host ) {
+		$host = strtolower( preg_replace( '/^www\./i', '', (string) $host ) );
+		if ( '' === $host ) { return true; }
 		$site = wp_parse_url( home_url(), PHP_URL_HOST );
-		return $site && strcasecmp( ltrim( $host, 'www.' ), ltrim( (string) $site, 'www.' ) ) === 0;
+		if ( $site && strcasecmp( $host, strtolower( preg_replace( '/^www\./i', '', (string) $site ) ) ) === 0 ) { return true; }
+		return in_array( $host, self::source_hosts(), true );
 	}
 
 	/**

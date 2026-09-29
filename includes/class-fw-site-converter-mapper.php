@@ -2710,7 +2710,7 @@ class FW_Site_Converter_Mapper {
 				return 0; // %/vw — not a fixed px cap
 			default:
 				// A non-standard "Content NNNN" preset (build_container_width_presets emits these for a source
-				// container that isn't a standard Tailwind step, e.g. modfii's 1400px) → its px value, so a
+				// container that isn't a standard Tailwind step, e.g. fixture-01's 1400px) → its px value, so a
 				// flexbox band in that section is capped at the same container as the source. Else inherit.
 				if ( preg_match( '/^content-(\d+)$/', $preset, $m ) ) { return (int) $m[1]; }
 				return 0; // inherit / empty
@@ -2723,7 +2723,7 @@ class FW_Site_Converter_Mapper {
 	 * { preset:'' } on read and the cap is silently dropped (the section grid then escaped to the full container
 	 * width — the "grids too wide" regression). Reverse of container_width_px()'s standard steps; a non-standard
 	 * width uses the shared `content-NNNN` preset (build_container_width_presets registers these from the source's
-	 * own container widths, e.g. modfii's 1400), so it renders exactly like the section's own container_width.
+	 * own container widths, e.g. fixture-01's 1400), so it renders exactly like the section's own container_width.
 	 *
 	 * @param int|float $px
 	 * @return array a content_width multi-picker value ({ preset: … })
@@ -5439,7 +5439,7 @@ selector .testimonial-avatar,selector .testimonial-avatar img{width:" . (int) $a
 			'design_settings' => $design_settings,
 			'container_type'  => 'container',
 			// text alignment from the source card (start/left → left, center default). A BOXED left-aligned
-			// testimonial (modfii) must not be force-centred.
+			// testimonial (fixture-01) must not be force-centred.
 			'text_align'      => ( in_array( $align, array( 'left', 'start' ), true ) ? 'text-left' : ( 'right' === $align || 'end' === $align ? 'text-right' : 'text-center' ) ),
 			'avatar_shape'    => 'rounded-circle',
 			'avatar_size'     => $avatar_size,
@@ -5502,7 +5502,7 @@ selector .testimonial-avatar,selector .testimonial-avatar img{width:" . (int) $a
 			if ( $any_extra ) { $rows_pin[] = array( 'slots' => array( 'extra' ), 'direction' => 'stack', 'justify' => 'start', 'align' => $j ); }
 			$atts['card_rows'] = $rows_pin;
 		}
-		// BOX STYLE — the source's per-card box skin (fill / border / radius / shadow / hover, e.g. modfii's
+		// BOX STYLE — the source's per-card box skin (fill / border / radius / shadow / hover, e.g. fixture-01's
 		// `bg-background rounded-2xl border`) → a shared Box Preset applied to EACH testimonial card, so the
 		// converted testimonials are boxed like the source instead of bare text on the section background.
 		if ( is_array( $card_box ) ) {
@@ -5725,6 +5725,53 @@ selector .testimonial-avatar,selector .testimonial-avatar img{width:" . (int) $a
 	 * Each item → one `tabs` row `{ tab_title, tab_content, is_open:'no' }`. Starts from the shortcode defaults so
 	 * the editor gets the full option tree. See accordion.md.
 	 */
+	/**
+	 * A breadcrumb trail → the breadcrumbs extension's native `[breadcrumbs]` shortcode.
+	 *
+	 * The shortcode derives the trail from the WordPress page hierarchy rather than from the crumbs we
+	 * captured, and that is the right behaviour: a converted site's trail must reflect the site it now IS,
+	 * not the paths the source happened to have. A trail transcribed literally would keep pointing at the
+	 * source's structure and would not update when pages move — a breadcrumb that lies is worse than none.
+	 *
+	 * So the captured crumbs are not emitted as content. They ride the node's `css_class` as a comment-free
+	 * marker only in the sense that the source's own class is preserved for styling, and they are recorded
+	 * in the conversion report so a mismatch between the source trail and the generated one is reviewable.
+	 *
+	 * Requires the breadcrumbs extension, which the importer activates on demand (the same mechanism the
+	 * contact form and subscriber CRM use).
+	 */
+	private static function n_breadcrumbs( array $b ) {
+		self::require_extension( 'breadcrumbs' );
+		// The source's FIRST crumb names its root ('Home'); the extension's default is 'Homepage'. The trail
+		// is rendered from the WordPress page hierarchy, so the label is the one thing the capture has to
+		// hand over or the converted trail says a word the source never used, on every page.
+		$first = ( isset( $b['items'][0]['label'] ) ) ? trim( (string) $b['items'][0]['label'] ) : '';
+		$fhref = ( isset( $b['items'][0]['href'] ) ) ? trim( (string) $b['items'][0]['href'] ) : '';
+		$fpath = '' !== $fhref ? trim( (string) wp_parse_url( $fhref, PHP_URL_PATH ), '/' ) : '';
+		if ( '' !== $first && '' === $fpath && mb_strlen( $first ) <= 40 ) {
+			self::require_ext_setting( 'breadcrumbs', 'homepage-title', $first );
+		}
+		// Every crumb that points somewhere teaches that path's short label.
+		foreach ( (array) ( $b['items'] ?? array() ) as $it ) {
+			$lbl = trim( (string) ( $it['label'] ?? '' ) );
+			$hrf = trim( (string) ( $it['href'] ?? '' ) );
+			if ( '' === $lbl || '' === $hrf || mb_strlen( $lbl ) > 60 ) { continue; }
+			$pth = trim( (string) wp_parse_url( $hrf, PHP_URL_PATH ), '/' );
+			if ( '' === $pth ) { continue; }   // the root crumb is the extension's homepage-title
+			self::$crumb_labels[ $pth ] = $lbl;
+		}
+		// …and the trailing crumb is THIS page's own label.
+		$self = trim( (string) ( $b['current'] ?? '' ) );
+		if ( '' !== $self && mb_strlen( $self ) <= 60 ) { self::$crumb_labels['@self'] = $self; }
+		$node = self::n_code( '[breadcrumbs]' );
+		// Keep the source's own class so the section-scoped type/colour rules still reach the trail.
+		$cls = trim( (string) ( $b['cls'] ?? '' ) );
+		if ( '' !== $cls && isset( $node['atts'] ) ) {
+			$node['atts']['css_class'] = trim( (string) ( $node['atts']['css_class'] ?? '' ) . ' ' . $cls );
+		}
+		return $node;
+	}
+
 	private static function n_accordion( array $b ) {
 		$src   = ( isset( $b['items'] ) && is_array( $b['items'] ) ) ? $b['items'] : array();
 		$tabs  = array();
@@ -5816,7 +5863,7 @@ selector .testimonial-avatar,selector .testimonial-avatar img{width:" . (int) $a
 		$atts['items']  = $items;
 		$atts['design'] = ! empty( $b['ordered'] ) ? 'numbered' : 'check';
 		// ORIENTATION — a source `flex flex-wrap` trust strip is HORIZONTAL; a stacked list is vertical. Was
-		// always defaulting to vertical, so the modfii inline strip rendered as a stacked column.
+		// always defaulting to vertical, so the fixture-01 inline strip rendered as a stacked column.
 		if ( ( $b['orientation'] ?? '' ) === 'horizontal' ) {
 			$atts['orientation'] = 'horizontal';
 			// the row's own placement + gap (`justify-center gap-4`): a centred contact row had packed left at the shortcode's
@@ -10722,7 +10769,7 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 			if ( $title_layout['spacing'] !== null ) { $layout['spacing'] = $title_layout['spacing']; }
 		}
 		// SUBTITLE bottom margin → the block's OUTER below-gap. When a subtitle renders it is the special
-		// heading's LAST part, so its own `mb-*` (the modfii hero `<p … mb-8>` = 32px, the gap down to the
+		// heading's LAST part, so its own `mb-*` (the fixture-01 hero `<p … mb-8>` = 32px, the gap down to the
 		// CTA button) IS the block's bottom margin. It sits on the <p>, not the wrapper, so heading_layout
 		// never saw it and the block sat flush on the button ("p margin-bottom 0 instead of 32px"). Capture
 		// it — computed margin-bottom first (authoritative, survives class-strip), else the `mb-*` utility —
@@ -11404,6 +11451,39 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 	/** The bundled extensions this build emitted a dependency on (for the importer to auto-activate). */
 	public static function needed_extensions() { return self::$needed_extensions; }
 
+	/**
+	 * Settings a converted element needs on its extension, as [ ext => [ option => value ] ].
+	 *
+	 * Activating an extension is not the same as configuring it. A converted breadcrumb trail rendered with
+	 * the extension's DEFAULT root label ('Homepage') where the source said 'Home' -- a word the source
+	 * chose, shown on every page, replaced by one it never used.
+	 */
+	private static $ext_settings = array();
+
+	/** Record a setting the importer should apply to a bundled extension. */
+	public static function require_ext_setting( $ext, $option, $value ) {
+		$ext = (string) $ext; $option = (string) $option;
+		if ( '' === $ext || '' === $option ) { return; }
+		self::$ext_settings[ $ext ][ $option ] = $value;
+	}
+
+	/** The extension settings this build asked for (for the importer to apply). */
+	public static function needed_ext_settings() { return self::$ext_settings; }
+
+	/**
+	 * The SHORT label the source's own breadcrumb used for each path, keyed by path.
+	 *
+	 * A trail is rendered from the page hierarchy, so its crumbs are page TITLES -- and a page title is not
+	 * a crumb label. The source titled a page 'Prefab Home Manufacturers' and crumbed it 'Manufacturers';
+	 * using the title made every trail read long-windedly, in words the source never put in its trail.
+	 * Each captured trail hands over the labels for its own ancestors, so converting any deep page teaches
+	 * the labels for everything above it.
+	 */
+	private static $crumb_labels = array();
+
+	/** The source's crumb label for a path ('modular-home-financing/manufacturers' => 'Manufacturers'). */
+	public static function crumb_labels() { return self::$crumb_labels; }
+
 	/** The native per-page Hide switches for chrome the source doesn't render (null chrome = unknown → set nothing). */
 	private static function chrome_page_options( $chrome ) {
 		if ( ! is_array( $chrome ) ) { return array(); }
@@ -11440,6 +11520,10 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 				'slug'       => $slug !== '' ? $slug : 'home',
 				'status'     => 'publish',
 				'front_page' => ! empty( $page['front_page'] ),
+				// The SOURCE URL this page was built from. Carried so a converted page can be re-run on its
+				// own later: without it the only way to redo one page was to remember its URL and paste it
+				// back in, which is why "re-convert just this page" could not be offered from the results.
+				'source_url' => isset( $page['source_url'] ) ? (string) $page['source_url'] : '',
 				'builder'    => $builder,
 				// Per-page layout options the importer sets (fw_set_db_post_option): the theme's native Hide Site Header /
 				// Footer switches when the source renders no such chrome (a footer-less page keeps its own closing band).
@@ -13186,6 +13270,16 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 				continue;
 			}
 
+			// A breadcrumb trail → the native `[breadcrumbs]` shortcode.
+			if ( ( $b['t'] ?? '' ) === 'breadcrumbs' ) {
+				$flush_buf();
+				$node = self::n_breadcrumbs( $b );
+				self::carry_wrap_margins( $node, $b );
+				self::apply_block_anim( $node, $b );
+				$items[] = self::n_column( '1_1', array( $node ) );
+				continue;
+			}
+
 			// An accordion / FAQ (<details> or aria-toggle group) → the native `accordion` shortcode.
 			if ( ( $b['t'] ?? '' ) === 'accordion' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
 				$flush_buf();
@@ -14157,7 +14251,7 @@ selector{max-width:100% !important;}" ); } // (#main's gutter is the gutter — 
 				}
 				// No solid band fill? A full-bleed GRADIENT layer (a CTA `absolute inset-0 bg-gradient-to-br`)
 				// is the band background too — hoist its gradient so the section paints it (applied as the
-				// native background.gradient below). This is what kept the modfii CTA band white (its white
+				// native background.gradient below). This is what kept the fixture-01 CTA band white (its white
 				// heading then vanished): the green gradient lived on an inner layer, not the section root.
 				if ( ! isset( $secd['background-color'] ) && ! isset( $secd['background-image'] ) ) {
 					foreach ( $sec['sectionLayers'] as $layer ) {
@@ -14369,7 +14463,7 @@ selector{max-width:100% !important;}" ); } // (#main's gutter is the gutter — 
 		// OVERLAY-HEADER OFFSET (applied AFTER Pass #5 so the native padding_top is finalized): a fixed/absolute
 		// transparent masthead overlays the hero, so the hero needs top padding >= the header height, or its
 		// heading renders UNDER the nav. But this is a MINIMUM clearance, NOT a replacement — a designer who
-		// overlays a fixed nav ALREADY pads the hero to clear it (modfii's `pt-28` = 112px clears the 80px nav).
+		// overlays a fixed nav ALREADY pads the hero to clear it (fixture-01's `pt-28` = 112px clears the 80px nav).
 		// So only force the nav-height offset when the source's OWN top padding is SMALLER; otherwise the native
 		// pt-* already clears the header and must stand. (Earlier this ran before padding_top was set, read 0,
 		// and always fired — clobbering the correct 112px with the 80px nav height.)
@@ -14448,6 +14542,7 @@ selector{max-width:100% !important;}" ); } // (#main's gutter is the gutter — 
 			}
 			if ( $sv ) { self::register_section_rule( $css_id, '', $sv ); }
 		}
+
 		return $sec_node;
 	}
 

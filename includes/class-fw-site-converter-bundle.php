@@ -532,6 +532,15 @@ class FW_Site_Converter_Bundle {
 				$out['extra_pages'] = $extra;
 				$out['sections'][]  = 'pages:multi';
 			}
+			// RECORD THE RESULT AGAIN, now that the inner pages exist.
+			//
+			// remember_result() runs early — before this line — so at that point the only page that has been
+			// built is the front one, and the coverage it records is the front page's. That is why a ten-page
+			// conversion kept reporting `pages=1` and one percentage: not because the inner pages were not
+			// audited, but because they were audited AFTER the report was written. Re-recording here is the
+			// cheapest correct fix: the accumulator is full now, and remember_result() is idempotent (it
+			// overwrites the stored option rather than appending to it).
+			if ( $extra ) { self::remember_result( $dir ); }
 		}
 
 		// --- Any sections recognized but not yet applied ---
@@ -581,6 +590,12 @@ class FW_Site_Converter_Bundle {
 			}
 		}
 		if ( $do_pages && $menus !== null && class_exists( 'FW_Site_Converter_Menus' ) ) {
+			// The importer decides which links are internal; without the SOURCE origin it judges them against
+			// this site and imports the source's own links verbatim, so the menu points at the live original.
+			if ( method_exists( 'FW_Site_Converter_Menus', 'set_source_origin' ) ) {
+				$sd_src = ( is_array( $theme_design ) && isset( $theme_design['source_url'] ) ) ? (string) $theme_design['source_url'] : '';
+				if ( '' !== $sd_src ) { FW_Site_Converter_Menus::set_source_origin( $sd_src ); }
+			}
 			$out['menus']      = FW_Site_Converter_Menus::import( $menus );
 			$out['sections'][] = 'menus';
 		}
@@ -647,6 +662,21 @@ class FW_Site_Converter_Bundle {
 		if ( $do_pages && is_array( $theme_design ) && ! empty( $theme_design['needs_extensions'] ) && is_array( $theme_design['needs_extensions'] ) ) {
 			$activated = self::activate_bundled_exts( $theme_design['needs_extensions'] );
 			if ( $activated ) { $out['activated_extensions'] = $activated; $out['sections'][] = 'extensions'; }
+		}
+
+		// Settings the converted elements need on their extensions. Applied after activation, and only for
+		// extensions the build actually asked for, so this can never reconfigure something unrelated.
+		if ( $do_pages && is_array( $theme_design ) && ! empty( $theme_design['ext_settings'] ) && is_array( $theme_design['ext_settings'] )
+			&& function_exists( 'fw_set_db_ext_settings_option' ) && function_exists( 'fw_ext' ) ) {
+			$applied = array();
+			foreach ( $theme_design['ext_settings'] as $ext => $opts ) {
+				if ( ! is_array( $opts ) || ! fw_ext( (string) $ext ) ) { continue; }
+				foreach ( $opts as $opt => $val ) {
+					fw_set_db_ext_settings_option( (string) $ext, (string) $opt, $val );
+					$applied[] = $ext . '.' . $opt;
+				}
+			}
+			if ( $applied ) { $out['ext_settings_applied'] = $applied; }
 		}
 
 		// --- Phase 5d: CATALOG MODE — a CATALOG / menu source (prices shown, but no cart / checkout / add-to-cart)
@@ -788,12 +818,27 @@ class FW_Site_Converter_Bundle {
 	 * @param array  $out the running import result (mutated: created pages are merged in)
 	 * @return array one row per extra page: { slug, ok, id?, created?, error? }
 	 */
+	/**
+	 * Each inner page's own text-coverage audit, keyed by slug.
+	 *
+	 * The front page's build is the only one whose report is recorded, because remember_result() reads
+	 * the drops out of THAT build's file set. Every inner snapshot computes its own coverage and then
+	 * throws it away, so a ten-page conversion reported `pages=1` and a single percentage — measured on
+	 * a real run: 97.7%, identical across three different ten-page batches, because in every one of them
+	 * the nine inner pages were never audited. A number that cannot move is not a measurement.
+	 *
+	 * Same shape as the extension-activation gap next door, and it was half-fixed: activation was
+	 * collected from the snapshots, the reporting was not.
+	 */
+	private static $snapshot_coverage = array();
+
 	private static function import_page_snapshots( $dir, array &$out ) {
 		$manifest = self::read_json( $dir, array( 'pages-manifest.json' ) );
 		$list     = ( is_array( $manifest ) && isset( $manifest['pages'] ) && is_array( $manifest['pages'] ) ) ? $manifest['pages'] : array();
 		if ( ! $list || ! class_exists( 'FW_Site_Converter_Sources' ) || ! class_exists( 'FW_Site_Converter_Pages' ) ) { return array(); }
 
-		$rows = array();
+		$rows      = array();
+		$needs_all = array();
 		foreach ( $list as $pg ) {
 			if ( ! is_array( $pg ) || ! empty( $pg['front'] ) ) { continue; } // the front page already ran, above
 			$slug = trim( (string) ( $pg['slug'] ?? '' ) );
@@ -819,8 +864,13 @@ class FW_Site_Converter_Bundle {
 
 			// the page's own URL drives its slug + front/inner decision inside the build
 			$url   = (string) ( $pg['url'] ?? '' );
+			// The page's own title comes from its MARKUP, not from its slug: ucwords('fha') is 'Fha', which
+			// loses the source's wording and casing and then shows up in every breadcrumb trail.
 			$title = ucwords( trim( preg_replace( '/[^a-z0-9]+/i', ' ', $slug ) ) );
 			if ( '' === $title ) { $title = $slug; }
+			if ( method_exists( 'FW_Site_Converter_Stitch', 'page_title_from_html' ) ) {
+				$title = FW_Site_Converter_Stitch::page_title_from_html( $html, $title );
+			}
 
 			$res = FW_Site_Converter_Sources::build_from_html( $html, $title, array(
 				'dynamic_chrome' => true,
@@ -833,7 +883,30 @@ class FW_Site_Converter_Bundle {
 				continue;
 			}
 
+			// AN INNER PAGE'S DEPENDENCIES COUNT TOO.
+			//
+			// Extension activation was driven by the FRONT page's build alone: whatever that one page emitted
+			// went into theme-design.json's `needs_extensions`, and nothing else was ever consulted. So a
+			// feature that lives on an inner page — a breadcrumb trail on every page BUT the home page, a
+			// contact form on /contact, a gallery on /work — emitted its `require_extension()` into a build
+			// result that was read for its pages and then discarded. The shortcode landed in the page and the
+			// extension that renders it stayed inactive, so the page showed nothing and the cause was three
+			// files away. Measured on a real conversion: every inner page emitted `[breadcrumbs]`, the home
+			// page had no trail, and the extension was never activated.
+			$snap_needs = ( isset( $res['files']['theme-design.json']['needs_extensions'] ) && is_array( $res['files']['theme-design.json']['needs_extensions'] ) )
+				? $res['files']['theme-design.json']['needs_extensions'] : array();
+			if ( $snap_needs ) { $needs_all = array_merge( $needs_all, $snap_needs ); }
+
+			// …and this page's own coverage, so the report covers the pages it actually converted.
+			$snap_cov = $res['files']['conversion-drops.json']['text_coverage'] ?? null;
+			if ( is_array( $snap_cov ) ) { self::$snapshot_coverage[ $slug ] = $snap_cov; }
+
 			$imp = FW_Site_Converter_Pages::import( $built );
+			// The trail labels this page's own capture taught us (its ancestors', and its own).
+			$cl = $res['files']['theme-design.json']['crumb_labels'] ?? null;
+			if ( is_array( $cl ) && method_exists( 'FW_Site_Converter_Pages', 'apply_crumb_labels' ) ) {
+				FW_Site_Converter_Pages::apply_crumb_labels( $cl, trim( (string) wp_parse_url( $url, PHP_URL_PATH ), '/' ) );
+			}
 			$row = array( 'slug' => $slug, 'ok' => true, 'result' => $imp );
 			// merge the created pages into the main result so the permalink check sees them
 			foreach ( (array) ( $imp['pages'] ?? array() ) as $p ) {
@@ -844,6 +917,14 @@ class FW_Site_Converter_Bundle {
 				if ( isset( $p['id'] ) ) { $row['id'] = $p['id']; }
 			}
 			$rows[] = $row;
+		}
+
+		// Activate what the inner pages asked for. Deduped, and harmless when the front page already asked
+		// for the same slug — activate_bundled_exts() skips anything already active and refuses any slug
+		// outside its own allowlist, so this cannot turn into "an inner page activated a plugin".
+		if ( $needs_all ) {
+			$done = self::activate_bundled_exts( array_values( array_unique( $needs_all ) ) );
+			if ( $done ) { $out['activated_extensions'] = array_values( array_unique( array_merge( (array) ( $out['activated_extensions'] ?? array() ), $done ) ) ); }
 		}
 
 		return $rows;
@@ -1092,6 +1173,45 @@ class FW_Site_Converter_Bundle {
 	public static function remember_result( $dir, $files = null ) {
 		$parity = ( is_array( $files ) && isset( $files['conversion-parity.json'] ) ) ? $files['conversion-parity.json'] : self::read_json( $dir, array( 'conversion-parity.json' ) );
 		$drops  = ( is_array( $files ) && isset( $files['conversion-drops.json'] ) )  ? $files['conversion-drops.json']  : self::read_json( $dir, array( 'conversion-drops.json' ) );
+		// Fold in the inner pages' coverage before anything reads it. Without this the panel reports the
+		// FRONT page's percentage as though it were the site's, which is the most misleading form a
+		// measurement can take: confidently precise about a tenth of the thing.
+		if ( is_array( $drops ) && self::$snapshot_coverage ) {
+			$tc = isset( $drops['text_coverage'] ) && is_array( $drops['text_coverage'] ) ? $drops['text_coverage'] : array();
+			$by = isset( $tc['by_page'] ) && is_array( $tc['by_page'] ) ? $tc['by_page'] : array();
+			// The front page's own row is unlabelled when it was built alone — name it before merging, or it
+			// collides with nothing and reads as 'page-1' next to real slugs.
+			if ( ! $by && isset( $tc['checked'] ) ) {
+				$by['home'] = array( 'checked' => (int) $tc['checked'], 'missing' => (int) $tc['missing'], 'coverage_pct' => $tc['coverage_pct'] );
+			} elseif ( isset( $by['page-1'] ) ) {
+				$by['home'] = $by['page-1'];
+				unset( $by['page-1'] );
+			}
+			$checked = 0; $missing = 0; $items = array();
+			foreach ( self::$snapshot_coverage as $slug => $cov ) {
+				$by[ $slug ] = array(
+					'checked' => (int) ( $cov['checked'] ?? 0 ),
+					'missing' => (int) ( $cov['missing'] ?? 0 ),
+					'coverage_pct' => $cov['coverage_pct'] ?? 100.0,
+				);
+				foreach ( (array) ( $cov['items'] ?? array() ) as $it ) {
+					$it['page'] = $slug;
+					if ( count( $items ) < 300 ) { $items[] = $it; }
+				}
+			}
+			foreach ( $by as $row ) { $checked += (int) $row['checked']; $missing += (int) $row['missing']; }
+			$drops['text_coverage'] = array(
+				'checked' => $checked,
+				'missing' => $missing,
+				'coverage_pct' => $checked ? round( ( ( $checked - $missing ) / $checked ) * 100, 1 ) : 100.0,
+				'pages' => count( $by ),
+				'by_page' => $by,
+				'note' => (string) ( $tc['note'] ?? '' ),
+				'items' => array_merge( (array) ( $tc['items'] ?? array() ), $items ),
+				'out_of_scope' => (array) ( $tc['out_of_scope'] ?? array() ),
+			);
+		}
+
 		if ( ! is_array( $parity ) && ! is_array( $drops ) ) { return; }
 
 		$fails = array();
@@ -1124,6 +1244,19 @@ class FW_Site_Converter_Bundle {
 				'total'      => (int) ( $drops['total'] ?? 0 ),
 				'salvaged'   => (int) ( $drops['rescued'] ?? 0 ),
 				'decorative' => (int) ( $drops['decorative'] ?? 0 ),
+				// The per-page coverage, summarised. Only three counters were kept here, so the merge that
+				// folds the inner pages' audits into $drops had nowhere to land and the panel kept showing
+				// the FRONT page's percentage as though it were the site's. Carried as the totals plus the
+				// per-page rows (not the item list, which can run to hundreds and has its own file).
+				'coverage'   => isset( $drops['text_coverage'] ) && is_array( $drops['text_coverage'] )
+					? array(
+						'pages'        => (int) ( $drops['text_coverage']['pages'] ?? 1 ),
+						'checked'      => (int) ( $drops['text_coverage']['checked'] ?? 0 ),
+						'missing'      => (int) ( $drops['text_coverage']['missing'] ?? 0 ),
+						'coverage_pct' => $drops['text_coverage']['coverage_pct'] ?? null,
+						'by_page'      => (array) ( $drops['text_coverage']['by_page'] ?? array() ),
+					)
+					: null,
 			),
 		) ), false );
 	}

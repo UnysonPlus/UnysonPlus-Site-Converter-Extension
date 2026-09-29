@@ -109,5 +109,29 @@ $logo_json = wp_json_encode( isset( $v4['header_logo'] ) ? $v4['header_logo'] : 
 $ok( false === stripos( (string) $logo_json, 'GeographicConservation' ),
 	'stacked wordmark lines are NOT glued ("GeographicConservation")' );
 
+// The case above passes on a TAG LIST alone (`<div><div>`), which is why it kept passing while a real
+// source's wordmark stayed glued for weeks. The two shapes that actually broke:
+//
+//  1. INLINE BY TAG, BLOCK BY COMPUTED DISPLAY. `<small>` is inline in every tag list, and this source
+//     lays it out as a block — so the boundary has to come from the MEASURED display in data-sc-cs.
+$lockup = '<header><div><a href="/"><span data-sc-cs="display:inline">NORTH RIDGE'
+	. '<small data-sc-cs="display:block;font-size:8px">HOME STUDIO</small></span></a></div>'
+	. '<nav><a href="#a">One</a><a href="#b">Two</a></nav></header>';
+$v5 = $convert( $lockup, '<footer><p>&copy; 2026 Parity</p></footer>' );
+$lockup_json = wp_json_encode( isset( $v5['header_logo'] ) ? $v5['header_logo'] : array() );
+$ok( false === stripos( (string) $lockup_json, 'LIVINGORANGE' ),
+	'a <small> the source COMPUTES as display:block is a line break, not a glue point' );
+$ok( false !== stripos( (string) $lockup_json, 'NORTH RIDGE HOME STUDIO' ),
+	'both wordmark lines survive, separated' );
+
+// NEGATIVE: an element that really is inline must NOT gain a space, or every emphasised word inside a
+// sentence would be pulled apart ("we build homes" -> "we build homes ").
+$inline = '<header><div><a href="/"><span data-sc-cs="display:inline">North'
+	. '<em data-sc-cs="display:inline">Ridge</em></span></a></div>'
+	. '<nav><a href="#a">One</a></nav></header>';
+$v6 = $convert( $inline, '<footer><p>&copy; 2026 Parity</p></footer>' );
+$ok( false !== stripos( (string) wp_json_encode( isset( $v6['header_logo'] ) ? $v6['header_logo'] : array() ), 'NorthRidge' ),
+	'NEGATIVE: a genuinely inline <em> does not gain a separator' );
+
 echo "\n" . ( $fails ? "✗ {$fails} FAIL" : '✓ ALL PASS — PHP chrome translations guarded' ) . "\n";
 exit( $fails ? 1 : 0 );

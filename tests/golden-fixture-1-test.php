@@ -6697,6 +6697,195 @@ ga( '[BS] (c) `space-x-8` nav spacing is read and carried as the menu gap (32px)
 ga( '[BS] NEGATIVE: the real filled CTA still maps to a header button', in_array( 'Inquire Now', $bs_ctas, true ), wp_json_encode( $bs_ctas ) );
 
 
+
+
+/* ==========================================================================================
+ * [RC] A CARD HAS ONE HEADING; A REGION HAS SEVERAL.
+ *  Any heading at all made a grid cell a "card", and card_from_cell() keeps the FIRST heading plus its
+ *  text and DISCARDS the rest of the cell. So a column holding several <h2> bands -- About, Key Features,
+ *  Certifications, Popular Models -- was flattened into one card and the rest of the page was thrown away.
+ *  The page still rendered; it was simply missing most of itself, which is the worst way for this to fail.
+ *  The converter's own text_coverage had been reporting those pages at 72% and naming every missing phrase.
+ *
+ *  Measured across 129 pages of a real multi-page source: mean coverage 88.5% -> 95.7%, worst archetype
+ *  70% -> 93%. And a shortcode census over 131 pages shows the structure was recovered too, not traded
+ *  away: icon_box 1146 -> 1386, special_heading 1418 -> 1738, button 778 -> 938. Across 84 captures, 1354
+ *  heading-bearing containers carry no <h2> and 425 carry exactly one; only 92 carry two or more, and
+ *  those are regions -- several hold a whole nav bar.
+ * ========================================================================================== */
+$rc_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$rc_band = function ( $h, $body ) use ( $rc_cs ) {
+	return '<div data-sc-cs="' . $rc_cs( 'height:120px' ) . '">'
+		. '<h2 data-sc-cs="' . $rc_cs( 'font-size:28px;height:36px' ) . '">' . $h . '</h2>'
+		. '<p data-sc-cs="' . $rc_cs( 'height:24px' ) . '">' . $body . '</p></div>';
+};
+$rc_card = function ( $title, $body ) use ( $rc_cs ) {
+	return '<div data-sc-cs="' . $rc_cs( 'height:180px;background-color:rgb(250,250,250);padding:24px;border-radius:12px' ) . '">'
+		. '<h3 data-sc-cs="' . $rc_cs( 'font-size:20px;height:28px' ) . '">' . $title . '</h3>'
+		. '<p data-sc-cs="' . $rc_cs( 'height:24px' ) . '">' . $body . '</p></div>';
+};
+/* Band 1 — a two-column row whose LEFT cell is a REGION of three <h2> bands (the defect's shape). */
+$rc_region = '<div data-sc-cs="' . $rc_cs( 'height:380px' ) . '">'
+	. $rc_band( 'About The Maker', 'A paragraph about who they are and where they build.' )
+	. $rc_band( 'Key Features And Benefits', 'A paragraph listing what the buyer gets.' )
+	. $rc_band( 'Certifications And Standards', 'A paragraph about the standards met.' )
+	. '</div>';
+/* Band 2 — an ordinary THREE-CARD grid, which must keep being a card grid. */
+$rc_grid = '<div class="grid grid-cols-3 gap-8" data-sc-cs="' . $rc_cs( 'display:grid;grid-template-columns:400px 400px 400px;height:200px' ) . '">'
+	. $rc_card( 'Get Matched With Lenders', 'One short paragraph of supporting copy.' )
+	. $rc_card( 'Compare Your Options', 'A second card with its own short paragraph.' )
+	. $rc_card( 'Close With Confidence', 'A third card with its own short paragraph.' )
+	. '</div>';
+$rc_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Fixture RC</title></head>'
+	. '<body data-sc-cs="' . $rc_cs( 'background-color:rgb(255,255,255)' ) . '">'
+	. '<section id="body" data-sc-cs="' . $rc_cs( 'padding:64px 0px;height:500px' ) . '">'
+	. '<div data-sc-cs="' . $rc_cs( 'max-width:1280px;margin:0px auto;height:400px' ) . '">'
+	. '<div class="grid grid-cols-2 gap-8" data-sc-cs="' . $rc_cs( 'display:grid;grid-template-columns:640px 640px;height:400px' ) . '">'
+	. $rc_region . $rc_band( 'Financing Options', 'A sidebar band beside the region.' )
+	. '</div></div></section>'
+	. '<section id="cards" data-sc-cs="' . $rc_cs( 'padding:64px 0px;height:300px' ) . '">'
+	. '<div data-sc-cs="' . $rc_cs( 'max-width:1280px;margin:0px auto;height:200px' ) . '">' . $rc_grid . '</div></section>'
+	. '</body></html>';
+
+$rc_files = FW_Site_Converter_Sources::build_from_html( $rc_html, 'Fixture RC', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files'] ?? array();
+$rc_json  = (string) wp_json_encode( $rc_files['pages.json'] ?? array() );
+
+/* Every band of the region survives — that is the whole defect. */
+$rc_kept = 0;
+foreach ( array( 'About The Maker', 'Key Features And Benefits', 'Certifications And Standards' ) as $rc_h ) {
+	if ( false !== strpos( $rc_json, $rc_h ) ) { $rc_kept++; }
+}
+ga( '[RC] (a) every heading of a multi-band cell survives (it is a region, not a card)', 3 === $rc_kept, 'kept ' . $rc_kept . ' of 3 headings' );
+ga( '[RC] (b) …and so does their body copy',
+	false !== strpos( $rc_json, 'who they are and where they build' ) && false !== strpos( $rc_json, 'about the standards met' ),
+	'a band lost its paragraph' );
+
+/* NEGATIVE: an ordinary card grid must STILL be a card grid. The way to get this fix wrong is a rule that
+   stops the converter recognising cards — trading one content loss for another. A corpus census says it
+   does the opposite (icon_box 1146 -> 1386), and this pins the behaviour. */
+$rc_boxes = substr_count( $rc_json, '"shortcode":"icon_box"' );
+ga( '[RC] NEGATIVE: a normal three-card grid is still mapped to cards', $rc_boxes >= 3, 'icon_box x' . $rc_boxes );
+ga( '[RC] NEGATIVE: those cards keep their own copy',
+	false !== strpos( $rc_json, 'a second card with its own short paragraph' )
+		|| false !== strpos( $rc_json, 'A second card with its own short paragraph' ),
+	'a card lost its text' );
+
+
+
+/* ==========================================================================================
+ * [TS] A TESTIMONIAL HAS NO SECTION HEADING OF ITS OWN.
+ *  is_single_testimonial() bowed out when a descendant was a testimonials GRID, but a band holding ONE
+ *  quote was still claimed whole — and single_testimonial_item() takes the longest paragraph as the quote
+ *  and discards the rest. Measured on a real page: a "Why Choose …" band (its heading, five trust badges
+ *  and a customer quote) collapsed to the quote alone; the page read 66.2% coverage with its heading and
+ *  every badge missing, and produced FOUR nodes for a whole page.
+ *  After: 75.7% and 24 nodes. Rejecting is strictly better than claiming — a rejected band yields its
+ *  heading, its content AND its testimonial, where claiming yields only the quote.
+ * ========================================================================================== */
+$ts_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+$ts_stars = '<div class="flex" data-sc-cs="' . $ts_cs( 'display:flex;height:20px' ) . '">'
+	. str_repeat( '<svg class="lucide lucide-star" width="16" height="16" data-sc-cs="' . $ts_cs( 'height:16px' ) . '"><path d="M8 1l2 5 5 .5-4 3 1 5-4-2.5L4 14l1-5-4-3L6 6z"></path></svg>', 5 ) . '</div>';
+$ts_quote = '<p data-sc-cs="' . $ts_cs( 'height:48px' ) . '">"After two banks turned us down, they found a lender who understood our build."</p>';
+$ts_author = '<p data-sc-cs="' . $ts_cs( 'height:20px' ) . '"><span data-sc-cs="' . $ts_cs( 'font-weight:600;height:20px' ) . '">Dana Reyes</span> Verified Buyer</p>';
+
+/* A BAND: its own heading + supporting copy + a single testimonial inside it. */
+$ts_band = '<section id="why" data-sc-cs="' . $ts_cs( 'padding:64px 0px;height:420px' ) . '">'
+	. '<div data-sc-cs="' . $ts_cs( 'max-width:1280px;margin:0px auto;height:340px' ) . '">'
+	. '<h2 data-sc-cs="' . $ts_cs( 'font-size:32px;height:40px' ) . '">Why Choose This Lender</h2>'
+	. '<p data-sc-cs="' . $ts_cs( 'height:24px' ) . '">Every badge below is a reason buyers pick us.</p>'
+	. '<div class="flex" data-sc-cs="' . $ts_cs( 'display:flex;height:24px' ) . '">'
+	. '<span data-sc-cs="' . $ts_cs( 'height:24px' ) . '">All fifty states</span>'
+	. '<span data-sc-cs="' . $ts_cs( 'height:24px' ) . '">Fifty lender network</span>'
+	. '<span data-sc-cs="' . $ts_cs( 'height:24px' ) . '">Five hundred families helped</span></div>'
+	. $ts_stars . $ts_quote . $ts_author
+	. '</div></section>';
+$ts_html = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Fixture TS</title></head>'
+	. '<body data-sc-cs="' . $ts_cs( 'background-color:rgb(255,255,255)' ) . '">' . $ts_band . '</body></html>';
+$ts_json = (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $ts_html, 'Fixture TS', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json'] ?? array() );
+
+ga( '[TS] (a) the band keeps its own heading', false !== strpos( $ts_json, 'Why Choose This Lender' ), 'the section heading was swallowed by the testimonial' );
+ga( '[TS] (b) …and the content beside the quote survives',
+	false !== strpos( $ts_json, 'All fifty states' ) && false !== strpos( $ts_json, 'Five hundred families helped' ),
+	'the trust badges were discarded' );
+ga( '[TS] (c) …and the quote itself is still there', false !== strpos( $ts_json, 'found a lender who understood our build' ), 'the quote was lost' );
+
+/* NEGATIVE: a BARE single testimonial — stars, quote, author, no band heading — must STILL be claimed as
+   a testimonial. The way to get this fix wrong is a rule that stops single testimonials being recognised
+   at all, which would lose the rating and split author that the shortcode renders natively. */
+$ts_bare = '<section id="quote" data-sc-cs="' . $ts_cs( 'padding:48px 0px;height:260px' ) . '">'
+	. '<div data-sc-cs="' . $ts_cs( 'max-width:900px;margin:0px auto;height:180px' ) . '">'
+	. $ts_stars . $ts_quote . $ts_author . '</div></section>';
+$ts_html2 = '<!DOCTYPE html><html data-sc-content-width="1280"><head><title>Fixture TS2</title></head>'
+	. '<body data-sc-cs="' . $ts_cs( 'background-color:rgb(255,255,255)' ) . '">' . $ts_bare . '</body></html>';
+$ts_json2 = (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $ts_html2, 'Fixture TS2', array( 'dynamic_chrome' => true, 'hifi_css' => true ) )['files']['pages.json'] ?? array() );
+ga( '[TS] NEGATIVE: a bare single testimonial is still a testimonials shortcode',
+	false !== strpos( $ts_json2, '"shortcode":"testimonials"' ), 'a real single testimonial stopped being recognised' );
+
+
+
+/* ==========================================================================================
+ * [BG] AN AVATAR IS A PERSON; A ROUND ICON TILE IS NOT.
+ *  has_author_block() accepted an EMPTY round disc as the avatar of an attribution, so a card whose
+ *  paragraph sat beside an ICON tile + a label + a sublabel — the shape of an option row, a feature row, a
+ *  step card — read as an author block and the card qualified as a testimonial. Measured on a real page:
+ *  a "How to Get a …" band holding a steps list AND a multi-step form was claimed as testimonials,
+ *  emitting step titles as people ({ quote: "Complete our 2-minute form…", name: "Pre-Qualify Online",
+ *  role: "Compare Lender Offers" }) and discarding the band. That page read 79.1%; after, 98.2%
+ *  (missing 23 -> 2). Corpus mean over 129 pages 95.8% -> 95.9%.
+ *
+ *  Asserted on the PREDICATE rather than through a whole page: has_author_block() is pure, and the four
+ *  cases below are the entire rule. An earlier end-to-end fixture here passed with the fix disabled —
+ *  it never reproduced the defect, so it guarded nothing while looking like it did.
+ * ========================================================================================== */
+$bg_cs = function ( $e = '' ) {
+	$e = trim( (string) $e, ';' );
+	return 'color:rgb(20,20,20);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;display:block' . ( '' !== $e ? ';' . $e : '' );
+};
+/* The shape both cases share: a flex row holding [tile] + [heavier label over lighter sublabel]. */
+$bg_row = function ( $tile ) use ( $bg_cs ) {
+	$html = '<div id="card" data-sc-cs="' . $bg_cs( 'height:96px' ) . '">'
+		. '<div data-sc-cs="' . $bg_cs( 'display:flex;flex-direction:row;height:56px' ) . '">'
+		. $tile
+		. '<div data-sc-cs="' . $bg_cs( 'height:44px' ) . '">'
+		. '<span data-sc-cs="font-weight:600;font-size:16px;color:rgb(20,20,20);height:24px">Pre-Qualify Online</span>'
+		. '<span data-sc-cs="font-weight:400;font-size:14px;color:rgb(90,90,90);height:20px">Compare lender offers</span>'
+		. '</div></div></div>';
+	$doc = new DOMDocument();
+	libxml_use_internal_errors( true );
+	$doc->loadHTML( '<?xml encoding="utf-8" ?><body>' . $html . '</body>' );
+	libxml_clear_errors();
+	return $doc->getElementsByTagName( 'div' )->item( 0 );
+};
+$bg_tile = function ( $inner ) use ( $bg_cs ) {
+	return '<div data-sc-cs="' . $bg_cs( 'border-radius:9999px;width:40px;height:40px' ) . '">' . $inner . '</div>';
+};
+
+ga( '[BG] (a) a round tile holding an ICON is not an author avatar',
+	false === FW_Site_Converter_Stitch::has_author_block( $bg_row( $bg_tile( '<svg class="lucide lucide-house" width="20" height="20"><path d="M3 10l9-7 9 7v9H3z"></path></svg>' ) ) ),
+	'an icon tile was read as a person' );
+ga( '[BG] (b) …nor one holding an icon FONT glyph',
+	false === FW_Site_Converter_Stitch::has_author_block( $bg_row( $bg_tile( '<i class="fa fa-home"></i>' ) ) ),
+	'an icon-font tile was read as a person' );
+
+/* NEGATIVE: the identical row with a real portrait, a monogram, or a bare CSS-background disc IS an
+   attribution. The way to get this fix wrong is to stop recognising author blocks at all. */
+ga( '[BG] NEGATIVE: a PHOTO avatar is still an author block',
+	true === FW_Site_Converter_Stitch::has_author_block( $bg_row( $bg_tile( '<img src="https://fixture-01.example/face.jpg" alt="">' ) ) ),
+	'a real portrait attribution stopped being recognised' );
+ga( '[BG] NEGATIVE: a MONOGRAM disc is still an author block',
+	true === FW_Site_Converter_Stitch::has_author_block( $bg_row( $bg_tile( 'DR' ) ) ),
+	'an initials avatar stopped being recognised' );
+ga( '[BG] NEGATIVE: a bare disc with NO icon is still an author block (a CSS background portrait)',
+	true === FW_Site_Converter_Stitch::has_author_block( $bg_row( $bg_tile( '' ) ) ),
+	'a background-image avatar stopped being recognised' );
+
+
 $pass = $GLOBALS['__pass'];
 $fail = $GLOBALS['__fail'];
 echo "\n========================================\n";

@@ -1152,7 +1152,7 @@ class FW_Site_Converter_Stitch {
 				elseif ( '' !== $sem )                                { $role = 'Outline'; } // outline / ghost / tertiary
 				elseif ( preg_match( '/\sbg-(primary|brand)\b/', $lc ) )   { $role = 'Primary'; }
 				// ACCENT / CTA is its OWN role — a site that has BOTH a `bg-secondary` (a soft neutral) AND a
-				// `bg-accent`/`bg-cta` (a loud CTA colour, modfii's orange) needs them as DISTINCT presets, or
+				// `bg-accent`/`bg-cta` (a loud CTA colour, fixture-01's orange) needs them as DISTINCT presets, or
 				// the two collide on "Secondary" and the accent button renders in the neutral fill.
 				elseif ( preg_match( '/\sbg-(accent|cta)\b/', $lc ) ) { $role = 'Accent'; }
 				elseif ( preg_match( '/\sbg-secondary\b/', $lc ) )    { $role = 'Secondary'; }
@@ -3004,7 +3004,7 @@ class FW_Site_Converter_Stitch {
 		// `<body class="text-white">` case): sample the dominant text colour off the page's headings.
 		if ( $ink === '' && $html !== '' ) { $ink = self::color_to_hex( self::sample_ink( (string) $html ) ); }
 		// PRIMARY role → prefer the source's explicit `primary` semantic/token over `accent`. When a site
-		// separates the two (modfii: `text-primary` = green brand ink, `text-accent` = orange CTA), picking
+		// separates the two (fixture-01: `text-primary` = green brand ink, `text-accent` = orange CTA), picking
 		// accent-first inverted them — `--color-primary` became orange, so every `text-primary` element (e.g.
 		// a green "We Fixed It." highlight) rendered in the CTA orange. `primary` first keeps the brand colour
 		// correct; the loud CTA colour still reaches buttons via build_button_presets (the real button fill)
@@ -6085,9 +6085,9 @@ class FW_Site_Converter_Stitch {
 			$slot = self::header_brand_block( $header );
 			if ( $slot instanceof DOMElement && $slot !== $brand && ! self::is_ancestor( $slot, $brand ) && self::dom_precedes( $slot, $brand, $header ) ) { $brand = $slot; }
 		}
-		// No brand ANCHOR at all? Many sites use a LINK-LESS text/image logo — e.g. modfii's
+		// No brand ANCHOR at all? Many sites use a LINK-LESS text/image logo — e.g. fixture-01's
 		// `<div class="flex items-center gap-2">Mod<span>Fii</span></div>` (no <a>). Falling back to the
-		// whole <header> made text_no_icons() harvest the ENTIRE header ("ModFiiFinancingResources…Get
+		// whole <header> made text_no_icons() harvest the ENTIRE header ("BrandFinancingResources…Get
 		// Started") as the wordmark. Locate the header's leftmost logo SLOT instead.
 		// A LINK-LESS masthead of plain labels (a fixed bar of "Headless Architecture · Brand Spatial · Low-Latency Node"): the
 		// label that starts with the <title>'s brand segment is the wordmark, wherever it sits — not the leftmost label.
@@ -6217,7 +6217,7 @@ class FW_Site_Converter_Stitch {
 		if ( $real_text === '' && $out['image'] !== '' ) { $txt = ''; }
 		// Guard against grabbing the whole nav: a brand wordmark is short (<= 4 words AND <= 24 chars).
 		// The char cap matters because Tailwind strips whitespace between inline nav items, so a whole
-		// glued header row ("ModFiiFinancingResources…") can read as only ~4 "words".
+		// glued header row ("BrandFinancingResources…") can read as only ~4 "words".
 		// The <=4-word cap guards against swallowing a glued nav row. A title taken from an identified
 		// two-line lockup is already known to be the wordmark, and real titles run longer than four
 		// words ("The Art of the Burger" is five), so widen the cap for that case only.
@@ -10220,7 +10220,7 @@ class FW_Site_Converter_Stitch {
 		}
 		// CLASS fallbacks — capture services often DON'T record `backdrop-filter` or `border-bottom-*` in the
 		// computed style, yet a modern header declares them as utility classes (`backdrop-blur-lg`, `border-b`).
-		// Read those so a FROSTED translucent header (modfii's `bg-background/80 backdrop-blur-lg border-b`)
+		// Read those so a FROSTED translucent header (fixture-01's `bg-background/80 backdrop-blur-lg border-b`)
 		// keeps its blur + hairline instead of flattening to a bare transparent bar.
 		$hcls = ' ' . strtolower( self::cls( $header ) ) . ' ';
 		// (…but a header whose REST stamp carries no blur while its SCROLLED stamp does is glass on scroll only: the blur class is
@@ -10909,7 +10909,7 @@ class FW_Site_Converter_Stitch {
 			$c = self::sc_css( $a, 'color' );
 			if ( $c !== '' ) { $colors[] = $c; }
 			// The computed style can't see :hover, so read a `hover:text-<token>` utility from the class —
-			// the source's real hover colour (modfii nav = `hover:text-foreground`, a quiet dark, NOT the
+			// the source's real hover colour (fixture-01 nav = `hover:text-foreground`, a quiet dark, NOT the
 			// loud accent the fallback would use).
 			if ( ! isset( $hvtok ) && preg_match( '/hover:text-([a-z][a-z0-9-]*)/', self::cls( $a ), $hvm ) ) { $hvtok = $hvm[1]; }
 			// The capture's RESOLVED :hover (data-sc-hover `hover-self{color:…}`, stamped from the source's own
@@ -11945,6 +11945,13 @@ class FW_Site_Converter_Stitch {
 		foreach ( $body->getElementsByTagName( 'nav' ) as $nav ) {
 			if ( self::has_ancestor_tag( $nav, 'footer', $body ) ) { continue; }
 			if ( $header_is_hero && self::node_within( $nav, $header ) ) { continue; }
+			// A BREADCRUMB TRAIL IS NEVER THE MASTHEAD. The test below is a shape test — `flex` plus
+			// `items-center`, or three links — and a trail has exactly that shape: it is a horizontal row of
+			// links. So `<nav aria-label="Breadcrumb" class="flex items-center gap-2">` was being claimed as
+			// the site header and removed from the body wholesale. Measured: with `class="flex"` the trail
+			// converted; adding `items-center` made it vanish, which is not a distinction any author intends.
+			// The element says what it is — believe it before guessing from utility classes.
+			if ( self::is_breadcrumb_trail( $nav ) ) { continue; }
 			$c = ' ' . self::cls( $nav ) . ' ';
 			$looks_masthead = ( strpos( $c, ' flex ' ) !== false && ( strpos( $c, 'justify-between' ) !== false || strpos( $c, 'items-center' ) !== false ) )
 				|| $nav->getElementsByTagName( 'a' )->length >= 3;
@@ -13151,6 +13158,34 @@ class FW_Site_Converter_Stitch {
 	/** Read + reset the accumulated drop log (called once the page tree is built). */
 	public static function get_drop_log() { return self::$drop_log; }
 
+	/**
+	 * The two self-assessment reports for a build that did NOT go through build_bundle().
+	 *
+	 * build_bundle() produces conversion-parity.json and conversion-drops.json as a side effect, and the
+	 * admin's "Build the site from this mapping" path does not use it -- it calls build_pages() directly.
+	 * So the primary conversion path produced NO self-assessment at all, the option behind the results
+	 * panel was never written, and the panel silently rendered nothing: the punch list and the agent brief
+	 * had never once appeared on the path almost everyone uses.
+	 *
+	 * Exposed as ONE method rather than making the two builders public separately, so a caller cannot take
+	 * half the assessment and believe it has the whole thing.
+	 *
+	 * @param string $html   the source HTML the conversion was built from
+	 * @param array  $values the theme-settings values it wrote
+	 * @param array  $pages  the built pages
+	 * @return array array( 'conversion-parity.json' => …, 'conversion-drops.json' => … )
+	 */
+	public static function self_assessment( $html, array $values, array $pages ) {
+		$drops = self::build_drop_report();
+		// The coverage audit rides inside the drop report because it answers the question that report
+		// claims to answer — what did we lose? — for the cases the drop log structurally cannot see.
+		$drops['text_coverage'] = self::build_text_coverage( (string) $html, $values, $pages );
+		return array(
+			'conversion-parity.json' => self::build_parity_report( (string) $html, $values, $pages ),
+			'conversion-drops.json'  => $drops,
+		);
+	}
+
 	/** Collect `selector { … max-width:VAL … }` rules from the source's <style> blocks. */
 	private static function parse_style_max_width( $html ) {
 		$out = array();
@@ -13308,7 +13343,26 @@ class FW_Site_Converter_Stitch {
 						$isrc = trim( (string) $bimg->getAttribute( 'src' ) );
 						if ( $isrc === '' ) { $isrc = trim( (string) $bimg->getAttribute( 'data-src' ) ); }
 						if ( $isrc !== '' && $isrc === $section_bg['src'] && $bimg->parentNode instanceof DOMElement ) {
-							$bimg->parentNode->removeChild( $bimg );
+							$bparent = $bimg->parentNode;
+							$bparent->removeChild( $bimg );
+
+							// ...AND THE WRAPPER IT LEAVES BEHIND. A responsive backdrop is normally
+							// `<picture><source…><img></picture>`, so removing just the <img> leaves an empty
+							// <picture> in the flow -- and an empty element is still a CHILD, so the row
+							// builder hands it a column. Measured on a real hero: the poster was correctly
+							// lifted to the section background and its hollow <picture> went on taking a third
+							// of the band, which is most of the squeeze the lift was meant to cure.
+							// Climb while the parent is now empty of text and media, never past the section.
+							for ( $bw = $bparent; $bw instanceof DOMElement && $bw !== $node; ) {
+								$up = $bw->parentNode;
+								if ( '' !== self::text( $bw ) ) { break; }
+								$still = 0;
+								foreach ( array( 'img', 'svg', 'video', 'iframe' ) as $mt ) { $still += $bw->getElementsByTagName( $mt )->length; }
+								if ( $still > 0 ) { break; }
+								if ( ! ( $up instanceof DOMElement ) ) { break; }
+								$up->removeChild( $bw );
+								$bw = $up;
+							}
 							break;
 						}
 					}
@@ -14269,6 +14323,26 @@ class FW_Site_Converter_Stitch {
 		}
 	}
 
+	/**
+	 * Does this <video> behave like a BACKDROP rather than a player?
+	 *
+	 * The old test was `hasAttribute('autoplay') && hasAttribute('muted')`, and the second half rejects a
+	 * large class of real background videos: `muted` is normally set as a DOM PROPERTY (`video.muted = true`)
+	 * rather than as an HTML attribute -- that is how browsers require it for autoplay to be allowed, and how
+	 * React and most hand-written players do it -- so the captured markup simply has no `muted` attribute to
+	 * find. Measured on a real hero: `<video autoplay loop playsinline preload="metadata" poster src>` was
+	 * refused, stayed in the flow, and became a COLUMN in the hero row, helping squeeze the copy into 2/12 of
+	 * the band.
+	 *
+	 * `controls` is the sturdier discriminator: a backdrop never has them, a player almost always does. So:
+	 * autoplay, plus muted-or-no-controls.
+	 */
+	private static function video_is_backdrop_like( $v ) {
+		if ( ! ( $v instanceof DOMElement ) ) { return false; }
+		if ( ! $v->hasAttribute( 'autoplay' ) ) { return false; }
+		return $v->hasAttribute( 'muted' ) || ! $v->hasAttribute( 'controls' );
+	}
+
 	private static function detect_section_bg_video( $node, $html = '' ) {
 		if ( ! ( $node instanceof DOMElement ) ) { return array(); }
 		// PAGE-WIDE FIXED VIDEO → handled at the SITE background level (a `position:fixed` full-viewport layer
@@ -14331,7 +14405,7 @@ class FW_Site_Converter_Stitch {
 			$sh = preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $node, 'height' ), $shm ) ? (float) $shm[1] : 0.0;
 			if ( $lh > 0 && $sh > 0 && $lh < $sh * 0.7 ) { continue; }
 			$vid0 = $el->getElementsByTagName( 'video' )->item( 0 );
-			if ( ! ( $vid0 instanceof DOMElement ) || ! $vid0->hasAttribute( 'autoplay' ) || ! $vid0->hasAttribute( 'muted' ) ) { continue; }
+			if ( ! self::video_is_backdrop_like( $vid0 ) ) { continue; }
 			$best = $el; $vid = $vid0; break;
 		}
 		// PASS 2 — no bleed wrapper: the <video> is ITSELF the full-bleed backdrop — either it carries a
@@ -14339,7 +14413,7 @@ class FW_Site_Converter_Stitch {
 		// content panel inside a grid column (biophilic's hero video-bg vs nox-liquid's `video-portal` card).
 		if ( null === $best ) {
 			foreach ( $node->getElementsByTagName( 'video' ) as $v ) {
-				if ( ! ( $v instanceof DOMElement ) || ! $v->hasAttribute( 'autoplay' ) || ! $v->hasAttribute( 'muted' ) ) { continue; }
+				if ( ! self::video_is_backdrop_like( $v ) ) { continue; }
 				$vcls    = ' ' . strtolower( self::cls( $v ) ) . ' ';
 				$bgclass = ( strpos( $vcls, 'video-bg' ) !== false || strpos( $vcls, 'bg-video' ) !== false || strpos( $vcls, 'video-background' ) !== false );
 				$vpos    = self::sc_css( $v, 'position' );
@@ -14347,11 +14421,38 @@ class FW_Site_Converter_Stitch {
 				if ( ! ( $bgclass || $selfabs ) ) { continue; }
 				// Reject a rounded card / a grid-column-scoped panel (that's CONTENT, not a backdrop) unless
 				// it explicitly carries a bg class.
+				// "Is this video inside a column?" must be asked of its ANCESTORS, not of itself. The capture
+				// stamps `data-sc-col` on every direct child of a flex/grid container, so a full-bleed backdrop
+				// that sits directly under the <section> carries the stamp too -- and the old walk started at
+				// the video, saw its own stamp, and concluded it was content in a column. A hero's background
+				// video could therefore never be promoted when it was a direct child of the section, which is
+				// the commonest way to write one. Measured on a real hero: the video stayed in the flow and
+				// became one of the columns that squeezed the copy to 2/12 of the band.
+				//
+				// The ROUNDNESS test still applies to the video itself -- a rounded video really is a content
+				// panel -- so it is checked separately before the walk.
 				$incol = false; $rounded = false;
-				for ( $a = $v; ( $a instanceof DOMElement ) && $a !== $node; $a = $a->parentNode ) {
+
+				// "Rounded" only means "a content panel" RELATIVE TO ITS SECTION. An absolute >= 24px test
+				// assumes the band itself is square, and breaks on any design whose sections are rounded
+				// cards: measured on a real hero, the <section> carried `border-radius: 25px` and its
+				// full-bleed backdrop video carried the same 25px -- because a backdrop follows the shape of
+				// the box it fills. The video was read as a rounded content card, refused promotion, stayed
+				// in the flow and became one of the columns that squeezed the hero copy into 2/12 of the band.
+				//
+				// So compare against the section: rounder than its band by a real margin = a panel; matching
+				// the band = a backdrop wearing the band's corners.
+				$rad_of = function ( $el ) {
+					$r = self::sc_css( $el, 'border-radius' );
+					return ( '' !== $r && preg_match( '/^([0-9.]+)px/', $r, $m ) ) ? (float) $m[1] : 0.0;
+				};
+				$band_rad = $rad_of( $node );
+				$panel_at = max( 24.0, $band_rad + 8.0 );
+
+				if ( $rad_of( $v ) >= $panel_at ) { $rounded = true; }
+				for ( $a = $v->parentNode; ( $a instanceof DOMElement ) && $a !== $node; $a = $a->parentNode ) {
 					if ( $a->hasAttribute( 'data-sc-col' ) ) { $incol = true; }
-					$arad = self::sc_css( $a, 'border-radius' );
-					if ( '' !== $arad && preg_match( '/^([0-9.]+)px/', $arad, $rm ) && (float) $rm[1] >= 24 ) { $rounded = true; }
+					if ( $rad_of( $a ) >= $panel_at ) { $rounded = true; }
 				}
 				if ( ! $bgclass && ( $incol || $rounded ) ) { continue; }
 				$best = $v; $vid = $v; break;
@@ -14609,6 +14710,47 @@ class FW_Site_Converter_Stitch {
 			if ( $src === '' || strpos( $src, 'data:image/svg' ) === 0 ) { continue; }
 			return $ret( $src );
 		}
+		// (3c) THE SAME HERO POSTER, DETECTED FROM COMPUTED STYLE INSTEAD OF CLASS NAMES.
+		//
+		// Every path above reads Tailwind utilities -- `absolute`, `inset-0`, `object-cover` -- or a CSS
+		// `background-image:url()`. A hand-authored source has none of them: measured on a real site, the hero
+		// backdrop was `<picture class="hero-poster"><img>` where the img carried NO class at all and only
+		// computed `position:absolute; object-fit:cover; width:1440px; height:900px`. Every detector missed it,
+		// so the backdrop stayed in the flow -- and because the section is `display:flex; flex-direction:row`,
+		// it became a COLUMN. The photo rendered as a small tile beside the copy, the copy was squeezed into
+		// the remaining half and wrapped one word per line, and that band measured 88% pixel drift: the worst
+		// region on the page and the first thing a visitor sees.
+		//
+		// Reading class names where a computed value is available is the same mistake as testing whether a
+		// property is PRESENT in a computed-style dump: it answers "was this built with the framework we
+		// expected?" when the question is "does this element cover the band?".
+		foreach ( $node->getElementsByTagName( 'img' ) as $img ) {
+			$ics = (string) $img->getAttribute( 'data-sc-cs' );
+			if ( '' === $ics ) { continue; }
+
+			$ipos = self::sc_css( $img, 'position' );
+			if ( 'absolute' !== $ipos && 'fixed' !== $ipos ) { continue; }
+
+			$ifit = strtolower( self::sc_css( $img, 'object-fit' ) );
+			if ( 'cover' !== $ifit && 'fill' !== $ifit ) { continue; }
+
+			// COVERS THE BAND, both ways. The width test is the same guard path (3) uses -- an absolutely
+			// positioned cover image filling HALF a split hero is that half's picture, not the backdrop. The
+			// height test stops a short absolutely-placed strip (a ribbon, a decorative edge) from being lifted
+			// out of the content and losing it.
+			$iw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $ics, $iwm ) ? (float) $iwm[1] : 0.0;
+			$ih = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $ics, $ihm ) ? (float) $ihm[1] : 0.0;
+			$bw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $scs, $bwm ) ? (float) $bwm[1] : 1440.0;
+			$bh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $scs, $bhm ) ? (float) $bhm[1] : 0.0;
+			if ( $iw <= 0 || $iw < $bw * 0.7 ) { continue; }
+			if ( $bh > 0 && $ih > 0 && $ih < $bh * 0.5 ) { continue; }
+
+			$src = trim( (string) $img->getAttribute( 'src' ) );
+			if ( '' === $src ) { $src = trim( (string) $img->getAttribute( 'data-src' ) ); }
+			if ( '' === $src || 0 === stripos( $src, 'data:image/svg' ) ) { continue; }
+			return $ret( $src );
+		}
+
 		// (3b) HERO ASPECT-BOX — an `<img w-full h-full object-cover>` FILLING a `relative aspect-[…]` container
 		// whose `absolute inset-0` overlay carries a HEADING (h1–h6). The Tailwind hero-banner pattern (the burger source:
 		// `<div class="relative aspect-[2/1]"><img object-cover><div class="absolute inset-0 …"><h2>…</h2><a>…`).
@@ -14791,7 +14933,7 @@ class FW_Site_Converter_Stitch {
 			if ( $px > $best ) { $best = $px; }
 		}
 		// $best is now the section's OUTERMOST/widest content container (the source's real per-section
-		// container — e.g. modfii's consistent 1400px), NOT an inner text cap. Every section pins to it, so the
+		// container — e.g. fixture-01's consistent 1400px), NOT an inner text cap. Every section pins to it, so the
 		// converted site reproduces the source's ONE consistent container instead of a jumble of per-section
 		// widths (768/896/1024/…). A section genuinely narrower than the site container pins its own (narrower)
 		// width; the inner text caps a heading keeps via block_max_width. (map_container_width turns a
@@ -15756,7 +15898,7 @@ class FW_Site_Converter_Stitch {
 				$rows = self::testimonials_items( $el );
 				if ( count( $rows ) < 2 ) { return null; }
 				// PER-CARD BOX + text alignment — the source often boxes each testimonial (bg/border/radius/
-				// shadow, e.g. modfii's `bg-background rounded-2xl p-8 border`). Read the first card's skin +
+				// shadow, e.g. fixture-01's `bg-background rounded-2xl p-8 border`). Read the first card's skin +
 				// its text-align so the mapper sets the shortcode's Box Style + text_align (each card boxed,
 				// left/centre matching the source) instead of the hardcoded unboxed+centred default.
 				$card_box = null; $align = '';
@@ -16354,6 +16496,22 @@ class FW_Site_Converter_Stitch {
 			function ( $el ) { return self::table_block( $el ); }
 		);
 
+		// A BREADCRUMB TRAIL — `Home > About`, the small row of ancestor links above a page's title.
+		//
+		// Until now the converter only ever REJECTED breadcrumbs: every list/menu recognizer carries a
+		// `NOT a … breadcrumb` guard so it does not misread one as a bullet list. Rejected but never claimed,
+		// a trail fell through to the generic decompose and came out as its pieces — on a real conversion the
+		// source's single inline `<nav aria-label="Breadcrumb">Home > About</nav>` became an `<a>Home</a>` and
+		// a separate `<p>About</p>` STACKED 21px apart, with the separator gone. The text survived; the thing
+		// it formed did not.
+		//
+		// Priority 93 — above the list (88) and menu recognizers, because those are exactly what would
+		// otherwise claim it, and below card/table so a trail inside richer furniture never wins.
+		self::register_recognizer( 'breadcrumbs', 93,
+			function ( $el ) { return self::is_breadcrumb_trail( $el ); },
+			function ( $el ) { return self::breadcrumb_block( $el ); }
+		);
+
 		// An ACCORDION / FAQ — a container holding >=2 `<details><summary>` items, or >=2 `[aria-expanded]`
 		// toggles each with a panel → the native `accordion` shortcode (items = title + content). Priority 89
 		// (below card_grid 90). TIGHT match (is_accordion_group): requires >=2 genuine toggle/detail pairs, so
@@ -16617,7 +16775,7 @@ class FW_Site_Converter_Stitch {
 		if ( strpos( $num_raw, '.' ) !== false ) { $decimals = strlen( substr( strrchr( $num_raw, '.' ), 1 ) ); }
 		$number = str_replace( ',', '', $num_raw );
 		// Capture the NUMBER's colour (the leaf element that renders the digits) so a stat on a DARK panel
-		// keeps its light / accent tone (e.g. modfii's `$12K` in accent-orange, `7`/`94%` in white on the
+		// keeps its light / accent tone (e.g. fixture-01's `$12K` in accent-orange, `7`/`94%` in white on the
 		// glass hero card) instead of collapsing to the default dark foreground = invisible on dark.
 		$num_color = ''; $label_color = ''; $num_size = ''; $label_size = ''; $num_cs = ''; $label_cs = '';
 		foreach ( $cell->getElementsByTagName( '*' ) as $e ) {
@@ -16628,7 +16786,7 @@ class FW_Site_Converter_Stitch {
 			if ( $num_color === '' && ( strpos( $et, $num_raw ) !== false || strpos( $et, $number ) !== false ) ) {
 				if ( '' === $num_cs ) { $num_cs = (string) $e->getAttribute( 'data-sc-cs' ); } // the digits' whole treatment (weight / family / tracking)
 				if ( $cc !== '' && stripos( $cc, 'inherit' ) === false ) { $num_color = self::color_to_hex( $cc ); }
-				// The stat NUMBER's font-SIZE (e.g. modfii's `$12K` = 30px). Without it the counter falls to its
+				// The stat NUMBER's font-SIZE (e.g. fixture-01's `$12K` = 30px). Without it the counter falls to its
 				// 44px default — bigger than the source and mis-scaled. Carried → n_counter number/prefix/suffix.
 				$fs = trim( (string) self::sc_css( $e, 'font-size' ) );
 				if ( $num_size === '' && preg_match( '/^([0-9.]+)px$/', $fs, $fm ) ) { $num_size = $fm[1]; }
@@ -17528,6 +17686,190 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** Extract accordion items `{ title, content }` from a `<details>` group or an aria-toggle group. */
+	/**
+	 * An accordion toggle's TITLE, derived the same way whichever shape the source used.
+	 *
+	 * The three branches of accordion_block() each read this differently, and only one of them was right:
+	 * the unannotated-toggle branch stripped the +/- glyph, while the `<details>` and aria-expanded branches
+	 * took raw text. On an aria-expanded source whose toggle is `<span>01</span><h3>Title</h3><span
+	 * aria-hidden="true">-</span>`, that produced "01Complete home renovations-" — which reads as SEVEN
+	 * missing items to anything looking for the source's own phrases, so a layout blemish was
+	 * indistinguishable from content loss. One derivation for all three removes the class of bug.
+	 *
+	 * What it does, in order: drop icon spans and space the block boundaries (text_no_icons), drop a
+	 * decorative `aria-hidden` subtree that is pure symbol, then strip a leading/trailing toggle glyph.
+	 * The ordinal ("01") is KEPT — it is text the source renders, and dropping it would be content loss
+	 * of exactly the kind this fix exists to avoid.
+	 */
+	/**
+	 * Is this element a BREADCRUMB TRAIL?
+	 *
+	 * Deliberately strict, because the shape (a short row of links) is also the shape of a nav, a tab strip,
+	 * a pagination row and a tag list. It requires an explicit DECLARATION of intent — the accessible name,
+	 * the class, or schema.org markup — and then checks the trail actually looks like one. A row of links
+	 * that merely resembles a trail is left alone: converting a site's main nav into a breadcrumb would be a
+	 * far worse outcome than leaving a trail undetected.
+	 */
+	private static function is_breadcrumb_trail( $el ) {
+		if ( ! $el instanceof DOMElement ) { return false; }
+
+		// 1. A DECLARATION. Any one of these is the author saying what this is.
+		$aria    = strtolower( trim( (string) $el->getAttribute( 'aria-label' ) ) );
+		$cls     = self::cls( $el );
+		$id      = strtolower( (string) $el->getAttribute( 'id' ) );
+		$itemtype = strtolower( (string) $el->getAttribute( 'itemtype' ) );
+		$declared = ( 'breadcrumb' === $aria || 'breadcrumbs' === $aria )
+			|| ( false !== strpos( $cls, 'breadcrumb' ) )
+			|| ( false !== strpos( $id, 'breadcrumb' ) )
+			|| ( false !== strpos( $itemtype, 'breadcrumblist' ) );
+		if ( ! $declared ) {
+			// schema.org may sit on a descendant <ol> instead of the wrapper.
+			foreach ( $el->getElementsByTagName( '*' ) as $d ) {
+				if ( false !== strpos( strtolower( (string) $d->getAttribute( 'itemtype' ) ), 'breadcrumblist' ) ) { $declared = true; break; }
+			}
+		}
+		// A TRAIL CAN BE UNMISTAKABLE WITHOUT SAYING SO.
+		//
+		// Everything above waits for the author to declare it. A real source published its trail as
+		// <a>Home</a> <svg/> <a>Modular Home Financing</a> <svg/> <a>...Manufacturers</a> <svg/> <span>Unity
+		// Homes</span> -- no aria-label, no 'breadcrumb' class, no schema, and SVG chevrons for separators.
+		// Undeclared, it was not a breadcrumb; the chevrons carry no text, so the trail decomposed into loose
+		// links and rendered as 'Home Modular Home Financing Manufacturers Unity Homes' -- every word present,
+		// run together, unreadable. The separators were never the signal; the STRUCTURE is.
+		if ( ! $declared ) { $declared = self::crumb_hrefs_nest( $el ); }
+		if ( ! $declared ) { return false; }
+
+		// 2. The SHAPE. A trail is a short row of mostly-link crumbs; two is the minimum that forms a trail.
+		$links = 0;
+		foreach ( $el->getElementsByTagName( 'a' ) as $a ) {
+			if ( '' !== trim( (string) $a->textContent ) ) { $links++; }
+		}
+		if ( $links < 1 ) { return false; }
+		$text = trim( preg_replace( '/\s+/', ' ', (string) $el->textContent ) );
+		if ( '' === $text || mb_strlen( $text ) > 200 ) { return false; }   // a trail is short by nature
+		// The LAST crumb is normally the current page and NOT a link, so one link plus a trailing text node
+		// is the commonest real trail. Requiring two links would miss most of them.
+		return ( $links + ( self::breadcrumb_current_of( $el ) !== '' ? 1 : 0 ) ) >= 2;
+	}
+
+	/**
+	 * Do this element's links form an ANCESTOR CHAIN -- '/', '/a', '/a/b' -- in document order?
+	 *
+	 * That is what a breadcrumb IS, and it needs no declaration and no separator glyph to read. Each link
+	 * must point one level deeper than the one before it, and the row must end in a non-link crumb (the
+	 * current page). A nav menu, a footer column or a related-links list does not produce strictly nesting
+	 * hrefs in order followed by a bare label, so this stays conservative: any break in the chain, or a
+	 * missing trailing label, and it declines.
+	 *
+	 * @param DOMElement $el
+	 * @return bool
+	 */
+	private static function crumb_hrefs_nest( $el ) {
+		if ( ! $el instanceof DOMElement ) { return false; }
+		$paths = array();
+		foreach ( $el->getElementsByTagName( 'a' ) as $a ) {
+			if ( '' === trim( (string) $a->textContent ) ) { continue; }
+			$href = trim( (string) $a->getAttribute( 'href' ) );
+			if ( '' === $href || '#' === $href || preg_match( '#^(mailto:|tel:|javascript:)#i', $href ) ) { return false; }
+			$p = (string) wp_parse_url( $href, PHP_URL_PATH );
+			if ( null === $p ) { $p = ''; }
+			$paths[] = trim( $p, '/' );
+		}
+		if ( count( $paths ) < 2 ) { return false; }
+		for ( $i = 1, $n = count( $paths ); $i < $n; $i++ ) {
+			$prev = $paths[ $i - 1 ];
+			$cur  = $paths[ $i ];
+			if ( '' === $cur ) { return false; }                       // home cannot follow a deeper crumb
+			if ( '' === $prev ) { continue; }                          // anything may follow the site root
+			if ( 0 !== strpos( $cur, $prev . '/' ) ) { return false; } // each crumb must extend the one before
+		}
+		// …and the row must END in the current page, which is a label rather than a link.
+		$current = self::breadcrumb_current_of( $el );
+		if ( '' === $current ) { return false; }
+
+		// THE ELEMENT MUST BE THE TRAIL, NOT SOMETHING CONTAINING IT.
+		//
+		// getElementsByTagName reaches every descendant, so an ANCESTOR of a trail passes the nesting test too
+		// -- and claiming the ancestor replaces its whole subtree with the trail shortcode. A fixture caught it
+		// immediately: the wrapping <div> matched, and the page's <h1> and body copy were swallowed into
+		// [breadcrumbs]. A recognizer that silently eats a heading is far worse than one that misses a trail.
+		//
+		// So the element's text must be NOTHING BUT its crumbs: remove each crumb label and the current-page
+		// label, and whatever is left may only be separators and whitespace.
+		$whole = trim( preg_replace( '/\s+/', ' ', (string) $el->textContent ) );
+		foreach ( $el->getElementsByTagName( 'a' ) as $a ) {
+			$lbl = trim( preg_replace( '/\s+/', ' ', (string) $a->textContent ) );
+			if ( '' === $lbl ) { continue; }
+			$pos = mb_strpos( $whole, $lbl );
+			if ( false !== $pos ) { $whole = mb_substr( $whole, 0, $pos ) . mb_substr( $whole, $pos + mb_strlen( $lbl ) ); }
+		}
+		$pos = mb_strpos( $whole, $current );
+		if ( false !== $pos ) { $whole = mb_substr( $whole, 0, $pos ) . mb_substr( $whole, $pos + mb_strlen( $current ) ); }
+		$leftover = trim( preg_replace( '#[\s/>\x{203a}\x{00bb}\x{2022}\|\-\x{2192}]+#u', '', $whole ) );
+		return '' === $leftover;
+	}
+
+	/** The trailing NON-link crumb (the current page), or '' when every crumb is a link. */
+	private static function breadcrumb_current_of( $el ) {
+		if ( ! $el instanceof DOMElement ) { return ''; }
+		$clone = $el->cloneNode( true );
+		foreach ( iterator_to_array( $clone->getElementsByTagName( 'a' ) ) as $a ) {
+			if ( $a->parentNode ) { $a->parentNode->removeChild( $a ); }
+		}
+		$rest = trim( preg_replace( '/\s+/', ' ', (string) $clone->textContent ) );
+		// Strip the separators the links used to sit between.
+		$rest = trim( preg_replace( '#^[\s/>\x{203a}\x{00bb}\x{2022}\|\-\x{2192}]+|[\s/>\x{203a}\x{00bb}\x{2022}\|\-\x{2192}]+$#u', '', $rest ) );
+		return ( '' !== $rest && mb_strlen( $rest ) <= 80 ) ? $rest : '';
+	}
+
+	/**
+	 * A breadcrumb trail → `{ t:'breadcrumbs', items:[{label,href}…], current }`.
+	 *
+	 * The crumbs are carried even though the native shortcode derives its own trail from the WordPress page
+	 * hierarchy: they are what makes the block reviewable, and what a report can point at when a converted
+	 * trail does not match the source's.
+	 */
+	private static function breadcrumb_block( $el ) {
+		$items = array();
+		foreach ( $el->getElementsByTagName( 'a' ) as $a ) {
+			$label = trim( preg_replace( '/\s+/', ' ', (string) $a->textContent ) );
+			if ( '' === $label ) { continue; }
+			$items[] = array( 'label' => $label, 'href' => trim( (string) $a->getAttribute( 'href' ) ) );
+		}
+		return array(
+			't'       => 'breadcrumbs',
+			'role'    => 'breadcrumbs',
+			'items'   => $items,
+			'current' => self::breadcrumb_current_of( $el ),
+			'cls'     => self::cls( $el ),
+			'cs'      => (string) $el->getAttribute( 'data-sc-cs' ),
+		);
+	}
+
+	private static function toggle_title( $el ) {
+		if ( ! $el instanceof DOMElement ) { return ''; }
+		$clone = ( $el->ownerDocument ) ? $el->cloneNode( true ) : null;
+		if ( $clone instanceof DOMElement ) {
+			// A decorative `aria-hidden` node carrying no letters or digits is a glyph (the +/- toggle, a
+			// chevron, an arrow). One carrying words is content someone chose to hide from AT — keep it.
+			$drop = array();
+			foreach ( $clone->getElementsByTagName( '*' ) as $d ) {
+				if ( 'true' !== strtolower( (string) $d->getAttribute( 'aria-hidden' ) ) ) { continue; }
+				if ( $d->getElementsByTagName( 'img' )->length ) { continue; }
+				if ( preg_match( '/[\p{L}\p{N}]/u', (string) $d->textContent ) ) { continue; }
+				$drop[] = $d;
+			}
+			foreach ( $drop as $d ) { if ( $d->parentNode ) { $d->parentNode->removeChild( $d ); } }
+			$t = self::text_no_icons( $clone );
+		} else {
+			$t = self::text( $el );
+		}
+		// Whatever glyph survived (an unwrapped "+", a bare "-" text node) is the toggle affordance, not a word.
+		$glyph = '[+\-\x{2212}\x{2013}\x{2014}\x{00D7}\x{2715}\x{25B8}\x{25BE}]';
+		$t = preg_replace( '/^\s*' . $glyph . '\s*|\s*' . $glyph . '\s*$/u', '', (string) $t );
+		return trim( preg_replace( '/\s+/', ' ', (string) $t ) );
+	}
+
 	private static function accordion_block( $el ) {
 		$items = array();
 		$dets  = $el->getElementsByTagName( 'details' );
@@ -17535,7 +17877,7 @@ class FW_Site_Converter_Stitch {
 			foreach ( $dets as $d ) {
 				$sum = $d->getElementsByTagName( 'summary' )->item( 0 );
 				if ( ! $sum ) { continue; }
-				$title = self::text( $sum );
+				$title = self::toggle_title( $sum );
 				// Content = the details' inner HTML minus the summary.
 				$clone = $d->cloneNode( true );
 				foreach ( iterator_to_array( $clone->getElementsByTagName( 'summary' ) ) as $s ) { $s->parentNode->removeChild( $s ); }
@@ -17546,7 +17888,7 @@ class FW_Site_Converter_Stitch {
 		} elseif ( ! count( self::el_all_with_aria( $el ) ) && count( self::plain_toggle_items( $el ) ) >= 2 ) {
 			// unannotated toggles (see plain_toggle_items): title = the button's text without its glyph; content = the sibling panel
 			foreach ( self::plain_toggle_items( $el ) as $pair ) {
-				$title = trim( preg_replace( '/\s*[+−–]\s*$/u', '', self::text_no_icons( $pair[0] ) ) );
+				$title = self::toggle_title( $pair[0] );
 				if ( '' === $title ) { continue; }
 				$items[] = array( 'title' => $title, 'content' => ( $pair[1] instanceof DOMElement ) ? self::strip_cs( trim( self::inner_html( $pair[1] ) ) ) : '', 'open' => false );
 			}
@@ -17554,7 +17896,7 @@ class FW_Site_Converter_Stitch {
 			// aria-expanded toggles: title = toggle text; content = aria-controls target or next sibling.
 			$doc = $el->ownerDocument;
 			foreach ( self::el_all_with_aria( $el ) as $t ) {
-				$title = self::text( $t );
+				$title = self::toggle_title( $t );
 				if ( '' === $title ) { continue; }
 				$panel_html = '';
 				$ctrl = trim( (string) $t->getAttribute( 'aria-controls' ) );
@@ -17900,7 +18242,7 @@ class FW_Site_Converter_Stitch {
 
 	/**
 	 * A single ICON+TEXT ROW: a `<div>`/`<span>` that holds an inline icon (an `<svg>`, or a lucide/iconify
-	 * element) AND a SHORT text label — the modfii hero's `<div class="flex items-center gap-2"><svg
+	 * element) AND a SHORT text label — the fixture-01 hero's `<div class="flex items-center gap-2"><svg
 	 * class="lucide lucide-circle-check"/><span>No credit impact</span></div>`. NOT a heading, a real
 	 * button/link CTA, an image card, or a long prose block. This is the atom the DIV-based feature list is
 	 * built from (the `<ul>/<li>` path can't see it, so such lists were dumped as code_blocks).
@@ -18037,7 +18379,7 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( count( $rows ) < 2 ) { return null; }
 		$cls = ' ' . strtolower( self::cls( $el ) ) . ' ';
-		// Orientation: an inline flex/inline-flex strip that ISN'T a column stack = horizontal (the modfii
+		// Orientation: an inline flex/inline-flex strip that ISN'T a column stack = horizontal (the fixture-01
 		// trust strip `flex flex-wrap items-center`); a `flex-col` or a `grid` is vertical.
 		$orientation = 'vertical';
 		if ( ( strpos( $cls, ' flex ' ) !== false || strpos( $cls, ' inline-flex ' ) !== false )
@@ -20810,6 +21152,8 @@ class FW_Site_Converter_Stitch {
 			$has_media = $cell->getElementsByTagName( 'img' )->length || $cell->getElementsByTagName( 'svg' )->length
 				|| $cell->getElementsByTagName( 'video' )->length || $cell->getElementsByTagName( 'iframe' )->length
 				|| in_array( strtolower( $cell->tagName ), array( 'img', 'svg', 'video', 'iframe', 'picture' ), true ); // (the cell IS the media: a bare arrow svg beside a title)
+			if ( self::el_takes_no_track( $cell ) ) { continue; } // out of flow / hidden -> not a column
+
 			// a DIVIDER cell in a content-sized row (an empty painted `w-px h-10` hairline between two stats) → an empty auto
 			// cell carrying the paint at its fixed size
 			if ( $content_sized && '' === self::text( $cell ) && ! $has_media ) {
@@ -20920,7 +21264,7 @@ class FW_Site_Converter_Stitch {
 					$col = array_merge( array( 'cls' => '', 'wResp' => $wResp, 'maxw' => $cell_maxw, 'blocks' => $cblocks ), $geo );
 					if ( $cell_pad ) { $col['pad'] = $cell_pad; }
 					// A decomposed cell that is itself a styled CARD (a glass panel: fill + border + rounded +
-					// padding, e.g. modfii's hero stats card) → carry its box skin so the COLUMN renders as a
+					// padding, e.g. fixture-01's hero stats card) → carry its box skin so the COLUMN renders as a
 					// card, not a bare stack of blocks. The mapper paints it onto the column.
 					$ccard = self::cell_card_skin( $cell );
 					// A decorative glow that reaches OUTSIDE the box (negative offsets) is clipped by the source card (overflow:hidden).
@@ -22489,6 +22833,226 @@ class FW_Site_Converter_Stitch {
 	 *
 	 * @return array
 	 */
+	/**
+	 * TEXT-COVERAGE audit — every visible phrase the SOURCE renders, checked for presence in what we BUILT.
+	 *
+	 * Why this exists, and why it is not the same thing as the drop log: the drop log is fed by the generic
+	 * decompose walker, so it only ever sees nodes THAT WALKER declined to emit. A node discarded because a
+	 * RECOGNIZER claimed its ancestor and then ignored it never reaches the walker at all, and is therefore
+	 * invisible to the report. That is not hypothetical — on a real source the accordion recognizer claimed a
+	 * services band and silently dropped the trailing "Tell Us About Your Project" link and the whole
+	 * `<figure>` preview beside it (image + caption), while conversion-drops.json reported 15 drops, all of
+	 * them from an unrelated FAQ group and none of them these. The instrument said the conversion was fine.
+	 *
+	 * So this audit deliberately shares NO code path with the builder. It reads the source DOM and the built
+	 * output as two bags of text and asks one question — is each source phrase somewhere in the output? —
+	 * which catches the whole class at once, whatever the cause: a recognizer over-claiming, a walker skip, or
+	 * text glued to its neighbour so the phrase no longer exists as itself ("01Complete home renovations").
+	 *
+	 * Deliberately excluded, because they would be false positives rather than losses:
+	 *   - `display:none` / `hidden` / `aria-hidden` subtrees. Sources routinely ship a mobile AND a desktop
+	 *     copy of the same band with one hidden; dropping the hidden twin is CORRECT, and demanding it would
+	 *     bury the real findings in noise. So this reports only what is VISIBLY lost, which is the honest claim.
+	 *   - `script` / `style` / `noscript` / `template` / `svg`, which is not rendered prose.
+	 *   - Phrases under two real words. A lone glyph, an ordinal or a one-word label matches something
+	 *     somewhere by accident too often to be evidence either way.
+	 *
+	 * @param string $html   the source HTML the conversion was built from
+	 * @param array  $values the theme-settings values it wrote
+	 * @param array  $pages  the built pages
+	 * @return array { checked, missing, coverage_pct, note, items[] }
+	 */
+	/**
+	 * Is this uncovered phrase OUT OF SCOPE rather than lost?
+	 *
+	 * Two kinds of text are in the rendered source but are deliberately not content:
+	 *   - a CONSENT / cookie banner, which is a plugin's UI. The converted site gets its own consent plugin,
+	 *     so copying the source's banner text would be both wrong and a compliance hazard.
+	 *   - a SKIP LINK, an a11y affordance the theme provides itself.
+	 *
+	 * These are reported in their own bucket instead of being hidden, because "we chose not to carry this" and
+	 * "we lost this" are different claims and a reader deserves to see which one each item is. Folding them
+	 * into `missing` would have put 7 non-findings in front of 11 real ones on the first source this ran on.
+	 *
+	 * @return string '' when the phrase is genuinely missing, else a short reason.
+	 */
+	private static function coverage_out_of_scope( $el ) {
+		static $CMP = array( 'cmplz', 'onetrust', 'ot-sdk', 'cookiebot', 'cookieyes', 'cky-', 'cc-window',
+			'cookie-consent', 'cookieconsent', 'osano', 'termly', 'iubenda', 'borlabs', 'gdpr', 'usercentrics',
+			'didomi', 'trustarc', 'klaro', 'moove_gdpr', 'wp-consent' );
+		// STOP AT <body>. A consent plugin also stamps its own class on <html>/<body> (Complianz writes
+		// `cmplz-…` there), so a climb that includes them matches EVERY phrase on the page: the first run of
+		// this classifier declared a services figcaption and a footer email address to be consent-banner text
+		// and reported 100% coverage with zero findings. A signature broad enough to match everything is not
+		// a signature — the banner has to be an actual enclosing container.
+		for ( $n = $el; $n instanceof DOMElement; $n = $n->parentNode ) {
+			$tag = strtolower( (string) $n->tagName );
+			if ( 'body' === $tag || 'html' === $tag ) { break; }
+			$sig = strtolower( (string) $n->getAttribute( 'class' ) . ' ' . (string) $n->getAttribute( 'id' ) );
+			if ( '' !== $sig ) {
+				foreach ( $CMP as $k ) {
+					if ( false !== strpos( $sig, $k ) ) { return 'consent banner (the converted site uses its own consent plugin)'; }
+				}
+				if ( false !== strpos( $sig, 'skip-link' ) || false !== strpos( $sig, 'skip-to' ) || false !== strpos( $sig, 'screen-reader-text' ) ) {
+					return 'accessibility affordance the theme provides itself';
+				}
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * The coverage audit across EVERY captured page, not just the first one.
+	 *
+	 * The single-page version audits one HTML document against the whole built output. Wired into the
+	 * bundle it was handed `$screens[0]` — the home page — so on a multi-page conversion the needles came
+	 * from page one while the haystack held every page. An inner page could lose its entire body and the
+	 * report would still say 100%: the audit built to catch silent content loss was itself silent about
+	 * four pages out of five.
+	 *
+	 * Each page is audited separately and the rows carry `page`, because "we lost the pricing table" and
+	 * "we lost it on /pricing" are different amounts of information, and only the second one is actionable.
+	 *
+	 * @param array $screens [{ html, slug|title }, …] — every captured page
+	 * @param array $values  the theme-settings values
+	 * @param array $pages   the built pages
+	 */
+	private static function build_text_coverage_all( array $screens, array $values, array $pages ) {
+		$checked = 0;
+		$missing = 0;
+		$items   = array();
+		$oos     = array();
+		$by_page = array();
+		foreach ( $screens as $sc ) {
+			$html = is_array( $sc ) ? (string) ( $sc['html'] ?? '' ) : (string) $sc;
+			if ( '' === trim( $html ) ) { continue; }
+			$label = is_array( $sc ) ? (string) ( $sc['slug'] ?? $sc['title'] ?? '' ) : '';
+			if ( '' === $label ) { $label = 'page-' . ( count( $by_page ) + 1 ); }
+			$r = self::build_text_coverage( $html, $values, $pages );
+			$checked += (int) $r['checked'];
+			$missing += (int) $r['missing'];
+			foreach ( (array) $r['items'] as $it )        { $it['page'] = $label; if ( count( $items ) < 200 ) { $items[] = $it; } }
+			foreach ( (array) $r['out_of_scope'] as $it ) { $it['page'] = $label; if ( count( $oos ) < 100 )   { $oos[] = $it; } }
+			$by_page[ $label ] = array(
+				'checked'      => (int) $r['checked'],
+				'missing'      => (int) $r['missing'],
+				'coverage_pct' => $r['coverage_pct'],
+			);
+		}
+		return array(
+			'checked'      => $checked,
+			'missing'      => $missing,
+			'coverage_pct' => $checked ? round( ( ( $checked - $missing ) / $checked ) * 100, 1 ) : 100.0,
+			'pages'        => count( $by_page ),
+			'by_page'      => $by_page,
+			'note'         => 'Visible source phrases (2+ real words, excluding hidden / display:none twins) absent from the built pages + theme settings, checked on EVERY captured page. Unlike the drop log above, this shares no code path with the builder, so it also catches text lost to a RECOGNIZER claiming a container and ignoring part of it, and text glued to a neighbour so the phrase no longer exists as itself. `items` is content we should have kept (each tagged with the page it came from); `out_of_scope` is text we deliberately did not carry.',
+			'items'        => $items,
+			'out_of_scope' => $oos,
+		);
+	}
+
+	private static function build_text_coverage( $html, array $values, array $pages ) {
+		// Compare on letters, digits and single spaces only: the output legitimately re-punctuates and
+		// re-cases text (a heading upper-cased by CSS, a curly quote normalised), and none of that is
+		// content loss. Anything stricter reports typography as a defect.
+		$norm = function ( $t ) {
+			$t = mb_strtolower( preg_replace( '/[^\p{L}\p{N}]+/u', ' ', (string) $t ) );
+			return trim( preg_replace( '/\s+/', ' ', $t ) );
+		};
+
+		// ---- the haystack: everything we emitted, as one normalised string -----------------------------
+		$hay  = '';
+		$flat = function ( $v, $flat ) use ( &$hay ) {
+			if ( is_array( $v ) ) { foreach ( $v as $x ) { $flat( $x, $flat ); } return; }
+			if ( is_string( $v ) || is_numeric( $v ) ) { $hay .= ' ' . $v; }
+		};
+		$flat( $pages, $flat );
+		$flat( $values, $flat );
+		// A RICH TAB PANEL IS NOT IN THE PAGE -- IT IS A SNIPPET THE PAGE REFERENCES.
+		//
+		// n_tabs() moves a large panel into a `snippet` CPT and leaves `[snippet id="N"]` behind, so the panel's
+		// text is genuinely carried but lives one indirection away. Reading only the page tree therefore reported
+		// every word of it as LOST. Measured on a captured menu page with two tab panels: 120 of 216 phrases
+		// "missing", 44.4% coverage -- and all 120 were present, intact, in the snippet the page points at. That
+		// made it the worst-ranked page in the corpus and sent the training after a defect that did not exist.
+		//
+		// So follow the reference. An instrument that cannot see where the content went does not measure loss, it
+		// measures its own blind spot -- and a false miss is more expensive than a missed one, because it is acted on.
+		if ( preg_match_all( '/\[snippet\s+id=\D{0,2}(\d+)/i', $hay, $sm ) && function_exists( 'fw_get_db_post_option' ) ) {
+			foreach ( array_unique( $sm[1] ) as $sid ) {
+				$flat( fw_get_db_post_option( (int) $sid ), $flat );
+			}
+		}
+		$hay = $norm( wp_specialchars_decode( wp_strip_all_tags( $hay ), ENT_QUOTES ) );
+
+		// ---- the needles: the source's own visible phrases ---------------------------------------------
+		$doc    = new DOMDocument();
+		$prev   = libxml_use_internal_errors( true );
+		$parsed = $doc->loadHTML( '<?xml encoding="utf-8"?>' . (string) $html );
+		libxml_clear_errors();
+		libxml_use_internal_errors( $prev );
+		if ( ! $parsed ) {
+			return array( 'checked' => 0, 'missing' => 0, 'coverage_pct' => 100.0, 'note' => 'source HTML could not be parsed', 'items' => array() );
+		}
+		$skip_tag = array( 'script', 'style', 'noscript', 'template', 'svg', 'head', 'title' );
+		$items    = array();
+		$excluded = array();
+		$checked  = 0;
+		$seen     = array();
+		$body     = $doc->getElementsByTagName( 'body' )->item( 0 );
+		$stack    = $body ? array( $body ) : array();
+		while ( $stack ) {
+			$el = array_pop( $stack );
+			foreach ( $el->childNodes as $c ) {
+				if ( XML_ELEMENT_NODE !== $c->nodeType ) { continue; }
+				if ( in_array( strtolower( $c->tagName ), $skip_tag, true ) ) { continue; }
+				if ( $c->hasAttribute( 'hidden' ) || 'true' === strtolower( (string) $c->getAttribute( 'aria-hidden' ) ) ) { continue; }
+				if ( preg_match( '/(?:^|;)\s*display:\s*none/i', (string) $c->getAttribute( 'data-sc-cs' ) ) ) { continue; }
+				$stack[] = $c;
+			}
+			// The element's OWN direct text, for the same reason the drop log reads it that way: a container's
+			// text lives in its children, and flattening it would invent phrases no single element renders.
+			$direct = '';
+			foreach ( $el->childNodes as $c ) {
+				if ( XML_TEXT_NODE === $c->nodeType ) { $direct .= $c->nodeValue . ' '; }
+			}
+			$phrase = $norm( $direct );
+			if ( '' === $phrase ) { continue; }
+			$real = 0;
+			foreach ( preg_split( '/\s+/', $phrase ) as $w ) {
+				if ( preg_match( '/[\p{L}]{2,}/u', $w ) ) { $real++; }
+			}
+			if ( $real < 2 ) { continue; }
+			if ( isset( $seen[ $phrase ] ) ) { continue; }
+			$seen[ $phrase ] = 1;
+			$checked++;
+			if ( false !== strpos( $hay, $phrase ) ) { continue; }
+			$row = array(
+				'tag'   => strtolower( $el->tagName ),
+				'class' => mb_substr( (string) self::cls( $el ), 0, 120 ),
+				'text'  => mb_substr( trim( preg_replace( '/\s+/', ' ', $direct ) ), 0, 120 ),
+			);
+			$why = self::coverage_out_of_scope( $el );
+			if ( '' !== $why ) {
+				$row['reason'] = $why;
+				if ( count( $excluded ) < 60 ) { $excluded[] = $row; }
+				continue;
+			}
+			if ( count( $items ) < 120 ) { $items[] = $row; }
+		}
+		$missing = count( $items );
+		// Out-of-scope text is not counted against coverage — it was never ours to carry.
+		$checked = max( 0, $checked - count( $excluded ) );
+		return array(
+			'checked'      => $checked,
+			'missing'      => $missing,
+			'coverage_pct' => $checked ? round( ( ( $checked - $missing ) / $checked ) * 100, 1 ) : 100.0,
+			'note'         => 'Visible source phrases (2+ real words, excluding hidden / display:none twins) absent from the built pages + theme settings. Unlike the drop log above, this shares no code path with the builder, so it also catches text lost to a RECOGNIZER claiming a container and ignoring part of it, and text glued to a neighbour so the phrase no longer exists as itself. `items` is content we should have kept; `out_of_scope` is text we deliberately did not carry, listed so the distinction is visible rather than assumed.',
+			'items'        => $items,
+			'out_of_scope' => $excluded,
+		);
+	}
+
 	private static function build_drop_report() {
 		$log      = self::$drop_log;
 		$by_kind  = array();
@@ -22765,7 +23329,7 @@ class FW_Site_Converter_Stitch {
 			// SOLID = a genuinely OPAQUE background — a bar reproduced IN-FLOW, whose reserved clearance is then
 			// redundant. A GLASS / TRANSLUCENT overlay is NOT solid: it carries a `backdrop-blur` and/or a sub-opaque
 			// fill, is reproduced as an OVERLAY header (position:absolute), and so the hero STILL needs its top
-			// clearance — dropping it renders the heading UNDER the nav (the modfii `bg-background/80 backdrop-blur-lg`
+			// clearance — dropping it renders the heading UNDER the nav (the fixture-01 `bg-background/80 backdrop-blur-lg`
 			// case: the first heading line clipped behind the frosted nav).
 			$has_blur = ( false !== strpos( $dc, ' backdrop-blur' ) || preg_match( '/backdrop-filter:\s*[^;]*blur/i', $dcs . ';' . $dst ) );
 			if ( $has_blur ) { continue; }
@@ -24171,7 +24735,9 @@ class FW_Site_Converter_Stitch {
 	 * (name over role). Returns false for a bare pair of lines: the avatar (or a clear weight step) is what separates
 	 * an attribution from an ordinary two-line card footer.
 	 */
-	private static function has_author_block( $k ) {
+	/** Public so the goldens can assert the avatar rule directly: the predicate is pure, and shaping a whole
+	 *  page that reproduces it end-to-end proved far more fragile than the rule it was meant to guard. */
+	public static function has_author_block( $k ) {
 		if ( ! ( $k instanceof DOMElement ) ) { return false; }
 		// The block is a ROW: one element holding the avatar AND the two stacked lines. Requiring the row (rather than
 		// "somewhere in the card") is what keeps a service card (icon tile + title + body) and a product tile (photo +
@@ -24192,7 +24758,21 @@ class FW_Site_Converter_Stitch {
 				elseif ( preg_match( '/(?:^|\s)(?:w|h|size)-(\d{1,2})(?:\s|$)/', $dcls, $um ) ) { $size = (int) $um[1] * 4; }
 				if ( $size <= 0 || $size > 80 ) { continue; }
 				$dt = trim( preg_replace( '/\s+/u', ' ', self::text( $d ) ) );
-				if ( 'img' === strtolower( $d->tagName ) || '' === $dt || preg_match( '/^\p{Lu}{1,3}$/u', $dt ) ) { $avatar = $d; break; }
+				// AN AVATAR IS A PERSON; A ROUND ICON TILE IS NOT.
+				//
+				// An empty round disc counted as an avatar, so an ICON tile beside a label and a sublabel -- the
+				// shape of every option row, feature row and step card -- read as an author attribution, and the
+				// card then qualified as a testimonial. Measured on a real page: a "How to Get a …" band holding a
+				// steps list AND a multi-step form was claimed as testimonials, emitting
+				// { quote: 'Complete our 2-minute form…', name: 'Pre-Qualify Online', role: 'Compare Lender Offers' }
+				// -- step titles as people -- and the whole band's content was discarded.
+				//
+				// So a disc whose content is an ICON is not an avatar. An <img> still is, a monogram still is, and a
+				// textless disc still is when it carries no icon (a CSS background-image portrait).
+				$d_icon = ( $d->getElementsByTagName( 'svg' )->length > 0 || $d->getElementsByTagName( 'i' )->length > 0 );
+				if ( 'img' === strtolower( $d->tagName ) ) { $avatar = $d; break; }
+				if ( $d_icon ) { continue; }
+				if ( '' === $dt || preg_match( '/^\p{Lu}{1,3}$/u', $dt ) ) { $avatar = $d; break; }
 			}
 			if ( null === $avatar ) { continue; }
 			// …beside a stack of two short lines, the first heavier or larger than the second (name over role)
@@ -24565,6 +25145,36 @@ class FW_Site_Converter_Stitch {
 				if ( $d !== $el && self::is_testimonials_grid( $d ) ) { return false; }
 			}
 		}
+		// A TESTIMONIAL HAS NO SECTION HEADING OF ITS OWN.
+		//
+		// The guard below bows out when a descendant is a testimonials GRID, but a band holding ONE quote
+		// was still claimed whole — and single_testimonial_item() then takes the longest paragraph as the
+		// quote and discards everything else. Measured on a real page: a "Why Choose …" band (its heading,
+		// five trust badges and a customer quote) collapsed to the quote alone; the page came out at 66%
+		// coverage with its heading and every badge missing.
+		//
+		// A quote may itself be marked up as a heading (single_testimonial_item reads h2/h3/h4 as quote
+		// candidates), so the test is not "has a heading" but "has a heading that is NOT the quote": that
+		// heading titles a band, and the band must decompose so it survives. Rejecting here is strictly
+		// better than claiming — a rejected band still yields its heading, its content AND its testimonial.
+		{
+			$quote_txt = '';
+			foreach ( array( 'blockquote', 'h2', 'h3', 'h4', 'p' ) as $qt ) {
+				foreach ( $el->getElementsByTagName( $qt ) as $qn ) {
+					$qtx = trim( preg_replace( '/\s+/u', ' ', self::text( $qn ) ) );
+					if ( mb_strlen( $qtx ) > mb_strlen( $quote_txt ) ) { $quote_txt = $qtx; }
+				}
+			}
+			foreach ( array( 'h1', 'h2', 'h3' ) as $ht ) {
+				foreach ( $el->getElementsByTagName( $ht ) as $hn ) {
+					$htx = trim( preg_replace( '/\s+/u', ' ', self::text( $hn ) ) );
+					if ( '' === $htx ) { continue; }
+					if ( '' !== $quote_txt && false !== mb_strpos( $quote_txt, $htx ) ) { continue; } // the quote itself
+					return false;   // a heading that titles a band, not a quote
+				}
+			}
+		}
+
 		// NOT a hero / CTA band: a real testimonial carries no primary H1 and no action buttons (a hero's
 		// star row is small social-proof next to the H1 + CTAs — reject it so the hero decomposes normally).
 		if ( $el->getElementsByTagName( 'h1' )->length > 0 ) { return false; }
@@ -24772,6 +25382,21 @@ class FW_Site_Converter_Stitch {
 	private static function is_card_cell( $k ) {
 		$tag = strtolower( $k->tagName );
 		if ( $tag === 'button' || $tag === 'input' ) { return false; }
+
+		// A CARD HAS ONE HEADING. A REGION HAS SEVERAL.
+		//
+		// Any heading at all used to make a cell a card, and card_from_cell() then keeps the FIRST heading
+		// plus its text and discards everything else in the cell. So a column holding four <h2> bands --
+		// About, Key Features, Certifications, Popular Models -- became one card, and the rest of the page
+		// was thrown away. Measured on a real conversion: the converter's own text_coverage read 72.2% on
+		// those pages, naming all 32 missing phrases, while the page looked merely thin.
+		//
+		// An <h2> is a SECTION heading. Across 84 captures, 1354 heading-bearing containers carry no <h2>
+		// at all and 425 carry exactly one; only 92 carry two or more, and those are regions -- several hold
+		// a whole nav bar. So two <h2> is the line: below it nothing changes, above it the cell is decomposed
+		// into its bands instead of being flattened into a single card.
+		if ( $k->getElementsByTagName( 'h2' )->length > 1 ) { return false; }
+
 		foreach ( array( 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
 			if ( $k->getElementsByTagName( $h )->length > 0 ) { return true; }
 		}
@@ -24849,7 +25474,7 @@ class FW_Site_Converter_Stitch {
 
 	/** The FIRST descendant container that is an icon-text/feature list (icon+text rows) inside $cell, or
 	 *  null. Lets a card cell that wraps a nested feature list (icon + heading + description followed by a
-	 *  grid/flex of icon+text pills — e.g. modfii's "Loan Types Available" card) decompose into an icon_box
+	 *  grid/flex of icon+text pills — e.g. fixture-01's "Loan Types Available" card) decompose into an icon_box
 	 *  HEADER + a native feature_list, instead of one icon_box that claims the card by its heading and DROPS
 	 *  the list. Excludes $cell itself (a bare list cell is the section-level icon_text_list recognizer's job). */
 	private static function cell_wraps_icon_text_list( $cell ) {
@@ -24958,6 +25583,66 @@ class FW_Site_Converter_Stitch {
 		return null;
 	}
 
+	/**
+	 * Does the browser give this child NO track in its parent's row/grid?
+	 *
+	 * `display:none` (or a `hidden` attribute) renders nothing at all, and an out-of-flow child
+	 * (`position:absolute` / `fixed`) is lifted out of the flow entirely -- neither takes any share of the
+	 * row's width. Counting them as columns is a layout error rather than a judgement call.
+	 *
+	 * Measured on a real hero: the <section> had six children and only ONE was in flow -- a poster
+	 * <picture>, a `hidden` <div> of video config, a <video>, a scrim and a bottom cue were all out of it.
+	 * Each was handed a column, so the single content layer got 2/12 of the band and the headline wrapped
+	 * one word per line ("Your / vision. / Beautifully / built."). That band measured 88% pixel drift: the
+	 * worst region on the page, and the first thing a visitor sees.
+	 *
+	 * SHARED by every column builder on purpose. The first version of this lived in layout_cols() alone and
+	 * changed nothing, because the hero's row came from grid_cols() -- a rule that applies to one of several
+	 * builders is a rule that silently does not apply.
+	 *
+	 * Text-bearing out-of-flow layers are deliberately kept: an overlay caption is still content, and losing
+	 * it would trade a layout bug for a content one. Media is kept too -- a backdrop image or video should
+	 * have been promoted to the section background before this point, and if it was not, dropping it here
+	 * would lose it silently.
+	 */
+	private static function el_takes_no_track( $cell ) {
+		if ( ! ( $cell instanceof DOMElement ) ) { return false; }
+
+		// The `hidden` ATTRIBUTE is unconditional: the element renders at no breakpoint, so it is never a
+		// column. Computed `display:none` is deliberately NOT treated the same way -- a `md:hidden` card is
+		// hidden at the captured width and visible on phones, and the pipeline turns that into Responsive
+		// Hide. Dropping it here deleted a card the golden expects to survive.
+		if ( $cell->hasAttribute( 'hidden' ) ) { return true; }
+
+		$pos = strtolower( (string) self::sc_css( $cell, 'position' ) );
+		if ( 'absolute' !== $pos && 'fixed' !== $pos ) { return false; }
+		if ( '' !== self::text( $cell ) ) { return false; }
+
+		// Media stays: a backdrop should have been promoted to the section background before this point,
+		// and if it was not, dropping it here would lose it silently.
+		$tag = strtolower( $cell->tagName );
+		if ( in_array( $tag, array( 'img', 'svg', 'video', 'iframe', 'picture' ), true ) ) { return false; }
+		foreach ( array( 'img', 'svg', 'video', 'iframe' ) as $m ) {
+			if ( $cell->getElementsByTagName( $m )->length ) { return false; }
+		}
+
+		// PAINT stays too. An absolutely-positioned painted layer -- a 1px "light river" hairline along a
+		// grid's bottom edge, a glow blob, a scrim -- is decor the existing paths lift out as its own layer.
+		// Dropping it here ran BEFORE those paths and lost the paint entirely, which a golden caught.
+		$fill = (string) self::sc_css( $cell, 'background-color' );
+		$has_fill = ( '' !== $fill && false === stripos( $fill, 'transparent' ) && ! preg_match( '/rgba\([^)]*,\s*0(?:\.0+)?\s*\)/', $fill ) );
+		if ( $has_fill ) { return false; }
+		$bgi = (string) self::sc_css( $cell, 'background-image' );
+		if ( '' !== $bgi && 'none' !== strtolower( $bgi ) ) { return false; }
+		$shadow = (string) self::sc_css( $cell, 'box-shadow' );
+		if ( '' !== $shadow && 'none' !== strtolower( $shadow ) ) { return false; }
+		foreach ( array( 'border-top-width', 'border-left-width' ) as $bwp ) {
+			if ( preg_match( '/^([0-9.]+)px/', (string) self::sc_css( $cell, $bwp ), $bm ) && (float) $bm[1] >= 1 ) { return false; }
+		}
+
+		return true;
+	}
+
 	private static function grid_cols( $grid ) {
 		$grid_cols = self::grid_col_count( $grid );
 		$out = array();
@@ -24966,6 +25651,7 @@ class FW_Site_Converter_Stitch {
 		$g_ci = -1;
 		foreach ( $g_children as $cell ) {
 			$g_ci++;
+			if ( self::el_takes_no_track( $cell ) ) { continue; } // out of flow / hidden -> not a column
 			$cls   = self::cls( $cell );
 			// Tailwind's `col-span-N` is N of the PARENT's OWN `grid-cols-M` tracks — it is NOT N/12.
 			// Treating it as a 12-grid span (which this did) shrank every cell of a non-12 grid: a
@@ -25024,7 +25710,7 @@ class FW_Site_Converter_Stitch {
 			}
 
 			// A cell that WRAPS a counter/stat grid (a "stats panel" = a section heading + a grid of
-			// number+label cells, e.g. modfii's glassmorphic hero panel) must NOT collapse into one
+			// number+label cells, e.g. fixture-01's glassmorphic hero panel) must NOT collapse into one
 			// icon_box — card_from_cell() would claim it by its heading and FLATTEN the counters to
 			// stacked <p>. Decompose it into blocks instead: the panel's own heading (special_heading)
 			// + the native counter row, which build_cell_items() renders stacked. Same heading-preserving
@@ -25100,7 +25786,7 @@ class FW_Site_Converter_Stitch {
 			}
 
 			// A card cell that WRAPS a feature/icon-text list (icon + heading + description, THEN a grid/flex
-			// of icon+text rows — e.g. modfii's "Loan Types Available" card) must NOT collapse into one
+			// of icon+text rows — e.g. fixture-01's "Loan Types Available" card) must NOT collapse into one
 			// icon_box: card_from_cell() claims it by its heading and DROPS the nested list. Decompose into the
 			// card's icon+title+desc as an icon_box HEADER + the list as a native feature_list below it. Same
 			// heading/content-preserving principle as the counter-panel + comparison-list deferrals above.
@@ -25965,7 +26651,7 @@ class FW_Site_Converter_Stitch {
 			if ( $nb >= 2 ) { $grp_cls = self::cls( $par ); $grp_cs = (string) $par->getAttribute( 'data-sc-cs' ); }
 		}
 		// SINGLE-button wrapper: even a lone CTA sits in a wrapper that carries the gap separating it from the
-		// next block (the modfii hero `<div class="flex flex-col sm:flex-row gap-4 mb-10">` = 40px). Carry that
+		// next block (the fixture-01 hero `<div class="flex flex-col sm:flex-row gap-4 mb-10">` = 40px). Carry that
 		// wrapper's classes + computed style so n_button can fold its `mt-*`/`mb-*` into the button's native
 		// spacing (the button was rendering flush). Alignment stays driven by $btn_align (the climb above), and
 		// the wrapper here holds no centering signal, so passing it is safe. Only when no 2+ group already set it.
@@ -26337,7 +27023,17 @@ class FW_Site_Converter_Stitch {
 			$slug  = $id['slug'];
 			$front = $id['front'];
 			if ( array_key_exists( 'set_as_homepage', $input ) ) { $front = ! empty( $input['set_as_homepage'] ); }
-			$screens[] = array( 'html' => (string) $input['html'], 'title' => (string) ( $input['title'] ?? 'Home' ), 'slug' => $slug, 'front' => (bool) $front );
+			// `url` carries the SOURCE URL this screen was captured from. Both single-page callers already
+			// pass it as `source_url` (the front-page rebuild and each per-page snapshot), so taking it here
+			// means one place records it and every path benefits — a converted page can then be re-run on
+			// its own instead of requiring someone to remember and re-paste its URL.
+			$screens[] = array(
+				'html'  => (string) $input['html'],
+				'title' => (string) ( $input['title'] ?? 'Home' ),
+				'slug'  => $slug,
+				'front' => (bool) $front,
+				'url'   => (string) ( $input['source_url'] ?? '' ),
+			);
 		} elseif ( ! empty( $input['folder'] ) && is_dir( $input['folder'] ) ) {
 			list( $screens, $md2 ) = self::screens_from_folder( $input['folder'] );
 			if ( $design_md === '' ) { $design_md = $md2; }
@@ -26427,6 +27123,15 @@ class FW_Site_Converter_Stitch {
 			// carried verbatim into the theme (mirror_design) and the reproduced Tailwind CSS keeps the
 			// decomposed elements looking like the source.
 			$map = self::html_to_mapping( $sc['html'], $sc['title'], $sc['slug'], $sc['front'] );
+			// Carry the SOURCE URL onto each page. The bundle knew which URL produced which page and threw
+			// it away, so a converted page had no way back to the thing it was made from — which made
+			// "re-run just this page" impossible to offer: the only way to redo one page was to remember
+			// its source URL yourself and paste it back in. The importer stores this as post meta.
+			$src_url = trim( (string) ( $sc['url'] ?? '' ) );
+			if ( '' !== $src_url ) {
+				foreach ( $map['pages'] as &$_mp ) { $_mp['source_url'] = $src_url; }
+				unset( $_mp );
+			}
 			$mapping_all['pages'] = array_merge( $mapping_all['pages'], $map['pages'] );
 		}
 		$urls = array_values( array_unique( array_filter( $urls ) ) );
@@ -26520,6 +27225,14 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( $needs && isset( $files['theme-design.json'] ) && is_array( $files['theme-design.json'] ) ) {
 			$files['theme-design.json']['needs_extensions'] = array_values( array_unique( $needs ) );
+			// Activating an extension is not configuring it: a converted trail also needs the source's own root
+			// label, or it renders the extension's default word on every page.
+			$ext_settings = ( class_exists( 'FW_Site_Converter_Mapper' ) && method_exists( 'FW_Site_Converter_Mapper', 'needed_ext_settings' ) )
+				? (array) FW_Site_Converter_Mapper::needed_ext_settings() : array();
+			if ( $ext_settings ) { $files['theme-design.json']['ext_settings'] = $ext_settings; }
+			$crumbs = ( class_exists( 'FW_Site_Converter_Mapper' ) && method_exists( 'FW_Site_Converter_Mapper', 'crumb_labels' ) )
+				? (array) FW_Site_Converter_Mapper::crumb_labels() : array();
+			if ( $crumbs ) { $files['theme-design.json']['crumb_labels'] = $crumbs; }
 		}
 		// The SOURCE URL rides the design file: the bundle importer keys "same site vs. a new site" (menu / media purge) on it
 		// rather than on the brand word, which two different sources can share.
@@ -26598,6 +27311,17 @@ class FW_Site_Converter_Stitch {
 			$files['theme-design.json']['site_title'] = trim( html_entity_decode( wp_strip_all_tags( $ttm[1] ), ENT_QUOTES, 'UTF-8' ) );
 		}
 		$files = self::bind_palette_colors( $files );
+		// The coverage audit runs HERE rather than beside build_drop_report() above, because it needs the
+		// finished pages.json and theme-settings.json — both of which are written after that point. Wiring it
+		// into the bundle (not only into the admin path's self_assessment) is the point: every conversion,
+		// however it was driven, then carries its own answer to "what text did we lose?".
+		if ( isset( $files['conversion-drops.json'] ) && is_array( $files['conversion-drops.json'] ) ) {
+			$files['conversion-drops.json']['text_coverage'] = self::build_text_coverage_all(
+				(array) $screens,
+				(array) ( $files['theme-settings.json'] ?? array() ),
+				(array) ( $files['pages.json'] ?? array() )
+			);
+		}
 		$out['files']   = $files;
 		$out['screens'] = count( $screens );
 		return $out;
@@ -27053,7 +27777,14 @@ class FW_Site_Converter_Stitch {
 			$res['header_html'] = self::mirror_minify( $dom->saveHTML( $header ) );
 			$nav_items = array();
 			foreach ( self::design_menu( (string) $html, 'primary' ) as $it ) {
-				$nav_items[] = array( 'label' => $it['label'], 'url' => $it['url'], 'href' => $it['url'], 'children' => array() );
+				$children = ( isset( $it['children'] ) && is_array( $it['children'] ) ) ? $it['children'] : array();
+				// A DEAD END is not a destination. nav_links() keeps a disclosure <button> on purpose, because a
+				// dropdown parent ("Products", with a caret) is a real nav entry -- but only while its children come
+				// with it. An overflow toggle ("More") arrives with url '#' and no children, and became a menu item
+				// that went nowhere on the converted site. Judge the DESTINATION, not the control, so real parents stay.
+				$u = trim( (string) $it['url'] );
+				if ( ( '' === $u || '#' === $u ) && ! $children ) { continue; }
+				$nav_items[] = array( 'label' => $it['label'], 'url' => $it['url'], 'href' => $it['url'], 'children' => $children );
 			}
 			$res['nav_tree'] = $nav_items;
 		}
@@ -27797,8 +28528,11 @@ class FW_Site_Converter_Stitch {
 	private static function text_no_icons( $el ) {
 		if ( ! $el->ownerDocument ) { return self::text( $el ); }
 		$clone = $el->cloneNode( true );
-		self::scrub( $clone );
+		// Space the boundaries BEFORE scrubbing: scrub() strips `data-sc-cs`, which is where the MEASURED
+		// `display` lives, so the other order leaves space_block_boundaries with nothing to read but tag
+		// names — and a `<small>` that the source lays out as a block then glues to its sibling again.
 		self::space_block_boundaries( $clone );
+		self::scrub( $clone );
 		return trim( preg_replace( '/\s+/', ' ', (string) $clone->textContent ) );
 	}
 
@@ -27807,7 +28541,19 @@ class FW_Site_Converter_Stitch {
 	 * (`<div>National Geographic</div><div>Conservation Technology</div>`) reads back as
 	 * "National GeographicConservation Technology" — glued. That surfaced in three places on one
 	 * source at once: the header wordmark, the footer brand, and the copyright line. Insert a space
-	 * after every block-level boundary (and <br>) before reading the text.
+	 * at every block-level boundary (and <br>) before reading the text.
+	 *
+	 * Two things a tag list alone got wrong, both measured on one source:
+	 *
+	 * 1. A boundary is a matter of the COMPUTED `display`, not the tag. That source stacks its wordmark
+	 *    as `<span>NORTH RIDGE<small>HOME STUDIO</small></span>`, and `<small>` is inline BY TAG but
+	 *    `display:block` in the capture — so the tag list walked straight past it and the brand kept
+	 *    reading back glued ("NORTH RIDGEHOME STUDIO") long after this helper was supposed to have
+	 *    fixed exactly that. The capture stamps `display` on every element, so read it instead of guessing
+	 *    from the tag name; the tag list stays as the fallback for an element the capture never stamped.
+	 * 2. The space has to go BEFORE the block as well as after it. An inline sibling followed by a block
+	 *    — `<span>01</span><h3>Complete home renovations</h3>` in an accordion toggle — is glued at the
+	 *    FRONT of the block, which a trailing-only space cannot reach ("01Complete home renovations").
 	 */
 	private static function space_block_boundaries( $node ) {
 		static $BLOCK = array( 'div', 'p', 'br', 'li', 'tr', 'section', 'article', 'header', 'footer',
@@ -27817,10 +28563,24 @@ class FW_Site_Converter_Stitch {
 		$els  = array();
 		foreach ( $node->getElementsByTagName( '*' ) as $e ) { $els[] = $e; }
 		foreach ( $els as $e ) {
-			if ( ! in_array( strtolower( $e->tagName ), $BLOCK, true ) ) { continue; }
-			// A single trailing space is enough — the caller collapses whitespace runs straight after.
+			if ( ! self::breaks_the_line( $e ) && ! in_array( strtolower( $e->tagName ), $BLOCK, true ) ) { continue; }
+			// A single space each side is enough — the caller collapses whitespace runs straight after.
 			$e->appendChild( $doc->createTextNode( ' ' ) );
+			if ( $e->parentNode ) { $e->parentNode->insertBefore( $doc->createTextNode( ' ' ), $e ); }
 		}
+	}
+
+	/**
+	 * Does this element start a new line, per the display the capture MEASURED on it?
+	 *
+	 * `inline` and `inline-block` sit in the line; everything else (block, flex, grid, list-item, table…)
+	 * opens one. An element the capture never stamped returns false, so the caller falls back to its tag list.
+	 */
+	private static function breaks_the_line( $el ) {
+		if ( ! $el instanceof DOMElement || ! $el->hasAttribute( 'data-sc-cs' ) ) { return false; }
+		if ( ! preg_match( '/(?:^|;)\s*display:\s*([a-z-]+)/i', (string) $el->getAttribute( 'data-sc-cs' ), $m ) ) { return false; }
+		$d = strtolower( $m[1] );
+		return ! in_array( $d, array( 'inline', 'inline-block', 'inline-flex', 'inline-grid', 'contents', 'none' ), true );
 	}
 
 	private static function has_ancestor_tag( $el, $tag, $stop ) {
@@ -29554,6 +30314,37 @@ class FW_Site_Converter_Stitch {
 			if ( $t !== '' ) { return $t; }
 		}
 		return $fallback;
+	}
+
+	/**
+	 * The PAGE's own title, as opposed to the site's brand.
+	 *
+	 * title_from_html() above keeps the BRAND half of a "Brand - Tagline" document title, which is what a
+	 * site name wants and the opposite of what a page wants. Inner pages were being titled from their SLUG
+	 * instead (ucwords of 'fha' -> 'Fha'), so the source's own casing and wording were lost -- visible
+	 * wherever the title is shown, and a breadcrumb trail shows it on every page.
+	 *
+	 * Order of preference: the page's <h1>, then the document title with a trailing " | Brand" removed.
+	 * Falls back to whatever the caller had.
+	 *
+	 * @param string $html
+	 * @param string $fallback
+	 * @return string
+	 */
+	public static function page_title_from_html( $html, $fallback = '' ) {
+		$html = (string) $html;
+		if ( preg_match( '/<h1[^>]*>(.*?)<\/h1>/is', $html, $m ) ) {
+			$t = trim( preg_replace( '/\s+/', ' ', html_entity_decode( wp_strip_all_tags( $m[1] ), ENT_QUOTES | ENT_HTML5 ) ) );
+			if ( '' !== $t && mb_strlen( $t ) <= 120 ) { return $t; }
+		}
+		if ( preg_match( '/<title[^>]*>(.*?)<\/title>/is', $html, $m ) ) {
+			$t = trim( preg_replace( '/\s+/', ' ', html_entity_decode( wp_strip_all_tags( $m[1] ), ENT_QUOTES | ENT_HTML5 ) ) );
+			// Drop a trailing brand segment, keeping the page's half: 'FHA Construction Loans | Brand'.
+			$parts = preg_split( '/\s*[|\x{2013}\x{2014}]\s*/u', $t );
+			if ( is_array( $parts ) && count( $parts ) > 1 ) { $t = trim( (string) $parts[0] ); }
+			if ( '' !== $t && mb_strlen( $t ) <= 120 ) { return $t; }
+		}
+		return (string) $fallback;
 	}
 
 	/** Font family names parsed from a Google-Fonts css2 URL (family=Inter&family=Manrope → [Inter, Manrope]). */

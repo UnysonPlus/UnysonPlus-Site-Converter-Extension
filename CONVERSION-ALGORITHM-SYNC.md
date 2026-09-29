@@ -13,7 +13,7 @@ The deterministic (**no‑AI**) converter — the logic that turns a source desi
 
 > **✅ Container Width — pin the SECTION container, not the inner text cap (fixed).** `section_content_max_width`
 > now scans the full content-band range INCLUDING the site container (up to 1600px) and returns the section's
-> WIDEST centered content cap = its real outer container (e.g. modfii's consistent **1400px**), instead of
+> WIDEST centered content cap = its real outer container (e.g. fixture-01's consistent **1400px**), instead of
 > skipping caps >1300 and grabbing the widest INNER TEXT measure (a `max-w-3xl`=768 / `max-w-5xl`=1024). Before
 > the fix every section pinned a DIFFERENT narrow width (768/896/1024/…) → a jumbled, inconsistent layout; now
 > every section pins the source's one consistent container. A non-standard width (1400) becomes a shared

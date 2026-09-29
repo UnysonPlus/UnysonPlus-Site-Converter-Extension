@@ -134,14 +134,55 @@ class FW_Site_Converter_Pages {
 		$status   = in_array( $status, array( 'publish', 'draft', 'pending', 'private' ), true ) ? $status : 'publish';
 		$slug_eff = sanitize_title( $slug !== '' ? $slug : $title );
 
-		// Idempotent: match an existing page by slug → update, else create.
-		$existing = get_page_by_path( $slug_eff, OBJECT, 'page' );
+		// THE SOURCE'S PAGE HIERARCHY IS PART OF THE PAGE.
+		//
+		// Slugs came from the LAST path segment only, so /modular-home-financing/manufacturers converted to
+		// /manufacturers and the source's structure was thrown away. Two costs, and the second is the one that
+		// bit: every URL changed (so an inbound link or a bookmark to the source path lands nowhere), and two
+		// pages under different parents collapsed onto one slug -- /construction-loans/fha and
+		// /modular-home-financing/loan-options/fha both became 'fha', and one silently overwrote the other.
+		//
+		// WordPress pages are hierarchical natively, so the faithful conversion is a real post_parent chain:
+		// the page keeps its leaf slug, its ancestors supply the rest of the path, and the converted permalink
+		// matches the source's. Same-named pages under different parents stop colliding by construction, which
+		// is a better answer than renaming one of them.
+		$spec_src  = trim( (string) self::pluck( $spec, array( 'source_url', 'src_url' ), '' ) );
+		$src_path  = '';
+		if ( '' !== $spec_src && preg_match( '#^https?://#i', $spec_src ) ) {
+			$src_path = trim( (string) wp_parse_url( $spec_src, PHP_URL_PATH ), '/' );
+		}
+		$parent_id = 0;
+		if ( ! $front && '' !== $src_path && false !== strpos( $src_path, '/' ) ) {
+			$segs      = array_values( array_filter( explode( '/', $src_path ) ) );
+			$leaf      = array_pop( $segs );
+			$parent_id = self::ensure_ancestors( $segs );
+			// the leaf names the page; the ancestors carry the path
+			if ( $parent_id > 0 ) { $slug_eff = sanitize_title( $leaf ); }
+		}
+
+		// Idempotent: match the page at this FULL path (a bare slug when there is no hierarchy) -> update,
+		// else create. Matching on the full path is what makes two same-named pages under different parents
+		// distinct: get_page_by_path() walks the parent chain, so 'construction-loans/fha' cannot resolve to
+		// the page under loan-options.
+		$lookup   = ( $parent_id > 0 && '' !== $src_path ) ? $src_path : $slug_eff;
+		$existing = get_page_by_path( $lookup, OBJECT, 'page' );
+
+		// Belt and braces for a page with NO hierarchy to fall back on (no source URL recorded, or a
+		// single-segment path): a different source page must still never overwrite this one.
+		if ( $existing && 0 === $parent_id && '' !== $spec_src ) {
+			$prev_src = (string) get_post_meta( (int) $existing->ID, '_upw_source_url', true );
+			if ( '' !== $prev_src && untrailingslashit( $prev_src ) !== untrailingslashit( $spec_src ) ) {
+				$slug_eff = self::unique_page_slug( $slug_eff, $spec_src );
+				$existing = get_page_by_path( $slug_eff, OBJECT, 'page' );
+			}
+		}
 
 		$postarr = array(
 			'post_type'   => 'page',
 			'post_title'  => $title,
 			'post_name'   => $slug_eff,
 			'post_status' => $status,
+			'post_parent' => (int) $parent_id,
 		);
 
 		if ( $existing ) {
@@ -161,6 +202,21 @@ class FW_Site_Converter_Pages {
 		$post_id     = (int) $post_id;
 		$row['id']   = $post_id;
 		$row['slug'] = (string) get_post_field( 'post_name', $post_id );
+
+		// THE WAY BACK TO THE SOURCE. A converted page used to carry no record of the URL it was built
+		// from, so re-running one page meant remembering its source URL and pasting it in by hand — which
+		// is why the results panel could only ever offer "convert the whole site again". Stored here, a
+		// page can be re-run on its own from the results list.
+		// The source's own SHORT crumb label for this page, when its trail supplied one. A trail renders page
+		// TITLES, and a title is not a crumb label ('Prefab Home Manufacturers' vs 'Manufacturers').
+		$crumb = trim( (string) self::pluck( $spec, array( 'crumb_label' ), '' ) );
+		if ( '' !== $crumb && mb_strlen( $crumb ) <= 60 ) { update_post_meta( $post_id, '_upw_crumb_label', sanitize_text_field( $crumb ) ); }
+
+		$src_url = trim( (string) self::pluck( $spec, array( 'source_url', 'src_url' ), '' ) );
+		if ( '' !== $src_url && preg_match( '#^https?://#i', $src_url ) ) {
+			update_post_meta( $post_id, '_upw_source_url', esc_url_raw( $src_url ) );
+			$row['source_url'] = esc_url_raw( $src_url );
+		}
 
 		// TARGETED RE-IMPORT (region scope): merge the reconverted sections INTO the existing page by
 		// their original index, so the sections you did NOT reconvert stay exactly as they were, instead
@@ -254,6 +310,108 @@ class FW_Site_Converter_Pages {
 			else { $existing[] = $node; }                                    // beyond the end → append
 		}
 		return wp_json_encode( array_values( $existing ) );
+	}
+
+	/**
+	 * Record the SOURCE's own breadcrumb labels onto the pages they name.
+	 *
+	 * A trail renders page TITLES, and a title is not a crumb label: the source titled a page 'Prefab Home
+	 * Manufacturers' and crumbed it 'Manufacturers'. Every captured trail hands over the labels for its own
+	 * ancestors, so converting any deep page teaches the labels for everything above it; this writes each one
+	 * onto the page at that path, where the trail filter picks it up.
+	 *
+	 * Idempotent, and it only ever writes a page that already exists -- it creates nothing.
+	 *
+	 * @param array  $map       path => label, plus an optional '@self' for the page just imported
+	 * @param string $self_path the path '@self' belongs to ('' to ignore it)
+	 * @return int how many labels were stored
+	 */
+	public static function apply_crumb_labels( $map, $self_path = '' ) {
+		if ( ! is_array( $map ) || ! $map ) { return 0; }
+		$n = 0;
+		foreach ( $map as $path => $label ) {
+			$label = trim( (string) $label );
+			if ( '' === $label || mb_strlen( $label ) > 60 ) { continue; }
+			$path = ( '@self' === $path ) ? trim( (string) $self_path, '/' ) : trim( (string) $path, '/' );
+			if ( '' === $path ) { continue; }
+			$page = get_page_by_path( $path, OBJECT, 'page' );
+			if ( ! $page ) { continue; }
+			update_post_meta( (int) $page->ID, '_upw_crumb_label', sanitize_text_field( $label ) );
+			$n++;
+		}
+		return $n;
+	}
+
+	/**
+	 * The page id that should parent a page at this ancestor path, creating placeholder ancestors as needed.
+	 *
+	 * A source's deep page (/modular-home-financing/manufacturers/unity-homes) needs every level above it to
+	 * exist as a page, or WordPress cannot build the nested permalink. Ancestors that the conversion also
+	 * captured get filled in with their real content whenever they are imported -- order does not matter,
+	 * because this reuses an existing page at that path instead of making a second one.
+	 *
+	 * A level the capture never saw becomes a DRAFT placeholder: it holds the path open for its children
+	 * without publishing an empty page into the site's navigation or sitemap. (On the source that prompted
+	 * this, both such levels -- /authors and /compare -- turned out to be real pages that discovery had
+	 * missed, so a placeholder is usually a signal that discovery came up short, not that the page is fake.)
+	 *
+	 * @param string[] $segs ancestor path segments, outermost first
+	 * @return int parent page id, or 0 when there is no hierarchy to build
+	 */
+	private static function ensure_ancestors( array $segs ) {
+		$parent = 0;
+		$path   = '';
+		foreach ( $segs as $seg ) {
+			$seg = sanitize_title( $seg );
+			if ( '' === $seg ) { continue; }
+			$path = ( '' === $path ) ? $seg : $path . '/' . $seg;
+			$page = get_page_by_path( $path, OBJECT, 'page' );
+			if ( $page ) { $parent = (int) $page->ID; continue; }
+			$id = wp_insert_post( array(
+				'post_type'   => 'page',
+				'post_title'  => ucwords( str_replace( '-', ' ', $seg ) ),
+				'post_name'   => $seg,
+				'post_status' => 'draft',
+				'post_parent' => $parent,
+			), true );
+			if ( is_wp_error( $id ) || ! $id ) { return $parent; }
+			update_post_meta( (int) $id, '_upw_path_placeholder', 1 );
+			$parent = (int) $id;
+		}
+		return $parent;
+	}
+
+	/**
+	 * A page slug not already taken by a DIFFERENT source page, disambiguated by the source path's ancestry.
+	 *
+	 * Climbs the source URL one ancestor at a time ('loan-options-fha', then 'modular-home-financing-...'), so
+	 * the page that claimed the readable slug keeps it and the newcomer says where it came from. A numeric
+	 * suffix is the last resort. Never returns a slug held by a page from a different source.
+	 *
+	 * @param string $base    the colliding slug
+	 * @param string $src_url this page's source URL
+	 * @return string
+	 */
+	private static function unique_page_slug( $base, $src_url ) {
+		$taken = static function ( $slug ) use ( $src_url ) {
+			$p = get_page_by_path( $slug, OBJECT, 'page' );
+			if ( ! $p ) { return false; }
+			$prev = (string) get_post_meta( (int) $p->ID, '_upw_source_url', true );
+			// the same source may reuse its own slug (a re-convert updates in place)
+			return ! ( '' !== $prev && untrailingslashit( $prev ) === untrailingslashit( $src_url ) );
+		};
+		$path = (string) wp_parse_url( $src_url, PHP_URL_PATH );
+		$segs = array_values( array_filter( explode( '/', (string) $path ) ) );
+		$n    = count( $segs );
+		for ( $take = 2; $take <= $n; $take++ ) {
+			$cand = sanitize_title( implode( '-', array_slice( $segs, -$take ) ) );
+			if ( '' !== $cand && ! $taken( $cand ) ) { return $cand; }
+		}
+		for ( $i = 2; $i < 200; $i++ ) {
+			$cand = sanitize_title( $base . '-' . $i );
+			if ( ! $taken( $cand ) ) { return $cand; }
+		}
+		return $base;
 	}
 
 	private static function resolve_media_urls( $json ) {

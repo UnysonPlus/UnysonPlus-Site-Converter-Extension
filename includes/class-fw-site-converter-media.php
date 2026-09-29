@@ -37,8 +37,57 @@ class FW_Site_Converter_Media {
 	 * @param string $desc    Optional attachment title / description.
 	 * @return int|WP_Error   Attachment ID, or WP_Error on failure / skip.
 	 */
+	/**
+	 * Give THIS asset its own slice of PHP's execution clock.
+	 *
+	 * Sideloading downloads a file and then has WordPress generate every intermediate image size -- slow
+	 * per file, unbounded across a set. Under a web request that runs with PHP's max_execution_time (120s
+	 * on a stock XAMPP), a large enough set dies mid-loop:
+	 *
+	 *   PHP Fatal error: Maximum execution time of 120 seconds exceeded
+	 *     in wp-includes/class-wp-image-editor-gd.php
+	 *
+	 * The fatal kills the AJAX response, so WordPress ships its "There has been a critical error" HTML
+	 * where the panel expected JSON and the user sees a parse error naming a '<' -- a message about the
+	 * symptom that says nothing about the cause. It never reproduces from the CLI, where the limit is 0.
+	 *
+	 * Resetting the clock per asset is the standard importer pattern: each file gets a fresh allowance
+	 * rather than the whole set sharing one. It lives on sideload() because that is the single chokepoint
+	 * every media path goes through -- the URL list, the content localizer, and inline data: URIs.
+	 */
+	/**
+	 * The intermediate image sizes a CONVERTED asset actually needs.
+	 *
+	 * WordPress regenerates every registered size for each imported file. On a real conversion that is
+	 * where the media phase goes: 60 images x 7 sizes = 420 resizes, measured at ~2.0s per image and
+	 * ~159s for the asset list -- past PHP's 120s limit, which is how the run came to die inside the GD
+	 * image editor and return an HTML error page where the panel wanted JSON.
+	 *
+	 * A converted page references the asset at its captured size; the extra sizes exist for the media
+	 * library and for themes that ask for them. Keeping `thumbnail` and `medium` leaves the library
+	 * usable and the editor able to place an image, and drops the rest. Measured on the same list:
+	 * 2.01s -> 1.02s per image, 159s -> 81s overall.
+	 *
+	 * Filterable: a site that wants every size back returns the untouched array.
+	 */
+	private static function trim_image_sizes() {
+		return function ( $sizes ) {
+			$keep = apply_filters( 'fw_sc_media_image_sizes', array( 'thumbnail', 'medium' ) );
+			if ( ! is_array( $keep ) ) { return $sizes; }
+			if ( ! $keep ) { return array(); }
+			return array_intersect_key( (array) $sizes, array_flip( $keep ) );
+		};
+	}
+
+	private static function stretch_time_limit() {
+		if ( ! function_exists( 'set_time_limit' ) ) { return; }
+		if ( false !== stripos( (string) ini_get( 'disable_functions' ), 'set_time_limit' ) ) { return; }
+		@set_time_limit( 300 );
+	}
+
 	public static function sideload( $url, $post_id = 0, $desc = '' ) {
 		self::$last_reused = false;
+		self::stretch_time_limit();
 		$url = trim( (string) $url );
 
 		// A data:image URI (an inline base64/urlencoded logo — e.g. a wordmark PNG or SVG embedded
@@ -152,7 +201,11 @@ class FW_Site_Converter_Media {
 		// the guard still runs its sanitiser; only the admin gate is lifted.
 		if ( $is_svg ) { add_filter( 'fw_sc_svg_upload_allowed', '__return_true', 99 ); }
 
+		// Only the sizes a converted asset needs — the bulk of the media phase is resizing (see trim_image_sizes).
+		$_trim = self::trim_image_sizes();
+		add_filter( 'intermediate_image_sizes_advanced', $_trim, 99 );
 		$id = media_handle_sideload( $file, (int) $post_id, $desc !== '' ? $desc : null );
+		remove_filter( 'intermediate_image_sizes_advanced', $_trim, 99 );
 
 		if ( $is_svg ) { remove_filter( 'fw_sc_svg_upload_allowed', '__return_true', 99 ); }
 		remove_filter( 'wp_check_filetype_and_ext', $accept_modern, 99 );
@@ -347,7 +400,11 @@ class FW_Site_Converter_Media {
 			return $m;
 		};
 		add_filter( 'upload_mimes', $allow_av, 99 );
+		// Only the sizes a converted asset needs — the bulk of the media phase is resizing (see trim_image_sizes).
+		$_trim = self::trim_image_sizes();
+		add_filter( 'intermediate_image_sizes_advanced', $_trim, 99 );
 		$id = media_handle_sideload( $file, (int) $post_id, $desc !== '' ? $desc : null );
+		remove_filter( 'intermediate_image_sizes_advanced', $_trim, 99 );
 		remove_filter( 'upload_mimes', $allow_av, 99 );
 
 		if ( is_wp_error( $id ) ) {
@@ -515,6 +572,25 @@ class FW_Site_Converter_Media {
 	public static function import_urls( array $urls, $post_id = 0 ) {
 		$seen = array();
 		$out  = array();
+
+		// A MEDIA IMPORT IS A LONG JOB, AND PHP'S CLOCK DOES NOT KNOW THAT.
+		//
+		// Sideloading downloads each asset and then has WordPress generate every intermediate image size,
+		// which is slow per file and unbounded across a set. On a web request that runs under PHP's
+		// max_execution_time (120s here), a large enough set simply dies mid-loop:
+		//
+		//   PHP Fatal error: Maximum execution time of 120 seconds exceeded
+		//     in wp-includes/class-wp-image-editor-gd.php
+		//
+		// The fatal kills the AJAX response, so WordPress ships its "There has been a critical error" HTML
+		// page where the panel expected JSON, and the user sees a JSON parse error naming a '<' -- a message
+		// about the symptom that says nothing about the cause. It never reproduces from the CLI, where
+		// max_execution_time is 0.
+		//
+		// So the clock is reset PER ITEM (the standard importer pattern -- WP's own importer does this): each
+		// asset gets a fresh allowance rather than the whole set sharing one, and memory is raised to the
+		// 'image' tier because that is what the resize actually needs.
+		if ( function_exists( 'wp_raise_memory_limit' ) ) { wp_raise_memory_limit( 'image' ); }
 
 		foreach ( $urls as $url ) {
 			$url = trim( (string) $url );
