@@ -780,6 +780,14 @@ class FW_Site_Converter_Media {
 	 * @return int Attachment ID, or 0.
 	 */
 	public static function find_by_source( $url ) {
+		// A needle esc_url_raw() rejects (a data: payload, say) collapses to '', and an empty
+		// meta_value makes the query degenerate into "any attachment carrying this key" --
+		// silently matching an unrelated one. Only a surviving needle may be looked up.
+		$needle = esc_url_raw( trim( (string) $url ) );
+		if ( '' === $needle ) {
+			return 0;
+		}
+
 		$ids = get_posts( array(
 			'post_type'        => 'attachment',
 			'post_status'      => 'inherit',
@@ -788,7 +796,7 @@ class FW_Site_Converter_Media {
 			'no_found_rows'    => true,
 			'suppress_filters' => false,
 			'meta_key'         => self::SOURCE_META,
-			'meta_value'       => esc_url_raw( trim( (string) $url ) ),
+			'meta_value'       => $needle,
 		) );
 
 		return $ids ? (int) $ids[0] : 0;

@@ -207,6 +207,18 @@ class FW_Site_Converter_Bundle {
 
 		$dir = self::locate_root( $dir );
 
+		// BUTTON presets are a property of the SITE, not of its home page — and build_from_html() runs once per
+		// ROUTE, so only here, where the whole capture directory is in hand, can the scan see every page. Without
+		// it a button shape that appears only on an inner page had no preset to match and fell into the nearest
+		// one it did not belong to: a 16px `px-8 py-4` CTA came back wearing the header's 12px pill.
+		if ( class_exists( 'FW_Site_Converter_Stitch' ) && method_exists( 'FW_Site_Converter_Stitch', 'set_button_scan_html' ) ) {
+			$btn_scan = '';
+			foreach ( array_merge( array( $dir . '/rendered.html' ), (array) glob( $dir . '/pages/*/rendered.html' ) ) as $rf ) {
+				if ( is_file( $rf ) ) { $btn_scan .= (string) @file_get_contents( $rf ); }
+			}
+			FW_Site_Converter_Stitch::set_button_scan_html( $btn_scan );
+		}
+
 		// A bundle that carries its own reports and never gets rebuilt still has something to tell the user;
 		// the rebuild path overwrites this a moment later with the PHP engine's numbers.
 		self::remember_result( $dir );
@@ -837,9 +849,48 @@ class FW_Site_Converter_Bundle {
 	 */
 	private static $snapshot_coverage = array();
 
+	/**
+	 * Reconcile a bundle's `pages-manifest.json` rows with the snapshots actually on disk.
+	 *
+	 * The manifest is an INDEX of the snapshots, and the two can disagree: a capture that writes
+	 * `pages/<slug>/rendered.html` but omits the row leaves a page that is silently never converted. Measured
+	 * on a real 11-page capture, where one page existed in full on disk and the manifest listed ten.
+	 *
+	 * An appended row needs the page's OWN URL, because that is what decides its slug and its front/inner
+	 * standing further down — a row without one is read as the FRONT page, and the snapshot then overwrites the
+	 * home page with its content. The URL is taken from the snapshot's own canonical link; a snapshot that
+	 * carries none is left alone rather than guessed at, because guessing wrong here destroys the front page.
+	 *
+	 * Pure: returns the list, touches nothing.
+	 *
+	 * @param string $dir  capture-out directory
+	 * @param array  $list the manifest's `pages` rows
+	 * @return array the same rows, plus one per unlisted snapshot that names its own URL
+	 */
+	private static function reconcile_snapshot_list( $dir, array $list ) {
+		$named = array();
+		foreach ( $list as $pg ) {
+			if ( is_array( $pg ) && '' !== trim( (string) ( $pg['slug'] ?? '' ) ) ) { $named[ trim( (string) $pg['slug'] ) ] = true; }
+		}
+		foreach ( (array) glob( rtrim( (string) $dir, '/\\' ) . '/pages/*/rendered.html' ) as $snap ) {
+			$slug = basename( dirname( $snap ) );
+			if ( '' === $slug || isset( $named[ $slug ] ) ) { continue; }
+			$head = (string) @file_get_contents( $snap, false, null, 0, 65536 );
+			$url  = '';
+			if ( preg_match( "#<link[^>]+rel=[\"']canonical[\"'][^>]+href=[\"']([^\"']+)#i", $head, $cm ) ) { $url = trim( $cm[1] ); }
+			elseif ( preg_match( "#<link[^>]+href=[\"']([^\"']+)[\"'][^>]+rel=[\"']canonical#i", $head, $cm ) ) { $url = trim( $cm[1] ); }
+			if ( '' === $url ) { continue; }
+			$named[ $slug ] = true;
+			$list[]         = array( 'slug' => $slug, 'url' => $url, 'front' => false, 'rendered' => 'pages/' . $slug . '/rendered.html' );
+		}
+		return $list;
+	}
+
 	private static function import_page_snapshots( $dir, array &$out ) {
 		$manifest = self::read_json( $dir, array( 'pages-manifest.json' ) );
 		$list     = ( is_array( $manifest ) && isset( $manifest['pages'] ) && is_array( $manifest['pages'] ) ) ? $manifest['pages'] : array();
+
+		$list = self::reconcile_snapshot_list( $dir, $list );
 		if ( ! $list || ! class_exists( 'FW_Site_Converter_Sources' ) || ! class_exists( 'FW_Site_Converter_Pages' ) ) { return array(); }
 
 		$rows      = array();
@@ -1072,7 +1123,17 @@ class FW_Site_Converter_Bundle {
 		// Carry the Convert panel's "Add entrance animations" (+ "Refine with AI") checkboxes into this
 		// re-convert — WITHOUT this, capture-service (URL) conversions re-run through the PHP engine here but
 		// with hardcoded opts, so the sequential-reveal pass never ran and the boxes appeared to do nothing.
-		$entrance     = isset( $_POST['opt_anim'] ) && ( $_POST['opt_anim'] === '1' || $_POST['opt_anim'] === 'true' ); // phpcs:ignore WordPress.Security.NonceVerification
+		// Prefer an EXPLICIT caller opt over the request. This read used to look only at $_POST, so a scripted
+		// import -- import_dir( $dir, '', array( 'entrance_anim' => true ) ) -- silently got whatever the request
+		// happened to carry, which for a CLI run is nothing. The caller's value now wins; absent both, the
+		// default is ON, matching the Convert panel's checkbox.
+		if ( array_key_exists( 'entrance_anim', (array) $opts ) ) {
+			$entrance = (bool) $opts['entrance_anim'];
+		} elseif ( isset( $_POST['opt_anim'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+			$entrance = ( $_POST['opt_anim'] === '1' || $_POST['opt_anim'] === 'true' ); // phpcs:ignore WordPress.Security.NonceVerification
+		} else {
+			$entrance = true;
+		}
 		$entrance_ai  = $entrance && isset( $_POST['opt_anim_ai'] ) && ( $_POST['opt_anim_ai'] === '1' || $_POST['opt_anim_ai'] === 'true' ); // phpcs:ignore WordPress.Security.NonceVerification
 		$entrance_svc = '';
 		if ( $entrance_ai ) {

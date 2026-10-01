@@ -465,6 +465,23 @@ class FW_Site_Converter_Theme_Settings {
 		$url      = isset( $value['url'] ) ? (string) $value['url'] : '';
 		$is_media = $url !== '' && ( ( isset( $value['type'] ) && $value['type'] === 'custom-upload' )
 			|| array_key_exists( 'attachment_id', $value ) || array_key_exists( 'attachment-id', $value ) );
+		// An INLINE image (`data:image/svg+xml;base64,…`) is a real asset, not a non-media value: a wordmark
+		// embedded that way is what a build tool does with a small SVG, and passing it through left the setting
+		// holding a 3 KB string that the theme's upload-option resolver cannot turn back into an attachment —
+		// so the logo fell back to whatever else was around. The media engine already decodes and sideloads
+		// these; it just was never asked to here.
+		if ( $is_media && 0 === stripos( $url, 'data:image/' ) && class_exists( 'FW_Site_Converter_Media' ) ) {
+			$id = FW_Site_Converter_Media::sideload( $url );
+			if ( $id && ! is_wp_error( $id ) ) {
+				$local = function_exists( 'wp_get_attachment_url' ) ? wp_get_attachment_url( (int) $id ) : '';
+				if ( $local ) {
+					$value['url'] = $local;
+					if ( array_key_exists( 'attachment-id', $value ) ) { $value['attachment-id'] = (string) $id; }
+					if ( array_key_exists( 'attachment_id', $value ) )  { $value['attachment_id']  = (string) $id; }
+				}
+			}
+			return $value;
+		}
 		if ( $is_media && preg_match( '#^https?://#i', $url ) && ! self::is_local_url( $url ) && class_exists( 'FW_Site_Converter_Media' ) ) {
 			$id = FW_Site_Converter_Media::sideload( $url );
 			if ( $id && ! is_wp_error( $id ) ) {

@@ -31,6 +31,8 @@ class FW_Site_Converter_Pages {
 
 	/** The page-builder post-option id. */
 	const OPTION_KEY = 'page-builder';
+	/** The post meta fw_set_db_post_option() actually writes the builder tree to — what a later run must compare. */
+	const BUILDER_META = 'fw:opt:ext:pb:page-builder:json';
 
 	/**
 	 * Import one or more pages.
@@ -38,8 +40,44 @@ class FW_Site_Converter_Pages {
 	 * @param array $data `{ pages: [ … ] }`, a bare list, or a single page object.
 	 * @return array{pages: array<int,array>, error: string}
 	 */
-	public static function import( $data ) {
+	/** Slugs approved for cross-source replacement by THIS import() call (slug => true). */
+	private static $replace_ok = array();
+
+	/**
+	 * Slugs approved for the whole conversion RUN (slug => true).
+	 *
+	 * A bundle import calls import() several times — the styleguide, the page set, each page snapshot — so a
+	 * per-call list would be forgotten between them. The build handler sets this once from what the person
+	 * ticked in the review step, and every import in that run honours it.
+	 */
+	private static $replace_run = array();
+
+	/**
+	 * Approve these slugs for replacement for the rest of this request.
+	 *
+	 * Only slugs listed here (or passed to import()) may overwrite a page belonging to a DIFFERENT source.
+	 * Pass an empty array to clear — always clear at the end of a run, or a later import in the same request
+	 * inherits permission nobody granted it.
+	 *
+	 * @param array $slugs page slugs
+	 */
+	public static function set_replace_approved( array $slugs ) {
+		self::$replace_run = array();
+		foreach ( $slugs as $sl ) {
+			$sl = sanitize_title( (string) $sl );
+			if ( '' !== $sl ) { self::$replace_run[ $sl ] = true; }
+		}
+	}
+
+	public static function import( $data, array $opts = array() ) {
 		$out = array( 'pages' => array(), 'error' => '' );
+		// Slugs the user approved for replacement in the pre-flight (see plan_collisions). Only these may
+		// overwrite a page belonging to a DIFFERENT source; everything else keeps the old forking guard.
+		self::$replace_ok = array();
+		foreach ( (array) ( $opts['replace'] ?? array() ) as $sl ) {
+			$sl = sanitize_title( (string) $sl );
+			if ( '' !== $sl ) { self::$replace_ok[ $sl ] = true; }
+		}
 
 		if ( ! is_array( $data ) ) {
 			$out['error'] = __( 'Invalid pages payload — expected a JSON object.', 'fw' );
@@ -86,6 +124,58 @@ class FW_Site_Converter_Pages {
 		return self::import( $decoded );
 	}
 
+	/**
+	 * PRE-FLIGHT: which existing pages would this import land on, and whose are they?
+	 *
+	 * Converting a NEW source into an install that still holds a PREVIOUS source's pages used to fork —
+	 * `about` was taken by the old source, so the new one became `about-2`. That guard is right in
+	 * principle (one source must not silently eat another's page) but wrong as a default when the whole
+	 * point is to retarget the site: the live URL kept stale content while the fresh page hid at a slug
+	 * nothing linked to, and every reconvert added more.
+	 *
+	 * So the decision moves to the user, with the provenance they need to make it:
+	 *   - `converter`  a page a previous conversion created (its own source is recorded) — safe to replace
+	 *   - `user`       a page nobody converted — theirs; replacing it destroys their work
+	 *   - `same`       this very source's page — an ordinary idempotent update, not a replacement
+	 * plus `edited`, true when the page no longer matches what the converter last wrote to it.
+	 *
+	 * Nothing here writes. Feed the approved slugs back through `import( $pages, array( 'replace' => … ) )`.
+	 *
+	 * @param array $pages page specs (the `pages` array of a pages.json)
+	 * @return array rows: slug, title, existing_id, provenance, prev_source, edited, recommended
+	 */
+	public static function plan_collisions( array $pages ) {
+		$rows = array();
+		foreach ( $pages as $spec ) {
+			if ( ! is_array( $spec ) ) { continue; }
+			$slug = sanitize_title( (string) ( $spec['slug'] ?? '' ) );
+			if ( '' === $slug ) { continue; }
+			$src  = untrailingslashit( (string) ( $spec['source_url'] ?? '' ) );
+			$page = get_page_by_path( $slug, OBJECT, 'page' );
+			if ( ! $page ) { continue; } // no collision: it will simply be created
+
+			$prev = (string) get_post_meta( (int) $page->ID, '_upw_source_url', true );
+			$prov = ( '' === $prev ) ? 'user' : ( untrailingslashit( $prev ) === $src ? 'same' : 'converter' );
+
+			// Hand-edited since we wrote it? Same fingerprint idea the demo / marketing importers use:
+			// compare the builder JSON now against the hash recorded at import.
+			$stamp   = (string) get_post_meta( (int) $page->ID, '_upw_import_hash', true );
+			$current = (string) get_post_meta( (int) $page->ID, self::BUILDER_META, true );
+			$edited  = ( '' !== $stamp && '' !== $current && md5( $current ) !== $stamp );
+
+			$rows[] = array(
+				'slug'        => $slug,
+				'title'       => (string) ( $spec['title'] ?? '' ),
+				'existing_id' => (int) $page->ID,
+				'provenance'  => $prov,
+				'prev_source' => $prev,
+				'edited'      => $edited,
+				// Ours to replace unless the person has since edited it; never theirs by default.
+				'recommended' => ( 'user' !== $prov && ! $edited ),
+			);
+		}
+		return $rows;
+	}
 	/* ---------------------------------------------------------------------- *
 	 * Internals
 	 * ---------------------------------------------------------------------- */
@@ -171,7 +261,11 @@ class FW_Site_Converter_Pages {
 		// single-segment path): a different source page must still never overwrite this one.
 		if ( $existing && 0 === $parent_id && '' !== $spec_src ) {
 			$prev_src = (string) get_post_meta( (int) $existing->ID, '_upw_source_url', true );
-			if ( '' !== $prev_src && untrailingslashit( $prev_src ) !== untrailingslashit( $spec_src ) ) {
+			// …unless the user approved replacing this page in the pre-flight. Retargeting a site to a new
+			// source is exactly the case where forking to `about-2` is wrong: the live URL keeps stale content
+			// and the fresh page hides at a slug nothing links to.
+			if ( '' !== $prev_src && untrailingslashit( $prev_src ) !== untrailingslashit( $spec_src )
+				&& empty( self::$replace_ok[ $slug_eff ] ) && empty( self::$replace_run[ $slug_eff ] ) ) {
 				$slug_eff = self::unique_page_slug( $slug_eff, $spec_src );
 				$existing = get_page_by_path( $slug_eff, OBJECT, 'page' );
 			}
@@ -234,6 +328,14 @@ class FW_Site_Converter_Pages {
 			'json'           => (string) $json,
 			'builder_active' => true,
 		) );
+
+		// FINGERPRINT what we just wrote, so a later run can tell a page the user has since edited from one
+		// still exactly as converted. plan_collisions() compares this against the page's current builder JSON
+		// and pre-UNchecks anything that diverged — the same guard the marketing / demo importers use, so
+		// "replace the old pages" can never quietly discard someone's hand edits. Read back rather than
+		// hashing $json: the stored value is what a later comparison will actually see.
+		$stored = (string) get_post_meta( $post_id, self::BUILDER_META, true );
+		if ( '' !== $stored ) { update_post_meta( $post_id, '_upw_import_hash', md5( $stored ) ); }
 
 		// Register any Tailwind-style arbitrary spacing values the converted page uses (e.g.
 		// pt-[40px]) as named Spacing-Scale presets, so they surface in Theme Settings → Components →
@@ -531,6 +633,9 @@ class FW_Site_Converter_Pages {
 		$url = trim( (string) $url );
 		if ( $url === '' ) {
 			return 0;
+		}
+		if ( 0 === stripos( $url, 'data:' ) ) {
+			return 0; // an inline payload is the value itself, not a pointer at a library item
 		}
 		$candidates = array( $url );
 		if ( strpos( $url, '//' ) === 0 ) {                 // protocol-relative → try both schemes

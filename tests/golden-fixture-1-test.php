@@ -625,12 +625,17 @@ ga( "styled table yields a non-empty table_preset", ! empty( $tp_tbl['atts']['ta
 $anim_nodes = $sc_nodes_of( '<section id="an"><p data-aos="fade-up">A revealed paragraph of text for the block.</p></section>' );
 $anim_txt = $first_sc( $anim_nodes, 'text_block' );
 ga( "data-aos node → a text_block", $anim_txt !== null, wp_json_encode( $codes_of( $anim_nodes ) ) );
-ga_eq( "data-aos=fade-up → animation enabled", 'yes', $anim_txt['atts']['animation']['enable'] ?? null );
-ga_eq( "data-aos=fade-up → mapped effect", 'animate__fadeInUp', $anim_txt['atts']['animation']['yes']['effect'] ?? null );
+// The Animations option is a multi-picker whose PICKER IS THE EFFECT: the chosen effect sits at
+// `animation.effect` and 'none' means off. There is no `enable` switch and no per-effect `yes` sub-array.
+// The converter wrote the older `{ enable, yes:{ effect } }` shape long after the option moved, so the
+// wrapper filter -- which reads `animation.effect` -- saw no effect and EVERY converted animation was dead
+// on arrival: 35 effects saved in the builder JSON, 0 animate__ classes in the rendered HTML.
+ga_eq( "data-aos=fade-up → the mapped effect lands on the picker", 'animate__fadeInUp', $anim_txt['atts']['animation']['effect'] ?? null );
+ga( "…and no legacy `enable` key is written", ! array_key_exists( 'enable', (array) ( $anim_txt['atts']['animation'] ?? array() ) ) );
 /* Negative: no animation attribute → the node stays disabled (no false motion). */
 $anim_neg = $sc_nodes_of( '<section id="an2"><p>A plain paragraph of text for the block.</p></section>' );
 $anim_neg_txt = $first_sc( $anim_neg, 'text_block' );
-ga_eq( "no anim attribute → animation stays disabled", 'no', $anim_neg_txt['atts']['animation']['enable'] ?? null );
+ga_eq( "no anim attribute → animation stays OFF ('none' is the off value)", 'none', $anim_neg_txt['atts']['animation']['effect'] ?? null );
 
 /* --------------------------------------------------------------------- *
  * 8) FIDELITY-AUDIT P0 FIXES
@@ -3189,9 +3194,12 @@ $u_secs = $u_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
 $u_ts   = json_encode( $u_bl['files']['theme-settings.json'] ?? array() );
 $u_ib   = $t_find( $u_secs, 'Midnight journal' );
 ga( "two tiles → icon_boxes", is_array( $u_ib ) && is_array( $t_find( $u_secs, 'Editorial toolkits' ) ) );
-ga_eq( "the eyebrow ('Digital Architecture') → the icon_box's native Overline", 'Digital Architecture', $u_ib['atts']['overline'] ?? null );
+// The icon_box's Overline option was REMOVED (2026-10-01) — the element has no eyebrow slot, so a card's
+// eyebrow is no longer carried. Measured before removing it: 6 of 122 converted icon_boxes across 57
+// captures had one. This pins that nothing is emitted into an att that no longer exists.
+ga( "NEG: the icon_box emits NO overline — the option was removed from the element", '' === (string) ( $u_ib['atts']['overline'] ?? '' ) );
 $u_ibcss = (string) ( $u_ib['atts']['custom_css'] ?? '' );
-ga( "…its mono family / 10px / 3.5px tracking / uppercase / translucent colour as scoped .icon-box__overline CSS", (bool) preg_match( '/selector \.icon-box__overline\{[^}]*font-size:10px[^}]*letter-spacing:3\.5px[^}]*text-transform:uppercase[^}]*color:rgba\(255, 255, 255, 0\.4\)[^}]*font-family:\'IBM Plex Mono\', monospace/', $u_ibcss ) );
+ga( "NEG: …and no scoped .icon-box__overline CSS either — styling a slot that no longer renders is dead weight", false === strpos( $u_ibcss, 'icon-box__overline' ) );
 ga( "the description's OWN measure (max-width:333px) → .icon-box__content", false !== strpos( $u_ibcss, 'selector .icon-box__content{max-width:333px;}' ) );
 ga( "NEG: no state (::before / :hover / :focus-visible) rides on the SHORTCODE — states belong to the preset", ! preg_match( '/::before|:hover|:focus-visible/', $u_ibcss ) );
 // The tile's Box Preset: the cell (nested-row cardBox) or the icon_box carries a boxp-box-… slug whose preset CSS holds the states.
@@ -3248,7 +3256,11 @@ $u_v  = $u_bl['files']['theme-settings.json']['values'] ?? ( $u_bl['files']['the
 $u_pg = $u_bl['files']['pages.json']['pages'][0]['builder'] ?? array();
 $u_mc = (string) ( $u_v['misc_custom_css']['custom_css'] ?? '' );
 ga( "masthead = the <nav>: the link-less brand block wins over the menu link cluster → site title 'AETHER HOUSE' (not 'Products')", 'AETHER HOUSE' === ( $u_v['header_logo']['logo_type']['custom']['site_title'] ?? '' ) );
-ga( "…its iconify mark (inlined by the capture) → the logo icon, BLACK on a white circle frame (the ink from the stamped host, not white-on-white)", 0 === stripos( (string) ( $u_v['header_logo']['logo_type']['custom']['logo_icon']['markup'] ?? '' ), '<svg' ) && 'circle' === ( $u_v['header_logo']['logo_type']['custom']['logo_icon_frame'] ?? '' ) && 'rgb(0, 0, 0)' === ( $u_v['header_logo']['logo_type']['custom']['logo_icon_color']['custom'] ?? '' ) );
+ga( "…its iconify mark (inlined by the capture) → the logo icon, BLACK on a white circle frame (the ink from the stamped host, not white-on-white)", 0 === stripos( (string) ( $u_v['header_logo']['logo_type']['custom']['logo_icon']['markup'] ?? '' ), '<svg' ) && 'circle' === ( $u_v['header_logo']['logo_type']['custom']['logo_icon_frame'] ?? '' ) && in_array( strtolower( (string) ( $u_v['header_logo']['logo_type']['custom']['logo_icon_color']['custom'] ?? '' ) ), array( '#000000', 'rgb(0, 0, 0)' ), true ) );
+/* The ink is asserted by VALUE, not by spelling. This used to pin the literal `rgb(0, 0, 0)`, which was not a
+   choice but a BUG: clean_color_value's translucency test read the final `0)` of `rgb(0, 0, 0)` as a zero alpha,
+   so it skipped normalising opaque black to hex. Fixing that test changed the notation and nothing else, and
+   this assertion failed on a colour that was already correct -- so it now accepts either spelling of black. */
 $u_right = json_encode( $u_v['header_main']['main_right'] ?? array() );
 ga( "the <button> CTA inside the nav-masthead → a cta_button in the right zone (beside the 'Log in' text link)", false !== strpos( $u_right, '"cta_text":"Open account"' ) && false !== strpos( $u_right, '"li_text":"Log in"' ) );
 $u_vid = $u_v['general_layout']['site_background']['video'] ?? array();
@@ -3383,7 +3395,7 @@ ga( "…its title bar (three dots + the filename in one cluster | 'TTY // 1') is
 $v_steps = array(); $r_all( $v_pg, function ( $n ) { return 'steps' === ( $n['shortcode'] ?? '' ); }, $v_steps );
 $v_nodes = array(); $r_all( $v_pg, function ( $n ) { return 'icon_box' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['title'] ?? '' ), 'Encapsulation' ); }, $v_nodes );
 $v_n1 = $v_nodes[0] ?? array( 'atts' => array() );
-ga( "the numbered node cards are NOT a steps flow (each carries a '01 / NODE' label + a 'Status:' footer the steps shortcode would drop) → icon_boxes with the label as the Overline and the footer line kept in the copy with its mono / tracked / muted treatment", 0 === count( $v_steps ) && 1 === count( $v_nodes ) && '01 / NODE' === (string) ( $v_n1['atts']['overline'] ?? '' ) && (bool) preg_match( '/<p><span style="[^"]*text-transform:uppercase[^"]*font-size:11px[^"]*">Status: Active Isolation<\/span><\/p>$/', (string) ( $v_n1['atts']['content'] ?? '' ) ) );
+ga( "the numbered node cards are NOT a steps flow (each carries a 'Status:' footer the steps shortcode would drop) → icon_boxes with that footer line kept in the copy with its mono / tracked / muted treatment", 0 === count( $v_steps ) && 1 === count( $v_nodes ) && (bool) preg_match( '/<p><span style="[^"]*text-transform:uppercase[^"]*font-size:11px[^"]*">Status: Active Isolation<\/span><\/p>$/', (string) ( $v_n1['atts']['content'] ?? '' ) ) );
 $v_kv = $r_find( $v_pg, function ( $n ) { return 'text_block' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['text'] ?? '' ), 'Key Profile' ); } );
 $v_kvc = (string) ( $v_kv['atts']['custom_css'] ?? '' );
 ga( "a spec row (key | value, hairline underneath, mt-4) → one text block of two labels whose line keeps the row's OWN hairline + inset, the value's white ink as its own rule, and the 16px margin on Spacing (stamps survive into the verbatim cell for the mirror)", is_array( $v_kv ) && false !== strpos( $v_kvc, 'border-bottom:1px solid rgba(34, 44, 55, 0.4);padding:0px 0px 8px' ) && false !== strpos( $v_kvc, 'selector p>.sc-label:nth-child(2){color:rgb(255, 255, 255);}' ) && 'mt-3' === ( $v_kv['atts']['spacing']['margin']['top'] ?? '' ) );
@@ -3782,7 +3794,7 @@ ga( "an OUTLINED word in the h1 (`-webkit-text-stroke` + transparent fill) keeps
 $t_stat = $r_find( $t_pg, function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && 3 === count( $n['_items'] ?? array() ) && false !== strpos( json_encode( $n['_items'][0] ), '4.2K' ) && false !== strpos( json_encode( $n['_items'][2] ), 'Zero' ); } );
 ga( "a CONTENT-SIZED flex row (two stats with a 1px hairline between; no cell declares a width; the measured tracks fill .11 + .12) keeps AUTO cells (`flex:0 0 auto`, no 12-grid span) and the divider as a 1×40 painted cell — not three equal spans a nowrap label overflows", is_array( $t_stat ) && 'none' === (string) ( $t_stat['_items'][0]['atts']['width']['base']['preset'] ?? '' ) && false !== strpos( (string) ( $t_stat['_items'][0]['atts']['custom_css'] ?? '' ), 'flex:0 0 auto' ) && (bool) preg_match( '/width:1px !important;height:40px !important/', (string) ( $t_stat['_items'][1]['atts']['custom_css'] ?? '' ) ) );
 $t_stage = $r_find( $t_pg, function ( $n ) { return 'icon_box' === ( $n['shortcode'] ?? '' ) && 'Visual Decompression' === (string) ( $n['atts']['title'] ?? '' ); } );
-ga( "a column ruled on TOP only (`border-t`) never wears a four-sided frame (cs_decls synthesises `border` only when every edge matches; a one-sided rule is `border-top`), and its eyebrow span is the card's Overline ONCE — not also the first body line", is_array( $t_stage ) && 'STAGE I' === (string) ( $t_stage['atts']['overline'] ?? '' ) && false === strpos( (string) ( $t_stage['atts']['content'] ?? '' ), 'STAGE I' ) && false === strpos( json_encode( $t_bl['files']['theme-design.json'] ?? array() ) . json_encode( $t_pg ), 'border:1px solid rgba(255,255,255,0.1);border-radius:0px;padding:32px' ) );
+ga( "a column ruled on TOP only (`border-t`) never wears a four-sided frame (cs_decls synthesises `border` only when every edge matches; a one-sided rule is `border-top`), and its eyebrow span is DROPPED — the Overline option was removed from the icon_box, and a dropped label must not reappear as the first body line either", is_array( $t_stage ) && '' === (string) ( $t_stage['atts']['overline'] ?? '' ) && false === strpos( (string) ( $t_stage['atts']['content'] ?? '' ), 'STAGE I' ) && false === strpos( json_encode( $t_bl['files']['theme-design.json'] ?? array() ) . json_encode( $t_pg ), 'border:1px solid rgba(255,255,255,0.1);border-radius:0px;padding:32px' ) );
 $t_icon = $r_find( $t_pg, function ( $n ) { return 'icon' === ( $n['shortcode'] ?? '' ) && 'absolute' !== (string) ( $n['atts']['element_position']['position'] ?? '' ); } ); // the emblem (the pinned scroll cue is the other icon)
 ga( "a lone glyph inside a painted round TILE (a 64px ring with a translucent fill over the CTA) wears the tile as its own Icon Badge Preset (the same preset an icon_box's chip gets), centred like its `mx-auto`", is_array( $t_icon ) && (bool) preg_match( '/^iconb-badge-[0-9a-f]{8}$/', (string) ( $t_icon['atts']['icon_badge_preset'] ?? '' ) ) && false !== strpos( (string) ( $t_icon['atts']['custom_css'] ?? '' ), 'text-align:center' ) );
 $t_nl = $r_find( $t_pg, function ( $n ) { return 'newsletter' === ( $n['shortcode'] ?? '' ); } );
@@ -4093,14 +4105,14 @@ $z_pills = array(); $r_all( $z_pg, function ( $n ) { return 'button' === ( $n['s
 $z_badges = array(); $r_all( $z_pg, function ( $n ) { return 'badge' === ( $n['shortcode'] ?? '' ); }, $z_badges );
 ga( "two PILL-shaped CTAs (48px tall, 14px, radius 100) in the hero's button row are BUTTONS, never badges", 2 === count( $z_pills ) && 0 === count( $z_badges ), 'buttons=' . count( $z_pills ) . ' badges=' . count( $z_badges ) );
 $z_fc = $r_find( $z_pg, function ( $n ) { return 'icon_box' === ( $n['shortcode'] ?? '' ) && 'Top Vet Clinic 2023' === (string) ( $n['atts']['title'] ?? '' ); } );
-ga( "a FLOATING CARD's lines: the heavier line is the title, the small first line the overline (the label had become the title)", is_array( $z_fc ) && 'Certified' === (string) ( $z_fc['atts']['overline'] ?? '' ), wp_json_encode( array( $z_fc['atts']['title'] ?? null, $z_fc['atts']['overline'] ?? null ) ) );
+ga( "a FLOATING CARD's lines: the heavier line is the title (the label had become the title); its small first line is DROPPED with the Overline option, and not folded into the copy", is_array( $z_fc ) && 'Top Vet Clinic 2023' === (string) ( $z_fc['atts']['title'] ?? '' ) && '' === (string) ( $z_fc['atts']['overline'] ?? '' ) && false === strpos( (string) ( $z_fc['atts']['content'] ?? '' ), 'Certified' ), wp_json_encode( array( $z_fc['atts']['title'] ?? null, $z_fc['atts']['overline'] ?? null, $z_fc['atts']['content'] ?? null ) ) );
 $z_black = $z_pg[1] ?? array();
 ga( "a BLACK band keeps its fill (rgb(0, 0, 0) matched the alpha-0 test and every black section rendered transparent): a dark variant or the custom colour", '' !== (string) ( $z_black['atts']['variant'] ?? '' ) || '' !== (string) ( $z_black['atts']['background']['color']['value']['custom'] ?? '' ), wp_json_encode( array( $z_black['atts']['variant'] ?? null, $z_black['atts']['background']['color']['value'] ?? null ) ) );
 $z_h2 = $r_find( $z_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && 'Numbers that hold' === (string) ( $n['atts']['title'] ?? '' ); } );
 $z_mq = array(); $r_all( $z_pg, function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && ! empty( $n['atts']['marquee']['mode'] ); }, $z_mq );
 ga( "a heading block classed `animate-scroll-fade-up` (a scroll REVEAL) is a special_heading at its desktop 48px with the intro as subtitle — not a full-bleed MARQUEE code block; and its title asserts sentence case (text-transform:none)", is_array( $z_h2 ) && 0 === count( $z_mq ) && false !== strpos( (string) ( $z_h2['atts']['custom_css'] ?? '' ), 'font-size:48px' ) && false !== strpos( (string) ( $z_h2['atts']['custom_css'] ?? '' ), '.heading-title{text-transform:none' ), 'h2=' . (int) is_array( $z_h2 ) . ' marquees=' . count( $z_mq ) );
 $z_stat = $r_find( $z_pg, function ( $n ) { return 'icon_box' === ( $n['shortcode'] ?? '' ) && '80+' === (string) ( $n['atts']['title'] ?? '' ); } );
-ga( "a STAT CARD (h4 label + 48px number + description): the number is the title at its measured size, the label the overline, the description the content — not a 12px number inside the paragraph", is_array( $z_stat ) && 'Crews retained' === (string) ( $z_stat['atts']['overline'] ?? '' ) && false !== strpos( (string) ( $z_stat['atts']['custom_css'] ?? '' ), '.icon-box__title{font-size:48px' ) && false !== strpos( (string) ( $z_stat['atts']['content'] ?? '' ), 'nine seasons' ), wp_json_encode( array( $z_stat['atts']['overline'] ?? null, $z_stat['atts']['content'] ?? null ) ) );
+ga( "a STAT CARD (h4 label + 48px number + description): the number is the title at its measured size and the description the content — not a 12px number inside the paragraph; the label is DROPPED with the Overline option, not folded into the copy", is_array( $z_stat ) && false !== strpos( (string) ( $z_stat['atts']['custom_css'] ?? '' ), '.icon-box__title{font-size:48px' ) && false !== strpos( (string) ( $z_stat['atts']['content'] ?? '' ), 'nine seasons' ) && '' === (string) ( $z_stat['atts']['overline'] ?? '' ) && false === strpos( (string) ( $z_stat['atts']['content'] ?? '' ), 'Crews retained' ), wp_json_encode( array( $z_stat['atts']['overline'] ?? null, $z_stat['atts']['content'] ?? null ) ) );
 $z_247 = $r_find( $z_pg, function ( $n ) { return 'counter' === ( $n['shortcode'] ?? '' ) && '24' === (string) ( $n['atts']['number'] ?? '' ); } );
 $z_247l = $r_find( $z_pg, function ( $n ) { return 'text_block' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['text'] ?? '' ), '24/7' ); } );
 $z_247s = $r_find( $z_pg, function ( $n ) { return 'text_block' === ( $n['shortcode'] ?? '' ) && preg_match( '#<p>/7#', (string) ( $n['atts']['text'] ?? '' ) ); } );
@@ -4237,15 +4249,15 @@ $aa_pilltxt = $r_find( $aa_pg, function ( $n ) { return 'text_block' === ( $n['s
 ga( "[AA] …the duration pill is ONE line in its own box (the leaf's copy of the stamp does not paint a second pill — two nested pills wrapped the label): the column wears the skin + nowrap, the text block wears no box", is_array( $aa_pill ) && is_array( $aa_pilltxt ) && '' === (string) ( $aa_pilltxt['atts']['border_preset'] ?? '' ) && false === strpos( $aa_css_of( $aa_pilltxt ), 'background' ), wp_json_encode( array( is_array( $aa_pill ), $aa_pilltxt['atts']['custom_css'] ?? null ) ) );
 // event cards
 $aa_ibx = array(); $r_all( $aa_pg, function ( $n ) { return 'image_box' === ( $n['shortcode'] ?? '' ); }, $aa_ibx );
-$aa_badge = $r_find( $aa_pg, function ( $n ) { return 'icon_box' === ( $n['shortcode'] ?? '' ) && 'JUN' === (string) ( $n['atts']['overline'] ?? '' ); } );
+$aa_badge = $r_find( $aa_pg, function ( $n ) { return 'icon_box' === ( $n['shortcode'] ?? '' ) && '08' === (string) ( $n['atts']['title'] ?? '' ); } );
 $aa_frame = $r_find( $aa_pg, function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && false !== strpos( (string) ( $n['atts']['custom_css'] ?? '' ), 'position:relative;overflow:hidden;height:224px' ); } );
 $aa_body = $r_find( $aa_pg, function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && false !== strpos( (string) ( $n['atts']['custom_css'] ?? '' ), 'flex:1 1 auto;justify-content:space-between' ); } );
 ga( "[AA] a card whose PHOTO carries a pinned date chip is not an image box (no layer for the chip): the photo + chip sit in a relative 224px frame, the body in a padded `flex-grow justify-between` stack", 0 === count( $aa_ibx ) && is_array( $aa_frame ) && is_array( $aa_body ) && false !== strpos( $aa_css_of( $aa_body ), 'padding-top:24px' ), wp_json_encode( array( count( $aa_ibx ), is_array( $aa_frame ), $aa_body['atts']['custom_css'] ?? null ) ) );
-ga( "[AA] …the chip is a STACKED icon box: month as the overline (its own 12px/800 indigo, the title's `mt-1` as its gap), day as an 18px leading-none title, no inner gap, the source's 64px min-width — it rendered inline at 62px tall", is_array( $aa_badge ) && '08' === (string) ( $aa_badge['atts']['title'] ?? '' ) && false !== strpos( $aa_css_of( $aa_badge ), 'margin-bottom:4px' ) && false !== strpos( $aa_css_of( $aa_badge ), 'font-size:18px;line-height:18px' ) && false !== strpos( $aa_css_of( $aa_badge ), '.icon-box__inner{gap:0;}' ) && false !== strpos( $aa_css_of( $aa_badge ), 'min-width:64px' ), wp_json_encode( $aa_badge['atts']['custom_css'] ?? null ) );
+ga( "[AA] …the chip is a STACKED icon box: the day an 18px leading-none title, no inner gap, the source's 64px min-width — it rendered inline at 62px tall. Its month line went with the Overline option (removed from the element) and is NOT folded into the copy", is_array( $aa_badge ) && '' === (string) ( $aa_badge['atts']['overline'] ?? '' ) && false === stripos( (string) ( $aa_badge['atts']['content'] ?? '' ), 'JUN' ) && false !== strpos( $aa_css_of( $aa_badge ), 'font-size:18px;line-height:18px' ) && false !== strpos( $aa_css_of( $aa_badge ), '.icon-box__inner{gap:0;}' ) && false !== strpos( $aa_css_of( $aa_badge ), 'min-width:64px' ), wp_json_encode( $aa_badge['atts']['custom_css'] ?? null ) );
 $aa_cat = $r_find( $aa_pg, function ( $n ) { return 'special_heading' === ( $n['shortcode'] ?? '' ) && 'Studio open evening' === (string) ( $n['atts']['title'] ?? '' ) && 'Workshop' === (string) ( $n['atts']['overline'] ?? '' ); } );
 $aa_learn = $r_find( $aa_pg, function ( $n ) { return 'text_block' === ( $n['shortcode'] ?? '' ) && false !== strpos( (string) ( $n['atts']['text'] ?? '' ), 'Learn More' ); } );
 $aa_time = $r_find( $aa_pg, function ( $n ) { return 'text_block' === ( $n['shortcode'] ?? '' ) && '<p>10:00 AM</p>' === (string) ( $n['atts']['text'] ?? '' ); } );
-ga( "[AA] …the body keeps its category chip as the heading's overline, its time, and its `<a>` leaf as a LINK in its own indigo with no underline (it was a dead label in the theme's accent, underlined)", is_array( $aa_cat ) && is_array( $aa_time ) && is_array( $aa_learn ) && false !== strpos( (string) $aa_learn['atts']['text'], '<a href="#">Learn More</a>' ) && false !== strpos( $aa_css_of( $aa_learn ), 'selector a{color:rgb(79, 70, 229) !important;text-decoration-line:none;}' ), wp_json_encode( array( is_array( $aa_cat ), is_array( $aa_time ), $aa_learn['atts']['text'] ?? null, $aa_learn['atts']['custom_css'] ?? null ) ) );
+ga( "[AA] …the body keeps its category chip as the heading's overline, its time, and its `<a>` leaf as a LINK in its own indigo with no underline (it was a dead label in the theme's accent, underlined)", is_array( $aa_cat ) && is_array( $aa_time ) && is_array( $aa_learn ) && false !== strpos( (string) $aa_learn['atts']['text'], '<a href="#">Learn More</a>' ) && '#4f46e5' === strtolower( (string) ( $aa_learn['atts']['link_color']['custom'] ?? '' ) ) && false !== strpos( $aa_css_of( $aa_learn ), 'selector a{text-decoration-line:none;}' ), wp_json_encode( array( is_array( $aa_cat ), is_array( $aa_time ), $aa_learn['atts']['text'] ?? null, $aa_learn['atts']['custom_css'] ?? null, $aa_learn['atts']['link_color'] ?? null ) ) );
 ga( "[AA] …the card's `border-2 border-t-[accent]` keeps the accent on the TOP edge only: the other sides carry their own colour in the preset CSS, with !important past the preset's own border rule (the whole card went red)", false !== strpos( $aa_json, 'border-right-color:rgb(229, 231, 235) !important;border-bottom-color:rgb(229, 231, 235) !important;border-left-color:rgb(229, 231, 235) !important' ) );
 // split band
 $aa_shed = $r_find( $aa_pg, function ( $n ) { return 'media_image' === ( $n['shortcode'] ?? '' ) && 'https://example.com/shed.jpg' === (string) ( $n['atts']['image']['url'] ?? '' ); } );
@@ -4791,7 +4803,16 @@ ga( "[AJ] the pinned label + arrow-down wrapper is ONE scroll_indicator (never a
 ga( "[AJ] …the source label, the library glyph, label-above-icon, the glyph's own `text-white/50` ink and 16px size", is_array( $aj_cue ) && 'Scroll' === (string) ( $aj_cue['atts']['text'] ?? '' ) && 'lucide/arrow-down' === (string) ( $aj_cue['atts']['icon']['svg-id'] ?? '' ) && 'stacked' === (string) ( $aj_cue['atts']['layout'] ?? '' ) && '16' === (string) ( $aj_cue['atts']['icon_size']['value'] ?? '' ) && false !== strpos( (string) ( $aj_cue['atts']['icon_color']['custom'] ?? '' ), '255' ) && false !== strpos( (string) ( $aj_cue['atts']['icon_color']['custom'] ?? '' ), '0.5' ), wp_json_encode( $aj_cue['atts'] ?? null ) );
 ga( "[AJ] …pinned with the native Position option (bottom, left 50%) + the utility's half-width centring, and the label's measured 10px tracked uppercase type", is_array( $aj_cue ) && 'absolute' === (string) ( $aj_cue['atts']['element_position']['position'] ?? '' ) && '50' === (string) ( $aj_cue['atts']['element_position']['absolute']['pos_offsets']['left']['value'] ?? '' ) && '%' === (string) ( $aj_cue['atts']['element_position']['absolute']['pos_offsets']['left']['unit'] ?? '' ) && '' !== (string) ( $aj_cue['atts']['element_position']['absolute']['pos_offsets']['bottom']['value'] ?? '' ) && false !== strpos( (string) ( $aj_cue['atts']['custom_css'] ?? '' ), 'transform:translateX(-50%)' ) && false !== strpos( (string) ( $aj_cue['atts']['custom_css'] ?? '' ), '.sc-scroll-cue__label{font-size:10px;letter-spacing:3px;text-transform:uppercase' ), wp_json_encode( array( $aj_cue['atts']['element_position'] ?? null, $aj_cue['atts']['custom_css'] ?? null ) ) );
 $aj_btn = $r_find( $aj_pg, function ( $n ) { return 'button' === ( $n['shortcode'] ?? '' ) && 'Shop Now' === (string) ( $n['atts']['label'] ?? '' ); } );
-ga( "[AJ] the container's `pb-28` (112px) lands on the CTA — the last IN-FLOW block — not on the pinned cue (the content had sat 70px too low)", is_array( $aj_btn ) && '' !== (string) ( $aj_btn['atts']['spacing']['margin']['bottom'] ?? '' ) && ( ! is_array( $aj_cue ) || '' === (string) ( $aj_cue['atts']['spacing']['margin']['bottom'] ?? '' ) ), wp_json_encode( array( $aj_btn['atts']['spacing']['margin']['bottom'] ?? null, $aj_cue['atts']['spacing']['margin']['bottom'] ?? null ) ) );
+// The container's `pb-28` (112px) must still SPACE the content off the band's bottom edge, and must never
+// land on the PINNED cue (which takes no part in the flow — that bug sat the content 70px too low). WHERE it
+// lands changed deliberately: this hero's wrapper spans the section and is its band-padding container, so the
+// inset is hoisted onto the SECTION (padding_bottom) instead of onto the last in-flow block's margin. Both
+// render the same space; the section is the band's own rhythm, and carrying it in both places applied it
+// twice (a real hero measured 793px against its source's 695px). Assert the SPACE, not the mechanism.
+$aj_sec = $r_find( $aj_pg, function ( $n ) { return 'section' === ( $n['type'] ?? $n['shortcode'] ?? '' ); } );
+$aj_secpb = is_array( $aj_sec ) ? ( is_array( $aj_sec['atts']['padding_bottom'] ?? '' ) ? (string) ( $aj_sec['atts']['padding_bottom']['base'] ?? '' ) : (string) ( $aj_sec['atts']['padding_bottom'] ?? '' ) ) : '';
+ga( "[AJ] the container's `pb-28` (112px) still spaces the content off the band's bottom — on the section's own padding, or the last IN-FLOW block — and NEVER on the pinned cue (the content had sat 70px too low)", ( '' !== $aj_secpb || ( is_array( $aj_btn ) && '' !== (string) ( $aj_btn['atts']['spacing']['margin']['bottom'] ?? '' ) ) ) && ( ! is_array( $aj_cue ) || '' === (string) ( $aj_cue['atts']['spacing']['margin']['bottom'] ?? '' ) ), wp_json_encode( array( 'section_pb' => $aj_secpb, 'cta_mb' => $aj_btn['atts']['spacing']['margin']['bottom'] ?? null, 'cue_mb' => $aj_cue['atts']['spacing']['margin']['bottom'] ?? null ) ) );
+ga( "[AJ] …and it is applied ONCE: the CTA does not ALSO carry the band's 112px bottom inset", '' === $aj_secpb || ! is_array( $aj_btn ) || '' === (string) ( $aj_btn['atts']['spacing']['margin']['bottom'] ?? '' ) || false === strpos( (string) ( $aj_btn['atts']['spacing']['margin']['bottom'] ?? '' ), '112' ), wp_json_encode( array( 'section_pb' => $aj_secpb, 'cta_mb' => $aj_btn['atts']['spacing']['margin']['bottom'] ?? null ) ) );
 
 
 /*
@@ -7137,6 +7158,1106 @@ ga( '[RB] NEGATIVE: a tall painted box is not a rule',
 ga( '[RB] NEGATIVE: an unpainted hairline is not a rule',
 	null === $rb_m->invoke( null, $rb_el( 'h-px', 'height:1px;border-radius:0px' ) ),
 	'a transparent box was turned into a visible divider' );
+
+/* ==========================================================================================
+ * [FL] A COLUMN'S OWN TITLE IS NOT THE FOOTER'S LEAD HEADING.
+ *  footer_lead_heading_el() took any h1–h3 in the footer that was not the brand wordmark. A nav column's
+ *  title ("Explore", "Our expertise") therefore read as the footer's lead CTA — and the consequence is
+ *  doubly wrong: the brand column SHORT-CIRCUITS to just that heading (no logo, no tagline, no
+ *  description, no contact), and the same words then appear twice, once as the brand column and once as
+ *  the real column they belong to.
+ *  Measured on a captured site: the footer tagline, location line and contact email were lost on EVERY
+ *  page — 49% of everything that site dropped. After: that site 91.3% -> 95.9% mean coverage, two pages
+ *  to 100%; the whole corpus 92.9% -> 93.2% with no page regressing.
+ *  A lead CTA may be followed by ONE button, so the test is two or more ORDINARY links — which is a list,
+ *  and a list is a column.
+ * ========================================================================================== */
+$fl_m = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'footer_lead_heading_el' );
+$fl_m->setAccessible( true );
+$fl_footer = function ( $inner ) {
+	$doc = new DOMDocument();
+	$prev = libxml_use_internal_errors( true );
+	$doc->loadHTML( '<?xml encoding="utf-8"?><body><footer>' . $inner . '</footer></body>' );
+	libxml_clear_errors();
+	libxml_use_internal_errors( $prev );
+	return $doc->getElementsByTagName( 'footer' )->item( 0 );
+};
+$fl_txt = function ( $el ) { return $el instanceof DOMElement ? trim( preg_replace( '/\s+/u', ' ', $el->textContent ) ) : ''; };
+
+/* A nav column: a title over a run of links. */
+$fl_col = $fl_m->invoke( null, $fl_footer(
+	'<div><h2>Our expertise</h2>'
+	. '<a href="/a">Complete home renovations</a><a href="/b">Luxury kitchens</a>'
+	. '<a href="/c">Interior design</a><a href="/d">Additions</a></div>'
+) );
+ga( '[FL] a column title over a run of links is NOT the footer lead heading',
+	null === $fl_col, 'took a column title as the lead: "' . $fl_txt( $fl_col ) . '"' );
+
+/* NEGATIVE: a genuine lead CTA — a heading with a sentence and a single button — is still the lead.
+   The way to get this wrong is a guard that stops footers having a lead heading at all. */
+$fl_cta = $fl_m->invoke( null, $fl_footer(
+	'<div><h2>Ready to start your project?</h2><p>Tell us what you have in mind.</p>'
+	. '<a class="btn" href="/contact">Get in touch</a></div>'
+) );
+ga( '[FL] NEGATIVE: a real lead CTA heading is still recognised',
+	false !== strpos( $fl_txt( $fl_cta ), 'Ready to start your project' ),
+	'the lead CTA was refused: "' . $fl_txt( $fl_cta ) . '"' );
+
+/* NEGATIVE: one ordinary link under a heading is not a list, so it stays a lead. */
+$fl_one = $fl_m->invoke( null, $fl_footer(
+	'<div><h2>Speak to our team today</h2><a href="/contact">Contact us</a></div>'
+) );
+ga( '[FL] NEGATIVE: a heading with a single link is still a lead, not a column',
+	false !== strpos( $fl_txt( $fl_one ), 'Speak to our team' ),
+	'a single link was mistaken for a column: "' . $fl_txt( $fl_one ) . '"' );
+
+
+/* ==========================================================================================
+ * [CS] AN IMAGE COMPARISON SLIDER IS A before_after, NOT ONE PHOTO.
+ *  The card path takes the FIRST <img> it finds — the base, which is the AFTER — so a renovation
+ *  before/after converted as a single ordinary photo, its second image never used and its labels read as
+ *  stray text (one capture's "Drag to reveal" was classified as an unplaceable short label).
+ *  Matched STRUCTURALLY, never by class name: two images sharing one box plus the mechanism that reveals
+ *  one over the other — a range input, or a wrapper clipped with `clip-path: inset(...)`. Every such
+ *  widget has both, whatever library drew it.
+ *  The source's own labels ride along, because the shortcode's defaults are English and a source may not be.
+ * ========================================================================================== */
+$ba_m = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'before_after_build' );
+$ba_m->setAccessible( true );
+$ba_in = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'before_after_in' );
+$ba_in->setAccessible( true );
+$ba_el = function ( $inner ) {
+	$doc = new DOMDocument();
+	$prev = libxml_use_internal_errors( true );
+	$doc->loadHTML( '<?xml encoding="utf-8"?><body><div id="w">' . $inner . '</div></body>' );
+	libxml_clear_errors();
+	libxml_use_internal_errors( $prev );
+	return $doc->getElementsByTagName( 'div' )->item( 0 );
+};
+$ba_slider = '<div><img src="https://fixture-01.example/a-after.jpg" alt="After: the finished room">'
+	. '<div style="clip-path: inset(0px 100% 0px 0px);"><img src="https://fixture-01.example/a-before.jpg" alt="Before: the original room"></div>'
+	. '<span class="before-label">Voor</span><span class="after-label">Na</span>'
+	. '<input type="range" min="0" max="100"></div>';
+
+$ba_one = $ba_m->invoke( null, $ba_el( $ba_slider ) );
+ga( '[CS] (a) a two-image box with a reveal mechanism is a before/after',
+	is_array( $ba_one ), 'the slider was not recognised' );
+ga( '[CS] (b) …and the alt text decides which side is which',
+	is_array( $ba_one ) && false !== strpos( (string) $ba_one['before'], 'a-before' )
+	&& false !== strpos( (string) $ba_one['after'], 'a-after' ),
+	'before/after were swapped or missing: ' . wp_json_encode( $ba_one ) );
+ga( '[CS] (c) …and the SOURCE labels are carried, not the English defaults',
+	is_array( $ba_one ) && 'Voor' === ( $ba_one['beforeLabel'] ?? '' ) && 'Na' === ( $ba_one['afterLabel'] ?? '' ),
+	'labels not carried: ' . wp_json_encode( $ba_one ) );
+
+/* A CARD is a slider PLUS a caption, so the strict text gate must be applied to the SLIDER, not the card. */
+$ba_card = $ba_in->invoke( null, $ba_el(
+	$ba_slider . '<h3>Newport Coast</h3><p>A remarkable first impression after a full exterior renovation.</p>'
+) );
+ga( '[CS] (d) a captioned card still yields its slider',
+	is_array( $ba_card ) && false !== strpos( (string) $ba_card['before'], 'a-before' ),
+	'the caption defeated the matcher: ' . wp_json_encode( $ba_card ) );
+
+/* NEGATIVE: two images with no reveal mechanism is just two images. */
+ga( '[CS] NEGATIVE: two plain images are not a comparison slider',
+	null === $ba_m->invoke( null, $ba_el(
+		'<div><img src="https://fixture-01.example/x.jpg" alt="x"><img src="https://fixture-01.example/y.jpg" alt="y"></div>' ) ),
+	'a plain image pair was claimed as a slider' );
+
+/* NEGATIVE: a content block that happens to hold two images is not one either — the text gate says so. */
+ga( '[CS] NEGATIVE: a content block with two images is not a slider',
+	null === $ba_m->invoke( null, $ba_el(
+		'<div style="clip-path: inset(0px 0px 0px 0px);"><img src="https://fixture-01.example/x.jpg" alt="x">'
+		. '<img src="https://fixture-01.example/y.jpg" alt="y">'
+		. '<p>A long paragraph of real copy that makes this a content block rather than a labelled widget, '
+		. 'carrying well over the character budget a pair of labels would ever need.</p></div>' ) ),
+	'a content block was claimed as a slider' );
+
+
+/* ==========================================================================================
+ * [GU] THE SITE GUTTER IS SPENT ONCE, NOT TWICE.
+ *  A band's content container is a capped box whose equal side padding IS the site's declared gutter —
+ *  and that same padding is what the gutter was DERIVED from. Mirror it onto the column as well and the
+ *  inset is paid twice: a hero h1 rendered 1152px wide at x=144 against the source's 1296px at x=72.
+ *  The container test used to demand proof of CENTRING, and took it from the `mx-auto` UTILITY CLASS
+ *  (with a stamped `margin` as fallback). A source that centres in a plain stylesheet carries neither, so
+ *  its container went unrecognised — 33 of 522 container-shaped boxes across 140 captures, on 8 separate
+ *  sources. Centring is not the evidence; the two COMPUTED facts are, and they are sufficient on their own.
+ * ========================================================================================== */
+$gu_m = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'row_is_container_box' );
+$gu_m->setAccessible( true );
+$gu_g = new ReflectionProperty( 'FW_Site_Converter_Stitch', 'site_gutter_px' );
+$gu_g->setAccessible( true );
+$gu_prev = $gu_g->getValue();
+$gu_g->setValue( null, 72 );                       // the site's declared gutter, per side
+
+$gu_el = function ( $attrs ) {
+	$d = new DOMDocument();
+	@$d->loadHTML( '<html><body><div ' . $attrs . '></div></body></html>' );
+	return $d->getElementsByTagName( 'div' )->item( 0 );
+};
+
+/* The regression: centred by a stylesheet, so NO `mx-auto` class and NO stamped margin. */
+ga( '[GU] (a) a container box centred in a plain stylesheet is still a container box',
+	true === $gu_m->invoke( null, $gu_el( 'class="hero-copy wrap" data-sc-cs="max-width:1600px;padding:104px 72px 130px;display:block"' ) ),
+	'the centring test rejected it, so its 72px inset would be mirrored on top of the gutter' );
+
+ga( '[GU] (b) …and one that DOES carry mx-auto is unaffected',
+	true === $gu_m->invoke( null, $gu_el( 'class="mx-auto container" data-sc-cs="max-width:1280px;padding:0px 72px;margin:0px auto"' ) ),
+	'the previously-accepted shape regressed' );
+
+/* NEGATIVES — the two computed tests are what carries the meaning, so each must still refuse. */
+ga( '[GU] (c) NEGATIVE: a capped box whose inset is NOT the site gutter is not a container',
+	false === $gu_m->invoke( null, $gu_el( 'class="wrap" data-sc-cs="max-width:1600px;padding:40px 24px;display:block"' ) ),
+	'a 24px inset was mistaken for the 72px gutter and would be dropped' );
+
+ga( '[GU] (d) NEGATIVE: an uncapped narrow box is not a container',
+	false === $gu_m->invoke( null, $gu_el( 'class="card" data-sc-cs="max-width:420px;padding:0px 72px;display:block"' ) ),
+	'a 420px card was treated as the band container' );
+
+ga( '[GU] (e) NEGATIVE: unequal side padding is not a gutter',
+	false === $gu_m->invoke( null, $gu_el( 'class="wrap" data-sc-cs="max-width:1600px;padding:0px 72px 0px 16px;display:block"' ) ),
+	'an asymmetric inset was read as the site gutter' );
+
+ga( '[GU] (f) NEGATIVE: with no declared site gutter nothing is a container box',
+	( $gu_g->setValue( null, 0 ) === null )
+		&& false === $gu_m->invoke( null, $gu_el( 'data-sc-cs="max-width:1600px;padding:0px 72px;display:block"' ) ),
+	'a box was dropped against a gutter the site never declared' );
+$gu_g->setValue( null, $gu_prev );
+
+
+/* ==========================================================================================
+ * [TG] A TOGGLE GROUP THAT IS A WHOLE CELL IS STILL AN ACCORDION.
+ *  A two-column FAQ band puts the heading in one cell and the toggle group in the other. The cell path
+ *  offers a cell to the recognizers WHOLE (claim_element) before walking its children — but only through an
+ *  ALLOWLIST of recognizer ids, and `accordion` was not on it. So collect_blocks walked the <details>
+ *  children and emitted one ordinary text_block per question and per answer.
+ *  Nothing reported this, and that is the instructive part: the text audit saw every word present, because
+ *  the words WERE present. What was lost was the WIDGET — the panels, the open/closed state, the FAQ schema.
+ *  A coverage number cannot see a missing BEHAVIOUR, so it read the band as whole while it was broken.
+ *  Measured across the corpus: accordion 5 -> 6, text_block 479 -> 465, every other count unchanged.
+ *
+ *  The fixture is REDUCED FROM THE REAL CAPTURE, not invented. A hand-written one that wrapped each answer
+ *  in a <div> was claimed by another path and passed with the fix disabled — a golden that guarded nothing.
+ *  The answer <p> sits directly inside <details> here because that is what actually routes this band through
+ *  the cell path. Verified red: with `accordion` off the allowlist this yields 0 accordions and 7 text blocks.
+ * ========================================================================================== */
+$tg_det = function ( $q, $a ) {
+	return '<details data-sc-cs="border-top-width:1px;border-top-style:solid;height:85px;display:block">'
+		. '<summary data-sc-cs="font-size:13px;padding:22px 0px;height:83px;display:flex;gap:30px;'
+		. 'justify-content:space-between;align-items:center;flex-direction:row">' . $q
+		. '<span aria-hidden="true" data-sc-cs="font-size:23px;height:39px;display:block">+</span></summary>'
+		. '<p data-sc-cs="display:block">' . $a . '</p></details>';
+};
+$tg_doc = '<html><body><main><section class="faq wrap section" data-sc-cs="padding:115.2px 72px;max-width:1600px;'
+	. 'height:820px;display:grid;gap:12%;grid-template-columns:456.188px 684.297px">'
+	. '<h2 data-sc-col="tg-1" data-sc-cs="font-size:50.4px;height:589.656px;display:block;track-frac:0.352;track-y:0;track-x:0;track-h:590">'
+	. 'A little clarity,<br><em>before we begin.</em></h2>'
+	. '<div data-sc-col="tg-2" data-sc-cs="height:589.656px;display:block;track-frac:0.528;track-y:0;track-x:612;track-h:590">'
+	. $tg_det( 'Where in the county do you work?', 'Our focus is the coastal county and the towns along it. Tell us your project location so we can discuss the right next step.' )
+	. $tg_det( 'What kinds of renovation projects do you handle?', 'We work across complete home renovations, kitchens, bathrooms, interiors, additions, exteriors and gardens.' )
+	. $tg_det( 'Can you coordinate the whole renovation?', 'Yes. Our service centers on coordinating the transformation, including planning, specialist trades and finishing.' )
+	. '</div></section></main></body></html>';
+
+$tg_j = (string) wp_json_encode(
+	FW_Site_Converter_Sources::build_from_html( $tg_doc, 'GoldenToggleCell', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array()
+);
+
+ga( '[TG] (a) a toggle group filling one grid cell is claimed as an accordion',
+	1 === substr_count( $tg_j, '"shortcode":"accordion"' ),
+	'accordion count: ' . substr_count( $tg_j, '"shortcode":"accordion"' ) );
+
+ga( '[TG] (b) …carrying every item, instead of a text_block per question and per answer',
+	3 === substr_count( $tg_j, '"tab_title"' )
+	&& ! preg_match( '/"shortcode":"text_block".{0,400}Where in the county/s', $tg_j ),
+	'tab_title=' . substr_count( $tg_j, '"tab_title"' ) . ' | a question loose in a text_block: '
+	. ( preg_match( '/"shortcode":"text_block".{0,400}Where in the county/s', $tg_j ) ? 'YES' : 'no' ) );
+
+ga( '[TG] (c) …with the question on the toggle and the answer in its panel',
+	false !== strpos( $tg_j, 'Where in the county do you work?' )
+	&& false !== strpos( $tg_j, 'coastal county and the towns' ),
+	'question or answer text missing from the accordion' );
+
+ga( '[TG] (d) …and the `+` affordance is not read as part of the question',
+	false === strpos( $tg_j, 'do you work?+' ),
+	'the toggle glyph was concatenated onto the title' );
+
+/* The heading BESIDE the group must survive as its own block — claiming a cell whole must never reach into
+   the sibling cell, which is the failure the band-wrapper guard inside is_accordion_group exists to prevent. */
+ga( '[TG] (e) the heading in the neighbouring cell is untouched',
+	false !== strpos( $tg_j, 'A little clarity' ),
+	'the section heading was absorbed or dropped' );
+
+/* NEGATIVE: an ordinary prose cell must still decompose normally — the new allowlist entry must not turn
+   every multi-paragraph cell into a widget. */
+$tg_plain = '<html><body><main><section data-sc-cs="padding:115.2px 72px;max-width:1600px;display:grid;gap:12%;grid-template-columns:456.188px 684.297px">'
+	. '<h2 data-sc-col="tp-1" data-sc-cs="display:block;track-frac:0.352">Our approach.</h2>'
+	. '<div data-sc-col="tp-2" data-sc-cs="display:block;track-frac:0.528">'
+	. '<p data-sc-cs="display:block">We begin with a conversation about how you actually live in the house.</p>'
+	. '<p data-sc-cs="display:block">Then we plan the work around those priorities rather than around a template.</p>'
+	. '<p data-sc-cs="display:block">Finally we deliver it with one team accountable from start to finish.</p>'
+	. '</div></section></main></body></html>';
+ga( '[TG] (f) NEGATIVE: a cell of ordinary paragraphs is not an accordion',
+	false === strpos(
+		(string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $tg_plain, 'GoldenPlainCell', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array() ),
+		'"shortcode":"accordion"'
+	),
+	'plain prose was claimed as a toggle group' );
+
+
+/* ==========================================================================================
+ * [LB] A HEADING KEEPS ITS LINE BREAK.
+ *  `<h1>Your vision.<br>Beautifully built.</h1>` is two deliberate lines, and the converted page rendered
+ *  it as one long run. The cause sat in unglue_line_breaks, which DELETED every <br> at parse time and put
+ *  a newline in its place. That was right for the text readers — textContent concatenates with no
+ *  separator, so without it a break glues two words together — but it destroyed the only evidence an HTML
+ *  reader had. Afterwards a newline from a <br> is indistinguishable from a newline of source indentation,
+ *  so clean_inline_html could not tell them apart and collapsed both to a space.
+ *  The tell was in that function's own comment: "call sites that care about the break can re-emit <br>".
+ *  None could, because none could identify one. The fix keeps the element AND the newline, so each kind of
+ *  reader gets the signal it needs.
+ *  Measured: 147 headings across 75 of 140 captures carry a <br>; the corpus census moved by one block
+ *  (text_block 465 -> 466) and text coverage did not move at all — this restores a break, it does not
+ *  restructure anything.
+ *  The negatives below guard the two things that broke while getting here: a <br> must not reach the text
+ *  readers as a SECOND separator (a footer address folded to `123 Example Lane, , Springfield`), and it
+ *  must still not glue.
+ * ========================================================================================== */
+$lb_doc = '<html><body><main><section data-sc-cs="display:block;padding:96px 72px;max-width:1600px">'
+	. '<h1 data-sc-cs="font-size:112px;display:block">Your vision.<br><em>Beautifully built.</em></h1>'
+	. '<p data-sc-cs="display:block">A short supporting line so the heading is not the only content.</p>'
+	. '</section></main></body></html>';
+$lb_j = (string) wp_json_encode(
+	FW_Site_Converter_Sources::build_from_html( $lb_doc, 'GoldenLineBreak', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array()
+);
+
+ga( '[LB] (a) a heading break survives into the stored title',
+	false !== strpos( $lb_j, '<br>' ),
+	'no <br> anywhere in the page: ' . substr( $lb_j, 0, 200 ) );
+
+ga( '[LB] (b) …with both halves still in ONE title, not split across blocks',
+	(bool) preg_match( '/"title":"Your vision\.\s*<br>\s*<em[^"]*Beautifully built/', $lb_j ),
+	'title: ' . ( preg_match( '/"title":"([^"]{0,120})"/', $lb_j, $lbm ) ? $lbm[1] : '(none)' ) );
+
+/* NEGATIVE: the break must not double up for the TEXT readers. unglue now adds a newline NEXT TO the tag
+   rather than instead of it, so a call site that folds <br> itself would otherwise count the break twice. */
+$lb_addr = '<html><body><main><footer data-sc-cs="display:block"><ul><li data-sc-cs="display:flex">'
+	. '<span data-sc-cs="display:block">123 Example Lane<br>Springfield, SP 12345</span></li>'
+	. '<li data-sc-cs="display:flex"><span data-sc-cs="display:block">(555) 123-4567</span></li>'
+	. '</ul></footer></main></body></html>';
+$lb_aj = (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $lb_addr, 'GoldenAddr', array( 'dynamic_chrome' => true ) ) );
+ga( '[LB] (c) NEGATIVE: a folded address gets ONE separator, not two',
+	false === strpos( $lb_aj, 'Lane, , Springfield' ) && false === strpos( $lb_aj, 'Lane,,Springfield' ),
+	'doubled separator in: ' . ( preg_match( '/123 Example Lane[^"]{0,30}/', $lb_aj, $lbam ) ? $lbam[0] : '(address not found)' ) );
+
+ga( '[LB] (d) NEGATIVE: …and the two lines are still not GLUED, which is why the newline exists',
+	false === strpos( $lb_aj, 'LaneSpringfield' ),
+	'the break was lost entirely and the lines ran together' );
+
+
+/* ==========================================================================================
+ * [SG] A STAGGERED (BENTO) GRID KEEPS ITS ROWS.
+ *  A gallery laid out as one full-width tile above two half-width tiles rendered as three half-width
+ *  tiles stacked down the LEFT, with the right half of the band empty — the single most visible defect
+ *  on a converted page, and worth 829px of false height in one section alone.
+ *  Every part of the pipeline but one was already right. The capture stamps each child's measured
+ *  track-x / track-y / track-frac; bento_split reads them and correctly returns a `stack` of two `row`
+ *  blocks. The stack BUILDER then passed each row through build_cell_items, which spreads a nested row's
+ *  cells BARE by design — at section level a later pass rows them up. Inside a stack there is no later
+ *  pass, so the cells landed as siblings of the column stack and their 6/12 widths stopped meaning
+ *  anything: a width is a share of a ROW, and there was no row.
+ *  The lesson is the same one this suite keeps recording: the data was right at every step, and one
+ *  consumer quietly dropped the part it did not know how to keep.
+ * ========================================================================================== */
+$bn_slider = function ( $l ) {
+	return '<div data-sc-cs="display:block"><div data-sc-cs="display:block">'
+		. '<img src="https://fixture-01.example/' . $l . '-before.jpg" alt="' . $l . ' before" data-sc-cs="display:block;width:100%">'
+		. '<div data-sc-cs="display:block"><img src="https://fixture-01.example/' . $l . '-after.jpg" alt="' . $l . ' after" data-sc-cs="display:block;width:100%"></div>'
+		. '<input type="range" min="0" max="100" data-sc-cs="display:block"></div></div>';
+};
+// The tiles hold a COMPARISON SLIDER, not a plain photo, and that is deliberate: a tile of plain images is
+// claimed as an image_box by a different path that rows correctly, so a fixture built from those passed with
+// the fix disabled and guarded nothing. This shape is the one that reaches the stack builder.
+$bn_tile = function ( $frac, $x, $y, $h, $label ) use ( $bn_slider ) {
+	return '<div data-sc-cs="display:block;height:' . $h . 'px;track-frac:' . $frac
+		. ';track-x:' . $x . ';track-y:' . $y . ';track-h:' . $h . '">'
+		. $bn_slider( $label )
+		. '<h3 data-sc-cs="display:block;font-size:34px">' . $label . '</h3>'
+		. '<p data-sc-cs="display:block">A short caption under the ' . $label . ' tile.</p></div>';
+};
+$bn_doc = '<html><body><main><section data-sc-cs="display:block;padding:96px 72px;max-width:1600px">'
+	. '<div data-sc-cs="display:grid;grid-template-columns:655.766px 570.219px;gap:60px;width:1296px">'
+	. $bn_tile( '1',     0,   0,    914, 'First' )
+	. $bn_tile( '0.506', 0,   974,  769, 'Second' )
+	. $bn_tile( '0.44',  726, 1114, 629, 'Third' )
+	. '</div></section></main></body></html>';
+
+$bn_pages = FW_Site_Converter_Sources::build_from_html( $bn_doc, 'GoldenBento', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array();
+
+/* Walk the built tree for a container whose DIRECT children are two half-width cells — the row that
+   bento_split asked for. Structure is the whole point here, so it is asserted structurally. */
+$bn_find_row = function ( $nodes ) use ( &$bn_find_row ) {
+	foreach ( (array) $nodes as $n ) {
+		if ( ! is_array( $n ) ) { continue; }
+		$kids = array();
+		foreach ( array( '_items', 'items', 'shortcodes' ) as $k ) { if ( ! empty( $n[ $k ] ) ) { $kids = array_merge( $kids, (array) $n[ $k ] ); } }
+		$halves = 0;
+		foreach ( $kids as $kd ) {
+			if ( is_array( $kd ) && '6' === (string) ( $kd['atts']['width']['base']['preset'] ?? '' ) ) { $halves++; }
+		}
+		if ( 2 === $halves && 2 === count( $kids ) ) { return $n; }
+		$deep = $bn_find_row( $kids );
+		if ( $deep ) { return $deep; }
+	}
+	return null;
+};
+$bn_row = $bn_find_row( $bn_pages['pages'][0]['builder'] ?? array() );
+
+ga( '[SG] (a) the two half-width tiles share ONE row container',
+	is_array( $bn_row ),
+	'no container holds exactly the two 6/12 cells — they were spread as loose siblings' );
+
+ga( '[SG] (b) …and that container is a ROW, so the halves sit side by side',
+	is_array( $bn_row ) && 'row' === (string) ( $bn_row['atts']['direction']['base'] ?? '' ),
+	'direction: ' . ( is_array( $bn_row ) ? (string) ( $bn_row['atts']['direction']['base'] ?? '(unset)' ) : 'n/a' ) );
+
+$bn_j = (string) wp_json_encode( $bn_pages );
+ga( '[SG] (c) the full-width tile is NOT given a half width',
+	2 === substr_count( $bn_j, '"preset":"6"' ),
+	'half-width cells: ' . substr_count( $bn_j, '"preset":"6"' ) . ' (expected exactly 2)' );
+
+ga( '[SG] (d) every tile survives the regrouping',
+	false !== strpos( $bn_j, 'First' ) && false !== strpos( $bn_j, 'Second' ) && false !== strpos( $bn_j, 'Third' ),
+	'a tile was lost while the rows were rebuilt' );
+
+
+/* ==========================================================================================
+ * [TC] AN ACCORDION CLAIMS THE TIGHTEST CONTAINER, NOT THE BAND AROUND IT.
+ *  A services band is a two-track grid: the toggle list in one cell, a photo in the other. Because the
+ *  toggles are DESCENDANTS of the grid, is_accordion_group matched the GRID, the accordion recognizer
+ *  (priority 89) outranked layout_row (82) and claimed the whole thing — and the photo, being no part of
+ *  any toggle, was simply discarded. The band also grew 393px taller, because the accordion then had the
+ *  full 1296px to itself instead of one 596px track.
+ *  This is the recurring shape: a recognizer claiming an ANCESTOR and dropping the rest of its subtree.
+ *  The function already refused a wrapper that holds a section heading; a sibling CELL needed the same
+ *  rule. Now: if every toggle lives inside ONE child and another child carries real content, this is the
+ *  band, not the group.
+ *  Measured: 2 of 18 accordion matches across the corpus are wrappers of this shape; fixing it recovered
+ *  a media_image (109 -> 110) and moved two more pages above 95% text coverage (29 -> 27 below).
+ * ========================================================================================== */
+$tc_item = function ( $q, $a ) {
+	$id = 'p' . substr( md5( $q ), 0, 8 );
+	return '<div data-sc-cs="display:block">'
+		. '<button aria-expanded="false" aria-controls="' . $id . '" data-sc-cs="display:flex">'
+		. '<h3 data-sc-cs="display:block">' . $q . '</h3></button>'
+		. '<div id="' . $id . '" data-sc-cs="display:block"><p>' . $a . '</p></div></div>';
+};
+$tc_doc = '<html><body><main><section data-sc-cs="display:block;padding:96px 72px;max-width:1600px">'
+	. '<h2 data-sc-cs="display:block;font-size:50px">Everything your home needs.</h2>'
+	. '<div data-sc-cs="display:grid;grid-template-columns:596.156px 596.172px;gap:60px;width:1296px">'
+	. '<div data-sc-cs="display:block;track-frac:0.46;track-x:0;track-y:0;height:709px">'
+	. $tc_item( '01 Complete home renovations', 'A coherent plan for the whole home, coordinated around your priorities.' )
+	. $tc_item( '02 Luxury kitchens and bathrooms', 'Beautifully practical spaces shaped around the way you live each day.' )
+	. $tc_item( '03 Interior design and finishing', 'Natural materials and tailored joinery bring character to every room.' )
+	. '</div>'
+	. '<figure data-sc-cs="display:block;track-frac:0.46;track-x:700;track-y:0;height:709px">'
+	. '<img src="https://fixture-01.example/services.jpg" alt="A finished interior" data-sc-cs="display:block;width:100%">'
+	. '</figure></div></section></main></body></html>';
+
+$tc_j = (string) wp_json_encode(
+	FW_Site_Converter_Sources::build_from_html( $tc_doc, 'GoldenTightClaim', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array()
+);
+
+ga( '[TC] (a) the photo BESIDE the toggle list survives',
+	false !== strpos( $tc_j, 'services.jpg' ),
+	'the sibling cell was swallowed by the accordion claim and dropped' );
+
+ga( '[TC] (b) …as a real image element, not stray markup',
+	1 === substr_count( $tc_j, '"shortcode":"media_image"' ),
+	'media_image count: ' . substr_count( $tc_j, '"shortcode":"media_image"' ) );
+
+ga( '[TC] (c) …and the toggle list is STILL an accordion, claimed one level tighter',
+	1 === substr_count( $tc_j, '"shortcode":"accordion"' ) && 3 === substr_count( $tc_j, '"tab_title"' ),
+	'accordion=' . substr_count( $tc_j, '"shortcode":"accordion"' ) . ' items=' . substr_count( $tc_j, '"tab_title"' ) );
+
+/* NEGATIVE: a PLAIN toggle group — nothing beside it — must still be claimed at its own level. The guard
+   must narrow the claim, never refuse one. */
+$tc_plain = '<html><body><main><section data-sc-cs="display:block;padding:96px 72px">'
+	. '<div data-sc-cs="display:block">'
+	. $tc_item( 'Where do you work?', 'Across the county and the towns along the coast.' )
+	. $tc_item( 'What do you handle?', 'Whole-home renovations through to single rooms.' )
+	. '</div></section></main></body></html>';
+ga( '[TC] (d) NEGATIVE: a toggle group with no sibling content is still an accordion',
+	1 === substr_count(
+		(string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $tc_plain, 'GoldenPlainToggles', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array() ),
+		'"shortcode":"accordion"'
+	),
+	'the guard refused a legitimate accordion instead of just narrowing the claim' );
+
+
+/* ==========================================================================================
+ * [MH] A BAND KEEPS THE HEIGHT THE SOURCE GAVE IT, HERO OR NOT.
+ *  A photo band is sized by its backdrop, not by its words: the source declares `min-height:620px` and the
+ *  three lines of copy inside are nowhere near that tall. Only HEROES were ever given a min_height, so the
+ *  converted band collapsed to its content — 443px against 620px, and the backdrop it was built around lost
+ *  a third of its height.
+ *  Two details make this safe rather than reckless:
+ *   · it reads `min-height`, never `height`. Computed `height` is set on EVERY element (it is just the
+ *     rendered box), so keying off it would pin every band on the page to whatever it happened to measure.
+ *     A non-zero computed `min-height` is something the author actually declared.
+ *   · it takes the floor the band ACHIEVED — max(declared, rendered). A hero declaring `min-height:760px`
+ *     renders 900px because its content is taller, and taking 760 verbatim REPLACED a correct 900px floor
+ *     from another path with a worse one: the hero went from exact to 53px short. Caught by A/B, not by
+ *     reasoning — the first version of this fix looked obviously right.
+ *  Measured: 45 of 648 sections across 43 of 140 captures declare a min-height.
+ * ========================================================================================== */
+$mh_band = function ( $declared, $rendered ) {
+	return '<html><body><main><section data-sc-cs="display:flex;height:' . $rendered . 'px;min-height:' . $declared
+		. 'px;padding:96px 72px;background-image:url(&quot;https://fixture-01.example/backdrop.jpg&quot;)">'
+		. '<div data-sc-cs="display:block">'
+		. '<h2 data-sc-cs="display:block;font-size:50px">California light.</h2>'
+		. '<p data-sc-cs="display:block">From coastal homes to hillside retreats, the light shapes every room.</p>'
+		. '</div></section></main></body></html>';
+};
+$mh_of = function ( $doc ) {
+	$j = (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $doc, 'GoldenMinH', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array() );
+	return preg_match( '/"min_height":\{"preset":"custom","custom":\{"custom_height":\{"value":"([0-9.]+)","unit":"px"/', $j, $m ) ? (float) $m[1] : 0.0;
+};
+
+ga( '[MH] (a) a NON-hero band carries the height the source declared',
+	620.0 === $mh_of( $mh_band( 620, 620 ) ),
+	'min_height came out as ' . $mh_of( $mh_band( 620, 620 ) ) . 'px (expected 620)' );
+
+ga( '[MH] (b) …and when content made the band TALLER than its declared floor, the achieved height wins',
+	900.0 === $mh_of( $mh_band( 760, 900 ) ),
+	'min_height came out as ' . $mh_of( $mh_band( 760, 900 ) ) . 'px (expected 900, not the declared 760)' );
+
+/* NEGATIVE: a band that declares NO floor must not acquire one from its rendered height — that would pin
+   every section on the page to one viewport's measurement. */
+$mh_plain = '<html><body><main><section data-sc-cs="display:flex;height:620px;padding:96px 72px">'
+	. '<div data-sc-cs="display:block"><h2 data-sc-cs="display:block;font-size:50px">No declared floor.</h2>'
+	. '<p data-sc-cs="display:block">This band is exactly as tall as the words inside it happen to be.</p>'
+	. '</div></section></main></body></html>';
+ga( '[MH] (c) NEGATIVE: a band with no declared min-height gets no forced height',
+	0.0 === $mh_of( $mh_plain ),
+	'a height of ' . $mh_of( $mh_plain ) . 'px was invented from the rendered box alone' );
+
+/* NEGATIVE: a small declared floor is not worth reproducing as a section height (a 48px utility strip). */
+ga( '[MH] (d) NEGATIVE: a tiny declared floor is ignored',
+	0.0 === $mh_of( $mh_band( 48, 48 ) ),
+	'a 48px strip was given a section min-height of ' . $mh_of( $mh_band( 48, 48 ) ) . 'px' );
+
+
+/* ==========================================================================================
+ * [FH] A CONTACT FORM: THE SOURCE'S ROW LAYOUT, AND NO HONEYPOT.
+ *  Two defects in one form, both visible on the converted page.
+ *
+ *  1. FIELD WIDTHS. A form control does not stamp its own width — its row WRAPPER does, as a grid
+ *     (`display:grid; grid-template-columns:275px 275px` around a name/email pair). The width test compared
+ *     the control's width against the FORM's, and on this source neither is stamped, so it never ran once:
+ *     two side-by-side fields became two full-width ones and the band grew 183px taller. The wrapper's
+ *     track count answers it directly — and a control that SPANS the grid (a message box at `col-span-2`)
+ *     is not one of its columns, which a long-standing golden caught the moment span was ignored.
+ *
+ *  2. HONEYPOT. The type filter drops `type=hidden`, but a spam honeypot is an ordinary text input parked
+ *     off-screen by its wrapper — so it sailed through and the converted form published a visible field
+ *     labelled "Leave this field empty". Two independent signals: `tabindex=-1` (a control no person can
+ *     reach by keyboard is not for them), and a wrapper hidden the way honeypots are hidden.
+ * ========================================================================================== */
+$fh_cs = function ( $extra ) { return 'data-sc-cs="' . $extra . '"'; };
+$fh_form = function ( $pair_grid, $with_pot ) use ( $fh_cs ) {
+	$pair = $pair_grid
+		? '<div ' . $fh_cs( 'display:grid;grid-template-columns:275.125px 275.125px;gap:20px' ) . '>'
+			. '<label for="fn">Full name *</label><input id="fn" name="name" ' . $fh_cs( 'display:inline-block;height:51px' ) . '>'
+			. '<label for="em">Email address *</label><input id="em" name="email" type="email" ' . $fh_cs( 'display:inline-block;height:51px' ) . '>'
+			. '</div>'
+		: '<div ' . $fh_cs( 'display:block' ) . '>'
+			. '<label for="fn">Full name *</label><input id="fn" name="name" ' . $fh_cs( 'display:block;height:51px' ) . '>'
+			. '<label for="em">Email address *</label><input id="em" name="email" type="email" ' . $fh_cs( 'display:block;height:51px' ) . '>'
+			. '</div>';
+	$pot = $with_pot
+		? '<div ' . $fh_cs( 'position:absolute;left:-9999px;top:10183px;height:1px;overflow:hidden;display:block' ) . '>'
+			. '<label for="hp">Leave this field empty</label>'
+			. '<input id="hp" name="website" tabindex="-1" autocomplete="off" ' . $fh_cs( 'display:inline-block' ) . '></div>'
+		: '';
+	return '<html><body><main><section ' . $fh_cs( 'display:block;padding:96px 72px' ) . '><form ' . $fh_cs( 'display:block' ) . '>'
+		. $pair
+		. '<label for="ms">Tell us about your project *</label>'
+		. '<textarea id="ms" name="description" ' . $fh_cs( 'display:block;height:128px' ) . '></textarea>'
+		. $pot
+		. '<button type="submit" ' . $fh_cs( 'display:block;height:58px' ) . '>Request a Consultation</button>'
+		. '</form></section></main></body></html>';
+};
+$fh_items = function ( $doc ) {
+	$j = FW_Site_Converter_Sources::build_from_html( $doc, 'GoldenForm', array( 'dynamic_chrome' => false ) );
+	$pg = $j['files']['pages.json']['pages'][0]['builder'] ?? array();
+	$found = null;
+	$walk = function ( $ns ) use ( &$walk, &$found ) {
+		foreach ( (array) $ns as $n ) {
+			if ( ! is_array( $n ) ) { continue; }
+			if ( 'contact_form' === (string) ( $n['shortcode'] ?? '' ) ) { $found = $n; return; }
+			foreach ( array( '_items', 'items', 'shortcodes' ) as $k ) { if ( ! empty( $n[ $k ] ) ) { $walk( $n[ $k ] ); } }
+		}
+	};
+	$walk( $pg );
+	return $found ? (array) json_decode( (string) ( $found['atts']['form']['json'] ?? '[]' ), true ) : array();
+};
+
+$fh_a = $fh_items( $fh_form( true, true ) );
+$fh_w = array_map( function ( $i ) { return (string) ( $i['width'] ?? '' ); }, $fh_a );
+$fh_t = array_map( function ( $i ) { return (string) ( $i['type'] ?? '' ); }, $fh_a );
+
+ga( '[FH] (a) a name/email pair in a two-track grid becomes two HALF-width fields',
+	'1_2' === ( $fh_w[1] ?? '' ) && '1_2' === ( $fh_w[2] ?? '' ),
+	'widths: ' . implode( ' ', $fh_w ) );
+
+ga( '[FH] (b) …and the message box beneath stays FULL width',
+	'textarea' === ( $fh_t[3] ?? '' ) && '1_1' === ( $fh_w[3] ?? '' ),
+	'types: ' . implode( ' ', $fh_t ) . ' | widths: ' . implode( ' ', $fh_w ) );
+
+ga( '[FH] (c) the off-screen honeypot is NOT published as a field',
+	3 === count( $fh_t ) - 1,   // the leading form-header-title item is not a field
+	'field count: ' . ( count( $fh_t ) - 1 ) . ' (expected 3: name, email, message)' );
+
+ga( '[FH] (d) …and its label never reaches the page',
+	false === strpos( (string) wp_json_encode( $fh_a ), 'Leave this field empty' ),
+	'the honeypot label was published' );
+
+/* NEGATIVE: a form with NO grid row must stay single-column — the track count is the only thing that may
+   promote a field to half width. */
+$fh_b = $fh_items( $fh_form( false, false ) );
+$fh_wb = array_map( function ( $i ) { return (string) ( $i['width'] ?? '' ); }, $fh_b );
+ga( '[FH] (e) NEGATIVE: a stacked form keeps every field full width',
+	! in_array( '1_2', $fh_wb, true ),
+	'widths: ' . implode( ' ', $fh_wb ) );
+
+/* NEGATIVE: a form with no honeypot loses nothing. */
+ga( '[FH] (f) NEGATIVE: a form without a honeypot keeps all three fields',
+	3 === count( $fh_b ) - 1,
+	'field count: ' . ( count( $fh_b ) - 1 ) );
+
+
+/* ==========================================================================================
+ * [LF] A RECOGNIZER MAY NOT DELETE THE PART OF ITS SUBTREE IT DOES NOT MODEL.
+ *  A toggle group's container usually holds one more thing than toggles — a CTA under the list, an intro
+ *  above it. accordion_block claims the whole container and models only toggles, so every such child was
+ *  silently discarded. On one page that was the band's only call to action; the words never appeared
+ *  anywhere, so the text audit could not see the loss either — it counted them missing without knowing why.
+ *  collect_blocks already accepts a LIST from a recognizer's build, so the leftovers ride back as their own
+ *  blocks, in source order around the accordion.
+ *  Measured across the corpus, purely additive: button 157 -> 165, accordion 6 -> 7, media_image 110 -> 111,
+ *  pricing_table 7 -> 8, total blocks 1494 -> 1505. Nothing was lost to gain them.
+ * ========================================================================================== */
+$al_row = function ( $n, $q ) {
+	$id = 'al' . $n;
+	return '<div data-sc-cs="display:block">'
+		. '<button aria-expanded="false" aria-controls="' . $id . '" data-sc-cs="display:flex">'
+		. '<h3 data-sc-cs="display:block">' . $q . '</h3></button>'
+		. '<div id="' . $id . '" data-sc-cs="display:block"><p>A short answer for ' . $q . '.</p></div></div>';
+};
+$al_doc = function ( $with_cta ) use ( $al_row ) {
+	return '<html><body><main><section data-sc-cs="display:block;padding:96px 72px">'
+		. '<div data-sc-cs="display:block">'
+		. $al_row( 1, 'Complete home renovations' )
+		. $al_row( 2, 'Luxury kitchens and bathrooms' )
+		. $al_row( 3, 'Interior design and finishing' )
+		. ( $with_cta ? '<a href="/contact" data-sc-cs="display:inline-block;padding:16px 28px">Tell Us About Your Project</a>' : '' )
+		. '</div></section></main></body></html>';
+};
+$al_j = function ( $doc ) {
+	return (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $doc, 'GoldenAccLeftover', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array() );
+};
+$al_with = $al_j( $al_doc( true ) );
+
+ga( '[LF] (a) the CTA beneath a toggle group survives the accordion claim',
+	false !== strpos( $al_with, 'Tell Us About Your Project' ),
+	'the link was discarded with the rest of the claimed subtree' );
+
+ga( '[LF] (b) …with its destination intact, so it is still a link',
+	false !== strpos( $al_with, '/contact' ),
+	'the label survived but the href did not' );
+
+ga( '[LF] (c) …and the accordion still carries every toggle',
+	1 === substr_count( $al_with, '"shortcode":"accordion"' ) && 3 === substr_count( $al_with, '"tab_title"' ),
+	'accordion=' . substr_count( $al_with, '"shortcode":"accordion"' ) . ' items=' . substr_count( $al_with, '"tab_title"' ) );
+
+/* NEGATIVE: a group with nothing beside the toggles must still produce ONE block — the leftover pass must
+   not invent an empty sibling out of whitespace or a decorative wrapper. */
+$al_without = $al_j( $al_doc( false ) );
+ga( '[LF] (d) NEGATIVE: a group with no leftovers yields the accordion alone',
+	1 === substr_count( $al_without, '"shortcode":"accordion"' )
+	&& 0 === substr_count( $al_without, '"shortcode":"button"' ),
+	'accordion=' . substr_count( $al_without, '"shortcode":"accordion"' ) . ' button=' . substr_count( $al_without, '"shortcode":"button"' ) );
+
+
+/* ==========================================================================================
+ * [CT] A COMPARISON TILE KEEPS ITS CALL TO ACTION.
+ *  Two separate faults cost every tile on a page its link to the project it was advertising.
+ *
+ *  1. THE WRONG LINK WAS PICKED. card_from_cell took the FIRST <a> carrying any label at all. A tile that
+ *     offers both a round arrow affordance and a named CTA lists the arrow first, so the card's button came
+ *     out as the bare glyph and the named link was never used. A label of nothing but symbols is an
+ *     affordance, not a call to action — though it is still kept when the card offers nothing better.
+ *
+ *  2. THE BUTTON WAS NEVER EMITTED. The before/after branch replaces the whole card with the slider and
+ *     re-emits only what it names. The caption was added after an earlier attempt dropped it (coverage
+ *     94.2% -> 88.4%); the CTA was never added at all. Because the words then appeared nowhere on the page,
+ *     the text audit could not report the loss either — a missing link is invisible to a coverage number.
+ * ========================================================================================== */
+$ct_slider = function ( $l ) {
+	return '<div data-sc-cs="display:block"><div data-sc-cs="display:block">'
+		. '<img src="https://fixture-01.example/' . $l . '-b.jpg" alt="' . $l . ' before" data-sc-cs="display:block;width:100%">'
+		. '<div data-sc-cs="display:block"><img src="https://fixture-01.example/' . $l . '-a.jpg" alt="' . $l . ' after" data-sc-cs="display:block;width:100%"></div>'
+		. '<input type="range" min="0" max="100" data-sc-cs="display:block"></div></div>';
+};
+$ct_tile = function ( $frac, $x, $y, $h, $l, $glyph_first ) use ( $ct_slider ) {
+	$glyph = '<a href="/projects/' . $l . '" data-sc-cs="display:inline-block">&#8599;</a>';
+	$named = '<a href="/projects/' . $l . '" data-sc-cs="display:inline-block">The ' . $l . ' Residence &#8594;</a>';
+	return '<div data-sc-cs="display:block;height:' . $h . 'px;track-frac:' . $frac . ';track-x:' . $x . ';track-y:' . $y . ';track-h:' . $h . '">'
+		. $ct_slider( $l )
+		. '<div data-sc-cs="display:block">'
+		. '<p data-sc-cs="display:block">A coastal county</p>'
+		. '<h3 data-sc-cs="display:block;font-size:34px">' . $l . ' transformed.</h3>'
+		. '<p data-sc-cs="display:block">Warm stone and layered planting bring fresh life to a familiar home.</p>'
+		. ( $glyph_first ? $glyph : '' )
+		. '</div>'
+		. $named
+		. '</div>';
+};
+$ct_doc = function ( $glyph_first ) use ( $ct_tile ) {
+	return '<html><body><main><section data-sc-cs="display:block;padding:96px 72px;max-width:1600px">'
+		. '<div data-sc-cs="display:grid;grid-template-columns:655.766px 570.219px;gap:60px;width:1296px">'
+		. $ct_tile( '1',     0,   0,    914, 'Newport', $glyph_first )
+		. $ct_tile( '0.506', 0,   974,  769, 'Laguna',  $glyph_first )
+		. $ct_tile( '0.44',  726, 1114, 629, 'Crystal', $glyph_first )
+		. '</div></section></main></body></html>';
+};
+$ct_j = (string) wp_json_encode(
+	FW_Site_Converter_Sources::build_from_html( $ct_doc( true ), 'GoldenTileCta', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array()
+);
+
+ga( '[CT] (a) every comparison tile keeps its CTA',
+	3 === substr_count( $ct_j, '"shortcode":"button"' ),
+	'button count: ' . substr_count( $ct_j, '"shortcode":"button"' ) . ' (expected one per tile)' );
+
+ga( '[CT] (b) …and it is the NAMED link, not the arrow glyph that sits before it',
+	false !== strpos( $ct_j, 'Newport Residence' ) && false !== strpos( $ct_j, 'Crystal Residence' ),
+	'the glyph affordance was taken as the call to action' );
+
+ga( '[CT] (c) …with the slider and its caption still intact beside it',
+	3 === substr_count( $ct_j, '"shortcode":"before_after"' )
+	&& false !== strpos( $ct_j, 'Warm stone and layered planting' ),
+	'before_after=' . substr_count( $ct_j, '"shortcode":"before_after"' ) . ' — the caption or slider was lost while adding the CTA' );
+
+/* NEGATIVE: a tile whose ONLY link is a glyph still gets it — the rule prefers words, it does not require
+   them. Otherwise an icon-only CTA would be dropped entirely, trading one loss for another. */
+$ct_glyph_only = '<html><body><main><section data-sc-cs="display:block;padding:96px 72px;max-width:1600px">'
+	. '<div data-sc-cs="display:grid;grid-template-columns:655.766px 570.219px;gap:60px;width:1296px">'
+	. str_replace( 'The Newport Residence &#8594;', '&#8599;', $ct_tile( '1', 0, 0, 914, 'Newport', false ) )
+	. str_replace( 'The Laguna Residence &#8594;', '&#8599;', $ct_tile( '0.506', 0, 974, 769, 'Laguna', false ) )
+	. str_replace( 'The Crystal Residence &#8594;', '&#8599;', $ct_tile( '0.44', 726, 1114, 629, 'Crystal', false ) )
+	. '</div></section></main></body></html>';
+ga( '[CT] (d) NEGATIVE: a tile whose only link is a glyph still keeps it',
+	substr_count( (string) wp_json_encode( FW_Site_Converter_Sources::build_from_html( $ct_glyph_only, 'GoldenGlyphCta', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array() ), '"shortcode":"button"' ) >= 1,
+	'an icon-only call to action was dropped instead of kept' );
+
+
+/* ==========================================================================================
+ * [CO] A FILL KEEPS ITS ALPHA, AND A GRADIENT IS A FILL.
+ *  A dark site tinted its form fields with 5% white — `oklab(… / 0.05)`, the modern slash-alpha syntax —
+ *  and filled its buttons with a linear-gradient and NO background-color at all. The converted page put
+ *  solid WHITE slabs where the fields were, with near-white text on them, and left the buttons to the
+ *  view's own default: on the newsletter the fill landed on exactly the text colour and the label
+ *  disappeared. It was the most visible thing on the page and no count could see it — every element was
+ *  present, every word was there, only the colours were wrong.
+ *  Three distinct causes, each its own assertion below:
+ *   · color_to_hex is lossy BY DESIGN and says so, but a caller deriving a FILL needs the alpha.
+ *     color_to_css keeps it (rgba when translucent, hex when not).
+ *   · an explicitly TRANSPARENT fill is a fact, not a blank — returning '' let a default paint over it.
+ *   · a button filled by `background-image` declares no background-COLOR, so reading only the colour
+ *     found nothing.
+ * ========================================================================================== */
+$co = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'color_to_css' );
+$co->setAccessible( true );
+
+ga( '[CO] (a) a translucent oklab fill keeps its alpha',
+	'rgba(255, 255, 255, 0.05)' === $co->invoke( null, 'oklab(0.999994 0.0000455678 0.0000200868 / 0.05)' ),
+	'got: ' . $co->invoke( null, 'oklab(0.999994 0.0000455678 0.0000200868 / 0.05)' ) );
+
+ga( '[CO] (b) …and an rgba one does too',
+	'rgba(255, 255, 255, 0.05)' === $co->invoke( null, 'rgba(255, 255, 255, 0.05)' ),
+	'got: ' . $co->invoke( null, 'rgba(255, 255, 255, 0.05)' ) );
+
+ga( '[CO] (c) NEGATIVE: an OPAQUE colour still comes back as plain hex',
+	'#0d162c' === $co->invoke( null, 'oklch(0.205 0.045 265)' ),
+	'got: ' . $co->invoke( null, 'oklch(0.205 0.045 265)' ) );
+
+ga( '[CO] (d) NEGATIVE: no colour at all is still no colour',
+	'' === $co->invoke( null, 'transparent' ) && '' === $co->invoke( null, '' ),
+	'a colour was invented from nothing' );
+
+/* END TO END — a dark form whose fields are a 5% white tint and whose submit is a gradient with no
+   background-color. The three causes above all have to hold for this to come out right. */
+$co_cs = function ( $extra ) { return 'data-sc-cs="' . $extra . '"'; };
+$co_doc = '<html><body><main><section ' . $co_cs( 'display:block;padding:96px 72px;background-color:oklch(0.15 0.03 265)' ) . '>'
+	. '<h2 ' . $co_cs( 'display:block;font-size:40px' ) . '>Get a free plan</h2>'
+	. '<form ' . $co_cs( 'display:block' ) . '>'
+	. '<input type="text" name="business" placeholder="Business name" '
+	. $co_cs( 'display:block;height:46px;background-color:oklab(0.999994 0.0000455678 0.0000200868 / 0.05);color:rgb(255, 255, 255);border-top-width:1px;border-top-color:oklab(0.999994 0.0000455678 0.0000200868 / 0.1)' ) . '>'
+	. '<input type="email" name="email" placeholder="name@company.com" '
+	. $co_cs( 'display:block;height:46px;background-color:oklab(0.999994 0.0000455678 0.0000200868 / 0.05);color:rgb(255, 255, 255)' ) . '>'
+	. '<button type="submit" '
+	. $co_cs( 'display:block;height:58px;color:oklch(0.95413 0.01612 293.75);background-image:linear-gradient(110deg, oklch(0.576 0.192 290.21), oklch(0.678 0.149 251.88))' ) . '>Get My Free Plan</button>'
+	. '</form></section></main></body></html>';
+$co_j = (string) wp_json_encode(
+	FW_Site_Converter_Sources::build_from_html( $co_doc, 'GoldenColour', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array()
+);
+
+ga( '[CO] (e) the field tint reaches the page as a TINT, never as opaque white',
+	false !== strpos( $co_j, 'rgba(255, 255, 255, 0.05)' ) && false === strpos( $co_j, '"custom":"#ffffff"' ),
+	'the 5% tint was flattened to a solid fill' );
+
+ga( '[CO] (f) the submit button carries its GRADIENT fill',
+	false !== strpos( $co_j, 'linear-gradient(110deg' ),
+	'the gradient was dropped and the view default would paint the button' );
+
+
+/* ==========================================================================================
+ * [TA] TRANSLUCENT IS TRANSLUCENT IN EVERY SYNTAX.
+ *  Three separate places asked "does this colour have alpha?" with their own `rgba()|hsla()` regex, and all
+ *  three got the same modern colour wrong: `oklab(... / 0.45)` read as OPAQUE. One flattened form fills to
+ *  solid white, one flattened the header and footer link ink to solid white, and one bound a 45% white to
+ *  the palette's opaque `text-white` preset — discarding the alpha and the literal together. Muted text
+ *  across the whole page rendered at full strength; props.mjs counted the same delta element after element,
+ *  and it is the only lens that can see it (pixel and geometry both pass on the right words in a slightly
+ *  wrong colour). is_translucent() is now the single predicate.
+ *
+ *  The second assertion is the one that cost a golden: an alpha is the FOURTH component, or whatever
+ *  follows a slash — never just "the last number". `[^)]*[,\/]\s*([0-9.]+)\)` matches the final 0 of
+ *  `rgb(0, 0, 0)`, so opaque black read as fully TRANSPARENT. The regex this was modelled on had the same
+ *  flaw, which is why a golden had been pinning `rgb(0, 0, 0)` un-normalised for so long.
+ * ========================================================================================== */
+$ta_t = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'is_translucent' );
+$ta_t->setAccessible( true );
+$ta_c = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'clean_color_value' );
+$ta_c->setAccessible( true );
+
+ga( '[TA] (a) a modern slash-alpha colour is recognised as translucent',
+	true === $ta_t->invoke( null, 'oklab(0.999994 0.0000455678 0.0000200868 / 0.45)' )
+	&& true === $ta_t->invoke( null, 'oklch(0.57 0.19 290 / 0.25)' ),
+	'a translucent oklab/oklch read as opaque' );
+
+ga( '[TA] (b) NEGATIVE: opaque black is NOT translucent (its trailing 0 is a channel, not an alpha)',
+	false === $ta_t->invoke( null, 'rgb(0, 0, 0)' )
+	&& '#000000' === $ta_c->invoke( null, 'rgb(0, 0, 0)' ),
+	'clean_color_value gave: ' . $ta_c->invoke( null, 'rgb(0, 0, 0)' ) );
+
+ga( '[TA] (c) NEGATIVE: an opaque colour still normalises to hex',
+	'#ffffff' === $ta_c->invoke( null, 'rgb(255, 255, 255)' )
+	&& false === $ta_t->invoke( null, 'oklch(0.205 0.045 265)' ),
+	'opaque values stopped normalising to hex' );
+
+ga( '[TA] (d) a translucent ink keeps its alpha through clean_color_value',
+	'rgba(255, 255, 255, 0.45)' === $ta_c->invoke( null, 'oklab(0.999994 0.0000455678 0.0000200868 / 0.45)' ),
+	'got: ' . $ta_c->invoke( null, 'oklab(0.999994 0.0000455678 0.0000200868 / 0.45)' ) );
+
+/* END TO END — a muted paragraph (45% white on a dark band) must reach the page as a TINT, never bound to
+   the palette's opaque white preset. */
+$ta_doc = '<html><body><main><section data-sc-cs="display:block;padding:96px 72px;background-color:oklch(0.15 0.03 265)">'
+	. '<h2 data-sc-cs="display:block;font-size:40px;color:rgb(255, 255, 255)">Get found</h2>'
+	. '<p data-sc-cs="display:block;font-size:14px;color:oklab(0.999994 0.0000455678 0.0000200868 / 0.45)">'
+	. 'We handle the search, the site and the follow-up. You handle the job.</p>'
+	. '</section></main></body></html>';
+$ta_j = (string) wp_json_encode(
+	FW_Site_Converter_Sources::build_from_html( $ta_doc, 'GoldenAlpha', array( 'dynamic_chrome' => false ) )['files']['pages.json'] ?? array()
+);
+
+ga( '[TA] (e) a muted paragraph is not bound to the opaque palette preset',
+	false === strpos( $ta_j, '"predefined":"text-white"' ),
+	'the 45% ink was snapped to the palette white and its alpha thrown away' );
+
+ga( '[TA] (f) …its alpha survives to the page',
+	(bool) preg_match( '/0\.45/', $ta_j ),
+	'no trace of the 45% alpha in the built page' );
+
+
+/* ==========================================================================================
+ * [NP] THE NAV GOES WHERE THE SOURCE DRAWS IT, NOT WHERE ITS DOM INDEX SUGGESTS.
+ *  menu_pos was read from the menu group's INDEX among the masthead row's children — a structural proxy
+ *  that a flex row makes meaningless: `justify-between`, or an `ml-auto` on one zone, puts a mid-index
+ *  element hard right. A nav rendered against the right edge was placed in the LEFT slot, and every link
+ *  landed ~830px from where the source draws it — on every page of the site, since this is chrome.
+ *  Two things had to change together, which is why this golden exists at all:
+ *   · the CAPTURE now stamps track-x / track-w for a FLEX ROW child, not only a grid cell, so a masthead
+ *     zone carries a position at all;
+ *   · the measurement is taken on the ROW-LEVEL ZONE. find_menu_group returns the innermost list, whose
+ *     track-* are relative to its own little wrapper — measured there, a right-hand nav reads 0.38 and
+ *     still lands in the centre.
+ *  A measurement also outranks the later structural guess; detect_header_design called this single-row
+ *  masthead 'centered' and would otherwise have overridden it straight back.
+ * ========================================================================================== */
+$np_bar = function ( $menu_x, $menu_w, $menu_frac ) {
+	// a masthead row: brand, then the menu zone, then the actions — with the menu's MEASURED placement
+	return '<html><body><header class="site-header" data-sc-cs="display:flex;justify-content:space-between;align-items:center;height:65px;width:1392px">'
+		. '<a href="/" data-sc-cs="display:flex;track-x:0;track-w:40;track-frac:0.029"><img src="https://fixture-01.example/mark.png" alt="Brand"></a>'
+		. '<div data-sc-cs="display:flex;track-x:' . $menu_x . ';track-w:' . $menu_w . ';track-frac:' . $menu_frac . '">'
+		. '<a href="/about" data-sc-cs="display:block">About</a>'
+		. '<a href="/services" data-sc-cs="display:block">Services</a>'
+		. '<a href="/faq" data-sc-cs="display:block">FAQ</a>'
+		. '</div>'
+		. '<div data-sc-cs="display:flex;track-x:1290;track-w:102;track-frac:0.073">'
+		. '<a href="/quote" data-sc-cs="display:inline-block;padding:10px 18px;background-color:rgb(20, 30, 60)">Free Quote</a>'
+		. '</div></header><main><section data-sc-cs="display:block;padding:80px 0px"><h1 data-sc-cs="display:block">Hello</h1></section></main></body></html>';
+};
+$np_pos = function ( $html ) {
+	$m = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'detect_header' );
+	$m->setAccessible( true );
+	$r = $m->invoke( null, $html );
+	return is_array( $r ) ? (string) ( $r['menu_pos'] ?? '' ) : '';
+};
+
+ga( '[NP] (a) a nav measured against the right edge is placed RIGHT',
+	'right' === $np_pos( $np_bar( 874, 518, '0.372' ) ),
+	'menu_pos: ' . $np_pos( $np_bar( 874, 518, '0.372' ) ) );
+
+ga( '[NP] (b) …a nav measured in the middle is placed CENTRE',
+	'center' === $np_pos( $np_bar( 560, 280, '0.201' ) ),
+	'menu_pos: ' . $np_pos( $np_bar( 560, 280, '0.201' ) ) );
+
+ga( '[NP] (c) …and one measured against the left edge is placed LEFT',
+	'left' === $np_pos( $np_bar( 60, 280, '0.201' ) ),
+	'menu_pos: ' . $np_pos( $np_bar( 60, 280, '0.201' ) ) );
+
+/* NEGATIVE: a capture with NO geometry stamped must still work — the index heuristic remains the
+   fallback, so an older capture is not made worse by the new rule. */
+$np_nogeo = str_replace( array( ';track-x:874', ';track-w:518', ';track-frac:0.372' ), '', $np_bar( 874, 518, '0.372' ) );
+ga( '[NP] (d) NEGATIVE: an older capture with no stamped geometry still resolves a position',
+	in_array( $np_pos( $np_nogeo ), array( 'left', 'center', 'right' ), true ),
+	'menu_pos: ' . $np_pos( $np_nogeo ) );
+
+
+/* ==========================================================================================
+ * [FB] THE BRAND BAND IS THE ONE HOLDING THE BRAND.
+ *  The footer router splits a footer into bands, anchors "main" on the densest one, then looks for the
+ *  brand band — and it looked for the first band OTHER than main carrying any brand signal, handing it the
+ *  role even when the MAIN band was the one with the logo and the social icons in it.
+ *  On a one-row footer whose tagline sits in a band of its own, the role went to the 721-byte tagline band
+ *  while the 15.9KB band holding the lockup and four social links was built with NO brand column: the logo
+ *  and every social icon were dropped, and the nav rendered as a bare left-hand stack.
+ *  detect_footer_social found all four the whole time — the detector was never the problem, the routing was.
+ *  That is why this is asserted on the BAR, not on the detector: a passing detector proved nothing.
+ *  Measured after the fix: footer geometry 25% FAIL -> -6% PASS, images -4 missing -> 0.
+ * ========================================================================================== */
+$fb_doc = '<html><body><main><section data-sc-cs="display:block;padding:60px 0px"><h1 data-sc-cs="display:block">Page</h1></section></main>'
+	. '<footer data-sc-cs="display:block;padding:48px 0px;background-color:rgb(12, 18, 32)">'
+	// band 0 — the REAL brand band: lockup, nav links and the social row, all in one row
+	. '<div data-sc-cs="display:block;padding:24px 0px">'
+	. '<img src="https://fixture-01.example/wordmark.png" alt="Brand wordmark" data-sc-cs="display:block;width:220px">'
+	. '<div data-sc-cs="display:flex;flex-wrap:wrap;align-items:center">'
+	. '<a href="/about" data-sc-cs="display:block">About</a>'
+	. '<a href="/services" data-sc-cs="display:block">Services</a>'
+	. '<a href="/faq" data-sc-cs="display:block">FAQ</a>'
+	. '<a href="https://www.instagram.com/example/" aria-label="On Instagram" data-sc-cs="display:flex"><svg class="lucide lucide-instagram" viewBox="0 0 24 24"></svg></a>'
+	. '<a href="https://www.facebook.com/example" aria-label="On Facebook" data-sc-cs="display:flex"><svg class="lucide lucide-facebook" viewBox="0 0 24 24"></svg></a>'
+	. '<a href="https://www.linkedin.com/company/example/" aria-label="On LinkedIn" data-sc-cs="display:flex"><svg class="lucide lucide-linkedin" viewBox="0 0 24 24"></svg></a>'
+	. '</div></div>'
+	// band 1 — a tagline of its own. The weaker signal that used to steal the brand role.
+	. '<div data-sc-cs="display:block;padding:12px 0px"><p data-sc-cs="display:block">Get found. Get leads. Get more customers.</p></div>'
+	// band 2 — the copyright
+	. '<div data-sc-cs="display:block;padding:12px 0px"><p data-sc-cs="display:block">&copy; 2026 Example. All rights reserved.</p></div>'
+	. '</footer></body></html>';
+
+$fb_v = FW_Site_Converter_Sources::build_from_html( $fb_doc, 'GoldenFooterBrand', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$fb_els = function ( $bar ) use ( $fb_v ) {
+	$b = $fb_v[ $bar ] ?? null;
+	if ( ! is_array( $b ) || empty( $b['count'] ) ) { return array(); }
+	$out = array();
+	foreach ( (array) ( $b[ (string) $b['count'] ] ?? array() ) as $k => $col ) {
+		if ( 0 !== strpos( (string) $k, $bar === 'main_footer_columns' ? 'main_footer_col_' : 'x' ) ) { continue; }
+		foreach ( (array) $col as $e ) { $out[] = (string) ( $e['element_type']['element'] ?? '' ); }
+	}
+	return $out;
+};
+$fb_main = $fb_els( 'main_footer_columns' );
+
+ga( '[FB] (a) the social icons reach the MAIN footer bar',
+	in_array( 'social_icons', $fb_main, true ),
+	'main bar elements: ' . implode( ' ', $fb_main ) );
+
+ga( '[FB] (b) …alongside the brand logo',
+	in_array( 'logo', $fb_main, true ) || in_array( 'footer_logo', $fb_main, true ),   // either lockup element
+	'main bar elements: ' . implode( ' ', $fb_main ) );
+
+ga( '[FB] (c) …and the nav links are still there, not displaced by it',
+	count( array_filter( $fb_main, function ( $e ) { return 'list_item' === $e; } ) ) >= 3,
+	'main bar elements: ' . implode( ' ', $fb_main ) );
+
+/* NEGATIVE: when the main band has NO brand content of its own, a separate brand band must still be able
+   to take the role — the fix narrows the rule, it does not remove it. */
+$fb_split = '<html><body><main><section data-sc-cs="display:block;padding:60px 0px"><h1 data-sc-cs="display:block">Page</h1></section></main>'
+	. '<footer data-sc-cs="display:block;padding:48px 0px;background-color:rgb(12, 18, 32)">'
+	. '<div data-sc-cs="display:block;padding:24px 0px"><div data-sc-cs="display:flex">'
+	. '<a href="/about" data-sc-cs="display:block">About</a><a href="/services" data-sc-cs="display:block">Services</a><a href="/faq" data-sc-cs="display:block">FAQ</a>'
+	. '</div></div>'
+	. '<div data-sc-cs="display:block;padding:12px 0px">'
+	. '<p data-sc-cs="display:block">Get found. Get leads. Get more customers.</p>'
+	. '<a href="https://www.instagram.com/example/" aria-label="On Instagram" data-sc-cs="display:flex"><svg class="lucide lucide-instagram" viewBox="0 0 24 24"></svg></a>'
+	. '<a href="https://www.linkedin.com/company/example/" aria-label="On LinkedIn" data-sc-cs="display:flex"><svg class="lucide lucide-linkedin" viewBox="0 0 24 24"></svg></a>'
+	. '</div>'
+	. '<div data-sc-cs="display:block;padding:12px 0px"><p data-sc-cs="display:block">&copy; 2026 Example.</p></div>'
+	. '</footer></body></html>';
+$fb_v2 = FW_Site_Converter_Sources::build_from_html( $fb_split, 'GoldenFooterSplit', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$fb_all2 = (string) wp_json_encode( array( $fb_v2['pre_footer_columns'] ?? null, $fb_v2['main_footer_columns'] ?? null, $fb_v2['post_footer_columns'] ?? null ) );
+ga( '[FB] (d) NEGATIVE: a genuinely separate brand band still gets the brand role',
+	false !== strpos( $fb_all2, 'social_icons' ),
+	'the socials were lost when the brand band really was a separate one' );
+
+
+/* --------------------------------------------------------------------- *
+ * [CG] PAGE CANVAS GRADIENT -> General > Layout > Site Background (gradient layer)
+ *
+ * A source whose whole identity is a full-height gradient on <body> used to convert to ONE FLAT fill:
+ * only background-COLOR was ever read off the canvas. The colour must survive as the base layer AND the
+ * gradient must land on top, as an EDITABLE gradient-v2 value rather than a frozen CSS string.
+ * --------------------------------------------------------------------- */
+echo "\n[CG] Page canvas gradient -> Site Background\n";
+
+$cg_doc = '<!DOCTYPE html><html><head><title>T</title></head>'
+	. '<body data-sc-cs="background-color:oklch(0.205 0.045 265);background-image:linear-gradient(145deg, oklch(0.205 0.045 265) 0%, oklab(0.345976 0.0227877 -0.0963011) 38%, oklab(0.387292 -0.0395197 -0.0403311) 70%, oklch(0.205 0.045 265) 100%)">'
+	. '<main><section><h1>Canvas</h1><p>Body copy long enough to be a real paragraph of text.</p></section></main></body></html>';
+$cg_ts = FW_Site_Converter_Sources::build_from_html( $cg_doc, 'Canvas', array( 'dynamic_chrome' => false ) )['files']['theme-settings.json']['values'] ?? array();
+$cg_sb = $cg_ts['general_layout']['site_background'] ?? array();
+$cg_g  = $cg_sb['gradient']['data'] ?? array();
+
+ga( '[CG] canvas gradient detected (gradient.data present)', is_array( $cg_g ) && ! empty( $cg_g['stops'] ), wp_json_encode( array_keys( (array) $cg_sb ) ) );
+ga_eq( '[CG] gradient type', 'linear', (string) ( $cg_g['type'] ?? '' ) );
+ga_eq( '[CG] angle carried from the source (145deg, not the 180deg CSS default)', 145, (int) ( $cg_g['angle'] ?? 0 ) );
+ga_eq( '[CG] all four stops survive', 4, count( (array) ( $cg_g['stops'] ?? array() ) ) );
+ga_eq( '[CG] first stop colour', '#0d162c', strtolower( (string) ( $cg_g['stops'][0]['color'] ?? '' ) ) );
+ga_eq( '[CG] mid stop position preserved (38%, not redistributed evenly)', 38.0, (float) ( $cg_g['stops'][1]['position'] ?? 0 ) );
+ga_eq( '[CG] last stop closes back to the base colour', '#0d162c', strtolower( (string) ( $cg_g['stops'][3]['color'] ?? '' ) ) );
+// The flat colour must REMAIN the layer beneath: it is what shows if a stop ever fails to resolve.
+ga_eq( '[CG] base colour layer kept under the gradient', '#0d162c', strtolower( (string) ( $cg_sb['color']['value']['custom'] ?? '' ) ) );
+// EDITABLE, not frozen: the stored value must round-trip through the option type that renders it.
+ga( '[CG] round-trips through gradient-v2 to_css()',
+	class_exists( 'FW_Option_Type_Gradient_V2' )
+		&& 'linear-gradient(145deg, #0d162c 0%, #34306a 38%, #1d4a5b 70%, #0d162c 100%)' === FW_Option_Type_Gradient_V2::to_css( $cg_g ),
+	class_exists( 'FW_Option_Type_Gradient_V2' ) ? FW_Option_Type_Gradient_V2::to_css( $cg_g ) : 'gradient-v2 missing' );
+
+/* NEGATIVE: a flat canvas must not invent a gradient; the colour path alone still works. */
+$cg_flat = '<!DOCTYPE html><html><head><title>T</title></head>'
+	. '<body data-sc-cs="background-color:rgb(13, 22, 44)"><main><section><h1>Flat</h1><p>Body copy long enough to be a real paragraph.</p></section></main></body></html>';
+$cg_fts = FW_Site_Converter_Sources::build_from_html( $cg_flat, 'Flat', array( 'dynamic_chrome' => false ) )['files']['theme-settings.json']['values'] ?? array();
+ga( '[CG] NEGATIVE flat canvas emits no gradient layer', empty( $cg_fts['general_layout']['site_background']['gradient']['data']['stops'] ),
+	wp_json_encode( $cg_fts['general_layout']['site_background']['gradient'] ?? null ) );
+ga_eq( '[CG] NEGATIVE flat canvas still carries its colour', '#0d162c', strtolower( (string) ( $cg_fts['general_layout']['site_background']['color']['value']['custom'] ?? '' ) ) );
+
+/* Named CSS colours: all 147 resolved to '' before this, so a gradient built from named stops vanished
+   entirely -- a dropped stop leaves fewer than the two gradient-v2 requires. */
+ga_eq( '[CG] named colour resolves (was the 147-name blind spot)', '#ff0000', strtolower( FW_Site_Converter_Stitch::color_to_hex( 'red' ) ) );
+ga_eq( '[CG] named colour resolves (white)', '#ffffff', strtolower( FW_Site_Converter_Stitch::color_to_hex( 'white' ) ) );
+ga_eq( '[CG] transparent still means NO colour outside a gradient', '', FW_Site_Converter_Stitch::color_to_css( 'transparent' ) );
+
+/* --------------------------------------------------------------------- *
+ * [SB] A SECTION'S CONTENT BAND when every sibling is itself a centred cap
+ *
+ * The sibling guard rejects a capped block that sits beside UNCAPPED content (a `max-w-4xl` heading
+ * group next to a full-width card stack) -- there the section's band must be wider than the block.
+ * But when EVERY sibling is capped and centred too, there is no uncapped content for a wider band to
+ * serve, and rejecting them all left the section with NO band: it fell through to the site container
+ * and rendered wider than the source. Measured on a real capture: a 768 heading beside a 672 panel
+ * produced band 0 and the section rendered at the site width of 1024.
+ * --------------------------------------------------------------------- */
+echo "\n[SB] Section content band vs. the capped-sibling guard\n";
+
+$sb_of = function ( $body_html, $max_px = 1300.0 ) {
+	$doc = '<!DOCTYPE html><html><head><title>T</title></head><body><main>' . $body_html . '</main></body></html>';
+	$r = new ReflectionClass( 'FW_Site_Converter_Stitch' );
+	$load = $r->getMethod( 'load_dom' ); $load->setAccessible( true );
+	$scmw = $r->getMethod( 'section_content_max_width' ); $scmw->setAccessible( true );
+	$dom = $load->invoke( null, $doc );
+	$sec = $dom->getElementsByTagName( 'section' )->item( 0 );
+	return $sec ? (float) $scmw->invoke( null, $sec, $max_px ) : -1.0;
+};
+
+/* Two centred caps as siblings -- a 768 heading block above a 672 panel. The band is the WIDER one. */
+$sb_two = '<section class="px-6 py-20"><div>'
+	. '<div class="max-w-3xl mx-auto text-center" data-sc-cs="max-width:768px;margin-left:auto;margin-right:auto"><h2>Heading</h2><p>Intro copy that is long enough to count as real content.</p></div>'
+	. '<div class="max-w-2xl mx-auto rounded" data-sc-cs="max-width:672px;margin-left:auto;margin-right:auto"><p>Panel copy that is also long enough to count as real content.</p></div>'
+	. '</div></section>';
+ga_eq( '[SB] every sibling capped + centred -> band is the WIDEST cap, not 0', 768.0, $sb_of( $sb_two ) );
+
+/* NEGATIVE: the guard must still fire when the sibling is UNCAPPED content -- that is what it is for. */
+$sb_mixed = '<section class="px-6 py-20"><div>'
+	. '<div class="max-w-3xl mx-auto text-center" data-sc-cs="max-width:768px;margin-left:auto;margin-right:auto"><h2>Heading</h2><p>Intro copy that is long enough to count as real content.</p></div>'
+	. '<div class="cards"><p>A full-width card stack with no cap of its own, holding real content.</p></div>'
+	. '</div></section>';
+ga_eq( '[SB] NEGATIVE an UNCAPPED content sibling still rejects the cap', 0.0, $sb_of( $sb_mixed ) );
+
+/* A lone centred cap with no siblings is unchanged by this rule. */
+$sb_one = '<section class="px-6 py-20"><div>'
+	. '<div class="max-w-5xl mx-auto" data-sc-cs="max-width:1024px;margin-left:auto;margin-right:auto"><p>Grid content long enough to count as real content here.</p></div>'
+	. '</div></section>';
+ga_eq( '[SB] a lone centred cap is still the band', 1024.0, $sb_of( $sb_one ) );
+
+/* An out-of-range sibling cap (below the 480 floor) is not a band, so it must not excuse the guard. */
+$sb_tiny = '<section class="px-6 py-20"><div>'
+	. '<div class="max-w-3xl mx-auto" data-sc-cs="max-width:768px;margin-left:auto;margin-right:auto"><h2>Heading</h2><p>Intro copy that is long enough to count as real content.</p></div>'
+	. '<div class="badge mx-auto" data-sc-cs="max-width:120px;margin-left:auto;margin-right:auto"><p>Tiny badge text</p></div>'
+	. '</div></section>';
+ga_eq( '[SB] a below-floor sibling cap does NOT excuse the guard', 0.0, $sb_of( $sb_tiny ) );
+
+/* --------------------------------------------------------------------- *
+ * [CF] A CENTRED-STACK FOOTER is ONE centred column, and the copyright bar
+ *      must not repeat what that column already shows.
+ *
+ * A footer that is `flex flex-col items-center` -- logo over one centred row of nav links + social
+ * icons over the tagline -- was band-split by its own rows, the widest row won the 'main' role, and
+ * the result was an INVENTED two-column bar (brand left, a vertical link list right) with every nav
+ * link emitted a SECOND time along the copyright strip. detect_footer_columns() had already returned
+ * nothing and footer_band_is_multicol() had already said false; nobody asked the root its shape.
+ * --------------------------------------------------------------------- */
+echo "\n[CF] Centred-stack footer -> one centred column\n";
+
+$cf_ink = 'color:rgb(255, 255, 255);font-family:Inter, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;';
+$cf_link = function ( $t, $h ) use ( $cf_ink ) { return '<a href="' . $h . '" data-sc-cs="' . $cf_ink . 'display:block">' . $t . '</a>'; };
+$cf_html = '<!DOCTYPE html><html><head><title>Beacon</title></head><body><main>'
+	. '<section data-sc-cs="' . $cf_ink . 'padding:80px 24px;display:block"><h1>Beacon</h1><p>Body copy long enough to count as a real paragraph here.</p></section></main>'
+	. '<footer data-sc-cs="' . $cf_ink . 'padding:48px 24px;display:flex;flex-direction:column;align-items:center;gap:16px">'
+	. '<img src="/logo.png" alt="Beacon" data-sc-cs="height:64px;width:205px;display:block">'
+	. '<div data-sc-cs="' . $cf_ink . 'display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:24px">'
+	. $cf_link( 'About', '/about' ) . $cf_link( 'Services', '/services' ) . $cf_link( 'Pricing', '/pricing' ) . $cf_link( 'Contact', '/contact' )
+	. '<a href="https://instagram.com/beacon" data-sc-cs="display:flex;height:40px;width:40px;border-radius:9999px"><svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20"/></svg></a>'
+	. '</div>'
+	. '<p data-sc-cs="color:rgba(255,255,255,0.4);font-size:10px;text-transform:uppercase;text-align:center">Find More. Do More.</p>'
+	. '<p data-sc-cs="color:rgba(255,255,255,0.3);font-size:10px;text-transform:uppercase;text-align:center">&copy; 2026 Beacon Labs. All Rights Reserved.</p>'
+	. '</footer></body></html>';
+$cf_v   = FW_Site_Converter_Sources::build_from_html( $cf_html, 'Beacon', array( 'dynamic_chrome' => true ) )['files']['theme-settings.json']['values'] ?? array();
+$cf_mfc = $cf_v['main_footer_columns'] ?? array();
+$cf_cp  = $cf_v['copyright_settings']['yes']['copyright_columns'] ?? array();
+$cf_col = (array) ( $cf_mfc[ (string) ( $cf_mfc['count'] ?? '0' ) ]['main_footer_col_1'] ?? array() );
+$cf_kinds = array(); foreach ( $cf_col as $e ) { $cf_kinds[] = (string) ( $e['element_type']['element'] ?? '?' ); }
+
+ga_eq( '[CF] a centred stack is ONE footer column (not an invented two-column bar)', '1', (string) ( $cf_mfc['count'] ?? '' ) );
+// Either lockup element counts: `logo` reuses the header's, `footer_logo` carries the footer's OWN measured
+// image. This footer draws a 205px <img> while the header is a TEXT wordmark, so the faithful answer is the
+// footer's own — what must hold is that the column carries A lockup, and that it leads the stack.
+$cf_islogo = function ( $k ) { return 'logo' === $k || 'footer_logo' === $k; };
+ga( '[CF] the column carries the logo', (bool) array_filter( $cf_kinds, $cf_islogo ), wp_json_encode( $cf_kinds ) );
+ga_eq( '[CF] all four nav links land in that column', 4, count( array_keys( $cf_kinds, 'list_item' ) ) );
+ga( '[CF] the social icons land in that column too', in_array( 'social_icons', $cf_kinds, true ), wp_json_encode( $cf_kinds ) );
+ga( '[CF] logo comes first (the source order)', $cf_islogo( (string) ( $cf_kinds[0] ?? '' ) ), (string) ( $cf_kinds[0] ?? '' ) );
+ga( '[CF] links precede the social icons', array_search( 'list_item', $cf_kinds, true ) < array_search( 'social_icons', $cf_kinds, true ), wp_json_encode( $cf_kinds ) );
+$cf_once = function ( $needle ) use ( $cf_mfc, $cf_cp ) {
+	$n = preg_replace( '/[^a-z0-9]+/', '', strtolower( (string) $needle ) );
+	$inbar = false !== strpos( preg_replace( '/[^a-z0-9]+/', '', strtolower( (string) wp_json_encode( $cf_mfc ) ) ), $n );
+	$incp  = false !== strpos( preg_replace( '/[^a-z0-9]+/', '', strtolower( (string) wp_json_encode( $cf_cp ) ) ), $n );
+	return ! ( $inbar && $incp );   // present in at most one of the two bars
+};
+ga( '[CF] no nav link appears in BOTH the footer bar and the copyright bar', $cf_once( 'Services' ) && $cf_once( 'Pricing' ) && $cf_once( 'Contact' ), substr( (string) wp_json_encode( $cf_cp ), 0, 160 ) );
+ga( '[CF] the tagline is not duplicated across the two bars', $cf_once( 'Find More Do More' ), substr( (string) wp_json_encode( $cf_cp ), 0, 160 ) );
+ga( '[CF] the copyright bar does NOT repeat a nav link', false === strpos( (string) wp_json_encode( $cf_cp ), 'Services' ), substr( (string) wp_json_encode( $cf_cp ), 0, 160 ) );
+ga( '[CF] the copyright line itself survives', false !== strpos( (string) wp_json_encode( $cf_cp ), 'Beacon Labs' ), substr( (string) wp_json_encode( $cf_cp ), 0, 160 ) );
 
 $pass = $GLOBALS['__pass'];
 $fail = $GLOBALS['__fail'];

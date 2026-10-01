@@ -1328,7 +1328,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			$opts['hifi_css'] = true; // high-fidelity faithful base ON by default (build_from_html → build_bundle reads it)
 		}
 		if ( ! isset( $opts['entrance_anim'] ) ) {
-			$opts['entrance_anim'] = self::sc_anim_opt(); // "Add entrance animations" checkbox (URL/dashboard flow); default OFF
+			$opts['entrance_anim'] = self::sc_anim_opt(); // "Add entrance animations" checkbox (URL/dashboard flow); default ON
 		}
 		if ( ! isset( $opts['entrance_anim_ai'] ) ) {
 			$opts['entrance_anim_ai'] = self::sc_anim_ai_opt(); // "Refine with AI" sub-option
@@ -2235,6 +2235,12 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		wp_send_json_success( array(
 			'mapping' => $bundle['mapping'],
 			'roles'   => FW_Site_Converter_Mapper::roles(),
+			// WHICH EXISTING PAGES THIS WOULD LAND ON, and whose they are. Retargeting a site to a new source
+			// used to fork silently (`about` taken -> `about-2`), leaving the live URL on stale content. The
+			// review step shows the collisions so the person can uncheck anything they want kept; only the
+			// slugs they approve may cross a source boundary. See Pages::plan_collisions().
+			'page_plan' => ( class_exists( 'FW_Site_Converter_Pages' ) && ! empty( $bundle['mapping']['pages'] ) )
+				? FW_Site_Converter_Pages::plan_collisions( (array) $bundle['mapping']['pages'] ) : array(),
 			// Header + footer chrome summary (from the captured theme-settings) → shown in the review UI so
 			// the chrome is visible and can be omitted (kept editable — applied via Theme Settings, not baked).
 			'chrome'  => self::chrome_review( ( isset( $bundle['files']['theme-settings.json']['values'] ) && is_array( $bundle['files']['theme-settings.json']['values'] ) ) ? $bundle['files']['theme-settings.json']['values'] : array() ),
@@ -2384,6 +2390,15 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		check_ajax_referer( self::NONCE );
 		if ( ! current_user_can( self::CAPABILITY ) ) { wp_send_json_error( array( 'message' => __( 'Permission denied.', 'fw' ) ), 403 ); }
 
+		// Pages the person ticked in the review step as safe to replace. Without this a retarget forks:
+		// the old source keeps `about` and the new page lands on `about-2`, which nothing links to. Only
+		// these slugs may overwrite a page recorded against a DIFFERENT source.
+		$replace = array();
+		foreach ( (array) ( $_POST['replace'] ?? array() ) as $rsl ) {
+			$rsl = sanitize_title( (string) wp_unslash( $rsl ) );
+			if ( '' !== $rsl ) { $replace[] = $rsl; }
+		}
+		if ( class_exists( 'FW_Site_Converter_Pages' ) ) { FW_Site_Converter_Pages::set_replace_approved( $replace ); }
 		$raw     = wp_unslash( $_POST['mapping'] ?? '' );
 		$mapping = is_string( $raw ) ? json_decode( $raw, true ) : ( is_array( $raw ) ? $raw : null );
 		if ( ! is_array( $mapping ) || empty( $mapping['pages'] ) ) { wp_send_json_error( array( 'message' => __( 'No mapping was received.', 'fw' ) ) ); }
@@ -2965,7 +2980,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 	 * @return bool
 	 */
 	private static function sc_anim_opt() {
-		return isset( $_POST['opt_anim'] ) && ( $_POST['opt_anim'] === '1' || $_POST['opt_anim'] === 'true' );
+		// DEFAULT ON. A source that reveals its content on scroll is the common case, and a conversion that
+		// renders every band flat is the one that looks wrong. Absent the field entirely (a scripted import
+		// that predates the option) the answer is now yes; an explicit '0' still turns it off.
+		if ( ! isset( $_POST['opt_anim'] ) ) { return true; }
+		return $_POST['opt_anim'] === '1' || $_POST['opt_anim'] === 'true';
 	}
 
 	/**
@@ -3770,7 +3789,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Destination', 'fw' ); ?></legend>
-						<label style="display:block;margin:.2em 0;color:#b32d2e" title="<?php echo esc_attr__( 'Wipe the PREVIOUS conversion first, then convert. Resets all Theme Settings (chrome / header / footer / colours / presets) back to defaults and clears the converter CSS caches, so nothing from an earlier converted site lingers. Use when converting a DIFFERENT site over this one. Leaves your pages, media library, and generated child themes in place. Off by default.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-replace"> <?php esc_html_e( 'Replace existing site', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'reset design first', 'fw' ); ?>)</span></label>
+						<label style="display:block;margin:.2em 0;color:#b32d2e" title="<?php echo esc_attr__( 'Wipe the PREVIOUS conversion first, then convert. Resets all Theme Settings (chrome / header / footer / colours / presets) back to defaults and clears the converter CSS caches, so nothing from an earlier converted site lingers. Use when converting a DIFFERENT site over this one. Leaves your pages, media library, and generated child themes in place. On by default; untick to convert without motion.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-replace"> <?php esc_html_e( 'Replace existing site', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'reset design first', 'fw' ); ?>)</span></label>
 						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Make the converted page your homepage. Auto-ON for a root URL; auto-OFF for an inner page (e.g. /services), which becomes a NEW page under its own slug and leaves your homepage untouched.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-homepage" checked> <?php esc_html_e( 'Set as homepage', 'fw' ); ?></label>
 					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;min-width:0">
@@ -3779,13 +3798,15 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-header" checked> <?php esc_html_e( 'Capture header', 'fw' ); ?></label>
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-footer" checked> <?php esc_html_e( 'Capture footer', 'fw' ); ?></label>
 						<label style="display:block;margin:.2em 0"><input type="checkbox" id="fw-sc-opt-media" checked> <?php esc_html_e( 'Import images', 'fw' ); ?></label>
+						<?php // Pages this conversion would land on that ALREADY exist — filled by renderReplacePlan(). ?>
+						<div id="fw-sc-replace-plan" style="display:none;margin:.5em 0 0;padding-top:.5em;border-top:1px solid var(--sc-border,#dcdcde)"></div>
 						<?php $upw_wc_active = class_exists( 'WooCommerce' ); ?>
 						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr( __( 'For a store source: activates the UnysonPlus WooCommerce extension and maps product grids to a live [wc_products] feed. If the WooCommerce plugin is not installed yet, the extension is still activated and a dashboard notice guides you to install it (grids stay as static cards until then). Auto-ticked when the source is detected as a store.', 'fw' ) ); ?>"><input type="checkbox" id="fw-sc-opt-woocommerce"> <?php esc_html_e( 'Map to WooCommerce', 'fw' ); ?><?php if ( ! $upw_wc_active ) : ?> <span style="color:#646970">(<?php esc_html_e( 'not installed', 'fw' ); ?>)</span><?php endif; ?></label>
 						<label style="display:block;margin:.2em 0 .2em 1.6em" title="<?php echo esc_attr__( 'Run the store as a browsable CATALOG — prices are shown, but add-to-cart, cart and checkout are hidden. Ideal for a restaurant menu, a lookbook, or a "call for pricing" showroom. AUTO-ENABLED when the source is detected as a catalog / menu (prices, but no cart); tick to force it. Only applies when Map to WooCommerce is on.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-catalog"> <?php esc_html_e( 'Catalog Mode', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'browse-only, no cart · auto for menus', 'fw' ); ?>)</span></label>
 					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Enhancements', 'fw' ); ?></legend>
-						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Give the converted page tasteful entrance animations — the elements in each section reveal in sequence as you scroll to them (headings fade up first, then text, then cards cascade). Applied deterministically from each element role; nothing that should stay static is animated. Edit or remove any of them per element in the builder Animations tab afterward. Off by default.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-anim"> <?php esc_html_e( 'Add entrance animations', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'sequential reveal on scroll', 'fw' ); ?>)</span></label>
+						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'Give the converted page tasteful entrance animations — the elements in each section reveal in sequence as you scroll to them (headings fade up first, then text, then cards cascade). Applied deterministically from each element role; nothing that should stay static is animated. Edit or remove any of them per element in the builder Animations tab afterward. On by default; untick to convert without motion.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-anim" checked> <?php esc_html_e( 'Add entrance animations', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'sequential reveal on scroll', 'fw' ); ?>)</span></label>
 						<label id="fw-sc-opt-anim-ai-wrap" style="display:block;margin:.2em 0 .2em 1.6em;opacity:.55" title="<?php echo esc_attr__( 'Refine the entrance animations with your LOCAL AI — it re-picks a fitting effect + timing per element on top of the deterministic base (e.g. a slide-up for a hero CTA, a soft zoom for a feature image). Requires the capture service running with an AI backend (a local model, Claude Code, or an API key). If the AI is unavailable it silently keeps the deterministic animations, so this never breaks a conversion.', 'fw' ); ?>"><input type="checkbox" id="fw-sc-opt-anim-ai" disabled> <?php esc_html_e( 'Refine with AI', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'local AI picks per-element effects', 'fw' ); ?>)</span></label>
 					</fieldset>
 				</div>
@@ -4209,6 +4230,11 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						fd.append( 'opt_woocommerce', optEl( 'fw-sc-opt-woocommerce' ) );
 						fd.append( 'opt_catalog', optEl( 'fw-sc-opt-catalog' ) );
 						fd.append( 'opt_homepage', optEl( 'fw-sc-opt-homepage' ) );
+						// Pages the person left ticked in the "already exists" list — the only ones allowed to replace
+						// a page belonging to a different source. Unticked pages keep their current content.
+						Array.prototype.forEach.call( document.querySelectorAll( '.fw-sc-replace-slug:checked' ), function ( c ) {
+							fd.append( 'replace[]', c.value );
+						} );
 						fd.append( 'opt_replace', ( function () { var e = document.getElementById( 'fw-sc-opt-replace' ); return e && e.checked ? '1' : '0'; } )() );
 						fd.append( 'opt_anim', ( function () { var e = document.getElementById( 'fw-sc-opt-anim' ); return e && e.checked ? '1' : '0'; } )() );
 						fd.append( 'opt_anim_ai', ( function () { var e = document.getElementById( 'fw-sc-opt-anim-ai' ); return e && e.checked && ! e.disabled ? '1' : '0'; } )() );
@@ -4696,7 +4722,35 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					// Remember the source URL (URL flow only) so the build can trigger the AI header/footer pass.
 					if ( /^https?:\/\//i.test( String( label || '' ) ) ) { window.__fwSCSourceUrl = String( label ); }
 					return prepareFromHtml( html, screens ).then( function ( d ) {
+					// EXISTING PAGES THIS WOULD REPLACE. Retargeting a site to a new source used to fork silently —
+					// `about` was taken by the previous source, so the new page became `about-2` and the live URL
+					// kept stale content. Now the collisions are shown before the build, pre-ticked only where the
+					// page is ours to replace: a page nobody converted, or one edited since we wrote it, starts
+					// UNticked so it is kept unless the person deliberately says otherwise.
+					var renderReplacePlan = function ( rows ) {
+						var box = document.getElementById( 'fw-sc-replace-plan' );
+						if ( ! box ) { return; }
+						rows = ( rows || [] ).filter( function ( r ) { return r && r.provenance !== 'same'; } );
+						if ( ! rows.length ) { box.style.display = 'none'; box.innerHTML = ''; return; }
+						var esc = function ( t ) { var d = document.createElement( 'div' ); d.textContent = String( t == null ? '' : t ); return d.innerHTML; };
+						var h = '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970;margin-bottom:.35em"><?php echo esc_js( __( 'These pages already exist', 'fw' ) ); ?></div>'
+							+ '<div style="font-size:12px;color:#646970;margin-bottom:.4em"><?php echo esc_js( __( 'Ticked pages will be replaced with the converted version. Untick any you want to keep as they are.', 'fw' ) ); ?></div>';
+						rows.forEach( function ( r ) {
+							var why = r.edited
+								? '<?php echo esc_js( __( 'you have edited this since it was converted', 'fw' ) ); ?>'
+								: ( r.provenance === 'user'
+									? '<?php echo esc_js( __( 'not made by the converter', 'fw' ) ); ?>'
+									: '<?php echo esc_js( __( 'from a previous conversion', 'fw' ) ); ?>' );
+							h += '<label style="display:block;margin:.2em 0">'
+								+ '<input type="checkbox" class="fw-sc-replace-slug" value="' + esc( r.slug ) + '"' + ( r.recommended ? ' checked' : '' ) + '> '
+								+ '<code>/' + esc( r.slug ) + '/</code> '
+								+ '<span style="color:#646970">— ' + why + '</span></label>';
+						} );
+						box.innerHTML = h;
+						box.style.display = '';
+					};
 						var dm = d.mapping || { pages: [] }; dm.chrome = d.chrome || null;
+						renderReplacePlan( d.page_plan || [] );
 						render( dm, d.roles || {}, label || ( d.source || '' ), false, container );
 					} );
 				};

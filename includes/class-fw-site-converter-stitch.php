@@ -171,10 +171,138 @@ class FW_Site_Converter_Stitch {
 		return ( $r >= 235 && $g >= 235 && $b >= 235 ) || ( $r <= 25 && $g <= 25 && $b <= 25 );
 	}
 
+	/**
+	 * A colour as CSS, KEEPING its alpha: `rgba(r, g, b, a)` when it is translucent, the hex when it is not.
+	 *
+	 * color_to_hex is lossy by design and says so, but a caller deriving a FILL needs the alpha or the
+	 * result is a different colour entirely. A source that tints a dark panel with 5% white
+	 * (`oklab(... / 0.05)`, the modern slash-alpha syntax) collapsed to `#ffffff`, and the converted form
+	 * fields rendered as solid WHITE slabs on a dark page with near-white text on them -- unreadable, and
+	 * the single most visible thing on the page. Use this wherever the value becomes a background.
+	 *
+	 * @param string $color any CSS colour
+	 * @return string '' when it has no colour at all
+	 */
+	/**
+	 * Is this colour translucent (alpha < 1)? In ANY syntax.
+	 *
+	 * Three separate places asked this question with their own `rgba()|hsla()` regex, and all three got the
+	 * same modern colour wrong: `oklab(... / 0.45)` read as OPAQUE. One flattened form fills to solid, one
+	 * flattened chrome ink to solid white, and one bound a 45% white to the palette's opaque `text-white`
+	 * preset -- discarding the alpha and the literal together. One predicate now, so a fourth caller cannot
+	 * reintroduce it.
+	 *
+	 * @param string $color any CSS colour
+	 * @return bool
+	 */
+	public static function is_translucent( $color ) {
+		$css = self::color_to_css( $color );
+		return (bool) preg_match( '/^rgba\(/', (string) $css );
+	}
+
+	/**
+	 * Does this value name a CSS colour FUNCTION that color_to_hex() can resolve?
+	 *
+	 * Callers that must decide "is this worth resolving?" kept writing their own whitelist of function
+	 * names -- six of them, across Stitch and the Mapper. Every one listed the forms that existed when it
+	 * was written, so each new colour space had to be remembered in six places and never was: CIE `lab()`
+	 * shipped in a source's button fill, color_to_hex() resolved it correctly, and the gatekeeper in front
+	 * of it rejected the string unread. The Primary preset was built with an EMPTY fill and every button on
+	 * the converted site painted the theme's default blue over the source's navy.
+	 *
+	 * This is the one list, and it tracks color_to_hex()'s own branches: rgb/rgba, hsl/hsla, color(),
+	 * oklch/oklab, lab/lch. `hwb()` is deliberately absent -- color_to_hex does not parse it, so claiming it
+	 * here would trade a dropped colour for a wrong one.
+	 *
+	 * @param string $color any CSS colour
+	 * @return bool
+	 */
+	public static function is_color_func( $color ) {
+		return (bool) preg_match( '/^\s*(?:' . self::COLOR_FUNC_NAMES . ')\(/i', (string) $color );
+	}
+
+	/**
+	 * The same list as a regex FRAGMENT, for the callers that must match a colour inside a larger pattern
+	 * (a colour token within a `border` shorthand, a validity check on an icon's ink) and so cannot use the
+	 * predicate above. Interpolate it, never retype it.
+	 */
+	const COLOR_FUNC_NAMES = 'rgba?|hsla?|oklch|oklab|lab|lch|color';
+
+	/** A bracketed alternation matching any resolvable colour FUNCTION call, e.g. `oklch(0.2 0 0 / .5)`. */
+	public static function color_func_re() {
+		return '(?:' . self::COLOR_FUNC_NAMES . ')\([^)]*\)';
+	}
+
+	public static function color_to_css( $color ) {
+		$c = strtolower( trim( (string) $color ) );
+		$hex = self::color_to_hex( $c );
+		if ( '' === $hex ) { return ''; }
+		$a = 1.0;
+		if ( preg_match( '/^#([0-9a-f]{8})$/i', $c, $hm ) ) {
+			$a = hexdec( substr( $hm[1], 6, 2 ) ) / 255;
+		// An alpha is the FOURTH component, or whatever follows a slash -- never just `the last number`.
+		// `[^)]*[,\/]\s*([0-9.]+)\)` matches the final 0 of `rgb(0, 0, 0)` and called opaque black fully
+		// TRANSPARENT. (The regex this was modelled on had the same flaw, which is why an existing golden
+		// pinned `rgb(0, 0, 0)` un-normalised: it was being mistaken for a translucent value and skipped.)
+		} elseif ( preg_match( '/^rgba?\(\s*[0-9.]+%?\s*,\s*[0-9.]+%?\s*,\s*[0-9.]+%?\s*,\s*([0-9.]+%?)\s*\)$/', $c, $am )
+			|| preg_match( '/^rgba?\([^)\/]*\/\s*([0-9.]+%?)\s*\)$/', $c, $am ) ) {
+			$a = ( strpos( $am[1], '%' ) !== false ) ? ( (float) $am[1] ) / 100 : (float) $am[1];
+		} elseif ( self::is_color_func( $c ) && preg_match( '/^[a-z]+\([^)]*\/\s*([0-9.]+%?)\s*\)$/', $c, $am ) ) {
+			$a = ( strpos( $am[1], '%' ) !== false ) ? ( (float) $am[1] ) / 100 : (float) $am[1];
+		}
+		if ( $a >= 0.999 ) { return $hex; }
+		$h = ltrim( $hex, '#' );
+		return 'rgba(' . hexdec( substr( $h, 0, 2 ) ) . ', ' . hexdec( substr( $h, 2, 2 ) ) . ', ' . hexdec( substr( $h, 4, 2 ) ) . ', ' . rtrim( rtrim( sprintf( '%.3f', max( 0, $a ) ), '0' ), '.' ) . ')';
+	}
+
 	/* (the alpha gate is ZERO only: a 2 % glass tint — `oklch(… / 0.02)` on a frosted panel — is still a fill; it was rounded to no colour — a feed finding) */
 	public static function color_to_hex( $color ) {
 		$c = strtolower( trim( (string) $color ) );
 		if ( $c === '' || $c === 'transparent' || $c === 'none' || $c === 'currentcolor' || $c === 'inherit' ) { return ''; }
+		// CSS NAMED COLOURS. Every one of the 147 returned '' before this, so a hand-written rule
+		// (`body{background:#fff}` is captured computed, but `background:white` in a <style> block is not)
+		// silently lost its colour -- and a gradient built from named stops vanished entirely, because a
+		// dropped stop leaves fewer than the two gradient-v2 needs.
+		static $named = array(
+			'aliceblue' => 'f0f8ff', 'antiquewhite' => 'faebd7', 'aqua' => '00ffff', 'aquamarine' => '7fffd4',
+			'azure' => 'f0ffff', 'beige' => 'f5f5dc', 'bisque' => 'ffe4c4', 'black' => '000000',
+			'blanchedalmond' => 'ffebcd', 'blue' => '0000ff', 'blueviolet' => '8a2be2', 'brown' => 'a52a2a',
+			'burlywood' => 'deb887', 'cadetblue' => '5f9ea0', 'chartreuse' => '7fff00', 'chocolate' => 'd2691e',
+			'coral' => 'ff7f50', 'cornflowerblue' => '6495ed', 'cornsilk' => 'fff8dc', 'crimson' => 'dc143c',
+			'cyan' => '00ffff', 'darkblue' => '00008b', 'darkcyan' => '008b8b', 'darkgoldenrod' => 'b8860b',
+			'darkgray' => 'a9a9a9', 'darkgreen' => '006400', 'darkgrey' => 'a9a9a9', 'darkkhaki' => 'bdb76b',
+			'darkmagenta' => '8b008b', 'darkolivegreen' => '556b2f', 'darkorange' => 'ff8c00', 'darkorchid' => '9932cc',
+			'darkred' => '8b0000', 'darksalmon' => 'e9967a', 'darkseagreen' => '8fbc8f', 'darkslateblue' => '483d8b',
+			'darkslategray' => '2f4f4f', 'darkslategrey' => '2f4f4f', 'darkturquoise' => '00ced1', 'darkviolet' => '9400d3',
+			'deeppink' => 'ff1493', 'deepskyblue' => '00bfff', 'dimgray' => '696969', 'dimgrey' => '696969',
+			'dodgerblue' => '1e90ff', 'firebrick' => 'b22222', 'floralwhite' => 'fffaf0', 'forestgreen' => '228b22',
+			'fuchsia' => 'ff00ff', 'gainsboro' => 'dcdcdc', 'ghostwhite' => 'f8f8ff', 'gold' => 'ffd700',
+			'goldenrod' => 'daa520', 'gray' => '808080', 'green' => '008000', 'greenyellow' => 'adff2f',
+			'grey' => '808080', 'honeydew' => 'f0fff0', 'hotpink' => 'ff69b4', 'indianred' => 'cd5c5c',
+			'indigo' => '4b0082', 'ivory' => 'fffff0', 'khaki' => 'f0e68c', 'lavender' => 'e6e6fa',
+			'lavenderblush' => 'fff0f5', 'lawngreen' => '7cfc00', 'lemonchiffon' => 'fffacd', 'lightblue' => 'add8e6',
+			'lightcoral' => 'f08080', 'lightcyan' => 'e0ffff', 'lightgoldenrodyellow' => 'fafad2', 'lightgray' => 'd3d3d3',
+			'lightgreen' => '90ee90', 'lightgrey' => 'd3d3d3', 'lightpink' => 'ffb6c1', 'lightsalmon' => 'ffa07a',
+			'lightseagreen' => '20b2aa', 'lightskyblue' => '87cefa', 'lightslategray' => '778899', 'lightslategrey' => '778899',
+			'lightsteelblue' => 'b0c4de', 'lightyellow' => 'ffffe0', 'lime' => '00ff00', 'limegreen' => '32cd32',
+			'linen' => 'faf0e6', 'magenta' => 'ff00ff', 'maroon' => '800000', 'mediumaquamarine' => '66cdaa',
+			'mediumblue' => '0000cd', 'mediumorchid' => 'ba55d3', 'mediumpurple' => '9370db', 'mediumseagreen' => '3cb371',
+			'mediumslateblue' => '7b68ee', 'mediumspringgreen' => '00fa9a', 'mediumturquoise' => '48d1cc', 'mediumvioletred' => 'c71585',
+			'midnightblue' => '191970', 'mintcream' => 'f5fffa', 'mistyrose' => 'ffe4e1', 'moccasin' => 'ffe4b5',
+			'navajowhite' => 'ffdead', 'navy' => '000080', 'oldlace' => 'fdf5e6', 'olive' => '808000',
+			'olivedrab' => '6b8e23', 'orange' => 'ffa500', 'orangered' => 'ff4500', 'orchid' => 'da70d6',
+			'palegoldenrod' => 'eee8aa', 'palegreen' => '98fb98', 'paleturquoise' => 'afeeee', 'palevioletred' => 'db7093',
+			'papayawhip' => 'ffefd5', 'peachpuff' => 'ffdab9', 'peru' => 'cd853f', 'pink' => 'ffc0cb',
+			'plum' => 'dda0dd', 'powderblue' => 'b0e0e6', 'purple' => '800080', 'rebeccapurple' => '663399',
+			'red' => 'ff0000', 'rosybrown' => 'bc8f8f', 'royalblue' => '4169e1', 'saddlebrown' => '8b4513',
+			'salmon' => 'fa8072', 'sandybrown' => 'f4a460', 'seagreen' => '2e8b57', 'seashell' => 'fff5ee',
+			'sienna' => 'a0522d', 'silver' => 'c0c0c0', 'skyblue' => '87ceeb', 'slateblue' => '6a5acd',
+			'slategray' => '708090', 'slategrey' => '708090', 'snow' => 'fffafa', 'springgreen' => '00ff7f',
+			'steelblue' => '4682b4', 'tan' => 'd2b48c', 'teal' => '008080', 'thistle' => 'd8bfd8',
+			'tomato' => 'ff6347', 'turquoise' => '40e0d0', 'violet' => 'ee82ee', 'wheat' => 'f5deb3',
+			'white' => 'ffffff', 'whitesmoke' => 'f5f5f5', 'yellow' => 'ffff00', 'yellowgreen' => '9acd32',
+		);
+		if ( isset( $named[ $c ] ) ) { return '#' . $named[ $c ]; }
 		$clamp = function ( $x ) { return max( 0, min( 255, (int) round( $x ) ) ); };
 		// #hex (expand shorthand; drop alpha)
 		if ( $c[0] === '#' ) {
@@ -217,6 +345,38 @@ class FW_Site_Converter_Stitch {
 			$R = 4.0767416621 * $lc - 3.3077115913 * $mc + 0.2309699292 * $sc;
 			$G = -1.2684380046 * $lc + 2.6097574011 * $mc - 0.3413193965 * $sc;
 			$B = -0.0041960863 * $lc - 0.7034186147 * $mc + 1.7076147010 * $sc;
+			$gam = function ( $x ) { $x = max( 0.0, min( 1.0, $x ) ); return $x <= 0.0031308 ? 12.92 * $x : 1.055 * pow( $x, 1 / 2.4 ) - 0.055; };
+			return sprintf( '#%02x%02x%02x', $clamp( $gam( $R ) * 255 ), $clamp( $gam( $G ) * 255 ), $clamp( $gam( $B ) * 255 ) );
+		}
+		// CIE lab(L a b) / lch(L C H) — NOT the same colour space as oklab/oklch above, and a different white
+		// point: CSS defines these on D50, so matching the browser means adapting D50 -> D65 before sRGB.
+		// A whole source can compute to this space (a site built on a palette declared in `lab()` does), and
+		// with no branch for it EVERY colour read returned '' — headings fell back to the theme's ink, an
+		// accent span lost its brand colour, and an accordion's titles came back slate instead of near-black.
+		// Measured on one such source: 62 property deltas, nearly all of them this.
+		if ( preg_match( '/^l(ab|ch)\(\s*(-?[0-9.]+%?)[,\s]+(-?[0-9.]+%?)[,\s]+(-?[0-9.]+)(?:deg)?(?:[,\s\/]+([0-9.]+%?))?\s*\)$/i', $c, $m ) ) {
+			if ( isset( $m[5] ) && $m[5] !== '' ) { $a = strpos( $m[5], '%' ) !== false ? (float) $m[5] / 100 : (float) $m[5]; if ( $a <= 0.0 ) { return ''; } }
+			$L = (float) rtrim( $m[2], '%' );
+			if ( 'ch' === strtolower( $m[1] ) ) {
+				$C = (float) rtrim( $m[3], '%' ); $H = deg2rad( (float) $m[4] );
+				$aa = $C * cos( $H ); $bb = $C * sin( $H );
+			} else {
+				$aa = (float) rtrim( $m[3], '%' ); $bb = (float) $m[4];
+			}
+			$eps = 216 / 24389; $kap = 24389 / 27;
+			$fy = ( $L + 16 ) / 116; $fx = $fy + $aa / 500; $fz = $fy - $bb / 200;
+			$fx3 = $fx ** 3; $fz3 = $fz ** 3;
+			$xr = ( $fx3 > $eps ) ? $fx3 : ( ( 116 * $fx - 16 ) / $kap );
+			$yr = ( $L > $kap * $eps ) ? ( ( ( $L + 16 ) / 116 ) ** 3 ) : ( $L / $kap );
+			$zr = ( $fz3 > $eps ) ? $fz3 : ( ( 116 * $fz - 16 ) / $kap );
+			// D50 reference white, then Bradford adaptation to D65 (CSS Color 4's own pipeline).
+			$X = $xr * 0.3457 / 0.3585; $Y = $yr * 1.0; $Z = $zr * ( 1.0 - 0.3457 - 0.3585 ) / 0.3585;
+			$X65 =  0.9554734527042182 * $X - 0.023098536874261423 * $Y + 0.0632593086610217   * $Z;
+			$Y65 = -0.028369706963208136 * $X + 1.0099954580058226  * $Y + 0.021041398966943008 * $Z;
+			$Z65 =  0.012314001688319899 * $X - 0.020507696433477912 * $Y + 1.3303659366080753  * $Z;
+			$R =  3.2409699419045226  * $X65 - 1.537383177570094  * $Y65 - 0.4986107602930034  * $Z65;
+			$G = -0.9692436362808796  * $X65 + 1.8759675015077202 * $Y65 + 0.04155505740717559 * $Z65;
+			$B =  0.05563007969699366 * $X65 - 0.20397695888897652 * $Y65 + 1.0569715142428786 * $Z65;
 			$gam = function ( $x ) { $x = max( 0.0, min( 1.0, $x ) ); return $x <= 0.0031308 ? 12.92 * $x : 1.055 * pow( $x, 1 / 2.4 ) - 0.055; };
 			return sprintf( '#%02x%02x%02x', $clamp( $gam( $R ) * 255 ), $clamp( $gam( $G ) * 255 ), $clamp( $gam( $B ) * 255 ) );
 		}
@@ -325,6 +485,25 @@ class FW_Site_Converter_Stitch {
 	/** Resolve a CSS value that may be `var(--x[, fallback])` (chained through the root‑var map) or a literal
 	 *  colour, to a colour string ('' if it doesn't resolve to a colour). Non‑var values pass through the
 	 *  normal colour parser, so existing behaviour is unchanged. */
+	/** Substitute EVERY `var(--x[, fallback])` inside a CSS value, in place, and return the value.
+	 *  `resolve_css_color()` resolves a value that IS a var and yields a colour token, which is the wrong shape
+	 *  for a gradient: `linear-gradient(145deg, var(--a) 0%, var(--b) 100%)` holds several vars and must keep its
+	 *  surrounding syntax. */
+	private static function resolve_css_vars( $val, $vars, $depth = 0 ) {
+		$val = (string) $val;
+		if ( '' === $val || $depth > 4 || false === stripos( $val, 'var(' ) ) { return $val; }
+		$out = preg_replace_callback(
+			'/var\(\s*--([a-z0-9-]+)\s*(?:,\s*([^()]*))?\)/i',
+			function ( $m ) use ( $vars ) {
+				$name = strtolower( $m[1] );
+				if ( isset( $vars[ $name ] ) ) { return (string) $vars[ $name ]; }
+				return isset( $m[2] ) ? trim( (string) $m[2] ) : '';
+			},
+			$val
+		);
+		if ( ! is_string( $out ) || $out === $val ) { return $val; }
+		return self::resolve_css_vars( $out, $vars, $depth + 1 );
+	}
 	private static function resolve_css_color( $val, $vars, $depth = 0 ) {
 		$val = trim( (string) $val );
 		if ( '' === $val || $depth > 4 ) { return ''; }
@@ -337,6 +516,93 @@ class FW_Site_Converter_Stitch {
 		return self::first_color_token( $val );
 	}
 
+	/** Split a comma-separated CSS argument list at TOP LEVEL only. `oklch(.2 .04 265 / .5), oklab(…)` must
+	 *  not be cut inside a colour's own parens, which a plain explode() does — and modern captures are full of
+	 *  functional colours, so the naive split produced fragments that parsed as nothing. */
+	private static function split_css_args( $s ) {
+		$out = array(); $buf = ''; $depth = 0; $len = strlen( $s );
+		for ( $i = 0; $i < $len; $i++ ) {
+			$ch = $s[ $i ];
+			if ( '(' === $ch ) { $depth++; }
+			elseif ( ')' === $ch ) { $depth--; }
+			if ( ',' === $ch && $depth <= 0 ) { $out[] = trim( $buf ); $buf = ''; continue; }
+			$buf .= $ch;
+		}
+		if ( '' !== trim( $buf ) ) { $out[] = trim( $buf ); }
+		return $out;
+	}
+
+	/** A CSS gradient string → the `gradient-v2` value shape array( type, angle, stops[{color,position}] ) that
+	 *  Theme Settings stores, or null when it is not a gradient this engine can represent. Keeping the CONVERSION
+	 *  here (rather than writing raw CSS somewhere) is what makes the result EDITABLE in Theme Settings instead of
+	 *  a frozen string: the option round-trips through FW_Option_Type_Gradient_V2::to_css().
+	 *
+	 *  Handles: `linear-gradient(<angle>deg|to <side...>, …)`, `radial-gradient([circle|ellipse…,] …)`, repeating-*,
+	 *  functional colours with inner commas, and stops with NO position (distributed evenly, as CSS itself does).
+	 *  A single-stop gradient returns null — gradient-v2 needs two, and to_css() would drop it anyway. */
+	public static function gradient_css_to_v2( $css ) {
+		$css = trim( (string) $css );
+		if ( '' === $css ) { return null; }
+		// A layered `background-image` can hold several gradients; the FIRST is the one painted on top.
+		$first = self::split_css_args( $css );
+		foreach ( $first as $cand ) { if ( preg_match( '/gradient\s*\(/i', $cand ) ) { $css = $cand; break; } }
+		if ( ! preg_match( '/^(repeating-)?(linear|radial|conic)-gradient\s*\((.*)\)$/is', $css, $m ) ) { return null; }
+		$kind = strtolower( $m[2] );
+		// conic has no gradient-v2 representation; treating it as linear would paint something the source never showed.
+		if ( 'conic' === $kind ) { return null; }
+		$args = self::split_css_args( $m[3] );
+		if ( count( $args ) < 2 ) { return null; }
+
+		$angle = ( 'radial' === $kind ) ? 90 : 180;   // CSS default for linear-gradient is `to bottom` = 180deg
+		$head  = $args[0];
+		$consumed_head = false;
+		if ( preg_match( '/^([-0-9.]+)deg$/i', $head, $a ) ) { $angle = (int) round( (float) $a[1] ); $consumed_head = true; }
+		elseif ( preg_match( '/^([-0-9.]+)(turn|rad|grad)$/i', $head, $a ) ) {
+			$n = (float) $a[1]; $u = strtolower( $a[2] );
+			$angle = (int) round( 'turn' === $u ? $n * 360 : ( 'rad' === $u ? $n * 180 / M_PI : $n * 0.9 ) );
+			$consumed_head = true;
+		} elseif ( preg_match( '/^to\s+(.+)$/i', $head, $a ) ) {
+			// `to <side>` → the CSS angle for that direction (corner forms approximated to the diagonal).
+			$sides = preg_split( '/\s+/', strtolower( trim( $a[1] ) ) );
+			sort( $sides );
+			$map = array( 'top' => 0, 'right' => 90, 'bottom' => 180, 'left' => 270,
+				'right top' => 45, 'bottom right' => 135, 'bottom left' => 225, 'left top' => 315 );
+			$key = implode( ' ', $sides );
+			if ( isset( $map[ $key ] ) ) { $angle = $map[ $key ]; }
+			$consumed_head = true;
+		} elseif ( 'radial' === $kind && preg_match( '/^(circle|ellipse|closest|farthest|at\s)/i', $head ) ) {
+			$consumed_head = true;   // a radial shape/position prelude carries no colour
+		}
+		if ( $consumed_head ) { array_shift( $args ); }
+		if ( count( $args ) < 2 ) { return null; }
+
+		$stops = array();
+		foreach ( $args as $i => $arg ) {
+			// The position is a trailing <percentage|length>; everything before it is the colour (which may
+			// itself contain spaces, e.g. `oklch(.2 .04 265)`), so peel from the END rather than splitting.
+			$pos = null;
+			if ( preg_match( '/^(.*?)\s+([-0-9.]+)%$/s', $arg, $pm ) ) { $arg = trim( $pm[1] ); $pos = (float) $pm[2]; }
+			elseif ( preg_match( '/^(.*?)\s+([-0-9.]+)(px|rem|em)$/is', $arg, $pm ) ) { $arg = trim( $pm[1] ); $pos = null; }
+			// `transparent` is a legitimate gradient STOP (a fade-out), while everywhere else it means
+			// "no colour" -- which is why color_to_css() returns '' for it and must keep doing so. Map it
+			// here only: dropping the stop deletes the fade and can leave fewer than the two stops needed.
+			$col = ( 'transparent' === strtolower( trim( $arg ) ) ) ? 'rgba(0, 0, 0, 0)' : self::color_to_css( $arg );
+			if ( '' === $col ) { continue; }
+			$stops[] = array( 'color' => $col, 'position' => $pos );
+		}
+		$n = count( $stops );
+		if ( $n < 2 ) { return null; }
+		// Distribute the un-positioned stops evenly, which is what the browser does for a bare colour list.
+		foreach ( $stops as $i => $st ) {
+			if ( null === $st['position'] ) { $stops[ $i ]['position'] = ( 1 === $n ) ? 0 : round( $i * 100 / ( $n - 1 ), 2 ); }
+			$stops[ $i ]['position'] = max( 0, min( 100, (float) $stops[ $i ]['position'] ) );
+		}
+		return array(
+			'type'  => ( 'radial' === $kind ) ? 'radial' : 'linear',
+			'angle' => ( ( $angle % 360 ) + 360 ) % 360,
+			'stops' => $stops,
+		);
+	}
 	/** The page CANVAS background from the source's `body{background|background-color}` rule (computed style
 	 *  first, then the `<style>` rule), resolving a `var(--x)` through the root‑var map. '' when none — used
 	 *  as a fallback for the token‑based site background so a hand‑built dark page (`body{background:var(--ink)}`)
@@ -364,6 +630,38 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 		return '';
+	}
+
+	/** The page CANVAS GRADIENT from the source's `body{background-image}` (the capture stamps it on body/html),
+	 *  as a `gradient-v2` value. Only the background-COLOUR was ever read, so a page whose entire identity is a
+	 *  full-height gradient on <body> converted to one FLAT fill — the most visible defect such a page can have,
+	 *  and one no band-level lens reports, because every band matches its own counterpart. Returns null when the
+	 *  canvas carries no gradient. */
+	private static function detect_body_gradient( $html ) {
+		$vars = self::css_root_vars( $html );
+		$dom  = self::load_dom( (string) $html );
+		if ( $dom ) {
+			foreach ( array( 'body', 'html' ) as $tag ) {
+				$el = $dom->getElementsByTagName( $tag )->item( 0 );
+				if ( ! $el ) { continue; }
+				foreach ( array( 'background-image', 'background' ) as $p ) {
+					$v = self::sc_css( $el, $p );
+					if ( '' === $v || false === stripos( $v, 'gradient' ) ) { continue; }
+					$g = self::gradient_css_to_v2( self::resolve_css_vars( $v, $vars ) );
+					if ( $g ) { return $g; }
+				}
+			}
+		}
+		$css = self::all_style_css( $html );
+		foreach ( array( 'body', 'html' ) as $sel ) {
+			if ( preg_match( '/(?:^|[}\s,;])' . preg_quote( $sel, '/' ) . '\s*\{([^}]*)\}/i', $css, $mm ) ) {
+				if ( preg_match( '/(?<![-\w])background(?:-image)?\s*:\s*([^;]+)/i', $mm[1], $m ) && false !== stripos( $m[1], 'gradient' ) ) {
+					$g = self::gradient_css_to_v2( self::resolve_css_vars( $m[1], $vars ) );
+					if ( $g ) { return $g; }
+				}
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -995,8 +1293,11 @@ class FW_Site_Converter_Stitch {
 				return ( isset( $m[4] ) && $m[4] !== '' && $m[4] !== '1' ) ? "rgba({$m[1]}, {$m[2]}, {$m[3]}, {$m[4]})" : "rgb({$m[1]}, {$m[2]}, {$m[3]})";
 			}
 			return $c;
+		// A pill radius reaches the stamp in scientific notation (`3.35544e+07px`), which the length regex
+		// below cannot match — so the value was DROPPED and the preset fell back to the theme radius.
+		// normalize_sci() expands it and caps at 9999px (= a pill) so it parses as an ordinary length.
 		};
-		$unit    = function ( $v ) { $v = trim( (string) $v ); return preg_match( '/^(-?[0-9.]+)\s*(px|rem|em|%)?$/', $v, $m ) ? array( 'value' => $m[1], 'unit' => ( isset( $m[2] ) && $m[2] !== '' ? $m[2] : 'px' ) ) : null; };
+		$unit    = function ( $v ) { $v = trim( self::normalize_sci( (string) $v ) ); return preg_match( '/^(-?[0-9.]+)\s*(px|rem|em|%)?$/', $v, $m ) ? array( 'value' => $m[1], 'unit' => ( isset( $m[2] ) && $m[2] !== '' ? $m[2] : 'px' ) ) : null; };
 		$filledp = function ( $bg ) { $bg = strtolower( str_replace( ' ', '', (string) $bg ) ); return $bg !== '' && $bg !== 'transparent' && strpos( $bg, 'rgba(0,0,0,0' ) === false; };
 		$whitish = function ( $bg ) { if ( preg_match( '/(\d+)[,\s]+(\d+)[,\s]+(\d+)/', (string) $bg, $m ) ) { return $m[1] > 240 && $m[2] > 240 && $m[3] > 240; } return in_array( strtolower( trim( (string) $bg ) ), array( '#fff', '#ffffff', 'white' ), true ); };
 		$shbox   = function ( $css ) { $css = trim( (string) $css ); if ( $css === '' || $css === 'none' || strpos( $css, '#0000' ) !== false ) { return null; } $first = explode( ',', $css )[0]; preg_match( '/(rgba?\([^)]*\)|#[0-9a-f]{3,8})/i', $first, $cm ); $off = preg_replace( '/(rgba?\([^)]*\)|#[0-9a-f]{3,8}|inset)/i', '', $first ); if ( ! preg_match_all( '/-?\d+(?:\.\d+)?/', $off, $mm ) ) { return null; } $n = array_map( 'intval', $mm[0] ); return array( 'x' => isset( $n[0] ) ? $n[0] : 0, 'y' => isset( $n[1] ) ? $n[1] : 0, 'blur' => isset( $n[2] ) ? $n[2] : 0, 'spread' => isset( $n[3] ) ? $n[3] : 0, 'color' => ( isset( $cm[1] ) ? $cm[1] : 'rgba(0,0,0,0.1)' ), 'inset' => false ); };
@@ -1016,7 +1317,7 @@ class FW_Site_Converter_Stitch {
 			// oklch() / oklab() / hsl() — the colour spaces AI-built sources paint buttons with (`border:0.5px solid
 			// oklch(1 0 0)` = a WHITE hairline). Unparsed, the border colour read '' and the Outline role defaulted to
 			// the text ink — a white pill shipped with a black outline. Resolve through color_to_hex, keeping alpha.
-			if ( preg_match( '/^(?:okl(?:ch|ab)|hsla?)\(/', $c ) ) {
+			if ( self::is_color_func( $c ) ) {
 				$hex = self::color_to_hex( $c );
 				if ( '' === $hex ) { return ''; }
 				if ( preg_match( '/[\/,]\s*([0-9.]+%?)\s*\)$/', $c, $am ) ) {
@@ -1060,6 +1361,10 @@ class FW_Site_Converter_Stitch {
 		};
 
 		$skins = array();
+		if ( '' !== self::$btn_scan_html && self::$btn_scan_html !== $html ) {
+			$dom_all = self::load_dom( self::$btn_scan_html );
+			if ( $dom_all ) { $dom = $dom_all; }   // scan every route, so an inner page's button shape gets its own preset
+		}
 		foreach ( array( 'a', 'button' ) as $tag ) {
 			foreach ( $dom->getElementsByTagName( $tag ) as $node ) {
 				$txt = trim( preg_replace( '/\s+/', ' ', (string) $node->textContent ) );
@@ -1096,7 +1401,16 @@ class FW_Site_Converter_Stitch {
 				$bw = '';
 				if ( isset( $props['border-top-width'] ) && ! in_array( $props['border-top-width'], array( '', '0', '0px' ), true ) ) { $bw = $props['border-top-width']; }
 				elseif ( isset( $props['border-width'] ) && ! in_array( $props['border-width'], array( '', '0', '0px' ), true ) ) { $bw = $props['border-width']; }
-				$bdcol = $normc( isset( $props['border-top-color'] ) ? $props['border-top-color'] : ( isset( $props['border-color'] ) ? $props['border-color'] : '' ) );
+				$bdcol_raw = (string) ( isset( $props['border-top-color'] ) ? $props['border-top-color'] : ( isset( $props['border-color'] ) ? $props['border-color'] : '' ) );
+				$bdcol = $normc( $bdcol_raw );
+				// A border the source deliberately makes TRANSPARENT is a design choice, not a missing value —
+				// it is how the gradient-border idiom works (a see-through 1px edge with the gradient painted
+				// on the border box beneath it). $normc flattens any alpha<=0.02 to '', which made it
+				// indistinguishable from "no colour captured", and the preset then substituted the button's INK
+				// — painting a white ring where the source shows a purple-to-blue gradient edge.
+				$bdclear = ( '' === $bdcol && '' !== trim( $bdcol_raw )
+					&& ( 'transparent' === strtolower( trim( $bdcol_raw ) )
+						|| preg_match( '/rgba?\([^)]*[,\/]\s*(?:0|0?\.0*)\s*\)/i', $bdcol_raw ) ) );
 				$radius = isset( $props['border-radius'] ) ? trim( $props['border-radius'] ) : '';
 				$pad    = isset( $props['padding'] ) ? trim( $props['padding'] ) : '';
 				$px = ''; $py = '';
@@ -1162,8 +1476,35 @@ class FW_Site_Converter_Stitch {
 				elseif ( $ghost )                                     { $role = 'Ghost'; }  // a text button: no fill, no border, its own ink + hover ink
 				else { $role = 'Outline'; }
 
+				// GRADIENT TEXT on the label: a span whose ink is transparent over a gradient background is the
+				// background-clip:text idiom, so the LABEL is painted by the gradient. The button's own stamp
+				// reports `color:rgba(0, 0, 0, 0)` for it, which read literally converts to an invisible (or,
+				// after the ink fallback, a flatly wrong) label. Captured here and reproduced on the preset.
+				$text_grad = '';
+				foreach ( $node->getElementsByTagName( 'span' ) as $sp ) {
+					$scs = (string) $sp->getAttribute( 'data-sc-cs' );
+					if ( '' === $scs
+						|| ! preg_match( '/(?:^|;)\s*color:\s*(?:transparent|rgba\([^)]*,\s*0(?:\.0*)?\s*\))/i', $scs )
+						|| ! preg_match( '/(?:^|;)\s*background-image:\s*([^;]*gradient[^;]*)/i', $scs, $tgm ) ) { continue; }
+					$cand = trim( $tgm[1] );
+					if ( preg_match( '/^[a-z0-9()%.,\s#\/_-]+$/i', $cand ) ) { $text_grad = $cand; break; }
+				}
+
+				// A button STRETCHED to its container (`w-full`, or a computed `width:100%`) is not a SIZE.
+				// Its box comes from whatever holds it, and its horizontal padding is usually zero because the
+				// width already fills the line — so letting it vote in the size clusters invented a "size" whose
+				// defining trait was `padding-x: 0`, and on a site where full-width CTAs are the commonest button
+				// that bogus size became the DEFAULT. Every ordinary button then matched into it and rendered with
+				// no side padding at all (a real-site audit: a `px-8` button came back 52px narrower than source).
+				// The flag only gates SIZE clustering; the fill, ink and type of such a button are real and still count.
+				$stretch = ( preg_match( '/(?:^|\s)w-full(?:\s|$)/', $lc )
+						&& ! preg_match( '/\b(?:sm|md|lg|xl|2xl):w-(?:auto|fit|max|min|\d)/', $lc ) )
+					|| (bool) preg_match( '/(?:^|;)\s*width:\s*100%/i', $cs );
+
 				$skins[] = array(
-					'role' => $role, 'bg' => $bg, 'grad' => $grad, 'fg' => $fg, 'bd' => $bdcol, 'bw' => $bw,
+					'stretch' => $stretch,
+					'textGrad' => $text_grad,
+					'role' => $role, 'bg' => $bg, 'grad' => $grad, 'fg' => $fg, 'bd' => $bdcol, 'bdclear' => $bdclear, 'bw' => $bw,
 					'shadow' => isset( $props['box-shadow'] ) ? $props['box-shadow'] : '',
 					'radius' => $radius, 'px' => $px, 'py' => $py, 'height' => $height,
 					'fs' => isset( $props['font-size'] ) ? $props['font-size'] : '',
@@ -1312,13 +1653,20 @@ class FW_Site_Converter_Stitch {
 			// The capture's RESOLVED :hover transform (data-sc-hover `hover-self{transform:translateY(-4px)}`) — the
 			// source's own lift / grow / tilt, carried VERBATIM. The preset owns it (like the source's `.btn:hover`
 			// rule), so the button never needs a substituted `.btnfx-*` effect that adds a shadow the source lacks.
-			if ( preg_match( '/hover-self\{([^}]*)\}/i', (string) $hov, $hm ) && preg_match( '/(?:^|;)\s*transform\s*:\s*([^;]+)/i', $hm[1], $tm ) ) {
+			// The capture appends the browser-RESOLVED hover AFTER the authored one (`…|hover-self{…}`), so a
+			// value written with var() / color-mix() arrives twice: as authored, and as the browser computed it.
+			// Both readers below took the FIRST block — the authored text — so a glow written as
+			// `color-mix(in oklab, var(--brand) 52%, transparent)` converted FULLY OPAQUE, because the alpha
+			// exists only once the browser has resolved it. Take the LAST block.
+			$hov_self = preg_match_all( '/hover-self\{([^}]*)\}/i', (string) $hov, $hms ) ? (string) end( $hms[1] ) : '';
+			if ( '' !== $hov_self && preg_match( '/(?:^|;)\s*transform\s*:\s*([^;]+)/i', $hov_self, $tm ) ) {
 				$tf = trim( $tm[1] );
 				if ( '' !== $tf && 'none' !== strtolower( $tf ) ) { $rules[] = '{{SELECTOR}}:hover { transform: ' . $tf . '; }'; }
 			}
 			// …and the REST of the hover state the native hover fields cannot hold (a lifted shadow, a glow filter, a wider
 			// tracking) — the source's `.btn:hover` rule, verbatim. Colours stay on the native hover fields.
-			if ( preg_match( '/hover-self\{([^}]*)\}/i', (string) $hov, $hm2 ) ) {
+			if ( '' !== $hov_self ) {
+				$hm2 = array( 1 => $hov_self );
 				$hd = array();
 				foreach ( array( 'box-shadow', 'filter', 'letter-spacing', 'opacity' ) as $hp ) { if ( preg_match( '/(?:^|;)\s*' . $hp . '\s*:\s*([^;]+)/i', $hm2[1], $pm ) && preg_match( '/^[a-z0-9()%.,\s#\/-]+$/i', trim( $pm[1] ) ) ) { $hd[] = $hp . ': ' . trim( $pm[1] ); } }
 				if ( $hd ) { $rules[] = '{{SELECTOR}}:hover { ' . implode( '; ', $hd ) . '; }'; }
@@ -1390,10 +1738,18 @@ class FW_Site_Converter_Stitch {
 			return $d ? '{{SELECTOR}} { ' . implode( '; ', $d ) . '; }' : '';
 		};
 
-		// Cluster distinct skins by role + colours; the FIRST-seen wins each role (source order = prominence).
+		// Cluster distinct skins by role + colours + TYPE; the FIRST-seen wins each role (source order = prominence).
+		//
+		// Casing and tracking belong in this key. The variant pass below already says casing is part of the skin,
+		// but it reads GROUPS — and the key merged them first, so two buttons with one fill and different type
+		// were a single group and the variant split could never fire. First seen won: a 12px uppercase header
+		// pill with `tracking-wider` imposed both on the page's sentence-case CTA, which came back 12px wider
+		// than its source with its letters spaced out. Keyed apart, each becomes its own preset and owns its own
+		// type — which is where a style belongs, rather than being re-asserted per button.
 		$groups = array();
 		foreach ( $skins as $s ) {
-			$key = $s['role'] . '|' . $s['bg'] . '|' . $s['bw'] . $s['bd'];
+			$type_sig = strtolower( trim( (string) ( $s['tt'] ?? '' ) ) ) . '|' . strtolower( trim( (string) ( $s['ls'] ?? '' ) ) );
+			$key = $s['role'] . '|' . $s['bg'] . '|' . $s['bw'] . $s['bd'] . '|' . $type_sig;
 			if ( ! isset( $groups[ $key ] ) ) { $groups[ $key ] = array_merge( $s, array( 'count' => 0 ) ); }
 			$groups[ $key ]['count']++;
 			// The winning group keeps the FIRST-seen skin's fields — but the HOVER often lives on only one
@@ -1424,7 +1780,15 @@ class FW_Site_Converter_Stitch {
 			$variants[ $r ] = isset( $variants[ $r ] ) ? $variants[ $r ] : array();
 			if ( count( $variants[ $r ] ) >= 2 ) { continue; }
 			$dup = false;
-			foreach ( $variants[ $r ] as $v ) { if ( $v['bg'] === $g['bg'] && $v['bd'] === $g['bd'] && $v['grad'] === $g['grad'] ) { $dup = true; break; } }
+			// CASING IS PART OF THE SKIN. Variants were deduped on colour alone, so an UPPERCASE pill and a
+			// sentence-case block button with the same fill collapsed into ONE preset -- and whichever was
+			// captured first imposed its text-transform on the other. A hero CTA reading 'Get My Free Quote'
+			// shipped as 'GET MY FREE QUOTE' because the small header chip happened to be seen first.
+			foreach ( $variants[ $r ] as $v ) {
+				if ( $v['bg'] === $g['bg'] && $v['bd'] === $g['bd'] && $v['grad'] === $g['grad']
+					&& strtolower( trim( (string) ( $v['tt'] ?? '' ) ) ) === strtolower( trim( (string) ( $g['tt'] ?? '' ) ) )
+					&& strtolower( trim( (string) ( $v['ls'] ?? '' ) ) ) === strtolower( trim( (string) ( $g['ls'] ?? '' ) ) ) ) { $dup = true; break; }
+			}
 			if ( $dup ) { continue; }
 			$g['role'] = $r . ' ' . ( count( $variants[ $r ] ) + 2 );
 			$variants[ $r ][] = $g;
@@ -1448,7 +1812,10 @@ class FW_Site_Converter_Stitch {
 			if ( isset( $seen_name[ $name ] ) ) { continue; }
 			$seen_name[ $name ] = true;
 			$is_outline = ( $name === 'Outline' ) || ( ! $filledp( $g['bg'] ) && $g['bw'] !== '' );
-			$def_bd = ( $g['bw'] !== '' ? ( $g['bd'] !== '' ? $g['bd'] : $g['fg'] ) : '' );
+			// A measured-transparent edge stays transparent: substituting the ink here is what put a white ring
+			// around every gradient-border CTA. Only a border whose colour was genuinely never captured falls
+			// back to the text colour.
+			$def_bd = ( $g['bw'] !== '' ? ( $g['bd'] !== '' ? $g['bd'] : ( ! empty( $g['bdclear'] ) ? 'transparent' : $g['fg'] ) ) : '' );
 			// HOVER — derive from the source button's own `hover:*` classes (real fill/text/border), NOT a
 			// blind /90. A `hover:bg-primary/90` resolves via the semantic map to the primary fill at 90%
 			// alpha; a `hover:bg-secondary` resolves to a genuinely different colour; `hover:opacity-90` →
@@ -1485,12 +1852,43 @@ class FW_Site_Converter_Stitch {
 			$ttv  = ( $ttv !== '' && $ttv !== 'none' ) ? $ttv : '';
 
 			$def_state = $state( $g['fg'], $g['bg'], $def_bd, $g['bw'], ( $g['bw'] !== '' ? 'solid' : ( $is_outline ? 'solid' : 'none' ) ), $g['shadow'] );
-			if ( $ttv !== '' ) { $def_state['text_transform'] = $ttv; }
+			// CASING ONLY WHEN THE SOURCE AGREES. A preset is SHARED, so putting one button's text-transform on
+			// it imposes that casing on every button matching the same fill. A small uppercase header chip and a
+			// sentence-case hero CTA share this source's fill, and the chip's `uppercase` turned the hero into
+			// SHOUTING. Only carry casing when every button feeding this role uses the same one; otherwise leave
+			// it off and let each button keep its own. An UPPERCASE chip rendered in sentence case is a much
+			// smaller error than a hero CTA shouting.
+			$tt_all = array();
+			foreach ( $groups as $g2 ) {
+				if ( ( $g2['role'] ?? '' ) !== ( $g['role'] ?? '' ) ) { continue; }
+				$t2 = strtolower( trim( (string) ( $g2['tt'] ?? '' ) ) );
+				$tt_all[ ( '' === $t2 ? 'none' : $t2 ) ] = 1;
+			}
+			if ( $ttv !== '' && count( $tt_all ) <= 1 ) { $def_state['text_transform'] = $ttv; } // (see above: shared preset, so only when the source agrees)
 			// GRADIENT fill → the preset's native Background Gradient (gradient-v2) field, parsed to {type,angle,stops}.
 			// The button's fill was captured as a gradient; map it to the option instead of dropping it to Custom CSS.
 			if ( ! empty( $g['grad'] ) && class_exists( 'FW_Site_Converter_Mapper' ) ) {
 				$gv = FW_Site_Converter_Mapper::parse_linear_gradient( (string) $g['grad'] );
-				if ( is_array( $gv ) ) { $def_state['gradient'] = $gv; }
+				// A LAYERED value defeats the simple parser. These buttons paint a flat overlay OVER a brand
+				// gradient (the gradient-border trick: `linear-gradient(a, a), linear-gradient(110deg, b, c)`),
+				// and the simple parser returned nothing -- so the button lost its fill entirely and converted
+				// as a bare outline. gradient_css_to_v2() reads layers, `to <side>` forms and oklab/oklch.
+				if ( ! is_array( $gv ) ) { $gv = self::gradient_css_to_v2( (string) $g['grad'] ); }
+				if ( is_array( $gv ) && ! empty( $gv['stops'] ) ) {
+					// All stops the same colour is not a gradient -- it is a SOLID fill written as one, which is
+					// exactly what the overlay layer above is. Store it as the fill so the button reads correctly
+					// and stays editable as a colour rather than as a degenerate two-stop gradient.
+					$uniq = array();
+					foreach ( $gv['stops'] as $st ) { $uniq[ strtolower( (string) ( $st['color'] ?? '' ) ) ] = 1; }
+					if ( 1 === count( $uniq ) ) {
+						$solid = (string) $gv['stops'][0]['color'];
+						if ( '' !== $solid && empty( $def_state['bg_color']['custom'] ) ) {
+							$def_state['bg_color'] = array( 'predefined' => '', 'custom' => $solid );
+						}
+					} else {
+						$def_state['gradient'] = $gv;
+					}
+				}
 			}
 
 			// Preset Custom CSS (advanced) = only what the native fields can't hold: the hover MOTION (+ its transition),
@@ -1509,6 +1907,31 @@ class FW_Site_Converter_Stitch {
 			$cpv = trim( (string) ( $g['clip'] ?? '' ) ); if ( '' !== $cpv && 'none' !== strtolower( $cpv ) && preg_match( $safe_x, $cpv ) ) { $skin_x[] = 'clip-path: ' . $cpv; }
 			$bfv = trim( (string) ( $g['backdrop'] ?? '' ) ); if ( '' !== $bfv && 'none' !== strtolower( $bfv ) && preg_match( $safe_x, $bfv ) ) { $skin_x[] = '-webkit-backdrop-filter: ' . $bfv; $skin_x[] = 'backdrop-filter: ' . $bfv; }
 			if ( $skin_x ) { $ccss = trim( $ccss . "\n{{SELECTOR}} { " . implode( '; ', $skin_x ) . "; }" ); }
+			// GRADIENT BORDER — a two-layer fill behind a deliberately transparent edge. The idiom paints an
+			// inner solid on the PADDING box and the gradient on the BORDER box, so the gradient shows through
+			// the see-through border as the outline. Only the first layer is parsed above (it is the inner
+			// solid, and it correctly becomes the flat bg_color), so the gradient edge itself had nowhere to
+			// live and the button converted with a plain ink-coloured ring. It belongs on the PRESET, so every
+			// button wearing this colour gets the same edge and one preset edit still moves them all.
+			$grad_all = trim( (string) ( $g['grad'] ?? '' ) );
+			$layers   = $grad_all !== '' ? preg_match_all( '/\b(?:linear|radial|conic)-gradient\s*\(/i', $grad_all ) : 0;
+			if ( $layers >= 2 && ! empty( $g['bdclear'] ) && '' !== (string) $g['bw']
+				&& preg_match( '/^[a-z0-9()%.,\s#\/_-]+$/i', $grad_all ) ) {
+				$ccss = trim( $ccss . "\n{{SELECTOR}} { background-image: " . $grad_all . '; '
+					. 'background-origin: padding-box, border-box; '
+					. 'background-clip: padding-box, border-box; '
+					. 'border-color: transparent; }' );
+			}
+			// GRADIENT TEXT — on the label's own element, because the button box may already be spending its
+			// background on the gradient border above and one element gets one background-clip. The label span
+			// exists for exactly this. Colour is set too, so a browser that ignores background-clip:text still
+			// shows readable text rather than nothing.
+			$tgrad = trim( (string) ( $g['textGrad'] ?? '' ) );
+			if ( '' !== $tgrad ) {
+				$ccss = trim( $ccss . "\n{{SELECTOR}} .btn__label { background-image: " . $tgrad . '; '
+					. '-webkit-background-clip: text; background-clip: text; '
+					. '-webkit-text-fill-color: transparent; }' );
+			}
 			$colors[] = array(
 				'id'         => $role_id[ $name ] ?? ( '00000000' . ( count( $colors ) + 1 ) ),
 				'color_name' => $name,
@@ -1541,13 +1964,30 @@ class FW_Site_Converter_Stitch {
 		foreach ( $skins as $s ) {
 			if ( $s['fs'] === '' && $s['px'] === '' && $s['radius'] === '' ) { continue; }
 			$fsn = $px_of( $s['fs'] ); $pxn = $px_of( $s['px'] ); $pyn = $px_of( $s['py'] ); $hn = $px_of( $s['height'] ?? '' );
+			// A STRETCHED button (`w-full`) has no horizontal padding to speak of — its width comes from the
+			// container, so `px` is usually 0 and says nothing about the site's button geometry. It is still a
+			// real size in every other respect (type, vertical padding, radius, height), so it clusters on those
+			// and simply abstains from the `px` vote below. Letting it vote invented a size whose defining trait
+			// was `padding-x: 0`; on a site whose commonest button is a full-width CTA that became the DEFAULT
+			// size, and every ordinary button then rendered with no side padding (a real-site audit).
+			// …and only when its inset is genuinely ZERO. A stretched button whose padding really is `0` says
+			// nothing about the size's inset (its width comes from the container) and must not vote. One that
+			// carries a real `px-8` is still describing the size, and discarding it was a REGRESSION: on a site
+			// whose buttons are all `w-full` at their breakpoint, every sample abstained, the cluster was left
+			// with no padding-x at all, and every button rendered with none — collapsing or stretching to its
+			// container. Abstention is about an absent measurement, not about the button being stretched.
+			$stretched = ! empty( $s['stretch'] ) && $pxn <= 0;
 			$hit = -1;
 			foreach ( $clusters as $ci => $c ) {
-				if ( abs( $c['fsn'] - $fsn ) <= 1 && abs( $c['pxn'] - $pxn ) <= 3 && abs( $c['pyn'] - $pyn ) <= 3 && abs( $c['hn'] - $hn ) <= 3 ) { $hit = $ci; break; }
+				if ( abs( $c['fsn'] - $fsn ) > 1 || abs( $c['pyn'] - $pyn ) > 3 || abs( $c['hn'] - $hn ) > 3 ) { continue; }
+				if ( ! $stretched && ! empty( $c['has_px'] ) && abs( $c['pxn'] - $pxn ) > 3 ) { continue; }
+				$hit = $ci; break;
 			}
 			if ( -1 === $hit ) {
-				$clusters[] = array( 'fsn' => $fsn, 'pxn' => $pxn, 'pyn' => $pyn, 'hn' => $hn, 'count' => 0, 'modes' => array(), 'names' => array() );
+				$clusters[] = array( 'fsn' => $fsn, 'pxn' => $stretched ? 0.0 : $pxn, 'pyn' => $pyn, 'hn' => $hn, 'has_px' => ! $stretched, 'count' => 0, 'modes' => array(), 'names' => array() );
 				$hit = count( $clusters ) - 1;
+			} elseif ( ! $stretched && empty( $clusters[ $hit ]['has_px'] ) ) {
+				$clusters[ $hit ]['pxn'] = $pxn; $clusters[ $hit ]['has_px'] = true;   // the first real measurement defines the cluster's inset
 			}
 			$clusters[ $hit ]['count']++;
 			// The source's OWN size name on this button (`btn-sm`, `btn-lg`, `button--large`, `btn-xl`, …) — a vote for
@@ -1557,7 +1997,9 @@ class FW_Site_Converter_Stitch {
 				if ( ! isset( $clusters[ $hit ]['names'][ $k ] ) ) { $clusters[ $hit ]['names'][ $k ] = 0; }
 				$clusters[ $hit ]['names'][ $k ]++;
 			}
-			foreach ( array( 'fs' => $s['fs'], 'px' => $s['px'], 'py' => $s['py'], 'radius' => $s['radius'], 'height' => ( $s['height'] ?? '' ), 'lh' => $s['lh'] ) as $p => $val ) {
+			$votes = array( 'fs' => $s['fs'], 'py' => $s['py'], 'radius' => $s['radius'], 'height' => ( $s['height'] ?? '' ), 'lh' => $s['lh'] );
+			if ( ! $stretched ) { $votes['px'] = $s['px']; }   // a stretched button abstains — see above
+			foreach ( $votes as $p => $val ) {
 				$val = (string) $val;
 				if ( ! isset( $clusters[ $hit ]['modes'][ $p ][ $val ] ) ) { $clusters[ $hit ]['modes'][ $p ][ $val ] = 0; }
 				$clusters[ $hit ]['modes'][ $p ][ $val ]++;
@@ -1682,7 +2124,7 @@ class FW_Site_Converter_Stitch {
 			return $p[3] < 1 ? "rgba({$p[0]}, {$p[1]}, {$p[2]}, {$p[3]})" : "rgb({$p[0]}, {$p[1]}, {$p[2]})";
 		};
 		$lum  = function ( $c ) use ( $parse ) { $p = $parse( $c ); return $p ? ( 0.2126 * $p[0] + 0.7152 * $p[1] + 0.0722 * $p[2] ) : null; };
-		$unit = function ( $v ) { $v = trim( (string) $v ); return preg_match( '/^(-?[0-9.]+)\s*(px|rem|em|%)?$/', $v, $m ) ? array( 'value' => $m[1], 'unit' => ( isset( $m[2] ) && $m[2] !== '' ? $m[2] : 'px' ) ) : null; };
+		$unit = function ( $v ) { $v = trim( self::normalize_sci( (string) $v ) ); return preg_match( '/^(-?[0-9.]+)\s*(px|rem|em|%)?$/', $v, $m ) ? array( 'value' => $m[1], 'unit' => ( isset( $m[2] ) && $m[2] !== '' ? $m[2] : 'px' ) ) : null; };
 		// Prefer the MEASURED heading color (data-sc-cs), falling back to the compiled Tailwind color — the
 		// source's headings on a green CTA band are `text-white` etc. that only the computed style carries.
 		$headOf = function ( $node ) use ( $norm ) {
@@ -3637,6 +4079,14 @@ class FW_Site_Converter_Stitch {
 				$res = FW_Site_Converter_Mapper::button_preset_for( $c['cls'], $c['cs'] );
 			}
 			$style = '' !== $res['style'] ? $res['style'] : ( ( 0 === $ci && ! empty( $hdr['cta']['style'] ) ) ? $hdr['cta']['style'] : '' );
+			// A ROLE FALLBACK picks a preset by name, and a role can now hold several presets that differ only in
+			// TYPE (an uppercase tracked pill and a sentence-case CTA on one fill). A gradient-filled CTA never
+			// enters the colour matcher at all — no background-colour, no border colour — so it always lands here,
+			// and the first preset of the role imposed its casing: the masthead pill came back sentence-case with
+			// its tracking gone. Let the CTA's OWN stamp choose between presets of that role.
+			if ( '' !== $style && method_exists( 'FW_Site_Converter_Mapper', 'button_style_for_type' ) ) {
+				$style = FW_Site_Converter_Mapper::button_style_for_type( $style, (string) $c['cs'] );
+			}
 			// No size match → the Default size; a Large preset that exists in the source keeps the historic
 			// "header CTA = the chunky Large" choice.
 			$size = '' !== $res['size'] ? $res['size'] : ( $has_lg_size ? 'btn-lg' : 'btn-md' );
@@ -3771,7 +4221,11 @@ class FW_Site_Converter_Stitch {
 			// …except in the CENTERED design, where the row stacks its columns: the END column keeps its `margin-left:auto`
 			// and the stacked menu hugged the right edge instead of sitting centred under the logo (a real-site audit).
 			// The middle column has no auto margin, so the menu belongs there.
-			if ( 'centered' === self::detect_header_design( (string) $html ) ) { // (the local $h_design is only assigned further down)
+			// …unless we MEASURED the menu's placement. detect_header_design reads structure and classes, and it
+			// called this single-row masthead 'centered' -- overriding a measured right-hand nav back into the
+			// centre slot, leaving every link ~400px from where the source draws it. A guess must not overrule a
+			// measurement; the override stays for the captures that carry no geometry.
+			if ( empty( $hdr['menu_pos_measured'] ) && 'centered' === self::detect_header_design( (string) $html ) ) {
 				$header_main = array( 'main_left' => array( $el( 'logo' ) ), 'main_center' => array( $menu_el ), 'main_right' => array_merge( $icon_els, $right ) );
 			}
 		} elseif ( 'left' === $mpos ) {
@@ -3891,11 +4345,23 @@ class FW_Site_Converter_Stitch {
 		$h_bg      = isset( $hstyle['bg'] ) ? (string) $hstyle['bg'] : '';
 		$h_solid   = $h_bg !== '' && empty( $hstyle['glass'] ) && ! preg_match( '/rgba?\([^)]*[,\/]\s*(0|0?\.\d+)\s*\)/i', $h_bg );
 		$h_pinned  = ! empty( $hdr['sticky'] );
-		$position  = $h_pinned ? ( $h_solid ? 'sticky' : 'overlay' ) : 'static';
+		// FLOW comes from the source's own `position`, never from whether the bar has a fill. `fixed` is out of
+		// flow — it reserves no height, so the hero really does start at the top of the page and the overlay
+		// header is faithful. `sticky` is IN flow: it occupies its own height and pushes the hero down by it.
+		// Deciding this by fill instead sent every pinned-but-transparent header down the overlay path, so a
+		// sticky source nav reserved nothing and the hero converted one header-height (65px here) too high —
+		// the "sticky header = no top spacing on the hero" report. Transparency is a separate question, and
+		// $header_transparent below still answers it, so a sticky bar keeps its see-through look either way.
+		$h_float   = ( 'fixed' === (string) ( $hdr['pinned'] ?? '' ) )
+			|| ( '' === (string) ( $hdr['pinned'] ?? '' ) && ! $h_solid ); // unknown keyword → previous behaviour
+		$position  = $h_pinned ? ( $h_float ? 'overlay' : 'sticky' ) : 'static';
 		// A header with NO captured fill that is GLASS or sits OVERLAY over the hero is TRANSPARENT by design
 		// (a frosted bar you see the hero through). Its bg_color must stay EMPTY — otherwise the #ffffff
 		// fallback default ($header_bg) turns a transparent glass nav into a solid WHITE bar (the reported bug).
-		$header_transparent = ! $has_src_bg && ( ! empty( $hstyle['glass'] ) || 'overlay' === $position );
+		// …and a PINNED bar with no captured fill is transparent whichever flow it has: a sticky source nav is
+		// just as see-through as a fixed one, and keying this to 'overlay' alone would have handed the sticky
+		// path the #ffffff fallback — turning the glass nav into a solid white bar the moment flow was fixed.
+		$header_transparent = ! $has_src_bg && ( ! empty( $hstyle['glass'] ) || in_array( $position, array( 'overlay', 'sticky' ), true ) );
 		$values['header_layout'] = array(
 			'header_mode'          => $header_mode_val,
 			'header_position'      => $position,
@@ -4142,6 +4608,10 @@ class FW_Site_Converter_Stitch {
 					'topbar_right'  => '' !== $tb['right']  ? array( $tcell( $tb['right'] ) )  : array(),
 				);
 			}
+			// The source put its bar OUTSIDE a pinned header → the theme's native "Scrolls Away", which moves
+			// the sticky off `.site-header` onto `.header-main`. Reproduces the source's own behaviour (the
+			// bar scrolls off, the nav pins) rather than pinning an address line to the viewport for good.
+			if ( ! empty( $tb['scrolls_away'] ) ) { $values['header_topbar']['topbar_unstick'] = true; }
 			if ( '' !== $tb['bg'] ) {
 				$values['header_topbar']['topbar_custom_styling'] = array(
 					'enabled' => 'yes',
@@ -4327,6 +4797,21 @@ class FW_Site_Converter_Stitch {
 			if ( ! isset( $values['general_layout'] ) || ! is_array( $values['general_layout'] ) ) { $values['general_layout'] = array(); }
 			$values['general_layout']['site_background'] = array( 'color' => array( 'value' => array( 'predefined' => '', 'custom' => $site_bg ) ) );
 		}
+		// …and the canvas GRADIENT, as a SECOND layer over that colour. Background Pro stacks colour under
+		// gradient under image, so the detected flat colour stays as the base (what shows if a stop fails to
+		// resolve) and the gradient paints over it. Reading only the colour turned a page whose entire identity
+		// is a full-height gradient into ONE flat fill -- the single most visible defect such a page can have,
+		// and one no band-level lens reports, because every band matches its own counterpart perfectly.
+		$site_grad = self::detect_body_gradient( (string) $html );
+		if ( is_array( $site_grad ) ) {
+			if ( ! isset( $values['general_layout'] ) || ! is_array( $values['general_layout'] ) ) { $values['general_layout'] = array(); }
+			if ( empty( $values['general_layout']['site_background'] ) || ! is_array( $values['general_layout']['site_background'] ) ) {
+				$values['general_layout']['site_background'] = array();
+			}
+			// The gradient-v2 value lives under `gradient.data` -- a bare `gradient` key is ignored, the same
+			// trap the site_background nesting note above records.
+			$values['general_layout']['site_background']['gradient'] = array( 'data' => $site_grad );
+		}
 		// PAGE-WIDE FIXED PATTERN layer — a body-level fixed inset-0 decorative wrapper (pointer-events none, no text) painting a
 		// CSS gradient grid / a data-URI tile (a console design's terminal grid) → Theme Settings → General → Layout → Site
 		// Background Pattern, backed by a registered Background Pattern preset carrying the image + its tile size. The theme
@@ -4415,7 +4900,18 @@ class FW_Site_Converter_Stitch {
 				$bot = max( 0.0, (float) ( $rm['bottom'] ?? 0 ) ) + ( is_array( $rp ) ? (float) $rp['bottom'] : 0.0 );
 				$slug = function ( $px ) { return self::spacing_scale_slug( $px ); };
 				$cur = ( isset( $values['main_footer_custom_styling']['yes'] ) && is_array( $values['main_footer_custom_styling']['yes'] ) ) ? $values['main_footer_custom_styling']['yes'] : array();
-				$cur['main_footer_padding'] = array( 'margin' => array( 'all' => '', 'top' => '', 'right' => '', 'bottom' => '', 'left' => '' ), 'padding' => array( 'all' => '', 'top' => 'pt-' . $slug( $top ), 'right' => '', 'bottom' => 'pb-' . $slug( $bot ), 'left' => '' ), 'advanced' => array() );
+				// ONE inset, ONE carrier. `footer_padding_top/bottom` (above) pads `.footer__body`, which WRAPS
+				// this band — so writing the same measured inset to both nests 56px inside 56px and the footer
+				// renders with double the source's breathing room. Measured: source 370px tall, build 470px, and
+				// the spacing walk showed `pad 56,0,56,0` on two nested boxes against the source's one.
+				// The global already has it, so the band only takes the padding when it DIFFERS (a band that is
+				// genuinely inset further than the footer as a whole).
+				$g_top = isset( $values['footer_padding_top'] ) ? (float) self::css_len_px( (string) $values['footer_padding_top'] ) : -1.0;
+				$g_bot = isset( $values['footer_padding_bottom'] ) ? (float) self::css_len_px( (string) $values['footer_padding_bottom'] ) : -1.0;
+				$same  = ( $g_top >= 0 && abs( $g_top - $top ) <= 2 ) && ( $g_bot >= 0 && abs( $g_bot - $bot ) <= 2 );
+				if ( ! $same ) {
+					$cur['main_footer_padding'] = array( 'margin' => array( 'all' => '', 'top' => '', 'right' => '', 'bottom' => '', 'left' => '' ), 'padding' => array( 'all' => '', 'top' => 'pt-' . $slug( $top ), 'right' => '', 'bottom' => 'pb-' . $slug( $bot ), 'left' => '' ), 'advanced' => array() );
+				}
 				// MAIN-FOOTER BODY TYPE. The copyright bar's own type has been read for a while, but the footer
 				// COLUMNS' body text never was, so a source setting them small (`text-sm`, the common form for a
 				// footer address / link list) rendered at the theme's larger default — measured 14px against 18px
@@ -4893,7 +5389,14 @@ class FW_Site_Converter_Stitch {
 				}
 			}
 		}
-		$footer_brand_col = function ( $scope_html, $skip_nl = false, $skip_contact = false, $skip_social = false ) use ( $el, $footer_contact ) {
+		// The footer's own brand image, when it is not the header's. Resolved once, from the whole footer, so
+		// every band that builds a brand column gets the same answer.
+		$footer_logo_img = self::detect_footer_logo( (string) $route_html );
+		if ( is_array( $footer_logo_img ) && '' !== (string) ( $logo['image'] ?? '' )
+			&& self::same_media_ref( (string) $footer_logo_img['url'], (string) $logo['image'] ) ) {
+			$footer_logo_img = null;   // the footer wears the header's lockup — the theme's own `logo` element is right
+		}
+		$footer_brand_col = function ( $scope_html, $skip_nl = false, $skip_contact = false, $skip_social = false ) use ( $el, $footer_contact, $route_html, $footer_logo_img ) {
 			// Reproduce the source's ACTUAL first footer column. When it's a display HEADING (e.g.
 			// "Tell us your story / Get in touch") rather than a logo/brand lockup, keep that heading —
 			// don't substitute the site logo + a disclaimer tagline (which replaced the source's real CTA).
@@ -4901,8 +5404,24 @@ class FW_Site_Converter_Stitch {
 			if ( $lead !== '' ) {
 				$col = array( array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => $lead ) ) ) );
 			} else {
-				$col = array( $el( 'logo' ) );
+				// The footer's OWN lockup when the source draws a different one there; otherwise the theme's
+				// `logo` element, which reuses the header's.
+				if ( is_array( $footer_logo_img ) ) {
+					$flw = (int) $footer_logo_img['width'];
+					$col = array( $el( 'footer_logo', array(
+						'footer_logo_image' => array( 'url' => (string) $footer_logo_img['url'], 'attachment_id' => '' ),
+						'footer_logo_width' => array( 'value' => ( $flw > 0 ? $flw : 200 ), 'unit' => 'px' ),
+						'footer_logo_show_title' => 'no',
+					) ) );
+				} else {
+					$col = array( $el( 'logo' ) );
+				}
 				$tg  = self::detect_footer_tagline( $scope_html );
+				// …and if this band has none, take it from the FOOTER. The brand column is built from whichever band
+				// holds the brand, and a footer often puts its tagline in a band of its own -- so keying the tagline to
+				// the brand band alone drops it. (Recovering the logo and socials cost the tagline exactly this way:
+				// text coverage 87% -> 84.8% on the very change that fixed the icons.)
+				if ( '' === $tg ) { $tg = self::detect_footer_tagline( $route_html ); }
 				if ( $tg !== '' ) { $col[] = array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<p class="footer-tagline">' . esc_html( $tg ) . '</p>' ) ) ); }
 				// …and the DESCRIPTION under it. Only the first long paragraph was ever read, so a brand column of
 				// "tagline + a sentence about the business" lost the sentence (see detect_footer_brand_desc).
@@ -4996,15 +5515,37 @@ class FW_Site_Converter_Stitch {
 		// CTA-stripped html so the CTA doesn't leak into the main brand column or steal the brand tagline.
 		$fbands  = self::footer_bands_html( $route_html );
 		$content = array_values( array_filter( $fbands, function ( $b ) { return empty( $b['is_copyright'] ); } ) );
+		// A CENTRED STACK IS ONE BAND. Band-splitting reads the footer's direct children as separate bands, which
+		// is right for a footer built of stacked strips -- and wrong for a single centred column whose children
+		// are simply its rows (logo / link row / tagline). Split that way, the rows became separate bands, the
+		// widest won the 'main' role, and the result was an INVENTED two-column bar with the nav duplicated into
+		// the copyright strip. detect_footer_columns() and footer_band_is_multicol() had both already said there
+		// were no columns; the band splitter never asked.
+		if ( count( $content ) >= 2 && self::footer_is_centred_stack( self::footer_root_el( (string) $html ) ) ) {
+			$merged = array( 'html' => '', 'ncols' => 1 );
+			foreach ( $content as $b ) { $merged['html'] .= (string) ( $b['html'] ?? '' ); }
+			foreach ( $content as $b ) { if ( isset( $b['el'] ) ) { $merged['el'] = $b['el']; break; } }
+			$content = array( $merged );
+		}
 		if ( count( $content ) >= 2 ) {
 			// Anchor on Main = the densest content band; the brand-signal band (tagline/newsletter/social) that
 			// ISN'T the main grid carries the brand column; bands above Main → Pre, below → Post (order sacred).
 			$main_i = 0; $best = -1;
 			foreach ( $content as $i => $b ) { if ( (int) $b['ncols'] > $best ) { $best = (int) $b['ncols']; $main_i = $i; } }
 			$brand_i = $main_i;
-			foreach ( $content as $i => $b ) {
-				if ( $i === $main_i ) { continue; }
-				if ( self::detect_footer_tagline( $b['html'] ) !== '' || self::detect_footer_newsletter( $b['html'] ) || self::detect_footer_social( $b['html'] ) ) { $brand_i = $i; break; }
+			// THE BRAND BAND IS THE ONE HOLDING THE BRAND. This looked for the first band OTHER than main carrying
+			// any brand signal and handed it the role -- even when the MAIN band was the one with the logo and the
+			// social icons in it. On a one-row footer whose tagline sits in a band of its own, the role went to the
+			// 721-byte tagline band while the 15.9KB band holding the lockup and four social links was built with
+			// no brand column at all: the logo and every social icon were dropped, and the links rendered as a bare
+			// left-hand stack. A weaker signal elsewhere must not outrank the real thing here.
+			$main_has_brand = ( self::detect_footer_social( $content[ $main_i ]['html'] ) )
+				|| ( false !== stripos( (string) $content[ $main_i ]['html'], '<img' ) );
+			if ( ! $main_has_brand ) {
+				foreach ( $content as $i => $b ) {
+					if ( $i === $main_i ) { continue; }
+					if ( self::detect_footer_tagline( $b['html'] ) !== '' || self::detect_footer_newsletter( $b['html'] ) || self::detect_footer_social( $b['html'] ) ) { $brand_i = $i; break; }
+				}
 			}
 			$pre = array(); $main = array(); $post = array();
 			$pre_el = null; $post_el = null;
@@ -5015,7 +5556,7 @@ class FW_Site_Converter_Stitch {
 				else                     { $main = $cols; }
 			}
 			$mb = self::footer_columns_to_bar( $main, 'main_footer', (string) $html ); if ( $mb ) { $values['main_footer_columns'] = $mb; }
-			self::flush_footer_track_css( $values );
+			self::flush_footer_track_css( $values ); self::flush_footer_title_css( $values );
 			$pb = self::footer_columns_to_bar( $pre,  'pre_footer',  (string) $html ); if ( $pb ) { $values['pre_footer_columns']  = $pb; }
 			$sb = self::footer_columns_to_bar( $post, 'post_footer', (string) $html ); if ( $sb ) { $values['post_footer_columns'] = $sb; }
 			// Carry each side band's OWN fill/border (a coloured CTA band, e.g. the red "Craving a Juicy Burger?"
@@ -5059,7 +5600,7 @@ class FW_Site_Converter_Stitch {
 				if ( $dedicated && $has_social && ! $social_col ) { $fcols[ $contact_ci ]['append_social'] = true; }
 				$brand_col = $footer_brand_col( $route_html, $has_nl_col, $dedicated, ( $dedicated && $has_social ) || $social_col );
 				$bar = self::build_footer_bar( $fcols, 'main_footer', $route_html, array( $brand_col ) );
-				if ( $bar ) { $values['main_footer_columns'] = $bar; } self::flush_footer_track_css( $values ); $ffc = self::footer_flat_links_css(); if ( '' !== $ffc ) { $values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . $ffc; } // the flat-link row layout + pill skin
+				if ( $bar ) { $values['main_footer_columns'] = $bar; } self::flush_footer_track_css( $values ); self::flush_footer_title_css( $values ); $ffc = self::footer_flat_links_css(); if ( '' !== $ffc ) { $values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . $ffc; } // the flat-link row layout + pill skin
 			} else {
 				// FLAT LINK ROW. detect_footer_columns() looks for heading+links COLUMN structures; a footer
 				// that is just a row of links ("Field Notes · Open Data · API Access · Partners") yields ZERO
@@ -5078,8 +5619,57 @@ class FW_Site_Converter_Stitch {
 						) ) );
 					}
 					$brand_col = $footer_brand_col( $route_html, false, false, false );
-					$bar = self::build_footer_bar( array(), 'main_footer', $route_html, array( $brand_col, $items ) );
-					if ( $bar ) { $values['main_footer_columns'] = $bar; } self::flush_footer_track_css( $values ); $ffc = self::footer_flat_links_css(); if ( '' !== $ffc ) { $values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . $ffc; } // the flat-link row layout + pill skin
+					// A CENTRED STACK is ONE column, in the source's order: logo, then the link row (the source
+					// keeps its nav links and social icons in a single centred flex-wrap row), then the tagline.
+					// Splitting it into brand | links invents a two-column bar the source never had.
+					$fr_el = self::footer_root_el( (string) $html );
+					if ( self::footer_is_centred_stack( $fr_el ) ) {
+						$logo_el = array(); $social_el = array(); $tag_el = array();
+						foreach ( $brand_col as $be ) {
+							$k = (string) ( $be['element_type']['element'] ?? '' );
+							if ( 'logo' === $k || 'footer_logo' === $k ) { $logo_el[] = $be; }   // either lockup element leads the stack
+							elseif ( 'social_icons' === $k ) { $social_el[] = $be; }
+							else { $tag_el[] = $be; }
+						}
+						// The source keeps its nav links and social icons on ONE centred row, so the social
+						// element joins the links' row via the footer element option `inline_with_previous`
+						// rather than stacking beneath them. Measured, not assumed: this branch only runs for a
+						// footer whose root stamp says flex-direction:column + align-items:center, and whose
+						// links and icons are siblings inside a single flex-wrap row.
+						foreach ( $social_el as $si => $se ) { $social_el[ $si ]['inline_with_previous'] = 'yes'; }
+						$one = array_merge( $logo_el, $items, $social_el, $tag_el );
+						$bar = self::build_footer_bar( array(), 'main_footer', $route_html, array( $one ) );
+						// The source CENTRES this stack (its root stamp says align-items:center), so the row's
+						// Column Alignment carries it. On the COLUMN, because centring the inline run needs the
+						// class on an ancestor -- an element's own CSS class lands inside the run and cannot.
+						if ( is_array( $bar ) && ! empty( $bar['count'] ) ) {
+							$bn = (string) $bar['count'];
+							if ( isset( $bar[ $bn ] ) && is_array( $bar[ $bn ] ) ) { $bar[ $bn ]['main_footer_align'] = 'center'; }
+						}
+						$values['_footer_centred_stack'] = true;
+						// …at the source's OWN rhythm. The theme's column stacks its elements flush; the source
+						// sets one `gap` on the centred flex column, so every row (lockup, link run, tagline) sat
+						// one gap too tight and the tagline read as glued to the links above it.
+						$fr_gap = preg_match( '/(?:^|;)\s*(?:row-)?gap:\s*([0-9.]+)px/i', (string) $fr_el->getAttribute( 'data-sc-cs' ), $fgm ) ? (float) $fgm[1] : 0.0;
+						if ( $fr_gap > 0 && $fr_gap <= 120 ) {
+							$g = (int) round( $fr_gap );
+							// The copyright line is the LAST ROW OF THE SAME STACK in this shape — the source has no
+							// separate bottom bar — so it takes the stack's gap above it, not the body's full bottom
+							// inset plus the bar's own padding (which read as a deliberate rule the source never drew).
+							// The footer's own bottom inset moves onto the bar so the overall height is unchanged.
+							$fr_pb = preg_match( '/(?:^|;)\s*padding-bottom:\s*([0-9.]+)px/i', (string) $fr_el->getAttribute( 'data-sc-cs' ), $fpm ) ? (int) round( (float) $fpm[1] ) : 0;
+							$values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' )
+								. "
+.footer-section--main-footer .footer-column > * + *{margin-top:" . $g . 'px;}'
+								. "
+.footer .footer__body{padding-bottom:0;}"
+								. "
+.footer .footer-section--copyright{padding-top:" . $g . 'px;padding-bottom:' . ( $fr_pb > 0 ? $fr_pb : 48 ) . 'px;}';
+						}
+					} else {
+						$bar = self::build_footer_bar( array(), 'main_footer', $route_html, array( $brand_col, $items ) );
+					}
+					if ( $bar ) { $values['main_footer_columns'] = $bar; } self::flush_footer_track_css( $values ); self::flush_footer_title_css( $values ); $ffc = self::footer_flat_links_css(); if ( '' !== $ffc ) { $values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' ) . $ffc; } // the flat-link row layout + pill skin
 				} else {
 					// BRAND-ONLY footer: a wordmark / logo beside ONE disclaimer paragraph and no links at all (a minimal AI page
 					// footer). Neither the column pass nor the flat-link pass had anything, so the footer shipped with NO bar — only
@@ -5167,6 +5757,23 @@ class FW_Site_Converter_Stitch {
 		// Legal links (Privacy / Terms …) beside the © line → the copyright bar's 2nd column (auto-aligns
 		// left © + right links). Without this they were swallowed into the © text as one run-on blob.
 		$legal   = self::detect_footer_legal_links( (string) $html );
+		// A LINK THE FOOTER BAR ALREADY EMITTED IS NOT A LEGAL LINK. The legal-link reader takes the anchors near
+		// the copyright line; on a centred-stack footer the main nav row sits directly above it, so all five nav
+		// links were read as legal links and emitted a SECOND time along the bottom -- every link listed twice.
+		// Matched EXACTLY against the labels the bar actually placed, not against the source's flat-link set: a
+		// first cut compared the latter and deleted a genuine `Privacy - Terms` row that the bar had never shown.
+		if ( count( $legal ) >= 2 ) {
+			$placed = self::footer_bar_link_labels( $values );
+			if ( count( $placed ) >= 2 ) {
+				$kept = array();
+				foreach ( $legal as $l ) {
+					$k = preg_replace( '/[^a-z0-9]+/', '', strtolower( (string) ( $l['label'] ?? '' ) ) );
+					if ( '' === $k || ! isset( $placed[ $k ] ) ) { $kept[] = $l; }
+				}
+				// Only when the overlap is real -- one coincidental match is not a duplicated bar.
+				if ( count( $kept ) <= (int) floor( count( $legal ) * 0.4 ) ) { $legal = $kept; }
+			}
+		}
 		$tagline = self::detect_footer_bottom_tagline( (string) $html );
 		$copyright_col_2 = null;
 		if ( count( $legal ) >= 1 ) {
@@ -5200,7 +5807,7 @@ class FW_Site_Converter_Stitch {
 					array( 'element_type' => array( 'element' => 'text', 'text' => array( 'text_content' => '<p>' . esc_html( $lbar['right'] ) . '</p>' ) ), 'element_css_class' => 'text-end' ),
 				);
 			}
-		} elseif ( $tagline !== '' ) {
+		} elseif ( $tagline !== '' && ! ( self::footer_is_centred_stack( self::footer_root_el( (string) $html ) ) && self::footer_bar_shows_text( $values, $tagline ) ) ) {
 			// A bottom-bar tagline opposite the © line ("Designed for the modern professional.") → the right
 			// column, auto-aligned end. Without this the second bottom-bar <p> was silently dropped.
 			$copyright_col_2 = array(
@@ -6104,7 +6711,14 @@ class FW_Site_Converter_Stitch {
 		// Image logo?
 		foreach ( $brand->getElementsByTagName( 'img' ) as $img ) {
 			$src = trim( (string) $img->getAttribute( 'src' ) );
-			if ( $src !== '' && strpos( $src, 'data:' ) !== 0 ) {
+			// A `data:` URI LOGO IS A LOGO. This skipped every inline image, so a source whose brand lockup is an
+			// embedded `data:image/svg+xml;base64,...` -- an extremely common shape for an AI-generated page, which
+			// inlines its wordmark rather than shipping a file -- was read as having NO image logo. Detection then
+			// fell through and picked up a DIFFERENT, smaller asset found elsewhere on the page, so the header and
+			// the footer both rendered a generic glyph instead of the brand. FW_Site_Converter_Media already
+			// decodes and sideloads a data URI into a real attachment (see its data:image branch, and the mapper's
+			// own inline-logo path), so there was never a reason to refuse it here.
+			if ( $src !== '' ) {
 				$out['image'] = $src;
 				// The emblem's rendered HEIGHT (so an image logo-icon is sized like the source, not oversized):
 				// a Tailwind `h-[Npx]` / `h-N` (N×4px) class, or the computed height.
@@ -6524,8 +7138,27 @@ class FW_Site_Converter_Stitch {
 		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
 		$cs = (string) $el->getAttribute( 'data-sc-cs' );
 		if ( $cs === '' ) { return ''; }
-		if ( preg_match( '/(?:^|;)\s*' . preg_quote( $prop, '/' ) . '\s*:\s*([^;]+)/i', $cs, $m ) ) { return trim( $m[1] ); }
+		if ( preg_match( '/(?:^|;)\s*' . preg_quote( $prop, '/' ) . '\s*:\s*([^;]+)/i', $cs, $m ) ) { return self::normalize_sci( trim( $m[1] ) ); }
 		return '';
+	}
+
+	/** Rewrite SCIENTIFIC NOTATION in a computed value to a plain number. A browser reports a pill radius
+	 *  (`rounded-full` = 9999px, clamped to half the box) as `3.35544e+07px`, and every numeric parse in this
+	 *  converter matches `[0-9.]+` -- which cannot read `e+07`. So the radius silently vanished and every
+	 *  pill-shaped button in every source converted with the theme's square 4px corners. Values are clamped
+	 *  to 9999, the conventional pill, so a 33-million-pixel radius never reaches a stylesheet. */
+	private static function normalize_sci( $v ) {
+		if ( false === stripos( (string) $v, 'e' ) ) { return (string) $v; }
+		return (string) preg_replace_callback(
+			'/(-?(?:[0-9]*\.)?[0-9]+)e([+-]?[0-9]+)/i',
+			function ( $m ) {
+				$n = (float) $m[1] * pow( 10, (int) $m[2] );
+				if ( $n > 9999 ) { $n = 9999; }
+				if ( $n < -9999 ) { $n = -9999; }
+				return rtrim( rtrim( number_format( $n, 4, '.', '' ), '0' ), '.' );
+			},
+			(string) $v
+		);
 	}
 
 	/** Sniff a Lucide icon id ('lucide/<name>') from data-lucide / class lucide-<name> / iconify lucide:<name>. */
@@ -6592,6 +7225,7 @@ class FW_Site_Converter_Stitch {
 
 	/** The footer's copyright line (a © / "rights reserved" text node), or '' if none. */
 	/** Plain text leaves (no link) that sit in the legal-link row beside the © line — a status label — as { text, color }. */
+
 	private static function detect_footer_legal_tail( $html ) {
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return array(); }
@@ -7602,7 +8236,14 @@ class FW_Site_Converter_Stitch {
 		$mk_heading = function ( $deftag ) use ( $group, $title ) {
 			if ( $title === '' ) { return null; }
 			$tag = preg_match( '/^h[2-6]$/', (string) ( $group['tag'] ?? '' ) ) ? $group['tag'] : $deftag;
-			return array( 'element_type' => array( 'element' => 'heading', 'heading' => array( 'heading_text' => $title, 'heading_level' => $tag ) ) );
+			// The column title's own leading MARK (a pin over an address column, a clock over opening hours).
+			// The heading element had no field for it, so the glyph was dropped on every such column — three
+			// missing images on a real four-column footer. Carried as the native Heading Icon.
+			$h = array( 'heading_text' => $title, 'heading_level' => $tag );
+			if ( ! empty( $group['titleIcon'] ) ) {
+				$h['heading_icon'] = array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => (string) $group['titleIcon'], 'svg-id' => '' );
+			}
+			return array( 'element_type' => array( 'element' => 'heading', 'heading' => $h ) );
 		};
 		$mk_item = function ( $text, $icon = null, $link = '', $type = 'none' ) {
 			$li = array( 'li_text' => (string) $text, 'li_link_type' => $type );
@@ -7658,6 +8299,35 @@ class FW_Site_Converter_Stitch {
 		if ( ! empty( $group['links'] ) ) {
 			$els = array(); $h = $mk_heading( 'h3' ); if ( $h ) { $els[] = $h; }
 			$had = false;
+			// Walk the column's own ROW ORDER when it has one, so a MIXED column (address lines, then a phone
+			// link, then the legal links) keeps its text rows and keeps them where the source put them. Only
+			// used when the sequence really carries a text row the link list cannot express; a pure nav column
+			// falls through to the link walk below and is byte-identical to before.
+			$seq = ( isset( $group['seq'] ) && is_array( $group['seq'] ) ) ? $group['seq'] : array();
+			$has_text = false;
+			foreach ( $seq as $r ) { if ( 'text' === ( $r['kind'] ?? '' ) ) { $has_text = true; break; } }
+			if ( $has_text ) {
+				foreach ( $seq as $r ) {
+					$label = trim( (string) ( $r['label'] ?? '' ) );
+					if ( '' === $label ) { continue; }
+					$had = true;
+					$rico = ( '' !== (string) ( $r['icon'] ?? '' ) )
+						? array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => (string) $r['icon'], 'svg-id' => '' )
+						: null;
+					if ( 'link' === ( $r['kind'] ?? '' ) ) {
+						$href0 = (string) ( $r['href'] ?? '' );
+						$type0 = ( 0 === stripos( $href0, 'tel:' ) ) ? 'phone' : ( ( 0 === stripos( $href0, 'mailto:' ) ) ? 'email' : 'url' );
+						$els[] = $mk_item( $label, $rico, '' !== $href0 ? $href0 : '#', $type0 );
+					} elseif ( preg_match( '/^[^\s@]+@[^\s@]+\.[^\s@]+$/', $label ) ) {
+						$els[] = $mk_item( $label, $rico, $label, 'email' );
+					} elseif ( preg_match( '/^[\d\s()+.\-]+$/', $label ) && strlen( preg_replace( '/[^0-9+]/', '', $label ) ) >= 7 ) {
+						$els[] = $mk_item( $label, $rico, $label, 'phone' );
+					} else {
+						$els[] = $mk_item( $label, $rico );
+					}
+				}
+				if ( $had ) { return $els; }
+			}
 			foreach ( $group['links'] as $l ) {
 				$label = trim( (string) $l['label'] );
 				if ( $label === '' ) { continue; }
@@ -7695,6 +8365,7 @@ class FW_Site_Converter_Stitch {
 	 * @param array  $lead_cols pre-built columns to place first (each an element_type list)
 	 * @return array|null the bar value, or null when there are no columns
 	 */
+
 	private static function build_footer_bar( array $groups, $prefix, $html, array $lead_cols = array() ) {
 		$cols = array();
 		foreach ( $lead_cols as $lc ) { if ( ! empty( $lc ) ) { $cols[] = $lc; } }
@@ -7863,6 +8534,34 @@ class FW_Site_Converter_Stitch {
 		return isset( $ladder[ (string) $slug ] ) ? $ladder[ (string) $slug ] : '';
 	}
 
+	/** The measured bottom margin of each footer COLUMN HEADING — the gap the source leaves under a column
+	 *  title. The footer heading element has no spacing option, so the agreed value rides as scoped CSS. */
+	private static $footer_title_mb = array();
+
+	/**
+	 * The column-title rhythm, emitted with the footer's TRACK css because that flush is the one that runs
+	 * AFTER detect_footer_columns(). flush_band_pad_css() runs before it, so collecting there read an empty
+	 * list every time and the rule was never written.
+	 *
+	 * Only when the columns AGREE: one odd heading is that column's business, a value every column shares is
+	 * the footer's rhythm.
+	 */
+	private static function flush_footer_title_css( array &$values ) {
+		if ( count( self::$footer_title_mb ) < 2 ) { self::$footer_title_mb = array(); return; }
+		$mb = array_count_values( array_map( 'strval', array_map( 'intval', self::$footer_title_mb ) ) );
+		arsort( $mb );
+		$top = (int) key( $mb );
+		$hits = current( $mb );
+		self::$footer_title_mb = array();
+		if ( $hits < 2 || $top <= 0 ) { return; }
+		// Matches the markup the footer builder actually renders (`.footer-column > .footer-links-title`),
+		// which is also where the converter already scopes the column title's typography.
+		$values['misc_custom_css']['custom_css'] = (string) ( $values['misc_custom_css']['custom_css'] ?? '' )
+			. "\n/* Footer column titles: the source's own gap under a column heading */\n"
+			. '.footer-column .footer-links-title,.footer-column .hf-heading'
+			. '{margin-top:0 !important;margin-bottom:' . $top . 'px !important;}' . "\n";
+	}
+
 	/** Flush the exact band paddings the spacing scale could not express. */
 	private static function flush_band_pad_css( array &$values ) {
 		if ( '' === self::$band_pad_css ) { return; }
@@ -8023,6 +8722,23 @@ class FW_Site_Converter_Stitch {
 					if ( '' !== $brand && 0 === strcasecmp( preg_replace( '/[^a-z0-9]+/i', '', $txt ), preg_replace( '/[^a-z0-9]+/i', '', $brand ) ) ) { $is_brand = true; }
 				}
 				if ( $is_brand ) { continue; }
+				// …NOR A COLUMN'S OWN TITLE. A heading that introduces a run of links is a nav column's title
+				// ("Explore", "Our expertise"), not the footer's lead CTA. Taken as the lead it is doubly wrong:
+				// the brand column short-circuits to JUST that heading -- no logo, no tagline, no description, no
+				// contact -- and the same words then appear twice, once as the brand column and once as the real
+				// column they belong to. Measured on a captured site: the footer's tagline, location line and
+				// contact email were lost on EVERY page, ~49% of everything that site dropped.
+				//
+				// A lead CTA may be followed by ONE button, so the test is two or more ordinary links -- which is a
+				// list, and a list is a column.
+				$after_links = 0;
+				for ( $sib = $cand->nextSibling; $sib; $sib = $sib->nextSibling ) {
+					if ( XML_ELEMENT_NODE !== $sib->nodeType ) { continue; }
+					foreach ( ( 'a' === strtolower( $sib->nodeName ) ? array( $sib ) : iterator_to_array( $sib->getElementsByTagName( 'a' ) ) ) as $lnk ) {
+						if ( ! self::is_button( $lnk ) ) { $after_links++; }
+					}
+				}
+				if ( $after_links >= 2 ) { continue; }
 				return $cand;
 			}
 		}
@@ -8337,6 +9053,55 @@ class FW_Site_Converter_Stitch {
 					if ( $lbl !== '' && ( '' === self::social_lucide( $hrf ) || ! $glyph ) ) { $links[] = array( 'label' => $lbl, 'href' => $hrf ); }
 					if ( count( $links ) >= 10 ) { break; }
 				}
+				// The column's rows IN DOCUMENT ORDER, each tagged link-or-text. A footer column routinely MIXES
+				// the two — `<li>Erzgießereistraße 40</li><li>80335 München</li><li><a href="tel:…">089 …</a></li>`
+				// then the legal links — and the emitter's nav branch returns after walking $links alone, so every
+				// plain-text row was dropped: a converted footer lost its street address and city outright, while
+				// the links beside them survived. Only a column with BOTH needs this; a pure nav column produces
+				// the same list it always did.
+				// The column heading's OWN rhythm. The footer heading element carries text and level only, so
+				// nothing told the theme what gap the source leaves under a column title and its default (19px
+				// above AND below) stood against the source's `mb-3` — 0 above, 12 below. Measured on a real
+				// footer: +26px per column, and the band ran 34% taller than its source.
+				// …and the mark the title leads with, if any — an <svg> inside the heading that carries no text
+				// of its own. text_no_icons() strips it from the title by design, so without capturing it here
+				// the glyph is simply lost.
+				$title_icon = '';
+				foreach ( $h->getElementsByTagName( 'svg' ) as $hsv ) {
+					if ( ! ( $hsv instanceof DOMElement ) || '' !== trim( (string) self::text( $hsv ) ) ) { continue; }
+					$hdoc = $hsv->ownerDocument;
+					$hmk  = $hdoc ? (string) $hdoc->saveHTML( $hsv ) : '';
+					if ( '' === $hmk || strlen( $hmk ) > 4000 ) { break; }
+					$title_icon = self::strip_cs( $hmk );
+					break;
+				}
+
+				$hm_b = self::el_margin( $h );
+				$title_mb = (float) ( $hm_b['bottom'] ?? 0 );
+				if ( $title_mb > 0 && $title_mb <= 48 ) { self::$footer_title_mb[] = $title_mb; }
+
+				$seq = array();
+				foreach ( $parent->getElementsByTagName( 'li' ) as $li ) {
+					// A ROW'S OWN leading mark (the phone glyph beside a number). text_no_icons() strips it from
+					// the label by design, so it has to be captured here or the row loses it.
+					$ri = '';
+					foreach ( $li->getElementsByTagName( 'svg' ) as $rsv ) {
+						if ( ! ( $rsv instanceof DOMElement ) || '' !== trim( (string) self::text( $rsv ) ) ) { continue; }
+						$rdoc = $rsv->ownerDocument;
+						$rmk  = $rdoc ? (string) $rdoc->saveHTML( $rsv ) : '';
+						if ( '' !== $rmk && strlen( $rmk ) <= 4000 ) { $ri = self::strip_cs( $rmk ); }
+						break;
+					}
+					$a0 = $li->getElementsByTagName( 'a' )->item( 0 );
+					if ( $a0 instanceof DOMElement ) {
+						$lbl0 = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $a0 ) ) );
+						if ( '' !== $lbl0 ) { $seq[] = array( 'kind' => 'link', 'label' => $lbl0, 'href' => trim( (string) $a0->getAttribute( 'href' ) ), 'icon' => $ri ); }
+						continue;
+					}
+					$t0 = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $li ) ) );
+					if ( '' !== $t0 && mb_strlen( $t0 ) <= 120 ) { $seq[] = array( 'kind' => 'text', 'label' => $t0, 'href' => '', 'icon' => $ri ); }
+					if ( count( $seq ) >= 14 ) { break; }
+				}
 				// No link list? Fall back to the column's text items (`<li>` rows — plain text or icon+text).
 				$items = array();
 				$rows  = array(); // structured icon+text rows (a CONTACT column: address/phone/email)
@@ -8442,7 +9207,7 @@ class FW_Site_Converter_Stitch {
 					}
 				}
 				if ( count( $links ) >= 2 || count( $items ) >= 2 || ( $kind === 'contact' && count( $rows ) >= 1 ) || $news !== null || $social_n >= 2 ) {
-					$out[] = array( 'title' => $title, 'tag' => $htag, 'links' => $links, 'items' => $items, 'kind' => ( $news !== null ? 'newsletter' : ( $social_n >= 2 ? 'social' : $kind ) ), 'rows' => ( $kind === 'contact' ? $rows : array() ), 'newsletter' => $news, 'cls' => self::cls( $parent ), 'append_social' => ( $social_n >= 2 ) );
+					$out[] = array( 'title' => $title, 'tag' => $htag, 'links' => $links, 'seq' => $seq, 'titleIcon' => $title_icon, 'items' => $items, 'kind' => ( $news !== null ? 'newsletter' : ( $social_n >= 2 ? 'social' : $kind ) ), 'rows' => ( $kind === 'contact' ? $rows : array() ), 'newsletter' => $news, 'cls' => self::cls( $parent ), 'append_social' => ( $social_n >= 2 ) );
 					$seen[ $title ] = true;
 				}
 				if ( count( $out ) >= 8 ) { break; }
@@ -8496,7 +9261,10 @@ class FW_Site_Converter_Stitch {
 		foreach ( iterator_to_array( $clone->getElementsByTagName( 'svg' ) ) as $sv ) { if ( $sv->parentNode ) { $sv->parentNode->removeChild( $sv ); } }
 		$inner = $dom ? $dom->saveHTML( $clone ) : '';
 		// Keep <br>, drop every other tag, collapse whitespace → clean value HTML with line breaks intact.
-		$inner = preg_replace( '~<br\s*/?>~i', "\n", (string) $inner );
+		// Swallow whitespace either side of the <br>: unglue_line_breaks now puts a newline NEXT TO the tag
+		// Swallow whitespace either side of the <br>: unglue_line_breaks now puts a newline NEXT TO the tag
+		// (rather than replacing it), so a plain break reaches here as a newline FOLLOWED by the tag, and
+		// folding both halves gave a doubled separator -- a footer address read `123 Example Lane, , Springfield`.
 		$inner = trim( preg_replace( '/[ \t]*\n[ \t]*/', "\n", preg_replace( '/[ \t]+/', ' ', wp_strip_all_tags( $inner ) ) ) );
 		if ( $inner === '' ) { return null; }
 		$html = str_replace( "\n", '<br>', esc_html( $inner ) );
@@ -9333,8 +10101,44 @@ class FW_Site_Converter_Stitch {
 		return $out;
 	}
 
+	/**
+	 * The utility bar that sits immediately ABOVE `<header>` as its sibling, rather than inside it.
+	 *
+	 * Common with a sticky header: the bar is deliberately left outside so it scrolls away while the nav
+	 * sticks. Returns the element, or null when what precedes the header is not a utility bar.
+	 *
+	 * Kept strict — this runs only when the header has no top row of its own, and a wrong match would paint a
+	 * whole content block into the chrome. A utility bar is SHORT, carries no brand lockup, and is not a
+	 * heading-bearing block (which would make it page content, not chrome).
+	 *
+	 * @param DOMElement $header
+	 * @return DOMElement|null
+	 */
+	private static function topbar_before_header( $header ) {
+		if ( ! ( $header instanceof DOMElement ) ) { return null; }
+		$prev = $header->previousSibling;
+		while ( $prev && ! ( $prev instanceof DOMElement ) ) { $prev = $prev->previousSibling; }
+		if ( ! ( $prev instanceof DOMElement ) ) { return null; }
+
+		$tag = strtolower( $prev->tagName );
+		if ( in_array( $tag, array( 'script', 'style', 'template', 'noscript', 'nav', 'main', 'section', 'aside' ), true ) ) { return null; }
+		// A heading inside it means page content, not chrome.
+		foreach ( array( 'h1', 'h2', 'h3' ) as $h ) { if ( $prev->getElementsByTagName( $h )->length ) { return null; } }
+		// A brand lockup means this is a masthead row, not a utility bar (same rule the in-header path uses).
+		if ( '' !== self::brand_text_of( $prev ) ) { return null; }
+
+		$txt = trim( preg_replace( '/\s+/u', ' ', (string) self::text( $prev ) ) );
+		if ( '' === $txt || mb_strlen( $txt ) > 200 ) { return null; }   // a bar is a line, not a paragraph
+
+		// SHORT: the measured height is the honest test, and the capture stamps it.
+		$cs = (string) $prev->getAttribute( 'data-sc-cs' );
+		if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $hm ) && (float) $hm[1] > 80 ) { return null; }
+
+		return $prev;
+	}
+
 	private static function detect_topbar( $html ) {
-		$out = array( 'has' => false, 'left' => '', 'center' => '', 'right' => '', 'bg' => '', 'text' => '', 'mobile_hide' => false, 'ticker' => '' );
+		$out = array( 'has' => false, 'left' => '', 'center' => '', 'right' => '', 'bg' => '', 'text' => '', 'mobile_hide' => false, 'ticker' => '', 'scrolls_away' => false );
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return $out; }
 		$header = self::header_root( $dom );
@@ -9342,20 +10146,37 @@ class FW_Site_Converter_Stitch {
 		$rows = self::header_row_model( $header );
 		$children = array();
 		foreach ( $rows as $r ) { $children[] = $r['el']; }
-		if ( count( $children ) < 2 ) { return $out; } // a single DESKTOP row → no top bar
 
 		// The MAIN row is the direct child that contains the <nav> (or, lacking one, the logo). The top bar is
 		// a direct child that comes BEFORE it — take the first child when it precedes the main row.
-		$nav = null;
-		foreach ( $header->getElementsByTagName( 'nav' ) as $n ) { $nav = $n; break; }
-		$main_idx = -1;
-		foreach ( $children as $i => $ch ) {
-			$is_main = false;
-			if ( $nav instanceof DOMElement ) { $p = $nav; while ( $p ) { if ( $p === $ch ) { $is_main = true; break; } $p = $p->parentNode; } }
-			if ( $is_main ) { $main_idx = $i; break; }
+		$bar = null;
+		if ( count( $children ) >= 2 ) {
+			$nav = null;
+			foreach ( $header->getElementsByTagName( 'nav' ) as $n ) { $nav = $n; break; }
+			$main_idx = -1;
+			foreach ( $children as $i => $ch ) {
+				$is_main = false;
+				if ( $nav instanceof DOMElement ) { $p = $nav; while ( $p ) { if ( $p === $ch ) { $is_main = true; break; } $p = $p->parentNode; } }
+				if ( $is_main ) { $main_idx = $i; break; }
+			}
+			if ( $main_idx >= 1 ) { $bar = $children[0]; }
 		}
-		if ( $main_idx < 1 ) { return $out; } // nothing sits above the main row
-		$bar  = $children[0];
+
+		// …OR THE BAR SITS OUTSIDE THE HEADER, immediately above it. A sticky header is routinely written as
+		// `<div class="border-b text-xs">…address · phone · hours…</div><header class="sticky top-0">…</header>`
+		// precisely SO the utility bar scrolls away while the nav sticks — putting the bar inside the sticky
+		// element would pin it to the viewport too. Reading only the header's own children, the header had a
+		// single row, this returned at the first guard, and the entire bar was dropped: a converted site lost
+		// its address, its phone link and its opening hours, with no band to show it missing (the bar is not a
+		// <section>, so the visual band audit cannot see it either).
+		$outside = false;
+		if ( null === $bar ) { $bar = self::topbar_before_header( $header ); $outside = ( null !== $bar ); }
+		if ( null === $bar ) { return $out; } // nothing sits above the main row
+		// A bar the source put OUTSIDE a pinned header is a bar the source means to SCROLL AWAY — that is the
+		// whole reason it is not inside the sticky element. Carried so the emit can set the theme's native
+		// "Scrolls Away" option; without it the converted bar pins with the nav and the source's address line
+		// occupies the viewport forever.
+		$out['scrolls_away'] = $outside && (bool) preg_match( '/(?:^|;)\s*position:\s*(?:sticky|fixed)/i', (string) $header->getAttribute( 'data-sc-cs' ) );
 		// (see header_topbar_row) a row carrying the brand is the MASTHEAD row, never the utility bar
 		if ( '' !== self::brand_text_of( $bar ) ) { return $out; }
 		$bcls = ' ' . strtolower( self::cls( $bar ) ) . ' ';
@@ -9442,8 +10263,13 @@ class FW_Site_Converter_Stitch {
 		else                 { $out['left'] = $cells[0]; $out['center'] = $cells[1]; $out['right'] = implode( '  ', array_slice( $cells, 2 ) ); }
 
 		$out['has']         = true;
-		$out['bg']          = $bg;
-		$out['text']        = $txt;
+		// Normalise the two colours before they become OPTION VALUES. The capture stamps whatever colour space
+		// the source authored in — this bar arrives as `oklab(0.999998 … / 0.95)` and `lab(25.76 0 0)` — and a
+		// raw colour function written into a Theme Settings colour field is a value the picker cannot show and
+		// a preset cannot match, even where the browser happens to render it. color_to_css keeps the alpha
+		// (the 0.95 here is the header's translucency, not a rounding artefact).
+		$out['bg']          = ( '' !== $bg )  ? ( self::color_to_css( $bg )  ?: $bg )  : '';
+		$out['text']        = ( '' !== $txt ) ? ( self::color_to_css( $txt ) ?: $txt ) : '';
 		$out['mobile_hide'] = ( strpos( $bcls, ' hidden ' ) !== false && (bool) preg_match( '/\s(?:sm|md|lg|xl):(?:block|flex|grid)/', $bcls ) );
 		return $out;
 	}
@@ -9777,6 +10603,200 @@ class FW_Site_Converter_Stitch {
 		return array( 'top' => $t, 'right' => $r, 'bottom' => $b, 'left' => $l );
 	}
 
+	/**
+	 * A band whose vertical inset lives on its INNER container, folded onto the SECTION's own stamp.
+	 *
+	 * The section is the band, but it is not always the box that is padded. A very common shape puts a
+	 * full-bleed backdrop and a centred content wrapper inside a bare `<section>`, and spends the rhythm on
+	 * the WRAPPER (`<section class="relative"><div class="absolute inset-0 …"></div><div class="container
+	 * pt-24 pb-28">…</div></section>`). The section's own computed padding is then genuinely `0`, and reading
+	 * it literally is right about the element and wrong about the band: the mapper's "ZERO IS A VALUE" rule
+	 * fires, emits `pt-[0px] pb-[0px]`, and the converted band loses the inset entirely. Measured on a real
+	 * hero: source 695px, converted 489px — the missing 206px is exactly the wrapper's `96px + 112px`.
+	 *
+	 * Deliberately narrow, because inheriting the wrong box would pad a band twice:
+	 *   - the SECTION must declare no vertical padding of its own (absent, or measured zero);
+	 *   - decorative layers (`position:absolute`/`fixed`) are not content and are skipped;
+	 *   - EXACTLY ONE content child may remain — with two, the padding is a card's, not the band's;
+	 *   - that child must SPAN the band (its stamped height within 2px of the section's), so the inset of a
+	 *     first card in a stack can never be mistaken for the band's own.
+	 * The responsive stamps ride along, so a wrapper's `sm`/`md`/`xl` rhythm is inherited with it rather than
+	 * leaving the phone tier to be re-derived from the desktop value.
+	 *
+	 * @param DOMElement $sec the section
+	 * @return array{cs:string,sm:string,md:string,xl:string} padding declarations to fold, or an empty array
+	 */
+	/**
+	 * The one child that IS a band's content container — the box that carries the band's vertical rhythm on
+	 * the section's behalf — or null when the section has no such child.
+	 *
+	 * Shared on purpose. TWO paths act on this same box and must agree, or the inset is applied twice: the
+	 * section record hoists its padding onto the band (band_pad_from_inner), and collect_blocks flattens the
+	 * wrapper and carries its padding onto the boundary blocks as mtAdd/mbAdd. Both were right in isolation
+	 * and wrong together — the converted hero grew 98px past its source because the 96px top inset arrived
+	 * once as the section's padding and once as the first block's margin.
+	 *
+	 * @param DOMElement $sec the section
+	 * @return DOMElement|null
+	 */
+	/**
+	 * An `<img>`'s INTRINSIC width or height in whole pixels ('' when the source states none).
+	 *
+	 * The image record carried src, alt, classes and a frame aspect, but never a SIZE — so every reconstructed
+	 * `<img src alt>` downstream had nothing to put in its width/height attributes, the browser could not
+	 * reserve the box, and each image contributed layout shift. It bites hardest on an SVG: WordPress stores no
+	 * dimension metadata for one, so with the attributes absent there is nothing left to infer them from.
+	 *
+	 * The author's own attribute first, then the capture's computed stamp. A percentage or `auto` is a layout
+	 * instruction rather than an intrinsic size and is deliberately ignored.
+	 *
+	 * @param DOMElement $im
+	 * @param string $which 'width' | 'height'
+	 * @return string
+	 */
+	private static function img_intrinsic( $im, $which ) {
+		if ( ! ( $im instanceof DOMElement ) ) { return ''; }
+		$which = ( 'height' === $which ) ? 'height' : 'width';
+		$a = trim( (string) $im->getAttribute( $which ) );
+		if ( preg_match( '/^([0-9]+(?:\.[0-9]+)?)(?:px)?$/i', $a, $m ) && (float) $m[1] >= 1 ) {
+			return (string) (int) round( (float) $m[1] );
+		}
+		if ( preg_match( '/(?:^|;)\s*' . $which . ':\s*([0-9]+(?:\.[0-9]+)?)px/i', (string) $im->getAttribute( 'data-sc-cs' ), $cm )
+			&& (float) $cm[1] >= 1 ) {
+			return (string) (int) round( (float) $cm[1] );
+		}
+		return '';
+	}
+
+	private static function band_pad_container_of( $sec ) {
+		if ( ! ( $sec instanceof DOMElement ) ) { return null; }
+		$own = (string) $sec->getAttribute( 'data-sc-cs' );
+		if ( '' === $own ) { return null; }
+
+		// The section must not already carry a vertical inset — shorthand or longhand.
+		$shorthand = self::cs_decls_pad( $own );
+		$pt = is_array( $shorthand ) ? (float) $shorthand['top']    : (float) self::sc_css( $sec, 'padding-top' );
+		$pb = is_array( $shorthand ) ? (float) $shorthand['bottom'] : (float) self::sc_css( $sec, 'padding-bottom' );
+		if ( $pt > 0 || $pb > 0 ) { return null; }
+
+		$sec_h = 0.0;
+		if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $own, $hm ) ) { $sec_h = (float) $hm[1]; }
+		if ( $sec_h <= 0 ) { return null; }
+
+		$content = null;
+		foreach ( $sec->childNodes as $kid ) {
+			if ( ! ( $kid instanceof DOMElement ) ) { continue; }
+			$kcs = (string) $kid->getAttribute( 'data-sc-cs' );
+			// A decorative layer is painted out of flow and contributes no rhythm.
+			if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', $kcs ) ) { continue; }
+			if ( null !== $content ) { return null; }   // two content children: the padding is not the band's
+			$content = $kid;
+		}
+		if ( null === $content ) { return null; }
+
+		$ccs = (string) $content->getAttribute( 'data-sc-cs' );
+		if ( '' === $ccs ) { return null; }
+		if ( ! preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $ccs, $chm ) ) { return null; }
+		if ( abs( (float) $chm[1] - $sec_h ) > 2.0 ) { return null; }   // it does not span the band
+
+		$cpad = self::cs_decls_pad( $ccs );
+		$ct   = is_array( $cpad ) ? (float) $cpad['top']    : (float) self::sc_css( $content, 'padding-top' );
+		$cb   = is_array( $cpad ) ? (float) $cpad['bottom'] : (float) self::sc_css( $content, 'padding-bottom' );
+		if ( $ct <= 0 && $cb <= 0 ) { return null; }
+
+		return $content;
+	}
+
+	/**
+	 * A card that IS an anchor → its destination and the label of its in-card affordance row.
+	 *
+	 * `<a class="card-surface" href="/laptop-repair"> …icon… <h3/> <p/> <div>Mehr erfahren →</div> </a>` is one
+	 * of the commonest card shapes there is, and the whole box is the control. The CTA has to be a <div>
+	 * because HTML forbids nesting an <a> in an <a> — which is exactly why the card's own CTA detector misses
+	 * it (that one requires `cursor-pointer` or a computed `cursor:pointer`, and the capture stamps neither,
+	 * the pointer being inherited). The card therefore converted with no destination and no affordance.
+	 *
+	 * Returns `{ href, label, whole:true }`, where `whole` tells n_icon_box to put the href on the box itself
+	 * (`box_link`) and render the label WITHOUT an anchor — nesting one inside a clickable box is invalid HTML,
+	 * as the option's own help text says.
+	 *
+	 * @param DOMElement $cell the card
+	 * @return array|null
+	 */
+	private static function card_whole_link( $cell ) {
+		if ( ! ( $cell instanceof DOMElement ) || 'a' !== strtolower( $cell->tagName ) ) { return null; }
+		$href = trim( (string) $cell->getAttribute( 'href' ) );
+		if ( '' === $href || '#' === $href || 0 === stripos( $href, 'javascript:' ) ) { return null; }
+
+		// The affordance row: the LAST short text run that carries a directional glyph and no nested anchor.
+		$label = ''; $glyph = '';
+		foreach ( array( 'div', 'span', 'p' ) as $tag ) {
+			foreach ( $cell->getElementsByTagName( $tag ) as $dv ) {
+				if ( ! ( $dv instanceof DOMElement ) ) { continue; }
+				if ( $dv->getElementsByTagName( 'a' )->length ) { continue; }
+				$svg = $dv->getElementsByTagName( 'svg' )->item( 0 );
+				if ( ! ( $svg instanceof DOMElement ) ) { continue; }
+				if ( ! preg_match( '/lucide-(?:arrow|chevron|move|external)/', self::cls( $svg ) ) ) { continue; }
+				$txt = trim( preg_replace( '/\s+/u', ' ', self::text_no_icons( $dv ) ) );
+				if ( '' === $txt || mb_strlen( $txt ) > 28 ) { continue; }
+				$label = $txt;
+				// …and the glyph itself. The arrow IS the affordance — "Mehr erfahren" without it reads as a
+				// stray line of text rather than "this goes somewhere", and the structure lens counted three
+				// missing images on a three-card grid. Carried verbatim, with its measured ink, since the
+				// shortcode has no native call-to-action icon to put it on.
+				$doc = $svg->ownerDocument;
+				$mk  = $doc ? (string) $doc->saveHTML( $svg ) : '';
+				if ( '' !== $mk && strlen( $mk ) <= 4000 ) {
+					$glyph = self::strip_cs( $mk );
+					$gcol  = self::color_to_hex( (string) self::sc_css( $svg, 'color' ) );
+					if ( '' === $gcol ) { $gcol = self::color_to_hex( (string) self::sc_css( $dv, 'color' ) ); }
+					if ( '' !== $gcol && false === stripos( $glyph, 'style=' ) ) {
+						$glyph = preg_replace( '/<svg\b/i', '<svg style="color:' . $gcol . '"', $glyph, 1 );
+					}
+				}
+			}
+		}
+
+		return array( 'href' => $href, 'label' => $label, 'glyph' => $glyph, 'whole' => true );
+	}
+
+	/** True when this element is its section's band-padding container — the flatten path must then leave its
+	 *  vertical padding alone, because the section has already taken it. */
+	private static function is_band_pad_container( $el ) {
+		if ( ! ( $el instanceof DOMElement ) || ! ( $el->parentNode instanceof DOMElement ) ) { return false; }
+		return self::band_pad_container_of( $el->parentNode ) === $el;
+	}
+
+	private static function band_pad_from_inner( $sec ) {
+		$content = self::band_pad_container_of( $sec );
+		if ( null === $content ) { return array(); }
+
+		$ccs = (string) $content->getAttribute( 'data-sc-cs' );
+		$pad = self::cs_decls_pad( $ccs );
+		$ct  = is_array( $pad ) ? (float) $pad['top']    : (float) self::sc_css( $content, 'padding-top' );
+		$cb  = is_array( $pad ) ? (float) $pad['bottom'] : (float) self::sc_css( $content, 'padding-bottom' );
+		if ( $ct <= 0 && $cb <= 0 ) { return array(); }
+
+		$decls = '';
+		if ( $ct > 0 ) { $decls .= ';padding-top:' . $ct . 'px'; }
+		if ( $cb > 0 ) { $decls .= ';padding-bottom:' . $cb . 'px'; }
+
+		$tier = function ( $attr ) use ( $content ) {
+			$v = (string) $content->getAttribute( $attr );
+			if ( '' === $v ) { return ''; }
+			$p = self::cs_decls_pad( $v );
+			if ( ! is_array( $p ) ) { return ''; }
+			return 'padding-top:' . (float) $p['top'] . 'px;padding-bottom:' . (float) $p['bottom'] . 'px';
+		};
+
+		return array(
+			'cs' => $decls,
+			'sm' => $tier( 'data-sc-cs-sm' ),
+			'md' => $tier( 'data-sc-cs-md' ),
+			'xl' => $tier( 'data-sc-cs-xl' ),
+		);
+	}
+
 	/** True when the container gutter sits INSIDE its measured width (the container's own padding — `max-w-7xl px-6`: 1280
 	 *  outer, 1232 content): the stamp `data-sc-content-gutter-inside`, or the measured-padding fallback above. */
 	private static $gutter_inside = false;
@@ -9786,6 +10806,26 @@ class FW_Site_Converter_Stitch {
 
 	/** Exact band padding that the spacing SCALE cannot express (32px between its 24 and 48 steps). */
 	private static $band_pad_css = '';
+	/** Every captured route's markup, for the BUTTON preset scan only. Button presets are a property of the
+	 *  SITE: derived from the home page alone, a button shape that only appears on an inner page had no preset
+	 *  to match and fell into the nearest one it did not belong to. Set once per multi-page build; empty on the
+	 *  single-page paths, which then read the html they were given. */
+	private static $btn_scan_html = '';
+	/** token → ink, built once from $btn_scan_html so a utility colour class can be resolved even when no
+	 *  element on the CURRENT page that wears it carries a stamp. null = not built yet. */
+	private static $token_ink_map = null;
+
+	/**
+	 * Hand the button scan every captured route's markup.
+	 *
+	 * build_bundle() runs ONCE PER ROUTE — it never holds more than one page — so only the importer that walks
+	 * the capture directory can see the whole site. Call this before any build; pass '' to clear it (a
+	 * single-page conversion then reads the html it was given, exactly as before).
+	 */
+	public static function set_button_scan_html( $html ) {
+		self::$btn_scan_html = (string) $html;
+		self::$token_ink_map = null;   // rebuilt lazily from the new markup
+	}
 
 	/**
 	 * The footer's STATEMENT BAR — a full-width band above the column grid carrying one sentence on its own
@@ -10263,7 +11303,7 @@ class FW_Site_Converter_Stitch {
 		if ( ! empty( $out['border'] ) && empty( $out['border_color'] ) ) {
 			$bcc = self::sc_css( $chrome, 'border-bottom-color' );
 			if ( '' === $bcc || (float) self::sc_css( $chrome, 'border-bottom-width' ) <= 0 ) { $bcc = ''; }
-			if ( '' !== $bcc && stripos( $bcc, 'transparent' ) === false && ! preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', $bcc ) ) { $out['border_color'] = $bcc; }
+			if ( '' !== $bcc && stripos( $bcc, 'transparent' ) === false && ! preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', $bcc ) ) { $out['border_color'] = self::color_keep_alpha( $bcc ); } // normalised: consumers match hex / rgba(), and a modern oklab()/oklch() hairline would otherwise be dropped
 		}
 		// PROMINENT bottom border on the header's INNER bar — the class-less `<header>` pattern, where the
 		// visible nav bar is a `border-b-4 border-primary` child (the burger source). The header-level reads above miss it.
@@ -11174,6 +12214,19 @@ class FW_Site_Converter_Stitch {
 			$a = strpos( $m[1], '%' ) !== false ? (float) $m[1] / 100 : (float) $m[1];
 			if ( $a < 0.99 ) { return preg_replace( '/\s+/', ' ', $c ); }
 		}
+		// MODERN colour functions carry their alpha after a slash — `oklab(L a b / 0.1)`, `oklch(… / 10%)`,
+		// `hsl(… / .5)`, `color(srgb … / .8)`. color_to_hex() resolves the hue but always returns an OPAQUE
+		// hex, so a translucent value came back solid: a header hairline the source draws in white at 10%
+		// would have painted a full-strength white line. Rebuild it as rgba() so the alpha survives — and so
+		// callers that only recognise hex / rgb() forms can match it at all.
+		if ( preg_match( '/^(?:oklab|oklch|lab|lch|hsla?|color)\([^)]*\/\s*([0-9.]+%?)\s*\)$/i', $c, $am ) ) {
+			$a = ( false !== strpos( $am[1], '%' ) ) ? (float) rtrim( $am[1], '%' ) / 100 : (float) $am[1];
+			$hex = self::color_to_hex( $c );
+			if ( $a < 0.99 && preg_match( '/^#([0-9a-f]{6})$/i', (string) $hex, $hm ) ) {
+				return 'rgba(' . hexdec( substr( $hm[1], 0, 2 ) ) . ', ' . hexdec( substr( $hm[1], 2, 2 ) ) . ', '
+					. hexdec( substr( $hm[1], 4, 2 ) ) . ', ' . rtrim( rtrim( number_format( $a, 3, '.', '' ), '0' ), '.' ) . ')';
+			}
+		}
 		return self::color_to_hex( $c );
 	}
 
@@ -11530,6 +12583,70 @@ class FW_Site_Converter_Stitch {
 			if ( preg_match( '/(?:^|\s|:)col-span-([2-9])/', $fc ) ) { return true; }
 		}
 		return false;
+	}
+
+	/** TRUE when two media refs point at the same asset — same URL, or the same basename once a query string,
+	 *  a scheme/host and a `-320x200` size suffix are set aside. A data: URI only matches itself, byte for byte. */
+	private static function same_media_ref( $a, $b ) {
+		$a = trim( (string) $a ); $b = trim( (string) $b );
+		if ( '' === $a || '' === $b ) { return false; }
+		if ( $a === $b ) { return true; }
+		if ( 0 === stripos( $a, 'data:' ) || 0 === stripos( $b, 'data:' ) ) { return false; }
+		$base = function ( $u ) {
+			$u = preg_replace( '/[?#].*$/', '', $u );
+			$u = basename( (string) $u );
+			return strtolower( preg_replace( '/-\d{2,4}x\d{2,4}(?=\.[a-z0-9]+$)/i', '', $u ) );
+		};
+		return $base( $a ) === $base( $b );
+	}
+
+	/**
+	 * The footer's OWN brand image — { url, width } — or null when it has none.
+	 *
+	 * The theme renders the HEADER logo in the footer, which is right only when the source uses one lockup in
+	 * both places. Plenty of sites do not: a compact mark pinned in the nav bar, the full wordmark in the
+	 * footer. Reading only the header's meant such a footer came back wearing a 40px glyph where the source
+	 * draws a 205px wordmark (a real-site audit).
+	 *
+	 * The brand image is the first <img> in the footer that is big enough to be a lockup and is not one of the
+	 * social glyphs (which are small, square, and usually inline SVG). Its rendered width is read from the
+	 * capture stamp, so the footer_logo element can be given the size the source actually draws.
+	 */
+	private static function detect_footer_logo( $html ) {
+		$dom = self::load_dom( $html );
+		if ( ! $dom ) { return null; }
+		$footer = $dom->getElementsByTagName( 'footer' )->item( 0 );
+		if ( ! $footer ) { return null; }
+		foreach ( $footer->getElementsByTagName( 'img' ) as $img ) {
+			if ( ! ( $img instanceof DOMElement ) ) { continue; }
+			$src = trim( (string) $img->getAttribute( 'src' ) );
+			if ( '' === $src ) { $src = trim( (string) $img->getAttribute( 'data-src' ) ); }
+			if ( '' === $src ) { continue; }
+			$cs = (string) $img->getAttribute( 'data-sc-cs' );
+			$w  = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', $cs, $wm ) ? (float) $wm[1] : (float) $img->getAttribute( 'width' );
+			$h  = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $cs, $hm ) ? (float) $hm[1] : (float) $img->getAttribute( 'height' );
+			// Only a MEASURED image can be claimed here. The footer_logo element needs a width to draw at, and an
+			// image the capture never sized is as likely to be a badge dropped into the footer chrome (a
+			// "built with" pill, a seal) as the site's own lockup — without a measurement there is nothing to
+			// tell them apart, so the theme's own `logo` element stays the safer answer.
+			if ( $w <= 0 ) { continue; }
+			// A social / payment glyph is small and square; a brand lockup is wider than it is tall, or simply large.
+			if ( $h > 0 && $w <= 48 && abs( $w - $h ) <= 6 ) { continue; }
+			// …and an image inside a link that LEAVES the site is somebody else's mark — a "built with" badge, an
+			// app-store button, a certification seal. The site's own lockup links home, or links nowhere at all.
+			$anchor = null;
+			for ( $a = $img->parentNode; $a instanceof DOMElement && $a !== $footer; $a = $a->parentNode ) {
+				if ( 'a' === strtolower( (string) $a->tagName ) ) { $anchor = $a; break; }
+			}
+			if ( $anchor instanceof DOMElement ) {
+				$href = trim( (string) $anchor->getAttribute( 'href' ) );
+				$home = ( '' === $href || '#' === $href || '/' === $href || 0 === strpos( $href, '#' )
+					|| (bool) preg_match( '~^https?://[^/]+/?$~i', $href ) );
+				if ( ! $home ) { continue; }
+			}
+			return array( 'url' => $src, 'width' => (int) round( $w > 0 ? $w : 0 ) );
+		}
+		return null;
 	}
 
 	/** The footer brand description (a substantial <p> that is NOT the copyright line), or ''. */
@@ -11889,7 +13006,13 @@ class FW_Site_Converter_Stitch {
 		foreach ( $cands as $c ) { if ( $c['raster'] ) { return $c['href']; } }
 		// (d) a .ico icon.
 		foreach ( $cands as $c ) { if ( $c['ico'] ) { return $c['href']; } }
-		// (e) fall back to <origin>/favicon.ico.
+		// (e) ANY REMAINING DECLARED ICON beats a guessed path -- in practice an SVG. None of the branches
+		// above match `<link rel="icon" type="image/svg+xml" href="/favicon.svg">`: it is not an apple icon,
+		// carries no sizes=, is not raster and is not .ico. So a site whose favicon is an SVG -- now the common
+		// case -- fell through to <origin>/favicon.ico, a file it never declared and often does not have, and
+		// the real favicon was never captured.
+		foreach ( $cands as $c ) { if ( '' !== $c['href'] ) { return $c['href']; } }
+		// (f) nothing declared at all: the conventional path is the only guess left.
 		return $origin !== '' ? $origin . '/favicon.ico' : '';
 	}
 
@@ -12024,27 +13147,32 @@ class FW_Site_Converter_Stitch {
 	}
 
 	private static function detect_header( $html ) {
-		$out = array( 'style' => 'bar', 'sticky' => false, 'dark' => false, 'cta' => array( 'label' => '', 'href' => '', 'style' => '' ) );
+		$out = array( 'style' => 'bar', 'sticky' => false, 'pinned' => '', 'dark' => false, 'cta' => array( 'label' => '', 'href' => '', 'style' => '' ) );
 		$dom = self::load_dom( $html );
 		if ( ! $dom ) { return $out; }
 		$header = self::header_root( $dom );
 		if ( ! $header ) { return $out; }
 		$hcls = self::cls( $header );
-		if ( strpos( $hcls, 'sticky' ) !== false || strpos( $hcls, 'fixed' ) !== false ) { $out['sticky'] = true; }
+		// WHICH keyword matters, not just that the header is pinned: `fixed` is OUT of flow (it reserves no
+		// height, so the hero sits under it), while `sticky` stays IN flow and pushes the hero down by its own
+		// height. Collapsing both into one boolean lost that, and every sticky-header source converted with the
+		// hero one header-height too high. `pinned` keeps the keyword; `sticky` stays for back-compat.
+		if ( strpos( $hcls, 'fixed' ) !== false )  { $out['sticky'] = true; $out['pinned'] = 'fixed'; }
+		elseif ( strpos( $hcls, 'sticky' ) !== false ) { $out['sticky'] = true; $out['pinned'] = 'sticky'; }
 		// Class-less fixed/sticky header (position set via a STYLESHEET rule, not a Tailwind class — e.g. kage's
 		// `<header id="nav" class="nav">` + `.nav{position:fixed}`). The capture's data-sc-cs omits `position`,
 		// so read the source sheet for the header's own tag / #id / .class rule.
 		if ( ! $out['sticky'] ) {
 			$inline = strtolower( (string) $header->getAttribute( 'style' ) );
-			if ( preg_match( '/position\s*:\s*(?:fixed|sticky)/', $inline ) ) {
-				$out['sticky'] = true;
+			if ( preg_match( '/position\s*:\s*(fixed|sticky)/', $inline, $pm ) ) {
+				$out['sticky'] = true; $out['pinned'] = strtolower( $pm[1] );
 			} else {
 				$sels = array( preg_quote( strtolower( $header->tagName ), '/' ) );
 				$hid  = trim( (string) $header->getAttribute( 'id' ) );
 				if ( '' !== $hid ) { $sels[] = '#' . preg_quote( $hid, '/' ); }
 				foreach ( preg_split( '/\s+/', $hcls ) as $c ) { $c = trim( $c ); if ( '' !== $c ) { $sels[] = '\.' . preg_quote( $c, '/' ); } }
-				$re = '/(?:' . implode( '|', $sels ) . ')(?![\w-])[^{}]*\{[^}]*position\s*:\s*(?:fixed|sticky)/i';
-				if ( preg_match( $re, self::all_style_css( $html ) ) ) { $out['sticky'] = true; }
+				$re = '/(?:' . implode( '|', $sels ) . ')(?![\w-])[^{}]*\{[^}]*position\s*:\s*(fixed|sticky)/i';
+				if ( preg_match( $re, self::all_style_css( $html ), $sm2 ) ) { $out['sticky'] = true; $out['pinned'] = strtolower( $sm2[1] ); }
 			}
 		}
 		// A pill nav: a container with rounded-full. Dark fill if it carries a near-black bg.
@@ -12198,6 +13326,37 @@ class FW_Site_Converter_Stitch {
 					// is DESKTOP-visible (only the bare-breakpoint `md:hidden` etc. are desktop-hidden).
 					if ( strpos( $kc, ' md:hidden ' ) !== false || strpos( $kc, ' lg:hidden ' ) !== false || strpos( $kc, ' sm:hidden ' ) !== false ) { continue; }
 					$major[] = $k;
+				}
+				// MEASURED POSITION FIRST. The index test below is a structural PROXY for where the menu sits, and a
+				// flex row makes it meaningless: `justify-between` or an `ml-auto` puts a mid-index zone hard right.
+				// A nav rendered against the right edge was read as index 0 and placed in the LEFT slot -- every link
+				// moved ~830px on the converted page, on every page of the site. The capture stamps each row child's
+				// measured offset (track-x) plus its width share (track-frac), so ask where it actually IS: the centre
+				// of the menu, as a fraction of the row, decides the slot. Falls through to the index heuristic when a
+				// capture is older than the stamp.
+				$mx = null;
+				// Measure the ZONE, not the menu list. find_menu_group returns the innermost list, whose track-* are
+				// relative to its own wrapper -- so a nav hard against the right edge measured 0.38 of its little
+				// parent and read as 'centre'. Climb to the masthead ROW's direct child: that is the zone whose
+				// stamps are relative to the row, and the zone is what a slot actually holds.
+				$zone = $menu_group;
+				while ( $zone->parentNode instanceof DOMElement && $zone->parentNode !== $header ) { $zone = $zone->parentNode; }
+				$zcs = ( $zone instanceof DOMElement ) ? (string) $zone->getAttribute( 'data-sc-cs' ) : '';
+				if ( '' === $zcs ) { $zcs = $mcs; }
+				if ( preg_match( '/(?:^|;)\s*track-x:\s*(-?[0-9.]+)/', $zcs, $xm ) && preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/', $zcs, $fm ) ) {
+					// The ROW's content width is not stamped, but each child carries its own measured width and its share
+					// of the row -- so the row is simply w / frac, and the menu's centre is (x + w/2) over that.
+					$mw = preg_match( '/(?:^|;)\s*track-w:\s*([0-9.]+)/', $zcs, $wm ) ? (float) $wm[1] : 0.0;
+					$frac = (float) $fm[1];
+					if ( $mw > 0 && $frac > 0.001 ) {
+						$roww = $mw / $frac;
+						if ( $roww > 0 ) { $mx = ( ( (float) $xm[1] ) + $mw / 2 ) / $roww; }
+					}
+				}
+				if ( null !== $mx ) {
+					$out['menu_pos'] = ( $mx < 0.36 ) ? 'left' : ( ( $mx > 0.64 ) ? 'right' : 'center' );
+					$out['menu_pos_measured'] = true; // a MEASURED placement outranks any later structural guess
+					return $out;
 				}
 				$idx = array_search( $menu_group, $major, true );
 				$n   = count( $major );
@@ -13240,6 +14399,29 @@ class FW_Site_Converter_Stitch {
 		foreach ( self::$mw_rules as $rule ) {
 			if ( self::selector_matches_el( (string) $rule['selector'], $el, $cls ) ) { return (string) $rule['value']; }
 		}
+		// 5. THE WRAPPER'S PROSE MEASURE. A centred text block usually caps its WRAPPER, not each paragraph
+		// (`<div class="max-w-xl mx-auto space-y-4"><p>…</p><p>…</p></div>`), so the paragraph itself reports no
+		// max-width and the converted copy ran the full column width — fewer lines, and a section measurably
+		// shorter than its source (a real-site audit: 558px against 428px, the copy 576px wide in the source
+		// and 723px in the conversion). Walk up a few levels for that cap.
+		//
+		// Only a PROSE measure is adopted: at most 800px, which is a reading width rather than a layout
+		// container. The band's own cap is already applied by the section, and inheriting it here would say
+		// nothing while overriding narrower intent further in.
+		$steps = 0;
+		for ( $a = $el->parentNode; $a instanceof DOMElement && $steps < 3; $a = $a->parentNode, $steps++ ) {
+			$atag = strtolower( (string) $a->tagName );
+			if ( in_array( $atag, array( 'section', 'main', 'body', 'article', 'header', 'footer' ), true ) ) { break; }
+			$acls = self::cls( $a );
+			$av   = '';
+			if ( preg_match( '/(?:^|\s)max-w-\[(\d+(?:\.\d+)?(?:px|rem|em))\]/', $acls, $am ) ) { $av = $am[1]; }
+			elseif ( preg_match( '/(?:^|\s)max-w-([a-z0-9]+)(?:\s|$)/', $acls, $am ) ) { $av = self::tw_max_w_named( $am[1] ); }
+			if ( '' === $av ) { $av = (string) self::sc_css( $a, 'max-width' ); }
+			if ( ! preg_match( '/^([0-9.]+)(px|rem|em)$/i', $av, $vm ) ) { continue; }
+			$px = ( 'px' === strtolower( $vm[2] ) ) ? (float) $vm[1] : (float) $vm[1] * 16;
+			if ( $px <= 0 || $px > 800 ) { continue; }
+			return $av;
+		}
 		return '';
 	}
 
@@ -13410,13 +14592,17 @@ class FW_Site_Converter_Stitch {
 					}
 					unset( $bk );
 				}
+				// A band that spends its vertical rhythm on an INNER container reports zero padding of its
+				// own; fold the wrapper's inset onto the section's stamp so the mapper sees the BAND's
+				// rhythm rather than the element's. No-op for every section that pads itself.
+				$inner_pad = self::band_pad_from_inner( $node );
 				$sections[] = array(
 					'sectionClass' => '',
 					'sectionRawClass' => self::cls( $node ), // the section's RAW classes (mt/mb/py …) → vertical-spacing carry, without polluting css_class
-					'sectionCs'    => (string) $node->getAttribute( 'data-sc-cs' ), // the section's COMPUTED style → faithful full-width band background (mapper reproduces bg the class parse misses)
-					'sectionCsSm'  => (string) $node->getAttribute( 'data-sc-cs-sm' ), // the PHONE-pass diff (capture >= 1.10.96: padding / margin at 390px when they differ) → Pass #5 base tier
-					'sectionCsMd'  => (string) $node->getAttribute( 'data-sc-cs-md' ), // the TABLET-pass diff (capture >= 1.10.97: 820px) → Pass #5 md tier
-					'sectionCsXl'  => (string) $node->getAttribute( 'data-sc-cs-xl' ), // the WIDE-pass diff (capture >= 1.10.99: 1920px → the >= 1536px tier) → Pass #5 min-width:1536px rule
+					'sectionCs'    => (string) $node->getAttribute( 'data-sc-cs' ) . ( $inner_pad['cs'] ?? '' ), // the section's COMPUTED style → faithful full-width band background (mapper reproduces bg the class parse misses)
+					'sectionCsSm'  => '' !== (string) $node->getAttribute( 'data-sc-cs-sm' ) ? (string) $node->getAttribute( 'data-sc-cs-sm' ) : (string) ( $inner_pad['sm'] ?? '' ), // the PHONE-pass diff (capture >= 1.10.96: padding / margin at 390px when they differ) → Pass #5 base tier
+					'sectionCsMd'  => '' !== (string) $node->getAttribute( 'data-sc-cs-md' ) ? (string) $node->getAttribute( 'data-sc-cs-md' ) : (string) ( $inner_pad['md'] ?? '' ), // the TABLET-pass diff (capture >= 1.10.97: 820px) → Pass #5 md tier
+					'sectionCsXl'  => '' !== (string) $node->getAttribute( 'data-sc-cs-xl' ) ? (string) $node->getAttribute( 'data-sc-cs-xl' ) : (string) ( $inner_pad['xl'] ?? '' ), // the WIDE-pass diff (capture >= 1.10.99: 1920px → the >= 1536px tier) → Pass #5 min-width:1536px rule
 					'bandPlace'    => self::band_placement_of( $node ), // a grid-canvas band's column placement { frac, x, w } (stamp_band_placement) → the mapper keeps it at its column
 					'phonePass'    => (bool) preg_match( '/<html\b[^>]*\bdata-sc-phone-pass\s*=\s*["\']?1/i', (string) $html ), // the capture measured 390px too → "no diff" means "same as desktop" (no clamp)
 					'sectionLayers' => self::section_layers( $node ), // direct-child "full-bleed" layers (class/style/computed) → mapper hoists a solid band fill that lives on an INNER layer, not the section root
@@ -13588,15 +14774,79 @@ class FW_Site_Converter_Stitch {
 	/** Stamp a wrapper / element content cap onto a WIDGET block (a columns row, an accordion, a list, a table, tabs, steps,
 	 *  a timeline, pricing, a gallery, testimonials, a logo strip, a panel): `capW` (a CSS length) + `capCenter`. A block that
 	 *  already carries a narrower cap keeps it; leaf text / headings have their own measures (maxWidth / wrapMaxW). */
-	private static function stamp_cap( array &$b, $w, $centered ) {
+	private static function stamp_cap( array &$b, $w, $centered, $pad_x = 0.0 ) {
 		$t = (string) ( $b['t'] ?? '' ); $role = (string) ( $b['role'] ?? '' );
-		$widget = in_array( $t, array( 'accordion', 'feature_list', 'table', 'tabs', 'steps', 'timeline', 'pricing', 'gallery', 'testimonials', 'logo_grid', 'panel', 'stack', 'contact_form', 'newsletter', 'progress', 'image_grid', 'icon_grid' ), true ) || ( 'row' === $t && 'columns' === $role );
-		if ( ! $widget || ! empty( $b['capW'] ) ) { return; }
+		// A BUTTON GROUP counts too: a capped, centred wrapper around a CTA (`max-w-md mx-auto`) IS that
+		// button's measure, and flattening the wrapper without it left a full-width button shrunk back to
+		// its label — 448px in the source, 177px converted.
+		$widget = in_array( $t, array( 'accordion', 'feature_list', 'table', 'tabs', 'steps', 'timeline', 'pricing', 'gallery', 'testimonials', 'logo_grid', 'panel', 'stack', 'contact_form', 'newsletter', 'progress', 'image_grid', 'icon_grid', 'button', 'image' ), true ) || ( 'row' === $t && 'columns' === $role );
+		if ( ! $widget ) { return; }
 		// a PAGE container's width (`max-w-[1600px] px-12`, `max-w-screen-2xl`) is the section's content width, never a content
 		// cap — stamping it overrode the theme's gutters (`min(1504px, 100% - 32px)`) and a 4-up product row ran edge to edge
-		$wpx = preg_match( '/^([0-9.]+)(px|rem)$/', trim( (string) $w ), $wm ) ? ( 'rem' === $wm[2] ? (float) $wm[1] * 16 : (float) $wm[1] ) : 0.0;
+		$px  = function ( $v ) {
+			return preg_match( '/^([0-9.]+)(px|rem)$/', trim( (string) $v ), $m )
+				? ( 'rem' === $m[2] ? (float) $m[1] * 16 : (float) $m[1] ) : 0.0;
+		};
+		$wpx = $px( $w );
 		if ( $wpx >= 1400 ) { return; }
+		// NESTED capped wrappers compose as a MINIMUM — the narrowest one bounds the block. Keeping whichever
+		// wrapper happened to be walked first meant an image inside `max-w-xl` (576) nested in the section's
+		// `max-w-2xl` (672) took the OUTER 672 and rendered a sixth wider than the source.
+		if ( ! empty( $b['capW'] ) ) {
+			$cur = $px( $b['capW'] );
+			if ( $cur > 0 && $wpx > 0 && $cur <= $wpx ) { return; } // already bounded at least this tightly
+		}
 		$b['capW'] = (string) $w; $b['capCenter'] = (bool) $centered;
+		// …AND THE CAPPED WRAPPER'S OWN SIDE GUTTER. A cap is a box width, not a content width: the commonest
+		// container is `max-w-[1152px] px-5`, whose BOX is 1152 but whose CONTENT is 1112. Carrying the cap
+		// alone made the converted row 40px wider than the source's, which is 20px per column on a two-column
+		// band — enough that a heading the source wraps over three lines fitted on two, and the band came back
+		// 60px shorter with 11.5% of its pixels differing.
+		if ( (float) $pad_x > 0 ) { $b['capPadX'] = (float) $pad_x; }
+	}
+
+	/**
+	 * A capped wrapper's own SIDE GUTTER in px — the padding that sits inside its max-width.
+	 *
+	 * `max-w-[1152px] px-5` is a 1152 BOX holding 1112 of content. Reading the cap without the gutter hands
+	 * the content 40px it does not have. Symmetric only: an asymmetric inset is a layout decision rather than
+	 * a gutter, and halving it would misplace the content rather than merely widen it.
+	 *
+	 * @param DOMElement $el the capped wrapper
+	 * @return float px per side, 0 when there is no symmetric gutter
+	 */
+	private static function wrapper_pad_x( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return 0.0; }
+		// THE COMPUTED STAMP FIRST — it is the DESKTOP truth, which is the width the cap is measured at. The
+		// class tiers are read only as a fallback, and reading their BASE tier first was wrong: a container
+		// written `px-4 md:px-12 lg:px-24` reports 16px at base and 96px at the captured viewport, so the base
+		// slipped under the gutter ceiling and a 96px layout inset was re-applied as if it were a 16px gutter.
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
+		$p  = self::cs_decls_pad( $cs );
+		if ( is_array( $p ) ) {
+			$l = (float) $p['left'];
+			$r = (float) $p['right'];
+		} else {
+			$l = (float) self::sc_css( $el, 'padding-left' );
+			$r = (float) self::sc_css( $el, 'padding-right' );
+		}
+		if ( $l <= 0 || $r <= 0 ) {
+			$pad = self::el_padding( $el );
+			if ( is_array( $pad ) ) {
+				// The widest declared tier, not the base one — the cap is a desktop measurement.
+				foreach ( array( 'lg', 'md', 'base' ) as $tier ) {
+					$t = isset( $pad[ $tier ] ) && is_array( $pad[ $tier ] ) ? $pad[ $tier ] : array();
+					if ( null !== ( $t['left'] ?? null ) && (float) $t['left'] > 0 ) { $l = (float) $t['left']; $r = (float) ( $t['right'] ?? 0 ); break; }
+				}
+			}
+		}
+		// A GUTTER IS SMALL. The universal page gutter is `px-4` to `px-8` — 16 to 32px — and it is the residue
+		// between a cap's box width and its content. A larger symmetric inset is a layout decision the BAND's
+		// container already expresses, and re-adding it here doubles the inset: a hero whose container is
+		// `max-w-7xl mx-auto px-12` (96px computed) had its title pushed 48px off the source's edge, which is
+		// what golden [AC] pins. Above the gutter range the cap travels alone, as it always did.
+		if ( $l <= 0 || $r <= 0 || abs( $l - $r ) > 1.0 || $l > 32 ) { return 0.0; }
+		return $l;
 	}
 
 	/** Whether a capped wrapper is horizontally CENTERED (`mx-auto`, or symmetric non-zero computed side margins). */
@@ -14628,6 +15878,22 @@ class FW_Site_Converter_Stitch {
 		if ( preg_match( '/\b(?:min-)?h-\[([0-9.]+)(?:s|d)?vh\]/', $scls, $hm ) )       { $hero_height = $hm[1] . 'vh'; }
 		elseif ( preg_match( '/\b(?:min-)?h-screen\b/', $scls ) )                       { $hero_height = '100vh'; }
 		elseif ( $scs !== '' && preg_match( '/(?:^|;)\s*(?:min-)?height:\s*([0-9.]+)(?:vh|dvh|svh)/', $scs, $hm ) && (float) $hm[1] >= 60 ) { $hero_height = $hm[1] . 'vh'; }
+		// …and a declared PIXEL min-height. Only vh was ever read here, so a band sized by a full-bleed photo
+		// (`min-height:620px`) reported nothing and collapsed to its content: the converted band rendered 443px
+		// against the source's 620px and the photo lost a third of its height. Reading `min-height` rather than
+		// `height` is what makes this safe -- computed `height` is set on EVERY element (it is just the rendered
+		// box, so freezing it would pin every band), while a non-zero computed `min-height` is something the
+		// author actually declared. Measured: 45 of 648 sections across 43 of 140 captures declare one.
+		elseif ( $scs !== '' && preg_match( '/(?:^|;)\s*min-height:\s*([0-9.]+)px/', $scs, $hm ) && (float) $hm[1] >= 200 ) {
+			// The floor the band ACHIEVED, not merely the one it declared. A hero declares `min-height:760px` and
+			// then renders 900px because its content is taller; taking the declared number verbatim handed the
+			// converted hero a 760px floor, and since its content is a little shorter it rendered 847 against the
+			// source's 900 -- a correct 900px floor from another path, replaced by a worse one. Whichever of the two
+			// is larger is the height the source actually stood at.
+			$mh_declared = (float) $hm[1];
+			$mh_rendered = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/', $scs, $rm ) ? (float) $rm[1] : 0.0;
+			$hero_height = (string) (int) round( max( $mh_declared, $mh_rendered ) ) . 'px';
+		}
 		// Vertical placement of the content = the content layer's flex alignment (justify-end → bottom).
 		$valign = 'middle';
 		$whole  = strtolower( $node->ownerDocument ? (string) $node->ownerDocument->saveHTML( $node ) : '' );
@@ -14655,7 +15921,7 @@ class FW_Site_Converter_Stitch {
 		// No scrim ELEMENT → a `::before` / `::after` pseudo-layer tint stamped by the capture (data-sc-scrim).
 		if ( '' === $overlay ) { $overlay = self::pseudo_scrim_of( $node ); }
 		$centred_cap = self::band_has_centred_cap( $node );
-		$ret = function ( $src ) use ( $hero, $valign, $hero_height, $overlay, $centred_cap ) { return array( 'src' => $src, 'contentCentred' => $centred_cap, 'hero' => $hero, 'valign' => $valign, 'hero_height' => $hero_height, 'overlay' => $overlay ); };
+		$ret = function ( $src, $layer_opacity = 1.0 ) use ( $hero, $valign, $hero_height, $overlay, $centred_cap ) { return array( 'src' => $src, 'contentCentred' => $centred_cap, 'hero' => $hero, 'valign' => $valign, 'hero_height' => $hero_height, 'overlay' => $overlay, 'bgOpacity' => $layer_opacity ); };
 
 		// A real image URL out of a computed `background-image` layer list (skips gradients + data:svg).
 		$url_of = function ( $bg ) {
@@ -14685,7 +15951,24 @@ class FW_Site_Converter_Stitch {
 				if ( $pos !== 'absolute' && $pos !== 'fixed' ) { continue; }
 			}
 			$bg = $url_of( self::sc_css( $el, 'background-image' ) );
-			if ( $bg !== '' ) { return $ret( $bg ); }
+			if ( $bg !== '' ) {
+				// THE LAYER'S OWN OPACITY IS THE TREATMENT. A source that wants a pale backdrop fades the image
+				// layer itself (`opacity-20`) rather than laying a scrim over it. Reading only the URL gave a
+				// full-strength photo, and the legibility fallback then added a dark scrim on top — the exact
+				// opposite of the source, which is a near-white wash under dark text (a real-site audit).
+				$lop = (float) self::sc_css( $el, 'opacity' );
+				// …and the colour it is fading INTO, which is what the equivalent overlay must be made of:
+				// the first painted background walking out from the layer. '' leaves the mapper to default.
+				$under = '';
+				for ( $u = $el->parentNode; $u instanceof DOMElement; $u = $u->parentNode ) {
+					$ubg = self::color_keep_alpha( (string) self::sc_css( $u, 'background-color' ) );
+					if ( '' !== $ubg && ! preg_match( '/[,\/]\s*0*(?:\.0+)?\s*\)$/', $ubg ) ) { $under = $ubg; break; }
+					if ( 'body' === strtolower( (string) $u->tagName ) ) { break; }
+				}
+				$r = $ret( $bg, ( $lop > 0 && $lop < 1 ) ? $lop : 1.0 );
+				$r['bgUnder'] = $under;
+				return $r;
+			}
 		}
 
 		// (3) An <img object-cover/object-fill> inside a full-bleed background LAYER (absolute/fixed inset-0),
@@ -14928,7 +16211,20 @@ class FW_Site_Converter_Stitch {
 			if ( $el->parentNode instanceof DOMElement ) {
 				foreach ( self::el_children( $el->parentNode ) as $sib ) {
 					if ( $sib === $el ) { continue; }
-					if ( '' !== trim( self::text( $sib ) ) || $sib->getElementsByTagName( 'img' )->length || $sib->getElementsByTagName( 'video' )->length || $sib->getElementsByTagName( 'svg' )->length ) { $has_content_sibling = true; break; }
+					if ( '' === trim( self::text( $sib ) ) && ! $sib->getElementsByTagName( 'img' )->length && ! $sib->getElementsByTagName( 'video' )->length && ! $sib->getElementsByTagName( 'svg' )->length ) { continue; }
+					// A sibling that is ITSELF a centred cap does not disqualify this one. The guard exists for a
+					// capped block sitting beside UNCAPPED content (a `max-w-4xl` heading group next to a
+					// full-width card stack), where the section's band must be wider than the capped block. When
+					// every sibling is capped and centred too, there is no uncapped content for a wider band to
+					// serve, and rejecting them all left the section with NO band at all -- so it fell through to
+					// the site container and rendered wider than the source (measured: a 768 heading beside a 672
+					// panel produced band 0, and the section rendered at the site width of 1024).
+					$sibcs = (string) $sib->getAttribute( 'data-sc-cs' );
+					if ( preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/', $sibcs, $sm ) ) {
+						$sibpx = self::cap_content_px( $sib, (float) $sm[1] );
+						if ( $sibpx >= 480 && $sibpx <= $max_px && self::cap_is_centred( $sib, ' ' . strtolower( self::cls( $sib ) ) . ' ', $sibcs ) ) { continue; }
+					}
+					$has_content_sibling = true; break;
 				}
 			}
 			if ( $has_content_sibling ) { continue; }
@@ -15997,6 +17293,21 @@ class FW_Site_Converter_Stitch {
 		// content) → kept VERBATIM as a code_block so the cinematic collage renders with its carried CSS,
 		// instead of the images being dropped as decorative. Above image_grid so a layer stack isn't misread
 		// as a photo grid; the matcher is strict (decorative marker + no headings/copy) so real grids fall through.
+		// An IMAGE COMPARISON SLIDER (a renovation before/after) -> the native `before_after` shortcode.
+		//
+		// Matched STRUCTURALLY, never by class name: two images sharing one box, plus the mechanism that
+		// reveals one over the other -- a range input, or a wrapper clipped with `clip-path: inset(...)`.
+		// Every such widget has both, whatever library drew it, and neither depends on what the source calls
+		// its elements.
+		//
+		// Sits ABOVE decorative_scene (96), which claims any stack of 2+ images and would otherwise freeze a
+		// comparison into a verbatim code block, and above image_grid (91), which would make it two loose
+		// photos side by side. Before this, the widget converted as a decorative stack and its labels read as
+		// stray text -- one capture's "Drag to reveal" was classified as an unplaceable short label.
+		self::register_recognizer( 'before_after', 98,
+			function ( $el ) { return self::is_before_after( $el ); },
+			function ( $el ) { return self::before_after_build( $el ); }
+		);
 		self::register_recognizer( 'decorative_scene', 96,
 			function ( $el ) { return self::is_decorative_scene( $el ); },
 			function ( $el ) { return self::decorative_scene_build( $el ); }
@@ -16154,7 +17465,7 @@ class FW_Site_Converter_Stitch {
 		// (Formerly split as `announcement_pill` + `badge`; consolidated — the output was always `badge`.)
 		self::register_recognizer( 'badge', 76,
 			function ( $el ) { return self::is_badge( $el ); },
-			function ( $el ) { $p = self::pill_parts( $el ); return array( 't' => 'badge', 'role' => 'badge', 'tag_text' => $p['tag_text'], 'message' => $p['message'], 'icon' => $p['icon'], 'link' => $p['link'], 'align' => '', 'pillCls' => $p['pillCls'], 'tagCls' => $p['tagCls'], 'msgCls' => $p['msgCls'], 'pillCs' => $p['pillCs'], 'leadingSvg' => $p['leadingSvg'], 'pillDot' => $p['pillDot'] ?? null ); }
+			function ( $el ) { $p = self::pill_parts( $el ); return array( 't' => 'badge', 'role' => 'badge', 'tag_text' => $p['tag_text'], 'message' => $p['message'], 'icon' => $p['icon'], 'link' => $p['link'], 'align' => '', 'pillCls' => $p['pillCls'], 'tagCls' => $p['tagCls'], 'msgCls' => $p['msgCls'], 'msgCs' => ( $p['msgCs'] ?? '' ), 'tagCs' => ( $p['tagCs'] ?? '' ), 'pillCs' => $p['pillCs'], 'leadingSvg' => $p['leadingSvg'], 'pillDot' => $p['pillDot'] ?? null ); }
 		);
 		self::register_recognizer( 'badge_verbatim', 75,
 			function ( $el ) { return self::is_badge_verbatim( $el ); },
@@ -16349,6 +17660,42 @@ class FW_Site_Converter_Stitch {
 					$par = $el->parentNode; $pw = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', (string) $img->getAttribute( 'data-sc-cs' ), $iwm ) ? (float) $iwm[1] : 0.0;
 					if ( $par instanceof DOMElement && in_array( strtolower( $par->tagName ), array( 'section', 'main', 'body' ), true ) && ( false !== strpos( $wcl, ' w-full ' ) || $pw >= 1200 ) ) { $blk['bleed'] = true; }
 				}
+				// A CONTAIN FRAME is the same idea with the other fit: a fixed-height box holding a logo or
+				// lockup that must sit INSIDE it (`flex h-48 w-full max-w-xl items-center` > `img.h-full.w-full
+				// .object-contain`). Only the cover case was carried, so the frame's height, its own width cap
+				// and its bottom margin were all dropped and the picture rendered at the column's full width and
+				// its own natural height — a hero lockup came through 672x210 where the source frames it 576x224,
+				// and the gap to the next block vanished with the margin. Measured from the wrapper's stamp.
+				$contain = false !== strpos( $icl, ' object-contain ' )
+					|| preg_match( '/object-fit:\s*contain/i', (string) $img->getAttribute( 'data-sc-cs' ) );
+				if ( $contain && empty( $blk['skinCss'] ) && $hpx >= 60 ) {
+					$wrap = array( 'height:' . (int) round( $hpx ) . 'px' );
+					// The frame's WIDTH comes from the image's own stamp, not the wrapper's max-width: the
+					// matched wrapper can be an OUTER container (a section's `max-w-2xl`) while the frame that
+					// actually bounds the picture is an inner `max-w-xl`. With `h-full w-full object-contain`
+					// the image fills its frame, so its measured width IS that frame — 576px here, where the
+					// outer container's cap reads 672 and rendered the lockup a sixth too wide.
+					$mwpx = preg_match( '/(?:^|;)\s*width:\s*([0-9.]+)px/i', (string) $img->getAttribute( 'data-sc-cs' ), $iwm2 ) ? (float) $iwm2[1] : 0.0;
+					if ( $mwpx <= 0 ) {
+						$mwpx = preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/i', $wcs, $mwm ) ? (float) $mwm[1] : 0.0;
+					}
+					if ( $mwpx > 0 && $mwpx < 1400 ) {
+						$wrap[] = 'max-width:' . (int) round( $mwpx ) . 'px';
+						$wrap[] = 'margin-left:auto'; $wrap[] = 'margin-right:auto'; // the frame's own `mx-auto`
+					}
+					// The frame's own BOTTOM MARGIN — read from the image's immediate parent, which IS the frame
+					// (the matched wrapper can be an outer container whose margin is zero). el_margin() reads the
+					// utility classes first and falls back to the stamp, which matters here: the capture stamps
+					// the frame's max-width but NOT its margin, so a stamp-only read found nothing and the block
+					// below the picture sat flush against it instead of clearing the source's gap.
+					$fel  = ( $img->parentNode instanceof DOMElement ) ? $img->parentNode : null;
+					$mbpx = $fel ? (float) ( self::el_margin( $fel )['bottom'] ?? 0 ) : 0.0;
+					if ( $mbpx <= 0 ) {
+						$mbpx = preg_match( '/(?:^|;)\s*margin-bottom:\s*([0-9.]+)px/i', $wcs, $mbm ) ? (float) $mbm[1] : 0.0;
+					}
+					if ( $mbpx > 0 ) { $wrap[] = 'margin-bottom:' . (int) round( $mbpx ) . 'px'; }
+					$blk['skinCss'] = 'selector{' . implode( ';', $wrap ) . ';} selector img{width:100%;height:100%;object-fit:contain;}';
+				}
 				$ix = self::img_extra_css( $img );
 				if ( '' !== $ix && empty( $blk['skinCss'] ) ) { $blk['skinCss'] = 'selector img{' . $ix . ';}'; }
 				return $blk;
@@ -16467,13 +17814,101 @@ class FW_Site_Converter_Stitch {
 				$items = array();
 				foreach ( self::el_children( $el ) as $k ) {
 					$txt = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $k ) ) );
-					$items[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $k ), 'cs' => (string) $k->getAttribute( 'data-sc-cs' ), 'text' => $txt, 'html' => '<p>' . esc_html( $txt ) . '</p>' );
+					// A CHIP THAT LEADS WITH AN ICON KEEPS IT. text_no_icons() strips the glyph by design, and the
+					// chip then shipped as bare words — a hero's trust row ("12 Monate Garantie", "Alle Marken") lost
+					// all four of its lucide marks, which is most of what made it read as a trust row at all. The
+					// glyph rides inline before the text, carrying its OWN ink: on this shape the mark is the accent
+					// colour while the words are body ink, so inheriting currentColor would repaint it wrong.
+					$ico = ''; $ico_cls = ''; $ico_cs = ''; $ico_px = 0.0;
+					foreach ( $k->getElementsByTagName( 'svg' ) as $sv ) {
+						if ( ! ( $sv instanceof DOMElement ) || '' !== trim( (string) self::text( $sv ) ) ) { continue; }
+						$mk = (string) $sv->ownerDocument->saveHTML( $sv );
+						if ( '' === $mk || strlen( $mk ) > 4000 ) { break; }
+						$ico = self::strip_cs( $mk );
+						$ico_cls = self::cls( $sv );
+						$ico_cs  = (string) $sv->getAttribute( 'data-sc-cs' );
+						// A lucide mark carries its size as an ATTRIBUTE (`width="16"`), not a `w-4` class and not
+						// always a stamped width -- so both of n_feature_list's size paths came back empty and the
+						// marks fell to the shortcode's font-relative default. Read the attribute as the third source.
+						$ico_px  = 0.0;
+						if ( preg_match( '/^([0-9.]+)(?:px)?$/', trim( (string) $sv->getAttribute( 'width' ) ), $wm ) ) { $ico_px = (float) $wm[1]; }
+						$icol = self::color_to_hex( (string) self::sc_css( $sv, 'color' ) );
+						if ( '' !== $icol && false === stripos( $ico, 'style=' ) ) {
+							$ico = preg_replace( '/<svg\b/i', '<svg style="color:' . $icol . '"', $ico, 1 );
+						}
+						break;
+					}
+					// A chip that IS a link keeps its destination. On a brand / tag strip the link is the whole
+					// point of the row — dropping it leaves nineteen words that go nowhere.
+					$inner = ( '' !== $ico ? $ico . ' ' : '' ) . esc_html( $txt );
+					if ( 'a' === strtolower( $k->tagName ) ) {
+						$href = trim( (string) $k->getAttribute( 'href' ) );
+						if ( '' !== $href && '#' !== $href && 0 !== stripos( $href, 'javascript:' ) ) {
+							$inner = '<a href="' . esc_url( $href ) . '">' . $inner . '</a>';
+						}
+					}
+					$items[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $k ), 'cs' => (string) $k->getAttribute( 'data-sc-cs' ), 'text' => $txt, 'iconSvg' => $ico, 'iconCls' => $ico_cls, 'iconCs' => $ico_cs, 'iconPx' => $ico_px,
+						'html' => '<p>' . $inner . '</p>' );
 				}
 				$jc = self::sc_css( $el, 'justify-content' );
 				$m  = self::el_margin( $el );
 				// PHONE PASS: the chip row stays a (wrapping) ROW at 390px in the source — the 390 stamp does not turn it into a column —
 				// so the converted row must not collapse to a stack on phones (the theme's default). JS twin: chips keepRowSm.
 				$keep_row_sm = ! preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', (string) $el->getAttribute( 'data-sc-cs-sm' ) ) && ! preg_match( '/(?:^|;)\s*display:\s*(?:block|grid)/i', (string) $el->getAttribute( 'data-sc-cs-sm' ) );
+				// AN ICON-LED STRIP IS A FEATURE LIST, NOT A ROW OF TEXT BLOCKS. The chips path writes each item
+				// as a Text Block with the glyph INLINED into its WYSIWYG — right for a tag / pill row (boxed
+				// labels, no icons), wrong the moment every item leads with a mark. A hero's trust strip
+				// ("12 Monate Garantie", "Alle Marken", …) came out as four text blocks each holding raw `<svg>`
+				// markup: the icon was no longer an icon, so the picker could not change it and editing one
+				// meant hand-editing SVG in a rich-text field.
+				// `feature_list` is the native shape — per-item `icon`, per-item text, and an `orientation` whose
+				// "Horizontal strip" is exactly this row. Every part stays an editable option.
+				// A SEPARATOR between the chips is not a chip. A row written `chip · chip · chip` carries a lone
+				// punctuation leaf between each pair, and requiring EVERY child to be iconed let one of those
+				// dividers veto the whole row: a five-chip strip stayed nine text_blocks (five chips + four
+				// middots), each with its glyph frozen into a WYSIWYG, while the identical strip one section up
+				// converted correctly because it had no dividers. The separators are decoration the native list
+				// draws (or omits) itself, so they are skipped here rather than counted against the row.
+				$is_sep = function ( $it ) {
+					$t = trim( (string) ( $it['text'] ?? '' ) );
+					return '' !== $t && '' === trim( (string) ( $it['iconSvg'] ?? '' ) )
+						&& (bool) preg_match( '/^[\x{00b7}\x{2022}\x{2219}\x{30fb}\x{2013}\x{2014}|\/\-]$/u', $t );
+				};
+				$chips = array();
+				foreach ( $items as $it ) { if ( ! $is_sep( $it ) ) { $chips[] = $it; } }
+				$all_iconed = count( $chips ) >= 2;
+				foreach ( $chips as $it ) {
+					if ( '' === trim( (string) ( $it['iconSvg'] ?? '' ) ) ) { $all_iconed = false; break; }
+				}
+				if ( $all_iconed ) {
+					$fl_rows = array();
+					foreach ( $chips as $it ) {
+						// The glyph's own class + stamp ride along: n_feature_list reads `icon_cls` / `icon_cs` off the
+						// FIRST row to fill the native Icon Size, and this routing supplied neither -- so every strip's
+						// marks rendered at the shortcode's font-relative default (measured 18.75px) instead of the
+						// source's 16px.
+						$fl_rows[] = array( 'text' => (string) ( $it['text'] ?? '' ), 'icon_svg' => (string) ( $it['iconSvg'] ?? '' ),
+							'icon_cls' => (string) ( $it['iconCls'] ?? '' ), 'icon_cs' => (string) ( $it['iconCs'] ?? '' ),
+							'icon_px' => (float) ( $it['iconPx'] ?? 0 ) );
+					}
+					return array(
+						't' => 'feature_list', 'role' => 'feature_list', 'ordered' => false, 'marker' => 'none',
+						'items' => $fl_rows, 'orientation' => 'horizontal',
+						// THE CHIP'S OWN STAMP carries the strip's type and its icon-to-label gap, and nothing else does.
+						// n_feature_list already resolves a label's size/colour from `label_cs` and falls back to
+						// `label_cls` -- this routing simply never supplied either, so every strip rendered at the
+						// theme's 16px body against a source's 14px. Measured on a trust strip: five labels at the
+						// wrong size widened the row by 114px, which moved every glyph off its source position and
+						// took the band to 8.3% pixel drift with its content already correct.
+						// A chip row is uniform, so the first chip speaks for the strip. `item_cs` is the same stamp,
+						// named for what the mapper reads off it there: the row's column-gap IS the icon-to-label gap.
+						'label_cls' => (string) ( $chips[0]['cls'] ?? '' ),
+						'label_cs'  => (string) ( $chips[0]['cs'] ?? '' ),
+						'item_cs'   => (string) ( $chips[0]['cs'] ?? '' ),
+						'list_cls' => self::cls( $el ), 'list_cs' => (string) $el->getAttribute( 'data-sc-cs' ),
+						'mt' => $m['top'], 'mb' => $m['bottom'],
+					);
+				}
 				return array( 't' => 'chips', 'role' => 'chips', 'gap' => self::grid_gap_px( $el ), 'align' => ( strpos( $jc, 'center' ) !== false ? 'center' : ( strpos( $jc, 'end' ) !== false ? 'end' : '' ) ), 'mt' => $m['top'], 'mb' => $m['bottom'], 'items' => $items, 'keepRowSm' => $keep_row_sm );
 			}
 		);
@@ -16563,7 +17998,7 @@ class FW_Site_Converter_Stitch {
 		// a lone <details> or a plain content stack never qualifies.
 		self::register_recognizer( 'accordion', 89,
 			function ( $el ) { return self::is_accordion_group( $el ); },
-			function ( $el ) { return self::accordion_block( $el ); }
+			function ( $el, $tag, $rules ) { return self::accordion_block( $el, (array) $rules ); }
 		);
 
 		// A standalone `<ul>`/`<ol>` of >=2 text items (NOT a nav / menu / pagination / breadcrumb / tab list)
@@ -17698,6 +19133,32 @@ class FW_Site_Converter_Stitch {
 				if ( ! $is_item ) { return false; } // a real section heading → this is the band, not the group
 			}
 		}
+		// CLAIM THE TIGHTEST CONTAINER. When every toggle lives inside ONE child and another child carries real
+		// content of its own, $el is the BAND WRAPPER and that child is the group. Claiming the wrapper here took
+		// the sibling with it and simply discarded it: a services band is a two-track grid of `accordion | photo`,
+		// and the photo vanished from the converted page while the band grew 393px taller. The heading guard above
+		// already refuses a wrapper that holds a section heading; this is the same rule for a sibling CELL.
+		// Measured across the corpus: 2 of 18 matches are wrappers of this shape.
+		$ag_tog = function ( $n ) {
+			$d = 0;
+			foreach ( $n->getElementsByTagName( 'details' ) as $dd ) { if ( $dd->getElementsByTagName( 'summary' )->length > 0 ) { $d++; } }
+			$a = 0;
+			foreach ( $n->getElementsByTagName( '*' ) as $t ) { if ( $t->hasAttribute( 'aria-expanded' ) && '' !== self::text( $t ) ) { $a++; } }
+			return max( $d, $a );
+		};
+		$ag_mine = $ag_tog( $el );
+		$ag_kids = self::el_children( $el );
+		if ( $ag_mine >= 2 && count( $ag_kids ) >= 2 ) {
+			$ag_holder = null;
+			foreach ( $ag_kids as $ag_k ) { if ( $ag_tog( $ag_k ) === $ag_mine ) { $ag_holder = $ag_k; break; } }
+			if ( null !== $ag_holder ) {
+				foreach ( $ag_kids as $ag_k ) {
+					if ( $ag_k === $ag_holder ) { continue; }
+					$ag_has_media = $ag_k->getElementsByTagName( 'img' )->length > 0 || $ag_k->getElementsByTagName( 'figure' )->length > 0 || $ag_k->getElementsByTagName( 'video' )->length > 0;
+					if ( $ag_has_media || mb_strlen( self::text( $ag_k ) ) > 20 ) { return false; } // the sibling is real content -> $el is the band
+				}
+			}
+		}
 		$details = 0;
 		foreach ( $el->getElementsByTagName( 'details' ) as $d ) {
 			if ( $d->getElementsByTagName( 'summary' )->length > 0 ) { $details++; }
@@ -17915,7 +19376,7 @@ class FW_Site_Converter_Stitch {
 		return trim( preg_replace( '/\s+/', ' ', (string) $t ) );
 	}
 
-	private static function accordion_block( $el ) {
+	private static function accordion_block( $el, array $rules = array() ) {
 		$items = array();
 		$dets  = $el->getElementsByTagName( 'details' );
 		if ( $dets->length > 0 ) {
@@ -17984,6 +19445,45 @@ class FW_Site_Converter_Stitch {
 		if ( $design ) { $block['design'] = $design; }
 		// FAQ schema present when the structured data covers at least half the questions.
 		if ( $faq_matched >= max( 1, (int) floor( count( $items ) / 2 ) ) ) { $block['faq'] = true; }
+		// WHAT THE TOGGLES ARE NOT. A toggle group's container often holds one more thing -- a CTA under the
+		// list (`Tell Us About Your Project`), an intro above it. The claim took the whole container and this
+		// function models only toggles, so every such child was silently discarded: 15 of them across 4 captures,
+		// several of them the band's only call to action. A recognizer must not delete the part of its subtree it
+		// does not understand. collect_blocks already accepts a LIST from a build, so the leftovers ride back as
+		// their own blocks, in source order around the accordion.
+		$is_toggle = function ( $k ) {
+			$kt = strtolower( $k->tagName );
+			if ( 'details' === $kt || $k->hasAttribute( 'aria-expanded' ) ) { return true; }
+			foreach ( $k->getElementsByTagName( 'details' ) as $d2 ) { if ( $d2->getElementsByTagName( 'summary' )->length > 0 ) { return true; } }
+			foreach ( $k->getElementsByTagName( '*' ) as $e2 ) { if ( $e2->hasAttribute( 'aria-expanded' ) && '' !== self::text( $e2 ) ) { return true; } }
+			return false;
+		};
+		$before = array(); $after = array(); $seen_toggle = false;
+		foreach ( self::el_children( $el ) as $k ) {
+			if ( $is_toggle( $k ) ) { $seen_toggle = true; continue; }
+			if ( '' === self::text( $k ) && ! $k->getElementsByTagName( 'img' )->length && ! $k->getElementsByTagName( 'svg' )->length ) { continue; }
+			$side = array();
+			self::collect_blocks_of( $k, $side, $rules );
+			// …and if nothing claimed it, keep it as TEXT rather than let it fall through. That fallback is the
+			// whole point: a bare `<a>` matched no recognizer here, so without it the leftover pass would have
+			// rescued only the children that happened to be recognisable and dropped the rest just as quietly as
+			// before. Whatever the leftover is, it leaves with a block.
+			if ( ! $side && '' !== self::text( $k ) ) {
+				$side[] = array(
+					't'    => 'text',
+					'role' => 'text',
+					// the WHOLE element, not its children: clean_inline_html returns inner HTML, which for a bare <a>
+				// keeps the label and throws away the link itself.
+				'html' => self::clean_block_html( $k, (string) $el->getAttribute( 'data-sc-cs' ) ),
+					'text' => self::text( $k ),
+					'cls'  => self::cls( $k ),
+					'cs'   => (string) $k->getAttribute( 'data-sc-cs' ),
+				);
+			}
+			if ( ! $side ) { continue; }
+			foreach ( $side as $sb ) { if ( $seen_toggle ) { $after[] = $sb; } else { $before[] = $sb; } }
+		}
+		if ( $before || $after ) { return array_merge( $before, array( $block ), $after ); }
 		return $block;
 	}
 
@@ -18175,16 +19675,43 @@ class FW_Site_Converter_Stitch {
 		$has_edge = $item_bw >= 1 || $radius > 0;
 		if ( $gap >= 4 && ( $has_edge || $has_bg ) ) {
 			$d['accordion_style'] = ( $has_bg && $item_bw < 1 && $radius <= 4 ) ? 'filled' : 'separated';
-		} elseif ( $gap < 4 && $outer_bw >= 1 ) {
+		}
+		// BORDERED is "one rounded BOX" — it needs a box. A track with only a top/bottom hairline
+		// (`divide-y border-y`: rules between the rows and a rule above and below the list) is the editorial FAQ
+		// shape, which is FLUSH. Testing the top border alone called it bordered, and the converted FAQ grew a
+		// card the source has not got — a bordered, filled panel around a list the source draws as plain rules
+		// on the page background. A real box also has side edges, or a radius.
+		$outer_lr = max( (float) self::sc_css( $track, 'border-left-width' ), (float) self::sc_css( $track, 'border-right-width' ) );
+		// The TRACK's own radius, not the item's: "bordered" is one rounded box, and the box is the track. A
+		// rounded corner on it implies the outline even where the side edges are hairline-thin.
+		$outer_rad = (float) self::sc_css( $track, 'border-radius' );
+		if ( $gap < 4 && $outer_bw >= 1 && ( $outer_lr >= 1 || $outer_rad > 0 || $radius > 0 ) ) {
 			$d['accordion_style'] = 'bordered';
 		} elseif ( $gap < 4 && ! $has_bg && ! $has_edge ) {
 			$d['accordion_style'] = 'flush';
 		}
 
 		// --- Title background color (only when the item carries a real fill) ---
-		if ( $has_bg && preg_match( '/rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/', $item_bg, $m ) ) {
-			$d['title_bg_color'] = array( 'predefined' => '', 'custom' => sprintf( '#%02x%02x%02x', (int) $m[1], (int) $m[2], (int) $m[3] ) );
+		if ( $has_bg ) {
+			$ibg = self::color_keep_alpha( (string) $item_bg );
+			if ( preg_match( '/^(?:#[0-9a-f]{3,8}|rgba?\()/i', (string) $ibg ) && ! preg_match( '/[,\/]\s*0*(?:\.0+)?\s*\)$/', (string) $ibg ) ) {
+				$d['title_bg_color'] = array( 'predefined' => '', 'custom' => preg_replace( '/\s+/', ' ', (string) $ibg ) );
+				// …and the ITEM's own fill, separately. title_bg_color skins only the header bar, while the
+				// design's own CSS paints the ITEM — opaque white in every light design. A source whose item is
+				// a translucent panel over a dark page therefore came back as a white slab with the measured
+				// tint painted on top of it, and the body copy stayed grey-on-white. The mapper puts this on
+				// `.accordion-item` and clears the bar and panel, which is exactly the source's own model.
+				$d['item_bg'] = preg_replace( '/\s+/', ' ', (string) $ibg );
+			}
 		}
+		// the item's hairline + corner, which no native option carries
+		if ( $item_bw >= 1 ) {
+			$ibd = self::color_keep_alpha( (string) self::sc_css( $first, 'border-top-color' ) );
+			if ( preg_match( '/^(?:#[0-9a-f]{3,8}|rgba?\()/i', (string) $ibd ) && ! preg_match( '/[,\/]\s*0*(?:\.0+)?\s*\)$/', (string) $ibd ) ) {
+				$d['item_border'] = rtrim( rtrim( number_format( (float) $item_bw, 2, '.', '' ), '0' ), '.' ) . 'px solid ' . preg_replace( '/\s+/', ' ', (string) $ibd );
+			}
+		}
+		if ( $radius > 0 ) { $d['item_radius'] = (int) round( $radius ) . 'px'; }
 
 		// --- Elevation (shadow) ---
 		$sh = self::sc_css( $first, 'box-shadow' );
@@ -18203,9 +19730,32 @@ class FW_Site_Converter_Stitch {
 			if ( ! $panel ) { $sib = $bar->nextSibling; while ( $sib && $sib->nodeType !== XML_ELEMENT_NODE ) { $sib = $sib->nextSibling; } if ( $sib instanceof DOMElement ) { $panel = $sib; } }
 		}
 
-		// Colour helpers: rgb(a) → #hex, and "is this the default near-black text?" (skip those to avoid noise).
-		$rgb_hex = function ( $css ) { return preg_match( '/rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/', (string) $css, $m ) ? sprintf( '#%02x%02x%02x', (int) $m[1], (int) $m[2], (int) $m[3] ) : ''; };
-		$near_black = function ( $css ) { return preg_match( '/rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/', (string) $css, $m ) && (int) $m[1] < 70 && (int) $m[2] < 70 && (int) $m[3] < 70; };
+		// Colour helpers. EVERY read here goes through color_keep_alpha() first, because a current
+		// utility-CSS source computes its colours to `oklab()` / `oklch()` and the rgb()-shaped match below
+		// never saw one: the whole accordion came back in the shortcode's LIGHT default — a near-white panel
+		// with dark headings — over a source that draws a translucent dark one, and the body copy was grey on
+		// white (a real-site audit; it was the single largest perceptual error on that page). Translucency is
+		// kept, because a 5%-white panel over a dark page is the fill; flattening it to opaque white is the
+		// very error being fixed.
+		$resolve = function ( $css ) {
+			$v = trim( (string) $css );
+			if ( '' === $v || 'transparent' === strtolower( $v ) ) { return ''; }
+			if ( ! preg_match( '/^(?:rgba?\(|#)/i', $v ) ) { $v = (string) self::color_keep_alpha( $v ); }
+			if ( preg_match( '/^#[0-9a-f]{3,8}$/i', $v ) ) { return strtolower( $v ); }
+			if ( preg_match( '/^rgba?\(/i', $v ) ) {
+				if ( preg_match( '/[,\/]\s*0*(?:\.0+)?\s*\)$/', $v ) ) { return ''; }   // fully transparent says nothing
+				return preg_replace( '/\s+/', ' ', $v );
+			}
+			return '';
+		};
+		$rgb_hex = $resolve;
+		$near_black = function ( $css ) use ( $resolve ) {
+			$v = $resolve( $css );
+			if ( preg_match( '/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i', $v, $m ) ) {
+				return hexdec( $m[1] ) < 70 && hexdec( $m[2] ) < 70 && hexdec( $m[3] ) < 70;
+			}
+			return (bool) ( preg_match( '/rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/', $v, $m ) && (int) $m[1] < 70 && (int) $m[2] < 70 && (int) $m[3] < 70 );
+		};
 		$col = function ( $hex ) { return array( 'predefined' => '', 'custom' => $hex ); };
 
 		// --- Content background (panel fill, when it carries a real, non-transparent fill) ---
@@ -18226,6 +19776,18 @@ class FW_Site_Converter_Stitch {
 		// --- Icon (closed-state) colour ---
 		if ( $icon_el instanceof DOMElement ) {
 			$ic = self::sc_css( $icon_el, 'color' );
+			// An inline <svg> carries no stamp of its own on many captures — its first stamped descendant
+			// (a <path> / <circle>) holds the glyph's ink. Reading only the <svg> left the toggle icon
+			// uncoloured, so it fell back to the shortcode's dark default on a dark panel.
+			if ( '' === $ic ) {
+				foreach ( $icon_el->getElementsByTagName( '*' ) as $gc ) {
+					$ic = self::sc_css( $gc, 'color' );
+					if ( '' !== $ic ) { break; }
+				}
+			}
+			// …and when NOTHING in the icon is stamped (the usual case for an inline <svg>), resolve its
+			// `text-<token>` utility from a stamped instance of the same token elsewhere on the page.
+			if ( '' === $ic ) { $ic = self::token_ink_from_document( $icon_el ); }
 			if ( '' !== $ic && ! $near_black( $ic ) ) { $h = $rgb_hex( $ic ); if ( '' !== $h ) { $d['icon_closed_color'] = $col( $h ); } }
 		}
 
@@ -18240,6 +19802,59 @@ class FW_Site_Converter_Stitch {
 		}
 
 		return $d;
+	}
+
+	/**
+	 * Resolve the ink of a `text-<token>` utility from any STAMPED instance of the same token in the document.
+	 *
+	 * An inline <svg> often carries no computed-style stamp of its own — the capture records nothing for it —
+	 * so an icon coloured purely by a utility class had no measurable colour at all, and fell back to whatever
+	 * the shortcode's design paints. But the token is a SITE-WIDE name: one element anywhere on the page that
+	 * wears the same `text-<token>` AND carries a stamp tells us what it resolves to. Returns '' when no
+	 * stamped instance exists, so nothing is invented.
+	 */
+	private static function token_ink_from_document( $el ) {
+		if ( ! ( $el instanceof DOMElement ) || ! ( $el->ownerDocument instanceof DOMDocument ) ) { return ''; }
+		if ( ! preg_match_all( '/(?:^|\s)text-([a-z][a-z0-9-]*)/i', ' ' . self::cls( $el ) . ' ', $tm ) ) { return ''; }
+		$tokens = array();
+		foreach ( $tm[1] as $t ) {
+			$t = strtolower( $t );
+			// a SIZE or weight utility is not a colour token
+			if ( preg_match( '/^(xs|sm|base|lg|xl|[2-9]xl|left|right|center|justify|start|end|balance|pretty|wrap|nowrap|ellipsis|clip|transparent|current|inherit)$/', $t ) ) { continue; }
+			$tokens[ $t ] = 1;
+		}
+		if ( ! $tokens ) { return ''; }
+		// A token may have no stamped instance on THIS page — on the page that prompted this, all 24 wearers of
+		// the token were the unstamped chevrons themselves. The same token is stamped on another route, so the
+		// cross-route markup already gathered for the button scan resolves it. Built once, then reused.
+		if ( null === self::$token_ink_map && '' !== self::$btn_scan_html ) {
+			self::$token_ink_map = array();
+			if ( preg_match_all( '/<[a-z0-9]+[^>]*\bdata-sc-cs="([^"]*)"[^>]*>/i', self::$btn_scan_html, $all, PREG_SET_ORDER ) ) {
+				foreach ( $all as $tag ) {
+					if ( ! preg_match( '/(?<![\w-])color:\s*([^;"]+)/i', $tag[1], $cm ) ) { continue; }
+					if ( ! preg_match( '/\bclass="([^"]*)"/i', $tag[0], $km ) ) { continue; }
+					$v = self::color_keep_alpha( trim( $cm[1] ) );
+					if ( ! preg_match( '/^(?:#[0-9a-f]{3,8}|rgba?\()/i', (string) $v ) ) { continue; }
+					if ( ! preg_match_all( '/(?:^|\s)text-([a-z][a-z0-9-]*)/i', ' ' . strtolower( $km[1] ) . ' ', $tk ) ) { continue; }
+					foreach ( $tk[1] as $t ) { if ( ! isset( self::$token_ink_map[ $t ] ) ) { self::$token_ink_map[ $t ] = (string) $v; } }
+				}
+			}
+		}
+		if ( is_array( self::$token_ink_map ) ) {
+			foreach ( $tokens as $t => $_ ) { if ( isset( self::$token_ink_map[ $t ] ) ) { return self::$token_ink_map[ $t ]; } }
+		}
+		foreach ( $el->ownerDocument->getElementsByTagName( '*' ) as $n ) {
+			if ( ! ( $n instanceof DOMElement ) || $n === $el ) { continue; }
+			$ncs = (string) $n->getAttribute( 'data-sc-cs' );
+			if ( '' === $ncs || ! preg_match( '/(?<![\w-])color:\s*([^;]+)/i', $ncs, $cm ) ) { continue; }
+			$ncls = ' ' . strtolower( self::cls( $n ) ) . ' ';
+			foreach ( $tokens as $t => $_ ) {
+				if ( false === strpos( $ncls, ' text-' . $t . ' ' ) ) { continue; }
+				$v = self::color_keep_alpha( trim( $cm[1] ) );
+				if ( preg_match( '/^(?:#[0-9a-f]{3,8}|rgba?\()/i', (string) $v ) ) { return (string) $v; }
+			}
+		}
+		return '';
 	}
 
 	/** All descendant elements carrying a non-empty `aria-expanded` toggle (helper for accordion_block). */
@@ -18280,9 +19895,45 @@ class FW_Site_Converter_Stitch {
 			if ( 'li' !== strtolower( $li->tagName ) ) { continue; }
 			$t = self::text( $li );
 			if ( '' === $t ) { continue; }
-			$rows[] = array( 'text' => $t, 'html' => self::clean_inline_html( $li ) );
+			// THE ITEM'S OWN GLYPH. A marker-less list usually draws its own mark — an inline <svg> check or
+			// arrow before the words. This recognizer only ever kept text, so once the design stopped defaulting
+			// to the checklist such a list would have rendered with no marker at all. Carry the glyph (and take
+			// it out of the words, where it is not content) so the source's own mark is what shows.
+			$icon_svg = ''; $icon_cls = ''; $icon_cs = '';
+			foreach ( $li->getElementsByTagName( 'svg' ) as $sv ) {
+				if ( ! ( $sv instanceof DOMElement ) || '' !== trim( (string) self::text( $sv ) ) ) { continue; }
+				$icon_svg = self::strip_cs( (string) $sv->ownerDocument->saveHTML( $sv ) );
+				$icon_cls = self::cls( $sv );
+				$icon_cs  = (string) $sv->getAttribute( 'data-sc-cs' );
+				break;
+			}
+			$row = array( 'text' => $t, 'html' => self::clean_inline_html( $li ) );
+			if ( '' !== $icon_svg ) {
+				$row['icon_svg'] = $icon_svg;
+				$row['icon_cls'] = $icon_cls;
+				$row['icon_cs']  = $icon_cs;
+				// the glyph is the MARKER, not part of the sentence — drop it from the carried markup
+				$row['html'] = trim( preg_replace( '#<svg\b[^>]*>.*?</svg>#is', '', (string) $row['html'] ) );
+			}
+			$rows[] = $row;
 		}
-		return count( $rows ) >= 2 ? array( 't' => 'feature_list', 'ordered' => $ordered, 'items' => $rows ) : null;
+		// THE SOURCE'S OWN MARKER. A plain `<ul>` was mapped to the CHECKLIST design, which draws a check glyph
+		// per item — an icon the source never had. Measured on a real page: two prose lists gained 4 and 5 icons
+		// that do not exist in the source. The `<li>`'s computed `display` and `list-style-type` say which it is:
+		// a native `list-item` with a marker is a BULLET list, a `list-style:none` run with no icon has NO marker,
+		// and only a source that actually draws a glyph should get one.
+		$marker = '';
+		foreach ( self::el_children( $el ) as $li ) {
+			if ( 'li' !== strtolower( $li->tagName ) ) { continue; }
+			$lcs = (string) $li->getAttribute( 'data-sc-cs' );
+			if ( '' === $lcs ) { continue; }
+			$disp = preg_match( '/(?:^|;)\s*display:\s*([a-z-]+)/i', $lcs, $dm ) ? strtolower( $dm[1] ) : '';
+			$lst  = preg_match( '/(?:^|;)\s*list-style-type:\s*([a-z-]+)/i', $lcs, $lm ) ? strtolower( $lm[1] ) : '';
+			if ( 'list-item' === $disp && 'none' !== $lst ) { $marker = 'bullet'; }
+			elseif ( 'none' === $lst || ( '' !== $disp && 'list-item' !== $disp ) ) { $marker = 'none'; }
+			break;   // the first stamped item speaks for the list
+		}
+		return count( $rows ) >= 2 ? array( 't' => 'feature_list', 'ordered' => $ordered, 'marker' => $marker, 'items' => $rows ) : null;
 	}
 
 	/**
@@ -18558,10 +20209,27 @@ class FW_Site_Converter_Stitch {
 		return '';
 	}
 
-	/** The item's body text = full text minus a leading title, first `<p>` preferred. */
+	/** The item's body text = full text minus a leading title, `<p>` copy preferred.
+	 *
+	 *  EVERY sibling paragraph, not just the first: a step / card whose body the source writes as two or three
+	 *  paragraphs kept only paragraph one and silently dropped the rest (a real-site audit — four process steps
+	 *  lost ~1000 characters between them, and the converted section rendered 44% shorter than its source). The
+	 *  siblings are joined with a blank line, which is exactly what the receiving fields run through wpautop(),
+	 *  so the paragraph breaks survive to the page. Only paragraphs sharing the FIRST one's parent are joined —
+	 *  a caption or a footnote nested deeper elsewhere in the item is not body copy and must not be glued on. */
 	private static function item_body_text( $el, $title ) {
-		$p = $el->getElementsByTagName( 'p' )->item( 0 );
-		if ( $p && self::text( $p ) !== '' ) { return self::text( $p ); }
+		$ps = $el->getElementsByTagName( 'p' );
+		$parent = null; $parts = array();
+		foreach ( $ps as $pn ) {
+			$t = self::text( $pn );
+			if ( '' === $t ) { continue; }
+			if ( null === $parent ) { $parent = $pn->parentNode; }
+			elseif ( $pn->parentNode !== $parent ) { continue; }
+			if ( ! in_array( $t, $parts, true ) ) { $parts[] = $t; }
+		}
+		if ( $parts ) { return implode( "
+
+", $parts ); }
 		$all = self::text( $el );
 		if ( $title !== '' && strpos( $all, $title ) === 0 ) { $all = trim( substr( $all, strlen( $title ) ) ); }
 		return $all;
@@ -19161,6 +20829,19 @@ class FW_Site_Converter_Stitch {
 				if ( preg_match( '/^(?:step\s*)?0*\d{1,2}$/i', $ct ) ) { $num_el = $c; $num = preg_replace( '/^step\s*/i', '', $ct ); break; }
 			}
 			if ( '' === $num && preg_match( '/^\s*(?:step\s*)?(\d{1,2})\b/i', self::text( $k ), $m ) ) { $num = $m[1]; }
+			// The marker has its OWN element, so the shortcode draws it as the badge. Leaving it in the title
+			// as well prints the number twice — a "1" chip beside a title reading "1Where Are You Now?", which
+			// is what a heading built as `<h3 class="flex gap-3"><span>1</span>Where Are You Now?</h3>` produces
+			// when its text is read whole. Strip exactly the marker element's own text, and only from the
+			// front: a title that merely starts with a digit ("5 Ways to …") has no marker element and is
+			// untouched. Never strip the title away entirely.
+			if ( $num_el instanceof DOMElement ) {
+				$marker_txt = trim( self::text( $num_el ) );
+				if ( '' !== $marker_txt && 0 === strpos( $title, $marker_txt ) ) {
+					$stripped = ltrim( substr( $title, strlen( $marker_txt ) ), " \t.)\xe2\x80\x93\xe2\x80\x94-:" );
+					if ( '' !== trim( $stripped ) ) { $title = trim( $stripped ); }
+				}
+			}
 			$item = array( 'title' => $title, 'content' => self::item_body_text( $k, $title ), 'number' => $num, 'icon' => self::step_icon( $k ) );
 			// the title's / body's own typography (a 20px semibold display title, 16px muted copy) — the shortcode's defaults re-sized them
 			foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $ht ) { $hx = $k->getElementsByTagName( $ht )->item( 0 ); if ( $hx instanceof DOMElement ) { $item['titleCs'] = self::cs_text_decls( (string) $hx->getAttribute( 'data-sc-cs' ) ); $tm = self::el_margin( $hx ); if ( ! empty( $tm['bottom'] ) ) { $item['titleMb'] = (int) round( (float) $tm['bottom'] ); } break; } }
@@ -19817,7 +21498,20 @@ class FW_Site_Converter_Stitch {
 		// Where the NUMERAL sits: inline at the START of each item (a `flex gap-4` row: chip, then the text stack) or
 		// above / to the right of the content. The steps element pins a number-only row to the right by convention, so
 		// without this a left-chip list rendered its numerals on the far right of every item (a real-site audit).
-		$first_kid = null; foreach ( self::el_children( $el ) as $k0 ) { if ( $k0 instanceof DOMElement ) { $first_kid = $k0; break; } }
+		// The first CONTENT child, not merely the first element. A vertical timeline draws its connector as an
+		// absolutely-positioned 1px spine (`<div class="absolute left-6 top-2 bottom-2 w-px">`) and that spine is
+		// written FIRST, so it has to paint behind the steps. Read literally it became the "first step": it is not
+		// a flex row and it is empty, so `is_row` was false and `lead` was null, neither numInline nor numBadge
+		// ever fired, and the mapper fell through to its "big faded number in the corner" convention — every step
+		// number rendered on the FAR RIGHT of the item, with no circle and no connector, against a source that
+		// draws a bordered circle on the left joined by a line. Out-of-flow layers take no part in the flow, here
+		// exactly as in band_pad_container_of.
+		$first_kid = null;
+		foreach ( self::el_children( $el ) as $k0 ) {
+			if ( ! ( $k0 instanceof DOMElement ) ) { continue; }
+			if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', (string) $k0->getAttribute( 'data-sc-cs' ) ) ) { continue; }
+			$first_kid = $k0; break;
+		}
 		if ( $first_kid instanceof DOMElement ) {
 			$fcs = (string) $first_kid->getAttribute( 'data-sc-cs' );
 			$is_row = preg_match( '/(?:^|;)\s*display:\s*flex/i', $fcs ) && ! preg_match( '/flex-direction:\s*column/i', $fcs );
@@ -19839,7 +21533,7 @@ class FW_Site_Converter_Stitch {
 					$out['markerSize'] = (int) round( $lw );
 					$out['numBadgeCs'] = $lcs;
 					$rad = trim( (string) self::sc_css( $lead, 'border-radius' ) );
-					if ( preg_match( '/^([0-9.]+)(px|%)$/', $rad, $rm ) ) {
+					if ( preg_match( '/^([0-9.]+(?:e[+-]?[0-9]+)?)(px|%)$/i', $rad, $rm ) ) {
 						$out['numShape'] = ( '%' === $rm[2] || (float) $rm[1] >= $lw / 2 - 1 ) ? 'circle' : ( (float) $rm[1] > 0 ? 'rounded' : 'square' );
 					} else { $out['numShape'] = 'square'; }
 					// …and the SPINE is only drawn when the source draws one. The vertical design connects its
@@ -19861,10 +21555,48 @@ class FW_Site_Converter_Stitch {
 					// .35rem title margin, a .5rem row gap), which together ran ~34px looser per step than the
 					// source's `space-y-6` list with a 4px title-to-copy gap (a real-site audit — the gap lens
 					// caught it; no position test could, because the drift accumulates downward).
-					$kids_r = self::el_children( $el );
+					// The ITEMS only — the spine is an out-of-flow sibling and occupying index 0 made "the second
+					// child" the FIRST step, whose top margin is 0. So the gap read as absent and every step
+					// collapsed onto the next.
+					$kids_r = array();
+					foreach ( self::el_children( $el ) as $kr ) {
+						if ( ! ( $kr instanceof DOMElement ) ) { continue; }
+						if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', (string) $kr->getAttribute( 'data-sc-cs' ) ) ) { continue; }
+						$kids_r[] = $kr;
+					}
+					// …and the rhythm is a MARGIN or a PADDING. A timeline spaces its steps with `pb-14 lg:pb-24`
+					// on each item — padding, because the spine has to run through the gap rather than stop at it.
+					// Reading only margin-top, the source's 96px never arrived and the native design's own tighter
+					// default stood: measured, the converted band ran 155% off its source's height.
 					if ( isset( $kids_r[1] ) ) {
 						$mt2 = self::el_margin( $kids_r[1] );
 						if ( isset( $mt2['top'] ) && (float) $mt2['top'] > 0 && (float) $mt2['top'] <= 120 ) { $out['itemGap'] = (float) $mt2['top']; }
+					}
+					// THE STEP'S OWN READING WIDTH. A timeline caps its copy beside the badge
+					// (`<div class="flex-1 max-w-3xl">`), which is a measure, not a layout container — the list
+					// already has its own cap. Without it the step body ran the full width of the item: measured,
+					// 942px against the source's 768, so the copy wrapped to two lines where the source takes
+					// three and the band came back 11% shorter than its source.
+					if ( isset( $kids_r[0] ) ) {
+						foreach ( self::el_children( $kids_r[0] ) as $sc_kid ) {
+							if ( ! ( $sc_kid instanceof DOMElement ) ) { continue; }
+							// The CONTENT column, not the badge: it holds the step's text.
+							if ( '' === trim( (string) self::text( $sc_kid ) ) ) { continue; }
+							if ( preg_match( '/^\s*\d{1,2}\s*$/', (string) self::text( $sc_kid ) ) ) { continue; }
+							$bmw = self::element_max_width( $sc_kid );
+							if ( '' === $bmw ) { $bmw = trim( (string) self::sc_css( $sc_kid, 'max-width' ) ); }
+							if ( preg_match( '/^([0-9.]+)(px|rem)$/', $bmw, $bm ) ) {
+								$bpx = ( 'rem' === $bm[2] ) ? (float) $bm[1] * 16 : (float) $bm[1];
+								// A reading measure, not the list's own container width.
+								if ( $bpx >= 320 && $bpx <= 900 ) { $out['bodyMaxW'] = (int) round( $bpx ); }
+							}
+							break;
+						}
+					}
+					if ( ! isset( $out['itemGap'] ) && isset( $kids_r[0] ) ) {
+						$pb0 = self::cs_decls_pad( (string) $kids_r[0]->getAttribute( 'data-sc-cs' ) );
+						$pbv = is_array( $pb0 ) ? (float) $pb0['bottom'] : (float) self::sc_css( $kids_r[0], 'padding-bottom' );
+						if ( $pbv > 0 && $pbv <= 120 ) { $out['itemGap'] = $pbv; }
 					}
 					// the step's TITLE-to-copy gap: the second stamped text leaf's own top margin
 					$leaves_r = array();
@@ -19874,8 +21606,17 @@ class FW_Site_Converter_Stitch {
 						$leaves_r[] = $lf2;
 					}
 					if ( isset( $leaves_r[2] ) ) {   // [0] = the numeral, [1] = the title, [2] = the copy
+						// EITHER SIDE MAY CARRY THE GAP. Reading only the copy's TOP margin missed the commoner
+						// authoring, which puts it on the title's BOTTOM margin (`mb-3`) — and because the
+						// emitted rule also ZEROES the title's own margin, a gap found as 0 did not merely fail
+						// to carry the source's 12px, it actively removed it. Measured: the step title sat flush
+						// against its copy, 12px lost on every step, and the band ran short by that much again.
 						$mt3 = self::el_margin( $leaves_r[2] );
-						$out['titleGap'] = ( isset( $mt3['top'] ) && (float) $mt3['top'] >= 0 && (float) $mt3['top'] <= 60 ) ? (float) $mt3['top'] : 0.0;
+						$gap_copy  = ( isset( $mt3['top'] ) && (float) $mt3['top'] > 0 ) ? (float) $mt3['top'] : 0.0;
+						$mb3       = isset( $leaves_r[1] ) ? self::el_margin( $leaves_r[1] ) : array();
+						$gap_title = ( isset( $mb3['bottom'] ) && (float) $mb3['bottom'] > 0 ) ? (float) $mb3['bottom'] : 0.0;
+						$gap_step  = max( $gap_copy, $gap_title );
+						$out['titleGap'] = ( $gap_step >= 0 && $gap_step <= 60 ) ? $gap_step : 0.0;
 					}
 				}
 			}
@@ -19928,12 +21669,23 @@ class FW_Site_Converter_Stitch {
 			elseif ( $mrad >= 4 ) { $out['marker_shape'] = 'rounded'; }
 			elseif ( '0px' === $mrad_raw ) { $out['marker_shape'] = 'square'; }
 			$mbg = self::sc_css( $marker, 'background-color' );
+			// A MODERN colour function — `oklab(L a b / .2)`, `oklch()`, `lab()`, `color(srgb …)` — is what a
+			// current utility-CSS source computes its badge fill to, and the rgb()-shaped match below never
+			// matched one: the marker silently kept the theme's default fill (a real-site audit — a translucent
+			// indigo chip rendered near-white with white text on it, i.e. an invisible numeral). Resolve it up
+			// front; color_keep_alpha() yields rgba() when translucent and #hex when opaque — the same two forms
+			// the branches below produce.
+			if ( '' !== $mbg && ! preg_match( '/^(?:rgba?\(|#)/i', $mbg ) && 'transparent' !== $mbg ) {
+				$mbg = (string) self::color_keep_alpha( $mbg );
+			}
 			if ( '' !== $mbg && 'rgba(0, 0, 0, 0)' !== $mbg && 'transparent' !== $mbg && preg_match( '/rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)(?:\D+([\d.]+))?/', $mbg, $m ) ) {
 				// Preserve a translucent tint (source badges are often `bg-primary/10`) — keep the rgba so the
 				// converted marker reads light, not a flat solid; a fully-opaque fill collapses to clean hex.
 				$out['accent'] = ( isset( $m[4] ) && (float) $m[4] < 1 )
 					? 'rgba(' . (int) $m[1] . ', ' . (int) $m[2] . ', ' . (int) $m[3] . ', ' . $m[4] . ')'
 					: sprintf( '#%02x%02x%02x', (int) $m[1], (int) $m[2], (int) $m[3] );
+			} elseif ( preg_match( '/^#[0-9a-f]{6}$/i', (string) $mbg ) ) {
+				$out['accent'] = strtolower( $mbg );
 			}
 		}
 
@@ -19942,11 +21694,38 @@ class FW_Site_Converter_Stitch {
 		if ( $marker ) {
 			$mw = self::sc_css( $marker, 'width' ); if ( '' === $mw ) { $mw = self::sc_css( $marker, 'height' ); } // the stamp drops an unremarkable width — the height is the same square
 			if ( preg_match( '/^([0-9.]+)px$/', $mw, $mwm ) && (float) $mwm[1] >= 20 && (float) $mwm[1] <= 120 ) { $out['markerSize'] = (int) round( (float) $mwm[1] ); }
+			// …and this chip IS the step's number badge when it carries the numeral itself. The detection above
+			// only fires for a chip that is a leading CELL beside the body; a source that nests it INSIDE the
+			// heading (`<h3 class="flex gap-3"><span>1</span>Title</h3>`) paints the very same circle but left
+			// numBadge unset — so the mapper kept marker:none and the number rendered as a bare inline digit
+			// with no chip at all, while marker_shape/markerSize were captured correctly and went unused.
+			if ( empty( $out['numBadge'] ) && ! empty( $out['markerSize'] )
+				&& preg_match( '/^\s*(?:step\s*)?0*\d{1,2}\s*$/i', (string) self::text( $marker ) ) ) {
+				$mbg2 = (string) self::sc_css( $marker, 'background-color' );
+				$mbw2 = (string) self::sc_css( $marker, 'border-top-width' );
+				$paints2 = ( '' !== $mbg2 && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent/i', $mbg2 ) )
+					|| ( preg_match( '/^([0-9.]+)px$/', $mbw2, $bw2 ) && (float) $bw2[1] >= 1 );
+				if ( $paints2 ) {
+					$out['numBadge'] = true;
+					// …carrying the chip's OWN measured skin, exactly as the leading-cell branch does. Without it
+					// the mapper had no `numBadgeCs` to scope onto `.fw-steps__marker`, so the badge fell back to
+					// the design's default (a near-white fill with white text — an invisible numeral).
+					$out['numBadgeCs'] = (string) $marker->getAttribute( 'data-sc-cs' );
+					$mr2 = trim( (string) self::sc_css( $marker, 'border-radius' ) );
+					if ( preg_match( '/^([0-9.eE+-]+)(px|%)$/', $mr2, $rm2 ) ) {
+						$out['numShape'] = ( '%' === $rm2[2] || (float) $rm2[1] >= (float) $out['markerSize'] / 2 - 1 ) ? 'circle' : ( (float) $rm2[1] > 0 ? 'rounded' : 'square' );
+					}
+				}
+			}
 			$glyph = null; foreach ( array( 'svg', 'i', 'span', 'img' ) as $gt ) { $g = $marker->getElementsByTagName( $gt )->item( 0 ); if ( $g instanceof DOMElement ) { $glyph = $g; break; } }
 			$mtc = $glyph instanceof DOMElement ? self::sc_css( $glyph, 'color' ) : '';
 			// an inline <svg> carries no stamp of its own — its first stamped child (a <path> / <circle>) has the glyph's ink
 			if ( '' === $mtc && $glyph instanceof DOMElement ) { foreach ( $glyph->getElementsByTagName( '*' ) as $gc ) { $mtc = self::sc_css( $gc, 'color' ); if ( '' !== $mtc ) { break; } } }
 			if ( '' === $mtc ) { $mtc = self::sc_css( $marker, 'color' ); }
+			// …in whatever colour syntax the source computed to. Same trap as the fill above: an `oklch()` ink
+			// failed this shape test, so the glyph/numeral fell back to the design's default white and vanished
+			// on a light tint.
+			if ( '' !== $mtc && ! preg_match( '/^(?:rgba?\(|#)/i', $mtc ) ) { $mtc = (string) self::color_keep_alpha( $mtc ); }
 			if ( '' !== $mtc && preg_match( '/^(?:rgba?\([^)]*\)|#[0-9a-f]{3,8})$/i', $mtc ) ) { $out['markerText'] = $mtc; }
 		}
 
@@ -19966,7 +21745,17 @@ class FW_Site_Converter_Stitch {
 					|| ( preg_match( '/\bh-(?:px|0\.5|\[1px\]|\[2px\])\b/', $cc ) && preg_match( '/\b(?:bg-|gradient)/', $cc ) ) ) { $has_conn = true; break 2; }
 			}
 		}
-		$out['connector'] = $has_conn ? 'solid' : 'none';
+		// Do NOT overwrite a connector the badge/spine scan already measured. This scan only recognises a
+		// HORIZONTAL connector — a `h-px` bar between steps — because that is what a left-to-right timeline
+		// draws. A VERTICAL timeline draws a `w-px` spine instead, which the numBadge branch above detects by
+		// measuring it (thin, tall, painted, textless). Running unconditionally, this line silently reset that
+		// measured `solid` back to `none`, and a converted timeline lost the line joining its steps while the
+		// detector had already found it.
+		if ( ! isset( $out['connector'] ) || '' === (string) $out['connector'] ) {
+			$out['connector'] = $has_conn ? 'solid' : 'none';
+		} elseif ( $has_conn ) {
+			$out['connector'] = 'solid';
+		}
 
 		return $out;
 	}
@@ -20344,7 +22133,18 @@ class FW_Site_Converter_Stitch {
 		$auto_w = ( false !== strpos( $cls, ' w-auto ' ) ) || ( '' === trim( (string) self::sc_css( $img, 'width' ) ) );
 		$rh = preg_match( '/^([0-9.]+)px$/', trim( (string) self::sc_css( $img, 'height' ) ), $rhm ) ? (float) $rhm[1] : 0.0;
 		if ( ! $auto_w || $rh <= 0 || abs( $rh - $cap ) > 2 ) { return ''; }
-		$fit = ( false !== strpos( $cls, 'object-cover' ) ) ? 'cover' : 'contain';
+		// THE MEASURED FIT WINS when the capture recorded one — this read only the `object-cover` class, so a
+		// source that sets its fit from a stylesheet (or any keyword but cover) was sent to `contain` whatever
+		// it actually said. The value goes into scoped CSS, so any legal keyword can be carried verbatim.
+		// Where the capture says nothing the historic `contain` stands: with `width:auto;height:auto` under a
+		// max-height cap the image keeps its own aspect anyway, so this is the conservative reading, and the
+		// comment on this helper documents it as deliberate.
+		$fit_m = strtolower( trim( (string) self::sc_css( $img, 'object-fit' ) ) );
+		if ( in_array( $fit_m, array( 'fill', 'cover', 'contain', 'none', 'scale-down' ), true ) ) {
+			$fit = $fit_m;
+		} else {
+			$fit = ( false !== strpos( $cls, 'object-cover' ) ) ? 'cover' : 'contain';
+		}
 		return 'selector img{max-height:' . (int) round( $cap ) . 'px;width:auto;height:auto;max-width:100%;object-fit:' . $fit . ';display:block;margin-left:auto;margin-right:auto;}';
 	}
 
@@ -20463,6 +22263,49 @@ class FW_Site_Converter_Stitch {
 		if ( ! preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/', $cs ) && ! preg_match( '/\s(?:inline-)?flex\s/', $cls ) ) { return false; }
 		if ( preg_match( '/(?:^|;)\s*flex-direction:\s*column/', $cs ) ) { return false; }
 		$kids = self::el_children( $el );
+
+		// A LINK STRIP — a wrapping row whose every child is a short text LINK: a brand list, a tag cloud, an
+		// "as featured in" row. The chip rules below reject it twice over (an <a> child is an outright no, and
+		// the 12-child cap is well under the 19 a brand list carries), so no recognizer claimed it and
+		// collect_blocks flattened it: nineteen separate stacked text blocks, left-aligned, where the source
+		// shows two centred wrapping rows. Emitted as `chips` — the native wrapping flex row — with each link
+		// kept as a link.
+		// Kept narrow: it must WRAP (a non-wrapping row of links is a nav or a button pair), carry enough items
+		// to be a strip rather than a couple of buttons, and live outside the chrome, which has its own paths.
+		if ( count( $kids ) >= 4 ) {
+			$wraps = preg_match( '/(?:^|\s)flex-wrap(?:\s|$)/', $cls )
+				|| preg_match( '/(?:^|;)\s*flex-wrap:\s*wrap/i', $cs );
+			$in_chrome = false;
+			for ( $p = $el->parentNode; $p instanceof DOMElement; $p = $p->parentNode ) {
+				if ( in_array( strtolower( $p->tagName ), array( 'nav', 'header', 'footer' ), true ) ) { $in_chrome = true; break; }
+			}
+			if ( $wraps && ! $in_chrome ) {
+				// The strip MIXES links and plain labels — a brand list links the makes it has pages for and
+				// leaves the rest as spans. Requiring every child to be an anchor rejected the whole row on its
+				// second item. What matters is that each child is a short TEXT LEAF; whether it links is its own
+				// business, and the builder keeps the href where there is one.
+				$all_links = false;
+				$links_n   = 0;
+				foreach ( $kids as $k ) {
+					$ktag = strtolower( $k->tagName );
+					if ( ! in_array( $ktag, array( 'a', 'span', 'div', 'li', 'p' ), true ) ) { $all_links = false; break; }
+					if ( 'a' === $ktag ) { $links_n++; }
+					$all_links = true;
+					$t = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $k ) ) );
+					if ( '' === $t || mb_strlen( $t ) > 40 ) { $all_links = false; break; }
+					// A link holding real content (an image, a heading, a paragraph) is a CARD, not a chip.
+					foreach ( array( 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'video', 'iframe' ) as $bt ) {
+						if ( $k->getElementsByTagName( $bt )->length ) { $all_links = false; break 2; }
+					}
+				}
+				// Linking is not the test — a brand list links the makes it has pages for and leaves the rest as
+				// spans (measured: 1 link among 19). The shape is the test: a long WRAPPING row of short text
+				// leaves. The ordinary chip rules below cap out at 12 children and so can never see one.
+				if ( $all_links && count( $kids ) >= 6 ) { return true; }
+				unset( $links_n );
+			}
+		}
+
 		if ( count( $kids ) < 2 || count( $kids ) > 12 ) { return false; }
 		$plain = 0;
 		foreach ( $kids as $k ) {
@@ -20567,6 +22410,38 @@ class FW_Site_Converter_Stitch {
 	}
 
 	private static function layout_row_build_inner( $el, $cols ) {
+		// A `flex-wrap` row that ACTUALLY WRAPPED at capture width is not a row — it is a stack, and the source
+		// renders it as one. `<div class="flex items-end justify-between flex-wrap gap-4">` holding a heading and
+		// a supporting line is the classic case: side by side while they fit, dropping under each other when they
+		// do not. Built as columns regardless, the heading was boxed to the column's share instead of the full
+		// measure and wrapped to two lines where the source holds one — measured on a real band, heading 783px x
+		// 40px in the source against 688px x 80px in the build, and at 390px the column collapsed to zero width.
+		// bento_split already knows this ("cells that share a y form a row") but needs every child to carry a
+		// `track-frac` stamp, and a wrapped child does not get one — so the height is the signal that survives.
+		// The computed value OR the utility class. `flex-wrap` is not in the capture's stamp set at all (it stamps
+		// `flex-direction` but not `flex-wrap`), so asking only the computed style always answered '' and the
+		// guard never ran on the very sources it exists for. `flex-nowrap` must not match.
+		$fw_decl = self::css_or_decl( $el, 'flex-wrap' );
+		$fw_cls  = ' ' . strtolower( self::cls( $el ) ) . ' ';
+		$wraps   = ( 'wrap' === $fw_decl || 'wrap-reverse' === $fw_decl )
+			|| ( '' === $fw_decl && preg_match( '/(?:^|\s)flex-wrap(?:-reverse)?(?:\s|$)/', $fw_cls ) );
+
+		if ( $wraps ) {
+			$h_of = function ( $node ) {
+				return ( $node instanceof DOMElement ) && preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $node->getAttribute( 'data-sc-cs' ), $m )
+					? (float) $m[1] : 0.0;
+			};
+			$row_h = $h_of( $el );
+			$sum = 0.0; $max = 0.0; $n = 0;
+			foreach ( self::el_children( $el ) as $k ) {
+				$kh = $h_of( $k );
+				if ( $kh <= 0 ) { $n = 0; break; }   // an unstamped child: cannot judge, so do not
+				$sum += $kh; $max = max( $max, $kh ); $n++;
+			}
+			// Tall enough to hold them stacked, and clearly taller than any single one — a true side-by-side row
+			// is as tall as its TALLEST cell, never as tall as all of them together.
+			if ( $n >= 2 && $row_h > 0 && $row_h >= $sum * 0.9 && $row_h >= $max * 1.4 ) { return null; }
+		}
 		$row = array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'gap' => self::grid_gap_px( $el ), 'gapResp' => self::grid_gap_responsive( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols );
 		// The ROW itself is a CARD (a band: `.band{border-radius:38px; background:…; box-shadow:…; overflow:hidden;
 		// min-height:300px; display:grid; grid-template-columns:.8fr 1.2fr}`) → its skin + min-height ride on the
@@ -21238,6 +23113,16 @@ class FW_Site_Converter_Stitch {
 			// column so the gutter that positions the hero text / media inside its track survives. Was dropped
 			// entirely, rendering the column flush to the section edge (title colliding with the neighbour image).
 			$cell_pad = self::el_padding( $cell );
+			// …and the SAME container-box rule the row path applies (row_is_container_box): a cell that is itself the
+			// band's content container — a full-width `.wrap` capped at 1600px whose 72px side inset IS the site
+			// gutter — must not carry that inset onto the column, because the section container already spends it.
+			// Without this the gutter is paid twice: a hero h1 measured 1152px against the source's 1296px, sitting
+			// 72px in from where it belongs. The top / bottom inset is untouched; only the duplicated sides go.
+			if ( $cell_pad && self::row_is_container_box( $cell ) ) {
+				foreach ( array( 'base', 'md', 'lg' ) as $tier ) {
+					if ( isset( $cell_pad[ $tier ] ) && is_array( $cell_pad[ $tier ] ) ) { $cell_pad[ $tier ]['left'] = null; $cell_pad[ $tier ]['right'] = null; }
+				}
+			}
 
 			// `col-span-N` is N of the parent's OWN declared `grid-cols-M` tracks, NOT N/12 — rescale it
 			// (see grid_cols() for the full note). Only a REAL declared track count is trusted; for a flex
@@ -21249,6 +23134,22 @@ class FW_Site_Converter_Stitch {
 			// UNEQUAL MEASURED tracks (`grid-cols-[1.2fr_.8fr]` → 796px / 531px) → each cell's 12-grid share from its track
 			// (7 / 5), never an even split; the shares are balanced to 12 by largest remainder.
 			if ( $desk < 1 ) { $ts = self::track_shares( $tracks, $n ); if ( isset( $ts[ $ci ] ) ) { $desk = $ts[ $ci ]; } }
+			// THE CELL'S MEASURED SHARE BEATS AN EVEN SPLIT BY CHILD COUNT.
+			//
+			// A FLEX row has no grid tracks, so every branch above misses and the fallback divides 12 by the
+			// number of children -- which says nothing about how wide any of them actually was. Measured on a
+			// captured hero: a full-width copy column sat beside four decorative siblings (a poster, a shade, a
+			// video config, a bottom bar), so it scored 12/5 = 2 twelfths. Its h1 came out 180px wide instead of
+			// 1296px, wrapped across four lines at the correct 112px type, and the hero CTAs were squeezed out of
+			// sight -- the first thing any visitor sees, wrecked by an arithmetic guess.
+			//
+			// `track-frac` is that cell's width as a fraction of its row, stamped by the capture. It is the fact;
+			// the child count is a guess. Use the fact first.
+			if ( $desk < 1 ) {
+				$tf = 0.0;
+				if ( preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/', (string) $cell->getAttribute( 'data-sc-cs' ), $tfm ) ) { $tf = (float) $tfm[1]; }
+				if ( $tf > 0 ) { $desk = max( 1, min( 12, (int) round( $tf * 12 ) ) ); }
+			}
 			if ( $desk < 1 ) { $desk = $grid_n > 0 ? (int) round( 12 / $grid_n ) : 0; }
 			$wResp = ( $desk >= 1 && $desk <= 12 ) ? array( 'desktop' => $desk ) : null;
 			// The cell's exact grid TRACK (px) + its own min-height / vertical centring — carried on every
@@ -21580,7 +23481,18 @@ class FW_Site_Converter_Stitch {
 		$cls = ' ' . strtolower( self::cls( $node ) ) . ' ';
 		$get = function ( $p ) use ( $cs ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $p, '/' ) . ':\s*([^;]+)/i', $cs, $m ) ? trim( $m[1] ) : ''; };
 		$bg = $get( 'background-color' ); $radius = $get( 'border-radius' );
+		// A BOX BORDER MUST BE A BOX. This read the TOP edge alone and the preset then rendered `border:` on all
+		// four sides — so a source that rules a list off with `border-y` (a rule above and below, no side edges)
+		// had a complete rectangle drawn around it. Measured on an editorial FAQ: the source shows hairlines on
+		// the page background, the conversion a bordered panel. The side edges decide: without them this is a
+		// RULE, not a box, and the box preset must not claim it. The element's own styling still reaches the
+		// page through its block (the accordion's `flush` family draws the dividers the source has).
 		$bw = $get( 'border-top-width' ); $bc = $get( 'border-top-color' );
+		if ( '' !== $bw && (float) $bw >= 1 ) {
+			$lw = (float) $get( 'border-left-width' );
+			$rw = (float) $get( 'border-right-width' );
+			if ( $lw < 1 && $rw < 1 ) { $bw = ''; $bc = ''; }
+		}
 		// padding: the computed `padding` SHORTHAND (1–4 values — an asymmetric `24px 56px` from padding-inline/-block must
 		// survive whole; the preset CSS takes a 1–4 value shorthand), else padding-top, else a `p-N` utility (N×4px).
 		$pad = ''; $ps = $get( 'padding' );
@@ -21767,10 +23679,13 @@ class FW_Site_Converter_Stitch {
 		// round-trips hex, and the de-dupe that stops one colour appearing twice compares STRINGS - so
 		// `rgb(245, 245, 245)` and `#f5f5f5` read as two different colours. A TRANSLUCENT value keeps its
 		// rgba()/hsla() form: alpha has no hex form the picker accepts. JS twin: toHex() in to-presets.
-		if ( ! preg_match( '/rgba?\([^)]*[,\/]\s*(?:0?\.\d+|0)\s*\)$/i', $h ) && ! preg_match( '/hsla\(/i', $h ) ) {
-			$hx = self::color_to_hex( $h );
-			if ( '' !== $hx ) { $h = $hx; }
-		}
+		// …and TRANSLUCENT means translucent in any syntax. The test above knew `rgba()` and `hsla()` only, so a
+		// modern `oklab(... / 0.7)` -- what these sources emit -- was not recognised and went to color_to_hex,
+		// which drops alpha by design. Every muted chrome tone then stored OPAQUE: the header menu links, the
+		// footer links and the copyright all became solid white. color_to_css keeps the alpha whatever the
+		// syntax, and still returns plain hex for an opaque colour, which is what the picker and the de-dupe want.
+		$hx = self::color_to_css( $h );
+		if ( '' !== $hx ) { $h = $hx; }
 		return $h;
 	}
 
@@ -21850,7 +23765,22 @@ class FW_Site_Converter_Stitch {
 		// No heading / prose, and NO media (a lone image / video tile keeps its verbatim or fill path): the cell is still
 		// decomposable when a recognizer claims it or one of its children (a stack of glass stat cards, a tag row) or when
 		// it is a bare text leaf (a footer's brand line) — the verbatim mirror would drop those skins and rows.
-		foreach ( array( 'img', 'video', 'picture', 'iframe', 'svg', 'canvas' ) as $mt ) { if ( $cell->getElementsByTagName( $mt )->length > 0 ) { return false; } }
+		// MEDIA INSIDE A BUTTON IS AN ICON, not media. This guard exists to keep a lone image / video tile on its
+		// verbatim path, but it counted the `<svg>` inside a CTA's own label — so a cell holding two icon buttons
+		// was classed media and returned here, before the "cell is ONLY buttons" branch below that was written
+		// for exactly this shape. The cell then took the verbatim mirror and each button was flattened to an icon
+		// and a text block with its href dropped: measured on a real CTA band, two elements that still looked
+		// like buttons and linked nowhere. collect_blocks() on the same cell returns `button button`.
+		foreach ( array( 'img', 'video', 'picture', 'iframe', 'svg', 'canvas' ) as $mt ) {
+			foreach ( $cell->getElementsByTagName( $mt ) as $mnode ) {
+				$in_btn = false;
+				for ( $p = $mnode->parentNode; $p instanceof DOMElement && $p !== $cell; $p = $p->parentNode ) {
+					if ( in_array( strtolower( $p->tagName ), array( 'a', 'button' ), true )
+						&& ( self::is_button( $p ) || self::cs_is_button( $p ) ) ) { $in_btn = true; break; }
+				}
+				if ( ! $in_btn ) { return false; }
+			}
+		}
 		if ( '' === trim( self::text( $cell ) ) ) { return false; }
 		$kids = self::el_children( $cell );
 		if ( ! $kids ) { return true; } // a text leaf
@@ -22159,6 +24089,14 @@ class FW_Site_Converter_Stitch {
 				$top = self::px_num( $pp[0] ); $bot = $n >= 3 ? self::px_num( $pp[2] ) : $top;
 				if ( $r['top'] <= 0 )    { $r['top'] = $top; }
 				if ( $r['bottom'] <= 0 ) { $r['bottom'] = $bot; }
+			}
+			// …and the LONGHANDS. Only the `margin` shorthand was ever read, so a stamp that spells the two
+			// edges out — which is what a capture writes when just one edge is worth recording — measured as
+			// zero, and every rhythm keyed to it (a label's distance from its input, a stack's gap) silently
+			// fell back to a default.
+			if ( '' !== $cs ) {
+				if ( $r['top'] <= 0 && preg_match( '/(?:^|;)\s*margin-top:\s*([^;]+)/i', $cs, $mt ) )    { $r['top']    = self::px_num( trim( $mt[1] ) ); }
+				if ( $r['bottom'] <= 0 && preg_match( '/(?:^|;)\s*margin-bottom:\s*([^;]+)/i', $cs, $mb ) ) { $r['bottom'] = self::px_num( trim( $mb[1] ) ); }
 			}
 		}
 		return $r;
@@ -22595,7 +24533,13 @@ class FW_Site_Converter_Stitch {
 			// (+ a CARD GRID: a cell that IS a grid of icon / title / copy cards — a 7-col half holding a 2×2 of console tiles — was
 			// otherwise claimed by layout_row and decomposed to heading + text per cell, its icons and box skins lost)
 			// (+ the MARQUEE strip, ahead of chip_row / toolbar_row: a sliding nowrap track of short labels is a chip row by shape)
-			if ( ! in_array( $r['id'] ?? '', array( 'marquee_strip', 'scroller', 'card_grid', 'layout_row', 'stack', 'chip_row', 'counter_grid', 'icon_text_list', 'inline_links', 'text_list', 'newsletter', 'contact_form', 'avatar_group' ), true ) ) { continue; } // (+ an avatar stack as a row cell)
+			if ( ! in_array( $r['id'] ?? '', array( 'marquee_strip', 'scroller', 'card_grid', 'layout_row', 'stack', 'chip_row', 'counter_grid', 'icon_text_list', 'inline_links', 'text_list', 'newsletter', 'contact_form', 'avatar_group', 'accordion' ), true ) ) { continue; } // (+ an avatar stack as a row cell)
+			// (+ the ACCORDION: a two-column FAQ band puts the toggle group in ONE CELL, and a cell is never offered to the
+			//  recognizers as a whole — so `collect_blocks` walked its <details> children and emitted seven ordinary
+			//  text_blocks. The questions survived the audit as text, which is why nothing reported it; the ACCORDION did
+			//  not — the panels, the open/closed state and the FAQ schema were all gone. is_accordion_group is tight (>= 2
+			//  genuine toggle+panel items, and it refuses a band wrapper that also holds a section heading), so claiming a
+			//  cell whole here cannot swallow a heading that belongs beside it.
 			if ( ! call_user_func( $r['match'], $el, $tag, $rules ) ) { continue; }
 			$out = call_user_func( $r['build'], $el, $tag, $rules );
 			return is_array( $out ) ? $out : null;
@@ -22639,7 +24583,7 @@ class FW_Site_Converter_Stitch {
 				// produced (capW / capCenter): the row / FAQ otherwise spanned the whole container — the recurring
 				// "section container width" report
 				$ecap = self::wrapper_maxw( $child );
-				if ( '' !== $ecap && is_array( $out ) ) { $ecc = self::wrapper_centered( $child ); if ( isset( $out['t'] ) ) { self::stamp_cap( $out, $ecap, $ecc ); } else { foreach ( $out as &$ob ) { if ( is_array( $ob ) ) { self::stamp_cap( $ob, $ecap, $ecc ); } } unset( $ob ); } }
+				if ( '' !== $ecap && is_array( $out ) ) { $ecc = self::wrapper_centered( $child ); $ecp = self::wrapper_pad_x( $child ); if ( isset( $out['t'] ) ) { self::stamp_cap( $out, $ecap, $ecc, $ecp ); } else { foreach ( $out as &$ob ) { if ( is_array( $ob ) ) { self::stamp_cap( $ob, $ecap, $ecc, $ecp ); } } unset( $ob ); } }
 				if ( is_array( $out ) ) {
 					if ( isset( $out['t'] ) ) { if ( '' !== $ai && empty( $out['anim'] ) ) { $out['anim'] = $ai; } if ( $rvl && empty( $out['reveal'] ) ) { $out['reveal'] = $rvl; } if ( $lpa && empty( $out['loopAnim'] ) ) { $out['loopAnim'] = $lpa; } if ( '' !== $tfx && empty( $out['text_fx'] ) ) { $out['text_fx'] = $tfx; } $blocks[] = $out; } // one block
 					else { foreach ( $out as $blk ) { if ( is_array( $blk ) && isset( $blk['t'] ) ) { if ( '' !== $ai && empty( $blk['anim'] ) ) { $blk['anim'] = $ai; } if ( $rvl && empty( $blk['reveal'] ) ) { $blk['reveal'] = $rvl; } if ( '' !== $tfx && empty( $blk['text_fx'] ) ) { $blk['text_fx'] = $tfx; } $blocks[] = $blk; } } } // a list
@@ -22721,7 +24665,11 @@ class FW_Site_Converter_Stitch {
 					// the group is margin + padding of the flattened wrapper. The DESKTOP tier (lg when a phone diff moved desktop
 					// there, else base). Horizontal padding already rides el_inset_x. JS: the decompose dive's wmt / wmb.
 					$wp = self::el_padding( $child );
-					if ( is_array( $wp ) ) { $wpd = ( isset( $wp['lg']['top'] ) && null !== $wp['lg']['top'] ) ? $wp['lg'] : $wp['base']; $wm['top'] += (float) ( $wpd['top'] ?? 0 ); $wm['bottom'] += (float) ( $wpd['bottom'] ?? 0 ); }
+					// …UNLESS this wrapper is the band's own content container, whose padding the SECTION has
+					// already taken (band_pad_container_of). Adding it here too applied the same inset twice —
+					// once as the section's padding, once as the first block's margin — and a hero measured 98px
+					// taller than its source. The band owns the band's rhythm; this path owns a wrapper's.
+					if ( is_array( $wp ) && ! self::is_band_pad_container( $child ) ) { $wpd = ( isset( $wp['lg']['top'] ) && null !== $wp['lg']['top'] ) ? $wp['lg'] : $wp['base']; $wm['top'] += (float) ( $wpd['top'] ?? 0 ); $wm['bottom'] += (float) ( $wpd['bottom'] ?? 0 ); }
 					// …onto the last IN-FLOW block: a pinned cue / floater at the end of the wrapper takes no part in its flow (the
 					// hero's `pb-28` had landed on the scroll cue instead of the CTA row — a real-site audit)
 					if ( $wm['bottom'] > 0 ) { $li = count( $blocks ) - 1; while ( $li > $before && self::block_is_floater( $blocks[ $li ] ) ) { $li--; } $blocks[ $li ]['mbAdd'] = max( (float) ( isset( $blocks[ $li ]['mbAdd'] ) ? $blocks[ $li ]['mbAdd'] : 0 ), $wm['bottom'] ); }
@@ -22775,7 +24723,7 @@ class FW_Site_Converter_Stitch {
 							}
 							// …and onto the WIDGET blocks under it (a FAQ list, a card grid, a feature list inside a `max-w-3xl
 							// mx-auto` wrapper): the cap is the wrapper's, every child lays out inside it
-							if ( '' !== $wmw ) { self::stamp_cap( $blocks[ $wi ], $wmw, self::wrapper_centered( $child ) ); }
+							if ( '' !== $wmw ) { self::stamp_cap( $blocks[ $wi ], $wmw, self::wrapper_centered( $child ), self::wrapper_pad_x( $child ) ); }
 						}
 					}
 					// A reveal-animated WRAPPER (`<div data-aos="fade-up">…`) that flattened into leaf blocks →
@@ -23808,6 +25756,127 @@ class FW_Site_Converter_Stitch {
 		return $layers;
 	}
 
+	/**
+	 * The wrapper that REVEALS one of the two images -- clipped with `clip-path: inset(...)`, which is how
+	 * every comparison slider hides one side until the handle moves. Returns the wrapper, or null.
+	 *
+	 * @param DOMElement $el candidate container
+	 * @return DOMElement|null
+	 */
+	private static function before_after_clip_el( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return null; }
+		foreach ( $el->getElementsByTagName( '*' ) as $d ) {
+			if ( 0 === $d->getElementsByTagName( 'img' )->length ) { continue; }
+			$sty = (string) $d->getAttribute( 'style' ) . ';' . (string) $d->getAttribute( 'data-sc-cs' );
+			if ( preg_match( '/clip-path:\s*inset\(/i', $sty ) ) { return $d; }
+		}
+		return null;
+	}
+
+	/**
+	 * An image COMPARISON SLIDER: two images in one box, one revealed over the other.
+	 *
+	 * Structural only. The reveal mechanism is a range input (semantic, and what a keyboard user drives) or
+	 * a clipped wrapper; a comparison also carries LABELS rather than copy, so a container holding real
+	 * prose is something else that happens to have two pictures in it.
+	 *
+	 * @param DOMElement $el
+	 * @return bool
+	 */
+	/**
+	 * The comparison slider INSIDE a container, built.
+	 *
+	 * A card is a slider PLUS a caption, so testing the card itself against is_before_after() fails its
+	 * deliberately strict text gate -- and relaxing that gate to fit the caption would let ordinary
+	 * two-image cards through. The container holds the slider; the slider is still matched strictly.
+	 *
+	 * @param DOMElement $el
+	 * @return array|null
+	 */
+	private static function before_after_in( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return null; }
+		$own = self::before_after_build( $el );
+		if ( is_array( $own ) ) { return $own; }
+		foreach ( $el->getElementsByTagName( '*' ) as $d ) {
+			$b = self::before_after_build( $d );
+			if ( is_array( $b ) ) { return $b; }
+		}
+		return null;
+	}
+
+	private static function is_before_after( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return false; }
+		if ( 2 !== $el->getElementsByTagName( 'img' )->length ) { return false; }
+		// labels, not copy: "Before", "After", "Drag to reveal" -- a paragraph of text means this is a
+		// content block that merely contains two images.
+		if ( mb_strlen( trim( preg_replace( '/\s+/u', ' ', (string) self::text( $el ) ) ) ) > 120 ) { return false; }
+		$has_range = false;
+		foreach ( $el->getElementsByTagName( 'input' ) as $in ) {
+			if ( 'range' === strtolower( (string) $in->getAttribute( 'type' ) ) ) { $has_range = true; break; }
+		}
+		return $has_range || ( self::before_after_clip_el( $el ) instanceof DOMElement );
+	}
+
+	/**
+	 * Which image is BEFORE and which is AFTER.
+	 *
+	 * The alt text / labels say so when the source bothered to write them, and that is the only evidence
+	 * that cannot be wrong. Failing that, the CLIPPED image is the before -- it is the one hidden until the
+	 * handle is dragged -- which is the common convention but only a convention, so it comes second.
+	 *
+	 * @param DOMElement $el
+	 * @return array|null { before: string, after: string }
+	 */
+	private static function before_after_build( $el ) {
+		if ( ! self::is_before_after( $el ) ) { return null; }
+		$imgs = array();
+		foreach ( $el->getElementsByTagName( 'img' ) as $im ) { $imgs[] = $im; }
+		if ( 2 !== count( $imgs ) ) { return null; }
+		$src = function ( $im ) { return trim( (string) $im->getAttribute( 'src' ) ); };
+		$alt = function ( $im ) { return mb_strtolower( trim( (string) $im->getAttribute( 'alt' ) ) ); };
+		$before = ''; $after = '';
+		foreach ( $imgs as $im ) {
+			if ( '' === $before && preg_match( '/\bbefore\b/u', $alt( $im ) ) ) { $before = $src( $im ); continue; }
+			if ( '' === $after  && preg_match( '/\bafter\b/u',  $alt( $im ) ) ) { $after  = $src( $im ); }
+		}
+		if ( '' === $before || '' === $after ) {
+			$clip = self::before_after_clip_el( $el );
+			$clipped = null;
+			if ( $clip instanceof DOMElement ) { $clipped = $clip->getElementsByTagName( 'img' )->item( 0 ); }
+			if ( $clipped instanceof DOMElement ) {
+				$before = $src( $clipped );
+				foreach ( $imgs as $im ) { if ( $im !== $clipped ) { $after = $src( $im ); break; } }
+			} else {
+				$before = $src( $imgs[0] ); $after = $src( $imgs[1] );
+			}
+		}
+		if ( '' === $before || '' === $after || $before === $after ) { return null; }
+		// THE SOURCE'S OWN LABELS. The shortcode has native before_label / after_label / show_labels, so a
+		// source that writes “Voor” and “Na”, or nothing at all, should read that way after conversion rather
+		// than falling back to the English defaults. Taken from the two SHORTEST leaf labels in the widget,
+		// which is what a label is; the drag hint is longer and is deliberately not one of them.
+		$labels = array();
+		foreach ( $el->getElementsByTagName( '*' ) as $lf ) {
+			if ( $lf->getElementsByTagName( '*' )->length ) { continue; }
+			$lt = trim( preg_replace( '/\s+/u', ' ', (string) self::text( $lf ) ) );
+			if ( '' === $lt || mb_strlen( $lt ) > 24 || ! preg_match( '/\p{L}/u', $lt ) ) { continue; }
+			$cls = mb_strtolower( (string) $lf->getAttribute( 'class' ) );
+			$labels[] = array( 'text' => $lt, 'before' => (bool) preg_match( '/before/', $cls . ' ' . mb_strtolower( $lt ) ),
+				'after' => (bool) preg_match( '/after/', $cls . ' ' . mb_strtolower( $lt ) ) );
+		}
+		$bl = ''; $al = '';
+		foreach ( $labels as $l ) {
+			if ( '' === $bl && $l['before'] && ! $l['after'] ) { $bl = $l['text']; }
+			if ( '' === $al && $l['after'] && ! $l['before'] ) { $al = $l['text']; }
+		}
+		$out = array( 't' => 'before_after', 'before' => $before, 'after' => $after );
+		if ( '' !== $bl ) { $out['beforeLabel'] = $bl; }
+		if ( '' !== $al ) { $out['afterLabel'] = $al; }
+		// A widget that shows NO labels should not gain two.
+		$out['showLabels'] = ( '' !== $bl || '' !== $al );
+		return $out;
+	}
+
 	private static function is_image_grid( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		$c = ' ' . self::cls( $el ) . ' ';
@@ -24030,9 +26099,15 @@ class FW_Site_Converter_Stitch {
 	 *  ≥ 1000px and whose equal side padding matches the site's declared container gutter (its inset is the gutter). */
 	private static function row_is_container_box( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
-		$cs = (string) $el->getAttribute( 'data-sc-cs' ); $cls = ' ' . strtolower( self::cls( $el ) ) . ' ';
+		$cs = (string) $el->getAttribute( 'data-sc-cs' );
 		if ( ! preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/i', $cs, $mw ) || (float) $mw[1] < 1000 ) { return false; }
-		if ( strpos( $cls, ' mx-auto ' ) === false && ! preg_match( '/(?:^|;)\s*margin(?:-left)?:\s*(?:0px\s+)?(?:auto|[1-9][0-9.]*px)/i', $cs ) ) { return false; }
+		// Centring is NOT required, and testing for it was a silent reject: the proof used was the `mx-auto`
+		// UTILITY CLASS, with a stamped `margin` as fallback — but a source that centres in a plain stylesheet
+		// (`.wrap{margin:0 auto}`) carries neither, so its container was never recognised and its side padding
+		// was mirrored on top of the gutter the section already spends. Measured across 140 captures: 33 of 522
+		// container-shaped boxes (6.3%, on 8 separate sources) were rejected for that reason alone. The two
+		// COMPUTED tests carry the whole meaning without it — a box capped at >= 1000px whose equal side padding
+		// is exactly the site's declared gutter IS the container, centred or not.
 		$pd = self::cs_decls_pad( $cs ); if ( null === $pd || $pd['left'] <= 0 || abs( $pd['left'] - $pd['right'] ) > 1 ) { return false; }
 		if ( 0 === (int) self::$site_gutter_px && $el->ownerDocument ) { $g0 = (int) self::declared_container_gutter( (string) $el->ownerDocument->saveHTML() ); self::$site_gutter_px = $g0 > 0 ? $g0 : -1; } // (the sections are stitched before the chrome computes it — read it once here)
 		$g = (int) self::$site_gutter_px; return $g > 0 && abs( $pd['left'] - $g ) <= 1;
@@ -24792,6 +26867,48 @@ class FW_Site_Converter_Stitch {
 		foreach ( $kids as $k ) { if ( self::looks_quote_card( $k ) ) { $cards++; } }
 		return $cards >= 2 && $cards >= count( $kids ) - 1;
 	}
+	/**
+	 * A card whose quote is a HEADING and whose body is two or more LABELLED GROUPS — a short label leaf
+	 * (≤ 5 words, uppercase or visibly a caption) immediately followed by a longer paragraph. That is the
+	 * problem/solution card shape, not a testimonial: there is no author, no role, no avatar and no rating,
+	 * and the content that matters is precisely the part a testimonial cannot hold.
+	 */
+	private static function is_labelled_problem_card( $k ) {
+		if ( ! ( $k instanceof DOMElement ) ) { return false; }
+		if ( self::has_author_block( $k ) || null !== self::testimonial_rating( $k ) ) { return false; }
+		// The quote must sit in a heading; a quote inside a <p> or <blockquote> is the ordinary testimonial shape.
+		$quoted_heading = false;
+		foreach ( array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ) as $h ) {
+			foreach ( $k->getElementsByTagName( $h ) as $hn ) {
+				if ( preg_match( '/["“”«»‘’]/u', (string) self::text( $hn ) ) ) { $quoted_heading = true; break 2; }
+			}
+		}
+		if ( ! $quoted_heading ) { return false; }
+		// …and two or more label-over-paragraph groups.
+		$groups = 0;
+		foreach ( $k->getElementsByTagName( '*' ) as $wrap ) {
+			if ( ! ( $wrap instanceof DOMElement ) ) { continue; }
+			$leaves = array();
+			foreach ( self::el_children( $wrap ) as $c ) {
+				if ( ! in_array( strtolower( (string) $c->tagName ), array( 'p', 'span', 'div' ), true ) ) { continue; }
+				$ct = trim( preg_replace( '/\s+/', ' ', (string) self::text( $c ) ) );
+				if ( '' === $ct ) { continue; }
+				$leaves[] = array( 'el' => $c, 'text' => $ct );
+			}
+			if ( count( $leaves ) < 2 ) { continue; }
+			$lab = $leaves[0]; $body = $leaves[1];
+			$words = str_word_count( $lab['text'] );
+			if ( $words < 1 || $words > 5 ) { continue; }
+			if ( mb_strlen( $body['text'] ) < 40 ) { continue; }
+			$lcs = (string) $lab['el']->getAttribute( 'data-sc-cs' );
+			$is_label = preg_match( '/text-transform:\s*uppercase/i', $lcs )
+				|| $lab['text'] === mb_strtoupper( $lab['text'] )
+				|| preg_match( '/(?:^|\s)uppercase(?:\s|$)/', ' ' . self::cls( $lab['el'] ) . ' ' );
+			if ( $is_label ) { $groups++; }
+		}
+		return $groups >= 2;
+	}
+
 	/** A card that reads like a testimonial (has a paragraph AND a quote/rating/attribution signal). */
 	private static function looks_quote_card( $k ) {
 		if ( ! ( $k instanceof DOMElement ) ) { return false; }
@@ -24803,6 +26920,17 @@ class FW_Site_Converter_Stitch {
 		if ( self::is_gallery_image_card( $k ) ) { return false; }
 		$t = self::text( $k );
 		if ( mb_strlen( $t ) < 30 ) { return false; }
+		// A QUOTED HEADLINE OVER LABELLED SECTIONS IS NOT A TESTIMONIAL. A problem/solution card quotes the
+		// customer's complaint as its TITLE ("My competitors show up on Google. I don't.") and then explains it
+		// in labelled groups — a short all-caps label over a paragraph, twice. Nothing in it is an attribution.
+		// Claiming it as a testimonial keeps the quote alone and discards every labelled group with it.
+		//
+		// Measured before changing anything, because the note below this one warns that a rejected card can fall
+		// to a path that keeps LESS than the wrong claim did. On the page that prompted this, the claim kept
+		// 0 of 11 body phrases and the fallback kept 11 of 11 — so for this shape the warning's premise does not
+		// hold. The test stays deliberately narrow: no attribution of any kind, the quote in a HEADING rather
+		// than a paragraph, and two or more labelled groups underneath.
+		if ( self::is_labelled_problem_card( $k ) ) { return false; }
 		if ( preg_match( '/["“”«»‘’]/u', $t ) ) { return true; }
 		if ( self::testimonial_rating( $k ) !== null ) { return true; }
 		// A dash before a capitalised word. This is a WEAK signal -- it is equally the shape of a feature row
@@ -25515,7 +27643,14 @@ class FW_Site_Converter_Stitch {
 	 */
 	private static function grid_gap_px( $grid ) {
 		$cs = (string) $grid->getAttribute( 'data-sc-cs' );
-		if ( preg_match( '/(?:^|;)\s*gap:\s*([0-9.]+)px/', $cs, $m ) ) { return (float) $m[1]; }
+		// `gap` is ROW-gap then COLUMN-gap. This reads the HORIZONTAL gutter — between the cells of a row, or
+		// the columns of a grid — which is the SECOND value when the source gives two. Taking the first handed
+		// back the row gap: a brand strip stamped `gap:16px 40px` (`gap-x-10 gap-y-4`) was laid out with 16px
+		// between names instead of 40, so 15 fitted on a line where the source fits 11 and the row came back a
+		// line short. One value applies to both axes, as CSS says.
+		if ( preg_match( '/(?:^|;)\s*gap:\s*([0-9.]+)px(?:\s+([0-9.]+)px)?/', $cs, $m ) ) {
+			return ( isset( $m[2] ) && '' !== $m[2] ) ? (float) $m[2] : (float) $m[1];
+		}
 		$cls = self::cls( $grid );
 		if ( preg_match( '/(?:^|\s)(?:[a-z0-9]+:)?gap(?:-x)?-(\d+(?:\.\d+)?)(?:\s|$)/', ' ' . $cls . ' ', $m ) ) { return (float) $m[1] * 4.0; }
 		return 0.0;
@@ -26076,9 +28211,57 @@ class FW_Site_Converter_Stitch {
 			// a HOVER-REVEALED line (`opacity-0 group-hover:opacity-100`, or a stamped opacity:0) is not resting content — a
 			// collection tile's hidden "Collection" kicker had rendered as a permanent eyebrow (a real-site audit)
 			if ( self::is_hover_revealed( $e, $cell ) ) { continue; }
+			// ...and neither is a positional COUNTER riding the far end of the icon's own row.
+			if ( self::is_counter_text( $t ) && self::is_icon_row_meta( $e ) ) { continue; }
 			$best = array( 'text' => $t, 'cs' => $cs );
 		}
 		return $best;
+	}
+
+	/**
+	 * Is this leaf a counter/meta riding the ICON'S row, rather than the card's eyebrow?
+	 *
+	 * An eyebrow is a line of its own ABOVE the title. What this excludes is a different thing that reads
+	 * identically to every class- and size-based test: a small label sitting INSIDE the icon's flex row and
+	 * pushed to the far end of it by `justify-between` -- the icon left, the label right, one row.
+	 *
+	 * Measured on a services grid: each card headed `<div class="flex items-center justify-between"><svg/>
+	 * <div class="text-xs">01 / 3</div></div>`. card_eyebrow() walks every leaf before the heading, and that
+	 * counter is a 12px leaf, so it qualified and was filed as the card's overline -- rendering above the
+	 * title a counter the source draws beside the icon. The icon box has no slot for it, and the corpus says
+	 * it should not grow one: across 117 captures this shape occurs on ONE site, twice, both the same
+	 * `01 / 3` string. Decoration on a single source, so it is dropped rather than relocated.
+	 *
+	 * `justify-between` is the whole test, and it is deliberate. An icon and a label sitting TOGETHER in a
+	 * flex row (`<div class="flex gap-2"><svg/><span>FEATURED</span></div>`) is a chip, and that label really
+	 * is the card's eyebrow -- so only a row that pushes the two to OPPOSITE ends is read as an icon row.
+	 */
+	/**
+	 * Is this string a positional COUNTER rather than a label that says something?
+	 *
+	 * `01 / 3`, `02`, `Schritt 3`, `Nr. 2` -- a number, optionally over a total, optionally behind one short
+	 * word. What it must NOT match is anything carrying information in the same slot: `ab 49 EUR`, `15 min`,
+	 * `FEATURED`. The distinction matters because the only thing done with a match is to DROP it, and a rule
+	 * that drops by position alone would one day silently delete a price.
+	 */
+	private static function is_counter_text( $t ) {
+		$t = trim( (string) $t );
+		if ( '' === $t || mb_strlen( $t ) > 16 ) { return false; }
+		return (bool) preg_match( '/^(?:\p{L}{1,8}\.?\s*)?\d{1,3}\s*(?:(?:\/|of|von|sur|de)\s*\d{1,3})?\.?$/iu', $t );
+	}
+
+	private static function is_icon_row_meta( $e ) {
+		if ( ! ( $e instanceof DOMElement ) ) { return false; }
+		$p = $e->parentNode;
+		if ( ! ( $p instanceof DOMElement ) ) { return false; }
+		$pcs = (string) $p->getAttribute( 'data-sc-cs' );
+		if ( ! preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $pcs ) ) { return false; }
+		if ( ! preg_match( '/(?:^|;)\s*justify-content:\s*space-between/i', $pcs ) ) { return false; }
+		if ( $p->getElementsByTagName( 'svg' )->length || $p->getElementsByTagName( 'img' )->length ) { return true; }
+		foreach ( $p->getElementsByTagName( 'span' ) as $sp ) {
+			if ( false !== strpos( self::cls( $sp ), 'material-symbols' ) ) { return true; }
+		}
+		return false;
 	}
 
 	/** TRUE when $a comes before $b in document order (both under $scope). */
@@ -26116,7 +28299,7 @@ class FW_Site_Converter_Stitch {
 		}
 
 		// Icon: first material-symbol span, else first <svg>.
-		$icon = ''; $custom_icon = ''; $icon_box_cls = ''; $icon_box_cs = ''; $icon_cls = ''; $icon_chip_cls = ''; $icon_badge = ''; $icon_badge_color = ''; $icon_chip_cs = ''; $icon_color = '';
+		$icon = ''; $custom_icon = ''; $icon_box_cls = ''; $icon_box_cs = ''; $icon_cls = ''; $icon_chip_cls = ''; $icon_badge = ''; $icon_badge_color = ''; $icon_chip_cs = ''; $icon_color = ''; $icon_ink_fb = '';
 		foreach ( $cell->getElementsByTagName( 'span' ) as $sp ) {
 			if ( strpos( self::cls( $sp ), 'material-symbols' ) !== false ) {
 				$icon     = self::material_to_fa( trim( $sp->textContent ) );
@@ -26145,7 +28328,23 @@ class FW_Site_Converter_Stitch {
 			$icon_el = self::lucide_icon_el( $cell );
 			if ( $icon_el instanceof DOMElement ) {
 				if ( '' === $icon_cls ) { $icon_cls = self::cls( $icon_el ); }
+				// AN <svg> IS NEVER STAMPED, so reading the glyph's own `color` finds nothing and a currentColor
+				// icon kept no ink at all -- six near-white source icons rendered in the theme's default GREEN. The
+				// colour it actually paints with belongs to the nearest stamped ancestor (its chip / the card), which
+				// is a measurement; the `text-brand-copy` class beside it is a custom token nothing can resolve.
 				$icon_color = self::sc_css( $icon_el, 'color' );
+				// Record the ancestor's ink as a FALLBACK, not as the answer. Overwriting $icon_color here made
+				// three cards whose icons carry DIFFERENT resolvable tokens (green / amber / green) all take the
+				// card's single colour. n_icon_box tries the icon's own token first and reaches for this only when
+				// nothing resolves -- which is the real case: a CUSTOM token like `text-brand-copy` that the
+				// Tailwind config cannot know, where the measured ancestor colour is the only truth available.
+				if ( '' === $icon_color ) {
+					for ( $ap = $icon_el->parentNode, $ai = 0; $ap instanceof DOMElement && $ai < 3; $ap = $ap->parentNode, $ai++ ) {
+						$ac = self::sc_css( $ap, 'color' );
+						if ( '' !== $ac ) { $icon_ink_fb = $ac; break; }
+						if ( $ap === $cell ) { break; }
+					}
+				}
 				$sp = ( $icon_el->parentNode instanceof DOMElement ) ? $icon_el->parentNode : null;
 				if ( $sp && $sp !== $cell && '' === $icon_chip_cls ) {
 					$pcls = self::cls( $sp );
@@ -26173,7 +28372,13 @@ class FW_Site_Converter_Stitch {
 				if ( '' === $icon_cls ) { $icon_cls = self::cls( $svg ); }
 				// The icon's COMPUTED ink: an <svg> is never stamped, so a currentColor glyph inherits from the nearest stamped ancestor
 				// (its <iconify-icon> host / the chip: `text-white` on the tile) — else the icon fell back to the theme's default colour.
-				if ( '' === $icon_color && ! preg_match( '/(?:^|\s)text-[a-z]/', self::cls( $svg ) ) ) { for ( $ap = $svg->parentNode, $ai = 0; $ap instanceof DOMElement && $ap !== $cell && $ai < 3; $ap = $ap->parentNode, $ai++ ) { $ac = self::sc_css( $ap, 'color' ); if ( '' !== $ac ) { $icon_color = $ac; break; } } }
+				// A `text-*` CLASS USED TO VETO THIS WALK, on the theory that n_icon_box could resolve the token
+				// itself. It cannot resolve a CUSTOM one: `text-brand-copy` means nothing to the Tailwind config, so
+				// the icon kept neither the measured colour nor a resolved one and fell back to the theme's default
+				// -- six source icons in near-white rendered GREEN. The ancestor's stamped colour is a measurement;
+				// a class name is a guess, and the measurement wins. A resolvable token still reaches n_icon_box via
+				// iconCls, which only applies when no computed colour was captured.
+				if ( '' === $icon_color ) { for ( $ap = $svg->parentNode, $ai = 0; $ap instanceof DOMElement && $ap !== $cell && $ai < 3; $ap = $ap->parentNode, $ai++ ) { $ac = self::sc_css( $ap, 'color' ); if ( '' !== $ac ) { $icon_color = $ac; break; } } }
 				// Capture the icon's CHIP wrapper — a filled, fixed-size container (`bg-*` + a w/h/aspect/pad
 				// sizing step, e.g. `w-16 h-16 bg-white rounded-2xl`) — as iconChipCls, so n_icon_box reproduces
 				// the badge/bg behind the icon (icon_badge shape + fill) rather than an unstyled bare icon.
@@ -26264,7 +28469,7 @@ class FW_Site_Converter_Stitch {
 			elseif ( 'div' === $btag && $bel !== $cell && 0 === $bel->getElementsByTagName( '*' )->length && '' !== trim( self::text( $bel ) ) && mb_strlen( trim( self::text( $bel ) ) ) <= 120
 				&& ! self::is_stat_number( $bel, 'div' ) && ! self::is_ancestor( $heading, $bel ) && $bel !== $heading
 				&& trim( preg_replace( '/\s+/', ' ', self::text( $bel ) ) ) !== trim( preg_replace( '/\s+/', ' ', (string) ( ( $eb_ = self::card_eyebrow( $cell, $heading ) ) ? ( is_array( $eb_ ) ? ( $eb_['text'] ?? '' ) : $eb_ ) : '' ) ) )
-				&& ! preg_match( '/^(?:step\s*)?0*\d{1,2}$/i', trim( self::text( $bel ) ) ) ) {
+				&& ! self::is_counter_text( trim( preg_replace( '/\s+/', ' ', self::text( $bel ) ) ) ) ) {
 				// its treatment vs the card's (mono / 11px / tracked uppercase / a muted tone) as an inline run, the same way a stray span keeps its own
 				$lcs = (string) $bel->getAttribute( 'data-sc-cs' ); $pcs = (string) $cell->getAttribute( 'data-sc-cs' ); $lst = array();
 				$lg = function ( $cs, $pr ) { return preg_match( '/(?:^|;)\s*' . preg_quote( $pr, '/' ) . ':\s*([^;]+)/i', $cs, $m ) ? trim( $m[1] ) : ''; };
@@ -26346,6 +28551,7 @@ class FW_Site_Converter_Stitch {
 		// slot, so it's captured separately: a box card WITH a button is rendered as icon_box + button in
 		// the column, and the box styling moves to the column's Inner Wrapper Class.
 		$button = null;
+		$button_worded = false;
 		foreach ( $cell->getElementsByTagName( 'a' ) as $a ) {
 			$label = self::text_no_icons( $a );
 			if ( $label === '' ) { continue; }
@@ -26365,8 +28571,14 @@ class FW_Site_Converter_Stitch {
 				break;
 			}
 			$href = $a->getAttribute( 'href' );
-			$button = array( 'label' => $label, 'href' => $href !== '' ? $href : '#', 'icon' => $bicon, 'iconSvg' => $bsvg, 'glyphSvg' => $braw, 'iconPos' => $bpos, 'cls' => self::cls( $a ), 'cs' => $a->getAttribute( 'data-sc-cs' ) );
-			break;
+						$cand = array( 'label' => $label, 'href' => $href !== '' ? $href : '#', 'icon' => $bicon, 'iconSvg' => $bsvg, 'glyphSvg' => $braw, 'iconPos' => $bpos, 'cls' => self::cls( $a ), 'cs' => $a->getAttribute( 'data-sc-cs' ) );
+			// PREFER A LABEL WITH WORDS IN IT. This took the first link with any label at all, and a card that carries
+			// both a round arrow affordance and a named CTA lists the arrow first -- so the card's button came out as
+			// a bare glyph while `The Example Residence ->` was never used. A label of nothing but symbols is an
+			// affordance, not a call to action; it is still kept when the card offers nothing better.
+			$has_word = (bool) preg_match( '/[\p{L}\p{N}]/u', $label );
+			if ( null === $button || ( $has_word && ! $button_worded ) ) { $button = $cand; $button_worded = $has_word; }
+			if ( $button_worded ) { break; }
 		}
 		// …a DIV-BUTTON: sources (especially generated ones) write a card's CTA as a `cursor-pointer` row rather than
 		// an <a>/<button> — `<div class="flex justify-between cursor-pointer border-t"><span>ADD TO CART</span><svg/></div>`.
@@ -26420,7 +28632,7 @@ class FW_Site_Converter_Stitch {
 				}
 				continue;
 			}
-			$image = array( 'src' => $isrc, 'alt' => trim( (string) $im->getAttribute( 'alt' ) ), 'cls' => self::cls( $im ), 'aspect' => self::img_frame_aspect( $im, $cell ), 'extra' => self::img_extra_css( $im ), 'frameBg' => self::media_frame_bg( $im ), 'framePad' => self::media_frame_pad( $im ) );
+			$image = array( 'src' => $isrc, 'alt' => trim( (string) $im->getAttribute( 'alt' ) ), 'cls' => self::cls( $im ), 'aspect' => self::img_frame_aspect( $im, $cell ), 'extra' => self::img_extra_css( $im ), 'frameBg' => self::media_frame_bg( $im ), 'framePad' => self::media_frame_pad( $im ), 'w' => self::img_intrinsic( $im, 'width' ), 'h' => self::img_intrinsic( $im, 'height' ) );
 			// a FIXED-HEIGHT media frame (`h-64 overflow-hidden` → 256px; a `w-full h-full object-cover` image filling it): the
 			// box's crop is a height, not a ratio — it fell back to 4:3 (a fixture from the feed). Measured on the frame.
 			$fr = ( $im->parentNode instanceof DOMElement ) ? $im->parentNode : null;
@@ -26530,6 +28742,10 @@ class FW_Site_Converter_Stitch {
 			if ( $p === $cell ) { break; }
 		}
 		return array(
+			// A card whose media is a COMPARISON SLIDER carries BOTH images. The card path otherwise takes the
+			// first <img> it finds -- the base, i.e. the AFTER -- and the before is never used at all, so the
+			// widget converted as one ordinary photo with its labels read as stray text.
+			'ba'         => self::before_after_in( $cell ),
 			'contentPad' => $content_pad, // inner content-wrapper padding (n_icon_box → icon_box spacing when unboxed)
 			'hoverOverlay' => $hover_overlay, // group-hover gradient sheen → a ::before fade-in on the card
 			// The card's OWN decorative / SWEEP pseudo-layers (capture data-sc-decor-pseudo + data-sc-keyframes): a corner glow,
@@ -26538,6 +28754,7 @@ class FW_Site_Converter_Stitch {
 			'icon'       => $icon,
 			'iconCls'    => $icon_cls,
 			'iconColor'  => $icon_color, // the icon's COMPUTED colour (authoritative — resolves custom text-* tokens)
+			'iconInkFallback' => $icon_ink_fb, // the nearest stamped ancestor's ink -- used ONLY when the icon's own token resolves to nothing
 			'customIcon' => $custom_icon,
 			'lucide'     => $lucide, // 'lucide/<name>' when the card icon is a native Lucide glyph → n_icon_box library icon
 			'imgIcon'    => $img_icon, // an <img src=*.svg> icon → icon_box INLINE svg icon (renders SVGs cleanly)
@@ -26583,6 +28800,14 @@ class FW_Site_Converter_Stitch {
 			'cardCs'     => (string) $cell->getAttribute( 'data-sc-cs' ), // the card's own stamp (its inherited ink) → content_color only when the body differs
 			'bodyLinkCs' => ( function () use ( $cell ) { foreach ( $cell->getElementsByTagName( 'p' ) as $bp ) { $la = $bp->getElementsByTagName( 'a' )->item( 0 ); if ( $la instanceof DOMElement ) { return (string) $la->getAttribute( 'data-sc-cs' ); } } return ''; } )(), // the first inline link inside the description → selector .icon-box__content a{…}
 			'button'     => $button, // a CTA inside the card (null when none) — see the column-build rule
+			// THE WHOLE CARD IS A LINK. A very common card is written as `<a class="card" href="/x">…</a>`, with
+			// the call to action inside it as a plain <div> ("Mehr erfahren →") because an <a> cannot nest an <a>.
+			// The div-button fallback above cannot see it: that one needs `cursor-pointer` or a computed
+			// `cursor:pointer`, and the capture stamps neither (the pointer is inherited from the anchor). So the
+			// card converted with NO destination at all — not clickable, and its affordance row dropped: measured
+			// on a real services grid, three cards lost three links and three arrow glyphs.
+			// Being an anchor IS the signal; no cursor heuristic is needed, because the whole box is the control.
+			'link'       => self::card_whole_link( $cell ),
 			'iconBoxCls'  => $icon_box_cls, // the source's gray icon container classes (if any) → reproduced as a box
 			'iconBoxCs'   => $icon_box_cs,
 			'iconChipCls' => $icon_chip_cls, // the icon's filled chip wrapper (bg-* + sizing) → n_icon_box icon_badge/bg
@@ -27236,6 +29461,8 @@ class FW_Site_Converter_Stitch {
 		// into one clean `.box` class on the column's Inner Wrapper Class (populated during build_pages,
 		// emitted into the child stylesheet below).
 		if ( ( $mirror || $dyn ) && class_exists( 'FW_Site_Converter_Tailwind' ) && class_exists( 'FW_Site_Converter_Mapper' ) ) {
+			// Every captured route's markup, for the button scan only (see prime_mapper) — the home page still
+			// supplies the chrome, palette and widths.
 			self::prime_mapper( (string) $screens[0]['html'], $hifi ); // ONE shared setup — the admin prepare→build path calls the same (see class-fw-extension-site-converter)
 		}
 		// "Add entrance animations" opt-in (Convert panel) → the mapper's sequential reveal-on-scroll pass.
@@ -27485,7 +29712,7 @@ class FW_Site_Converter_Stitch {
 				if ( '' !== $kind ) {
 					$lit = trim( (string) $node['custom'] );
 					// opaque only — a translucent literal has no preset to point at
-					if ( ! preg_match( '/rgba?\([^)]*[,\/]\s*(?:0?\.\d+|0)\s*\)$/i', $lit ) && ! preg_match( '/hsla\(/i', $lit ) ) {
+					if ( ! self::is_translucent( $lit ) ) {
 						$hx = strtolower( self::color_to_hex( $lit ) );
 						if ( '' !== $hx && isset( $map[ $hx ] ) ) {
 							$node['predefined'] = ( 'bg' === $kind ? 'bg-' : 'text-' ) . $map[ $hx ];
@@ -27786,6 +30013,56 @@ class FW_Site_Converter_Stitch {
 	/** The tightest footer element holding the copyright line (a year / "copyright" / the (c) glyph),
 	 *  preferring the wrapper with the FEWEST child elements so social icons etc. stay out of it. */
 	/** A footer whose © line, brand (a logo image / a wordmark link to the root) and ≥ 3 links all sit in ONE horizontal flex row. */
+	/** Is the footer a CENTRED SINGLE-COLUMN STACK -- logo over a centred link row over the tagline -- rather
+	 *  than a multi-column bar? Read from the root's own computed stamp (display/flex-direction/align-items),
+	 *  which is a measurement, not a class-name guess. A source shaped this way used to convert into an
+	 *  INVENTED two-column bar (brand on the left, a vertical link list on the right) because the flat-link
+	 *  branch hard-coded two columns -- even though detect_footer_columns() had already correctly returned
+	 *  NOTHING and footer_band_is_multicol() had already said false. Nobody asked the root what shape it was. */
+	/** Does the already-built footer bar ALREADY show this text? The copyright bar's readers look at the rows
+	 *  near the copyright line, which on a centred-stack footer are the same rows the bar itself was built
+	 *  from -- so the tagline (and, before the legal-link dedupe, every nav link) was emitted a second time
+	 *  along the bottom. Compared on letters and digits only, so punctuation and case cannot hide a match. */
+	/** The link labels the footer bars ACTUALLY emitted, normalised to letters+digits. Used to tell a nav row
+	 *  that the bar already shows from a genuine legal row the bar never had. */
+	private static function footer_bar_link_labels( $values ) {
+		$out = array();
+		$walk = function ( $node ) use ( &$walk, &$out ) {
+			if ( ! is_array( $node ) ) { return; }
+			$el = (string) ( $node['element_type']['element'] ?? '' );
+			if ( 'list_item' === $el ) {
+				$k = preg_replace( '/[^a-z0-9]+/', '', strtolower( (string) ( $node['element_type']['list_item']['li_text'] ?? '' ) ) );
+				if ( '' !== $k ) { $out[ $k ] = 1; }
+			}
+			foreach ( $node as $v ) { if ( is_array( $v ) ) { $walk( $v ); } }
+		};
+		foreach ( array( 'main_footer_columns', 'pre_footer_columns', 'post_footer_columns' ) as $bar ) {
+			if ( ! empty( $values[ $bar ] ) && is_array( $values[ $bar ] ) ) { $walk( $values[ $bar ] ); }
+		}
+		return $out;
+	}
+	private static function footer_bar_shows_text( $values, $text ) {
+		$k = preg_replace( '/[^a-z0-9]+/', '', strtolower( (string) $text ) );
+		if ( '' === $k || strlen( $k ) < 6 ) { return false; }
+		foreach ( array( 'main_footer_columns', 'pre_footer_columns', 'post_footer_columns' ) as $bar ) {
+			if ( empty( $values[ $bar ] ) || ! is_array( $values[ $bar ] ) ) { continue; }
+			$blob = preg_replace( '/[^a-z0-9]+/', '', strtolower( (string) wp_json_encode( $values[ $bar ] ) ) );
+			if ( '' !== $blob && false !== strpos( $blob, $k ) ) { return true; }
+		}
+		return false;
+	}
+	private static function footer_is_centred_stack( $footer ) {
+		if ( ! ( $footer instanceof DOMElement ) ) { return false; }
+		$cs = (string) $footer->getAttribute( 'data-sc-cs' );
+		if ( '' === $cs ) { return false; }
+		$is_flex = (bool) preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $cs );
+		if ( $is_flex ) {
+			return (bool) ( preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $cs )
+				&& preg_match( '/(?:^|;)\s*align-items:\s*center/i', $cs ) );
+		}
+		// A non-flex footer that simply centres its text is the same shape to a reader.
+		return (bool) preg_match( '/(?:^|;)\s*text-align:\s*center/i', $cs );
+	}
 	private static function footer_is_single_row( $footer ) {
 		if ( ! ( $footer instanceof DOMElement ) ) { return false; }
 		$cp = self::footer_copyright_el( $footer ); if ( ! ( $cp instanceof DOMElement ) ) { return false; }
@@ -28576,7 +30853,16 @@ class FW_Site_Converter_Stitch {
 		foreach ( $brs as $br ) { $list[] = $br; }
 		foreach ( $list as $br ) {
 			if ( ! $br->parentNode ) { continue; }
-			$br->parentNode->replaceChild( $dom->createTextNode( "\n" ), $br );
+			// Insert the newline BESIDE the <br> rather than INSTEAD of it. Replacing it satisfied the text
+			// readers (textContent sees the break, so a two-line label does not glue into one word) but it
+			// destroyed the only evidence an HTML reader had, and the two are indistinguishable afterwards:
+			// a newline from a <br> looks exactly like a newline from source indentation. So the note above
+			// promised something no call site could do -- clean_inline_html collapses whitespace, so every
+			// heading break became a space and a two-line hero title rendered as one long line.
+			// Measured: 147 headings across 75 of 140 captures carry a <br>, and every one of them lost it.
+			// Keeping the element costs the text readers nothing (a <br> contributes an empty string to
+			// textContent, and the newline now supplies the break they need) while the HTML readers get it back.
+			$br->parentNode->insertBefore( $dom->createTextNode( "\n" ), $br );
 		}
 	}
 
@@ -28589,7 +30875,12 @@ class FW_Site_Converter_Stitch {
 		foreach ( $el->childNodes as $c ) { if ( $c->nodeType === XML_ELEMENT_NODE && ! isset( self::$non_content_tags[ strtolower( $c->tagName ) ] ) ) { $out[] = $c; } }
 		return $out;
 	}
-	private static $non_content_tags = array( 'style' => 1, 'script' => 1, 'template' => 1, 'noscript' => 1, 'link' => 1, 'meta' => 1 );
+	// `br` is here because unglue_line_breaks now KEEPS the element (it used to delete it, which is what lost
+	// every heading's line break). No structural walker ever saw a <br> before that change, so every one of
+	// them would have been reading a new kind of child it was never written for -- a footer address folded on
+	// a child count, for one. Hiding it HERE restores their exact previous view at a single choke point, while
+	// serialization (clean_inline_html) still sees the tag and can carry the break through.
+	private static $non_content_tags = array( 'style' => 1, 'script' => 1, 'template' => 1, 'noscript' => 1, 'link' => 1, 'meta' => 1, 'br' => 1 );
 
 	private static function cls( $el ) {
 		return ( $el instanceof DOMElement ) ? strtolower( (string) $el->getAttribute( 'class' ) ) : '';
@@ -28854,7 +31145,7 @@ class FW_Site_Converter_Stitch {
 	 *  remaining text is the message. */
 	private static function pill_parts( $el ) {
 		$tag_text = ''; $icon = ''; $link = ''; $msg = array();
-		$pill_cls = self::cls( $el ); $tag_cls = ''; $msg_cls = ''; // source classes → color reproduction in n_badge
+		$pill_cls = self::cls( $el ); $tag_cls = ''; $tag_cs = ''; $msg_cls = ''; $msg_cs = ''; // source classes → color reproduction in n_badge
 		$pill_cs  = ( $el instanceof DOMElement ) ? (string) $el->getAttribute( 'data-sc-cs' ) : ''; // container computed style → real fill (bg-primary/10)
 		$lead_svg = ''; // an inline <svg> BEFORE the text → the pill's leading_icon (parity with heading overline_icon)
 		$doc      = $el->ownerDocument;
@@ -28885,9 +31176,19 @@ class FW_Site_Converter_Stitch {
 			if ( $ctag === 'i' ) { if ( $icon === '' ) { $icon = trim( $ccls ); } continue; }
 			if ( $tag_text === '' && $ctxt !== '' && mb_strlen( $ctxt ) <= 18 && $nspan >= 2
 				&& ( strpos( $ccls, 'rounded-full' ) !== false || strpos( $ccls, 'uppercase' ) !== false || strpos( $ccls, 'bg-' ) !== false ) ) {
-				$tag_text = $ctxt; $tag_cls = $ccls; continue;
+				// …and the chip span's OWN stamp. A badge whose only text span looks chip-like (short, uppercase)
+				// is claimed HERE rather than as the message, so its stamp went nowhere and the label's measured
+				// type — size, weight, tracking, case, ink — was lost. Every hero eyebrow of that shape rendered
+				// in the theme's type: 14px sentence case where the source draws a 10px uppercase tracked label.
+				$tag_text = $ctxt; $tag_cls = $ccls; $tag_cs = (string) $ch->getAttribute( 'data-sc-cs' ); continue;
 			}
-			if ( $ctxt !== '' ) { if ( $msg_cls === '' ) { $msg_cls = $ccls; } $msg[] = $ctxt; }
+			if ( $ctxt !== '' ) {
+				// …and the message span's OWN computed stamp. Properties that belong to the LABEL (its ink,
+				// its case) live here, not on the pill: reading the pill's stamp for them painted a kicker in
+				// the pill's near-white instead of the label's brand colour.
+				if ( $msg_cls === '' ) { $msg_cls = $ccls; $msg_cs = (string) $ch->getAttribute( 'data-sc-cs' ); }
+				$msg[] = $ctxt;
+			}
 		}
 		$message = trim( implode( ' ', $msg ) );
 		if ( $message === '' ) {
@@ -28899,7 +31200,11 @@ class FW_Site_Converter_Stitch {
 		$dot = null;
 		foreach ( self::el_children( $el ) as $k ) {
 			if ( '' !== trim( self::text( $k ) ) || $k->getElementsByTagName( '*' )->length ) { continue; }
-			$kcs = (string) $k->getAttribute( 'data-sc-cs' );
+			// normalize_sci: a fully-rounded mark stamps its radius in SCIENTIFIC notation (`3.35544e+07px`),
+			// which the radius test below cannot match — so a status dot beside a kicker was read as "not a
+			// dot" and dropped from the badge entirely. Nothing flagged it either: it carries no text, so a
+			// text-matching parity lens has nothing to miss. Same notation that hid a pill button's radius.
+			$kcs = self::normalize_sci( (string) $k->getAttribute( 'data-sc-cs' ) );
 			$kh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $kcs, $hm ) ? (float) $hm[1] : 0.0;
 			$kbg = preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $kcs, $bm ) ? trim( $bm[1] ) : '';
 			if ( $kh >= 4 && $kh <= 20 && '' !== $kbg && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent/i', $kbg ) && preg_match( '/(?:^|;)\s*border-radius:\s*(?:9999px|50%|[1-9][0-9]*px)/i', $kcs ) ) {
@@ -28910,7 +31215,7 @@ class FW_Site_Converter_Stitch {
 			}
 		}
 		return array( 'tag_text' => $tag_text, 'message' => $message, 'icon' => $icon, 'link' => $link,
-			'pillCls' => $pill_cls, 'tagCls' => $tag_cls, 'msgCls' => $msg_cls, 'pillCs' => $pill_cs, 'leadingSvg' => $lead_svg, 'pillDot' => $dot );
+			'pillCls' => $pill_cls, 'tagCls' => $tag_cls, 'tagCs' => $tag_cs, 'msgCls' => $msg_cls, 'msgCs' => $msg_cs, 'pillCs' => $pill_cs, 'leadingSvg' => $lead_svg, 'pillDot' => $dot );
 	}
 
 	/** A button or a button-styled link. */
@@ -29114,7 +31419,7 @@ class FW_Site_Converter_Stitch {
 		if ( strpos( $icls, ' aspect-square ' ) !== false || preg_match( '/\baspect-square\b/', self::cls( $el ) ) ) { $ar = '1/1'; } elseif ( preg_match( '/\baspect-\[([0-9.]+)\/([0-9.]+)\]/', self::cls( $el ) . ' ' . $icls, $am ) ) { $ar = $am[1] . '/' . $am[2]; } elseif ( preg_match( '/aspect-video/', self::cls( $el ) . $icls ) ) { $ar = '16/9'; }
 		$fh = 0.0; if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', (string) $el->getAttribute( 'data-sc-cs' ), $fhm ) ) { $fh = (float) $fhm[1]; }
 		$card = array(
-			'image' => array( 'src' => $src, 'alt' => trim( (string) $img->getAttribute( 'alt' ) ), 'cls' => self::cls( $img ), 'aspect' => $ar, 'extra' => self::img_extra_css( $img ), 'frameBg' => self::media_frame_bg( $img ), 'framePad' => self::media_frame_pad( $img ) ),
+			'image' => array( 'src' => $src, 'alt' => trim( (string) $img->getAttribute( 'alt' ) ), 'cls' => self::cls( $img ), 'aspect' => $ar, 'extra' => self::img_extra_css( $img ), 'frameBg' => self::media_frame_bg( $img ), 'framePad' => self::media_frame_pad( $img ), 'w' => self::img_intrinsic( $img, 'width' ), 'h' => self::img_intrinsic( $img, 'height' ) ),
 			'title' => $title, 'titleTag' => 'h3', 'titleCs' => $title_cs, 'titleFontSize' => ( preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+px)/i', $title_cs, $tfm ) ? $tfm[1] : '' ), 'titleWeight' => ( preg_match( '/(?:^|;)\s*font-weight:\s*([0-9]+)/i', $title_cs, $twm ) ? $twm[1] : '' ),
 			'text' => implode( '', array_map( function ( $l ) { return '<p>' . esc_html( $l['text'] ) . '</p>'; }, $lines ) ),
 			'bodyCs' => isset( $lines[0]['cs'] ) ? $lines[0]['cs'] : '', 'bodyFontSize' => ( isset( $lines[0]['cs'] ) && preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+px)/i', $lines[0]['cs'], $bfm ) ) ? $bfm[1] : '',
@@ -29158,7 +31463,25 @@ class FW_Site_Converter_Stitch {
 		$src = $img->getAttribute( 'src' );
 		$alt = $img->getAttribute( 'alt' );
 		if ( $src === '' ) { return ''; }
-		return '<img src="' . esc_url( $src ) . '" alt="' . esc_attr( $alt ) . '" />';
+		// A `data:image/...` SOURCE SURVIVES. esc_url() strips the data: protocol outright, so an inline image
+		// -- the ordinary way an AI-generated page ships its brand lockup -- came out as `<img src="">`: a
+		// broken element where the logo should be, and no URL left for the media importer to sideload. The
+		// importer already decodes data URIs into real attachments (FW_Site_Converter_Media::sideload_data_uri);
+		// it simply never saw one. Kept verbatim minus anything outside the base64/URI alphabet.
+		// The INTRINSIC size rides along. Everything downstream rebuilds the tag from this string, so a width
+		// and height omitted here can never be recovered: the converted image states no box, the browser
+		// cannot reserve one, and every image contributes layout shift. Worst for an SVG and for a data URI,
+		// where WordPress has no attachment metadata to fall back on either.
+		$wh = '';
+		$iw = self::img_intrinsic( $img, 'width' );
+		$ih = self::img_intrinsic( $img, 'height' );
+		if ( '' !== $iw ) { $wh .= ' width="' . $iw . '"'; }
+		if ( '' !== $ih ) { $wh .= ' height="' . $ih . '"'; }
+		if ( 0 === stripos( $src, 'data:image/' ) ) {
+			$safe = preg_replace( '/[^A-Za-z0-9;,:\/=+._%-]/', '', $src );
+			if ( '' !== $safe ) { return '<img src="' . $safe . '" alt="' . esc_attr( $alt ) . '"' . $wh . ' />'; }
+		}
+		return '<img src="' . esc_url( $src ) . '" alt="' . esc_attr( $alt ) . '"' . $wh . ' />';
 	}
 
 	/* --------------------------------------------------------------------- *
@@ -29580,6 +31903,15 @@ class FW_Site_Converter_Stitch {
 			$chip = $svg->parentNode;
 			if ( $chip instanceof DOMElement && $chip !== $card ) {
 				$data['iconChipCls'] = self::cls( $chip );
+				// AN <svg> IS NEVER STAMPED, so reading its own `color` finds nothing and a currentColor glyph
+				// kept no ink at all -- six near-white source icons rendered in the theme's default green. The
+				// colour it actually paints with is the nearest stamped ancestor's, which is this chip.
+				if ( empty( $data['iconColor'] ) ) {
+					for ( $ap = $chip, $ai = 0; $ap instanceof DOMElement && $ap !== $card && $ai < 3; $ap = $ap->parentNode, $ai++ ) {
+						$ac = self::sc_css( $ap, 'color' );
+						if ( '' !== $ac ) { $data['iconColor'] = $ac; break; }
+					}
+				}
 				$cbg = self::sc_css( $chip, 'background-color' );
 				if ( '' !== $cbg && ! preg_match( '/rgba?\(\s*0[,\s]+0[,\s]+0[,\s]+0\s*\)|transparent/', $cbg ) ) {
 					$data['iconBadgeColor'] = $cbg;
@@ -29653,6 +31985,130 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** The contact form block: its fields in order (type / label / placeholder / required / half-width), the submit label, the form's measure. */
+	/** The visual CARD a form sits in -- the nearest ancestor-or-self carrying a real fill or a border --
+	 *  as array( bg, border_w, border_color, radius, padding ), or null when the form floats on the page.
+	 *
+	 *  Both converted forms lost their panel: the source wraps one in the `<form>` itself
+	 *  (`bg-white/5 border border-white/10 rounded-[22px] p-6`) and the other in a parent `<div>`
+	 *  (`bg-bg-deep p-8 rounded-[23px]`), and neither shape was read, so the fields rendered bare on the page
+	 *  background. Walks OUT from the form so either shape is found, and stops before the section so a band's
+	 *  own fill is never mistaken for a card. */
+	/** Small prose inside a form that is neither a label nor a control -- a hint under a field ('A sentence
+	 *  or two is plenty.'), a disclaimer under the submit ('No cost, no obligation.'). A form recognizer
+	 *  claims the whole element, so every one of these was swallowed and lost. No form field owns a
+	 *  description, so they ride out as their own text blocks after the form. */
+	/**
+	 * The form's FINE PRINT — the small prose that follows the submit button ("No cost, no obligation. I reply
+	 * within one business day.") — as { html, cs }, or null.
+	 *
+	 * This is not a loose paragraph that happens to sit near the form: it is the newsletter's own Consent /
+	 * Fine Print, and the shortcode has a field for it. Emitting it as a sibling text block put it outside the
+	 * form, where it lost the form's own rhythm and could be reordered or edited away from what it qualifies.
+	 * Only prose AFTER the submit counts; a hint above or between the fields belongs to the field it follows.
+	 */
+	private static function form_fine_print( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return null; }
+		$submit = null;
+		foreach ( $el->getElementsByTagName( 'button' ) as $b ) { $submit = $b; }
+		if ( ! ( $submit instanceof DOMElement ) ) {
+			foreach ( $el->getElementsByTagName( 'input' ) as $in ) { if ( 'submit' === strtolower( (string) $in->getAttribute( 'type' ) ) ) { $submit = $in; } }
+		}
+		if ( ! ( $submit instanceof DOMElement ) ) { return null; }
+		foreach ( $el->getElementsByTagName( '*' ) as $n ) {
+			if ( ! ( $n instanceof DOMElement ) ) { continue; }
+			if ( ! in_array( strtolower( (string) $n->tagName ), array( 'p', 'small' ), true ) ) { continue; }
+			if ( ! self::dom_precedes( $submit, $n, $el ) ) { continue; }          // after the submit, not before it
+			if ( self::is_ancestor( $n, $submit ) ) { continue; }
+			$t = trim( preg_replace( '/\s+/', ' ', (string) self::text( $n ) ) );
+			if ( '' === $t || str_word_count( $t ) < 3 ) { continue; }
+			// Its distance from the submit: its own top margin, else the submit's bottom margin — adjacent block
+			// siblings collapse to the larger of the two, so reading only the note's own gave 0 whenever the
+			// source put the space on the button instead.
+			$nm = self::el_margin( $n ); $sm = self::el_margin( $submit );
+			$gap = max( (float) ( $nm['top'] ?? 0 ), (float) ( $sm['bottom'] ?? 0 ) );
+			return array(
+				'html' => self::clean_inline_html( $n ),
+				'cs'   => (string) $n->getAttribute( 'data-sc-cs' ),
+				'gap'  => ( $gap > 0 && $gap <= 120 ) ? $gap : 0.0,
+			);
+		}
+		return null;
+	}
+
+	private static function form_note_blocks( $el ) {
+		$notes = array();
+		if ( ! ( $el instanceof DOMElement ) ) { return $notes; }
+		foreach ( $el->getElementsByTagName( '*' ) as $n ) {
+			if ( ! in_array( strtolower( (string) $n->tagName ), array( 'p', 'small', 'figcaption' ), true ) ) { continue; }
+			if ( $n->getElementsByTagName( 'input' )->length || $n->getElementsByTagName( 'textarea' )->length || $n->getElementsByTagName( 'button' )->length ) { continue; }
+			$in_label = false;
+			for ( $a = $n->parentNode; $a instanceof DOMElement && $a !== $el; $a = $a->parentNode ) { if ( 'label' === strtolower( (string) $a->tagName ) ) { $in_label = true; break; } }
+			if ( $in_label ) { continue; }
+			$t = trim( preg_replace( '/\s+/', ' ', (string) self::text( $n ) ) );
+			if ( '' === $t || str_word_count( $t ) < 3 ) { continue; }
+			$notes[] = array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $n ), 'cs' => (string) $n->getAttribute( 'data-sc-cs' ),
+				'text' => $t, 'html' => '<p>' . self::clean_inline_html( $n ) . '</p>' );
+		}
+		return $notes;
+	}
+	/** TRUE when $inner is the only thing $wrap shows: every other element child of $wrap is empty of text,
+	 *  media and controls (a decorative layer, a spacer, a stamped-but-blank div). */
+	private static function el_sole_content( $wrap, $inner ) {
+		if ( ! ( $wrap instanceof DOMElement ) || ! ( $inner instanceof DOMElement ) ) { return false; }
+		foreach ( self::el_children( $wrap ) as $k ) {
+			if ( $k === $inner || self::is_ancestor( $k, $inner ) ) { continue; }
+			if ( '' !== trim( (string) self::text( $k ) ) ) { return false; }
+			foreach ( array( 'img', 'svg', 'video', 'picture', 'canvas', 'input', 'button', 'select', 'textarea' ) as $t ) {
+				if ( $k->getElementsByTagName( $t )->length ) { return false; }
+			}
+		}
+		// …and no bare text of its own beside the form (a heading written straight into the wrapper).
+		foreach ( $wrap->childNodes as $cn ) {
+			if ( XML_TEXT_NODE === $cn->nodeType && '' !== trim( (string) $cn->nodeValue ) ) { return false; }
+		}
+		return true;
+	}
+
+	/**
+	 * The panel a form sits in — its fill / hairline / radius / inset — or null when the form has none.
+	 *
+	 * An ANCESTOR only counts when the form is effectively that panel's whole content. A panel that ALSO
+	 * holds the section's heading, its copy or a footnote is the SECTION's card, not the form's: it is
+	 * already reproduced as the column/section box, so adopting it again wrapped the converted signup in a
+	 * second identical card and the form rendered inside two nested insets (a real-site audit — a source
+	 * form with `padding: 0` and no fill of its own came back with 32px of padding and a filled slab).
+	 */
+	private static function form_card_of( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return null; }
+		$steps = 0;
+		for ( $n = $el; $n instanceof DOMElement && $steps < 4; $n = $n->parentNode, $steps++ ) {
+			$tag = strtolower( (string) $n->tagName );
+			if ( in_array( $tag, array( 'section', 'main', 'body', 'article' ), true ) ) { break; }
+			if ( $n !== $el && ! self::el_sole_content( $n, $el ) ) { continue; }
+			$cs = (string) $n->getAttribute( 'data-sc-cs' );
+			if ( '' === $cs ) { continue; }
+			$bg = self::sc_css( $n, 'background-color' );
+			$bw = self::sc_css( $n, 'border-top-width' );
+			// A fill is real when it resolves to a colour with a non-zero alpha. color_to_css() spells a
+			// translucent one as rgba(...), so a zero alpha is visible in the value itself.
+			$bgc        = ( '' !== $bg ) ? self::color_to_css( $bg ) : '';
+			$has_fill   = ( '' !== $bgc && ! preg_match( '/,\s*0(?:\.0+)?\s*\)$/', $bgc ) );
+			$has_border = (bool) ( preg_match( '/^([0-9.]+)px$/', $bw, $bm ) && (float) $bm[1] > 0 );
+			if ( ! $has_fill && ! $has_border ) { continue; }
+			$rad = self::sc_css( $n, 'border-radius' );
+			$pad = self::sc_css( $n, 'padding' );
+			// A card has a ROUNDED or PADDED box; a plain tinted wrapper with neither is just a background.
+			if ( ! preg_match( '/[1-9]/', (string) $rad ) && ! preg_match( '/[1-9]/', (string) $pad ) ) { continue; }
+			return array(
+				'bg'           => $has_fill ? $bgc : '',
+				'border_w'     => $has_border ? (float) $bm[1] : 0.0,
+				'border_color' => $has_border ? self::color_to_css( self::sc_css( $n, 'border-top-color' ) ) : '',
+				'radius'       => (string) $rad,
+				'padding'      => (string) $pad,
+			);
+		}
+		return null;
+	}
 	private static function contact_form_build( $el ) {
 		$fields = array();
 		$label_of = function ( $ctrl ) use ( $el ) {
@@ -29661,20 +32117,121 @@ class FW_Site_Converter_Stitch {
 			for ( $a = $ctrl->parentNode; $a instanceof DOMElement && $a !== $el; $a = $a->parentNode ) { if ( 'label' === strtolower( $a->tagName ) ) { return trim( self::text( $a ) ); } foreach ( self::el_children( $a ) as $k ) { if ( 'label' === strtolower( $k->tagName ) ) { return trim( self::text( $k ) ); } } }
 			return '';
 		};
+		// A VISUALLY HIDDEN control is a SPAM HONEYPOT, not a field. The type filter below only drops
+		// `type=hidden`; the usual honeypot is an ordinary text input parked off-screen by its wrapper, so it
+		// sailed through and the converted contact form published a visible `Leave this field empty` box.
+		// Two independent signals, either sufficient: `tabindex=-1` (a control a real person can never reach
+		// by keyboard is not for them), and a wrapper hidden the way honeypots are hidden -- display:none,
+		// visibility:hidden, opacity:0, parked at left/top <= -1000px, or collapsed to <= 1px with overflow
+		// hidden. Walks up to the form so the wrapper is seen; the control itself rarely carries the trick.
+		$ctrl_hidden = function ( $ctrl ) use ( $el ) {
+			if ( '-1' === trim( (string) $ctrl->getAttribute( 'tabindex' ) ) ) { return true; }
+			for ( $a = $ctrl; $a instanceof DOMElement; $a = $a->parentNode ) {
+				$acs = (string) $a->getAttribute( 'data-sc-cs' );
+				if ( '' !== $acs ) {
+					if ( preg_match( '/(?:^|;)\s*display:\s*none/i', $acs ) ) { return true; }
+					if ( preg_match( '/(?:^|;)\s*visibility:\s*hidden/i', $acs ) ) { return true; }
+					if ( preg_match( '/(?:^|;)\s*opacity:\s*0(?:\.0+)?\s*(?:;|$)/i', $acs ) ) { return true; }
+					if ( preg_match( '/(?:^|;)\s*(?:left|top):\s*-([0-9.]+)px/i', $acs, $om ) && (float) $om[1] >= 1000 ) { return true; }
+					if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $acs, $hm2 ) && (float) $hm2[1] <= 1
+						&& preg_match( '/(?:^|;)\s*overflow:\s*hidden/i', $acs ) ) { return true; }
+				}
+				if ( $a === $el ) { break; }
+			}
+			return false;
+		};
 		$form_w = 0; if ( preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $el, 'width' ), $wm ) ) { $form_w = (float) $wm[1]; }
+		// …and when the form itself stamps no width (this one does not), the WIDEST control is the row measure.
+		// Without a reference the half-width test below never ran at all, so a source that sets name and email
+		// side by side got two full-width fields and the band grew 183px taller than the source.
+		if ( $form_w <= 0 ) {
+			foreach ( $el->getElementsByTagName( '*' ) as $c0 ) {
+				if ( ! in_array( strtolower( $c0->tagName ), array( 'input', 'textarea', 'select', 'button' ), true ) ) { continue; }
+				if ( preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $c0, 'width' ), $w0 ) ) { $form_w = max( $form_w, (float) $w0[1] ); }
+			}
+		}
 		foreach ( $el->getElementsByTagName( '*' ) as $ctrl ) {
 			$ct = strtolower( $ctrl->tagName );
 			if ( 'input' !== $ct && 'textarea' !== $ct && 'select' !== $ct ) { continue; }
 			$t = strtolower( trim( (string) $ctrl->getAttribute( 'type' ) ) );
 			if ( 'input' === $ct && in_array( $t, array( 'submit', 'button', 'hidden', 'checkbox', 'radio', 'file', 'search', 'password' ), true ) ) { continue; }
+			if ( $ctrl_hidden( $ctrl ) ) { continue; } // a honeypot / visually-hidden control is not a field
 			$type = 'textarea' === $ct ? 'textarea' : ( 'email' === $t ? 'email' : ( 'url' === $t ? 'website' : ( 'number' === $t ? 'number' : 'text' ) ) );
 			if ( 'select' === $ct ) { $type = 'select'; }
 			$ph = trim( (string) $ctrl->getAttribute( 'placeholder' ) );
 			$lb = $label_of( $ctrl ); if ( '' === $lb ) { $lb = '' !== $ph ? $ph : ucfirst( $type ); }
 			$star = (bool) preg_match( '/\s*\*\s*$/u', $lb ); if ( $star ) { $lb = trim( preg_replace( '/\s*\*\s*$/u', '', $lb ) ); } // "Full name *" = required (the form item renders its own sup)
-			$half = false; if ( $form_w > 0 && preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $ctrl, 'width' ), $cw ) ) { $half = (float) $cw[1] < $form_w * 0.7; }
+			// HOW MANY ACROSS. A form control does not stamp its own width -- its row WRAPPER does, as a grid: a
+			// name/email pair sits in `display:grid; grid-template-columns:275px 275px`. The old test compared the
+			// control's width against the form's, and BOTH are unstamped here, so it never once ran and every source
+			// that puts two fields on a line produced two full-width ones (the band came out 183px too tall).
+			// The nearest grid ancestor inside the form gives the answer directly, and its track count maps to the
+			// widths the form builder actually accepts (1_2 / 1_3 / 1_4).
+			$cols = 0;
+			for ( $a = $ctrl->parentNode; $a instanceof DOMElement; $a = $a->parentNode ) {
+				$acs = (string) $a->getAttribute( 'data-sc-cs' );
+				if ( preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?grid/i', $acs )
+					&& preg_match( '/(?:^|;)\s*grid-template-columns:\s*([^;]+)/i', $acs, $gm )
+					&& stripos( $gm[1], 'repeat' ) === false ) {
+					$tr = array_values( array_filter( preg_split( '/\s+/', trim( $gm[1] ) ), function ( $t ) { return '' !== $t && 'none' !== strtolower( $t ); } ) );
+					if ( count( $tr ) >= 2 ) { $cols = count( $tr ); }
+					break;
+				}
+				if ( $a === $el ) { break; }
+			}
+			// A control that SPANS the grid is not one of its columns. The message box on a two-up form sits in the
+			// same grid as name and email but crosses both tracks (`col-span-2`), so counting tracks alone made it
+			// half-width too -- caught by a golden that had asserted exactly this for years. Span comes from the
+			// utility class or the computed `grid-column`, and a control whose own measured width already fills the
+			// grid is treated the same way.
+			$span = 1;
+			for ( $a = $ctrl; $a instanceof DOMElement; $a = $a->parentNode ) {
+				if ( preg_match( '/(?:^|\s)col-span-(\d{1,2})(?:\s|$)/', ' ' . self::cls( $a ) . ' ', $sm ) ) { $span = max( $span, (int) $sm[1] ); break; }
+				$scs2 = (string) $a->getAttribute( 'data-sc-cs' );
+				if ( preg_match( '/(?:^|;)\s*grid-column:[^;]*span\s+(\d{1,2})/i', $scs2, $sm2 ) ) { $span = max( $span, (int) $sm2[1] ); break; }
+				if ( $a === $el ) { break; }
+			}
+			if ( $cols >= 2 && 1 === $span && preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $ctrl, 'width' ), $ow )
+				&& $form_w > 0 && (float) $ow[1] >= $form_w * 0.7 ) { $span = $cols; } // measured full width = it spans
+			if ( $span > 1 ) { $cols = ( $span >= $cols ) ? 0 : (int) round( $cols / $span ); }
+			// …and the original measured test still stands for a source that DOES stamp both widths.
+			$half = ( $cols >= 2 );
+			if ( ! $half && $form_w > 0 && preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $ctrl, 'width' ), $cw ) ) { $half = (float) $cw[1] < $form_w * 0.7; }
 			$choices = array(); if ( 'select' === $ct ) { foreach ( $ctrl->getElementsByTagName( 'option' ) as $op ) { $ov = trim( self::text( $op ) ); if ( '' !== $ov ) { $choices[] = $ov; } } }
-			$fields[] = array( 'type' => $type, 'label' => $lb, 'placeholder' => $ph, 'required' => $ctrl->hasAttribute( 'required' ) || $star, 'half' => $half, 'choices' => $choices );
+			// THE FIELD'S OWN HELP LINE. A source writes it as a short leaf right after the control (`<p id="x-hint">A
+			// sentence or two is plenty.</p>`) and usually points the control at it with `aria-describedby`. The
+			// contact form already HAS the slot for it -- every field type offers an "Instructions for Users"
+			// option and all eleven field views render it under the control -- but nothing filled it, so the
+			// hint fell out of the form entirely and was emitted as a loose text_block AFTER </form>: left-
+			// aligned, outside the card, and with the accessible description the source author wired up lost.
+			//
+			// Read by ID first, because that is the association the source actually declares; the positional
+			// fallback only fires when there is no aria-describedby, and is kept short and punctuation-free of
+			// its own so a stray paragraph of copy cannot be swallowed into a field.
+			$info = '';
+			$desc_id = trim( (string) $ctrl->getAttribute( 'aria-describedby' ) );
+			if ( '' !== $desc_id ) {
+				foreach ( explode( ' ', $desc_id ) as $did ) {
+					$did = trim( $did );
+					if ( '' === $did ) { continue; }
+					$dn = $ctrl->ownerDocument->getElementById( $did );
+					if ( ! ( $dn instanceof DOMElement ) ) { continue; }
+					$dt = trim( preg_replace( '/\s+/u', ' ', self::text( $dn ) ) );
+					if ( '' !== $dt && mb_strlen( $dt ) <= 160 ) { $info = $dt; break; }
+				}
+			}
+			if ( '' === $info ) {
+				for ( $sib = $ctrl->nextSibling; $sib instanceof DOMNode; $sib = $sib->nextSibling ) {
+					if ( XML_ELEMENT_NODE !== $sib->nodeType ) { continue; }
+					$stag = strtolower( $sib->nodeName );
+					if ( ! in_array( $stag, array( 'p', 'span', 'small', 'div' ), true ) ) { break; }
+					if ( $sib->getElementsByTagName( '*' )->length ) { break; }
+					$st = trim( preg_replace( '/\s+/u', ' ', self::text( $sib ) ) );
+					if ( '' !== $st && mb_strlen( $st ) <= 120 ) { $info = $st; }
+					break;
+				}
+			}
+			$fields[] = array( 'type' => $type, 'label' => $lb, 'placeholder' => $ph, 'required' => $ctrl->hasAttribute( 'required' ) || $star, 'half' => $half, 'cols' => $cols, 'choices' => $choices, 'info' => $info );
 		}
 		if ( ! $fields ) { return null; }
 		$submit = ''; foreach ( $el->getElementsByTagName( 'button' ) as $b ) { $submit = trim( self::text( $b ) ); if ( '' !== $submit ) { break; } }
@@ -29684,13 +32241,36 @@ class FW_Site_Converter_Stitch {
 		// the field skin (a `border-b`-only underline input, a filled box) rides as measured decls for the mapper's scoped CSS
 		$first = null; foreach ( $el->getElementsByTagName( 'input' ) as $in ) { $t = strtolower( trim( (string) $in->getAttribute( 'type' ) ) ); if ( in_array( $t, array( '', 'text', 'email' ), true ) ) { $first = $in; break; } }
 		$btn = null; foreach ( $el->getElementsByTagName( 'button' ) as $b ) { $btn = $b; break; }
-		return array( 't' => 'contact_form', 'role' => 'contact_form', 'fields' => $fields, 'submit' => $submit, 'max_width' => $maxw, 'mt' => (float) ( $m['top'] ?? 0 ), 'mb' => (float) ( $m['bottom'] ?? 0 ),
-			'field_cs' => $first ? (string) $first->getAttribute( 'data-sc-cs' ) : '', 'button_cs' => $btn ? (string) $btn->getAttribute( 'data-sc-cs' ) : '', 'button_cls' => $btn ? self::cls( $btn ) : '' );
+		$notes = self::form_note_blocks( $el );
+
+		$cf_block = array( 't' => 'contact_form', 'role' => 'contact_form', 'fields' => $fields, 'submit' => $submit, 'max_width' => $maxw, 'mt' => (float) ( $m['top'] ?? 0 ), 'mb' => (float) ( $m['bottom'] ?? 0 ),
+			'field_cs' => $first ? (string) $first->getAttribute( 'data-sc-cs' ) : '', 'button_cs' => $btn ? (string) $btn->getAttribute( 'data-sc-cs' ) : '', 'button_cls' => $btn ? self::cls( $btn ) : '',
+			'card' => self::form_card_of( $el ),
+			// The LABEL's own skin. The source writes its field labels as 10px/700 uppercase at 40% white; the
+			// theme's default label is a 14px sentence-case bold, so every converted label read as a heading
+			// beside a source that whispers them. Only the first label is needed -- they are one style.
+			'label_cs' => ( function () use ( $el ) {
+				foreach ( $el->getElementsByTagName( 'label' ) as $lb ) {
+					$lcs = (string) $lb->getAttribute( 'data-sc-cs' );
+					if ( '' !== $lcs ) { return $lcs; }
+				}
+				return '';
+			} )(),
+			// The submit's rendered WIDTH against the form's, so a full-bleed button in the source does not
+			// convert to a content-sized pill sitting on the left.
+			'button_w'  => ( $btn instanceof DOMElement ) ? (float) preg_replace( '/[^0-9.]/', '', (string) self::sc_css( $btn, 'width' ) ) : 0.0,
+			'form_w'    => (float) preg_replace( '/[^0-9.]/', '', (string) self::sc_css( $el, 'width' ) ) );
+
+		return $notes ? array_merge( array( $cf_block ), $notes ) : $cf_block;
 	}
 
 	private static function is_newsletter_form( $el, $tag ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		if ( self::is_contact_form( $el, $tag ) ) { return false; } // a message textarea / ≥ 3 fields = a CONTACT form (contact_form), not a signup
+		// A signup form whose fields carry VISIBLE LABELS stays a NEWSLETTER. Rerouting it to contact_form
+		// kept the labels but left the newsletter shortcode unused for a form that plainly is one -- the
+		// shortcode now carries its own Show Field Labels / Name Label / Email Label, so the source's words
+		// survive without changing what the element IS.
 		$tag = strtolower( (string) $tag );
 		// a NON-form container that holds a real <form> is CONTENT AROUND the form (a two-column contact band: the form card + a
 		// details column) — the inner <form> is the one; claiming the container swallowed the whole grid into one newsletter node
@@ -29750,7 +32330,7 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( $email_ph === '' && $texts ) { $email_ph = array_shift( $texts ); } // no explicit email → first text field
 		if ( $texts ) { $name_ph = $texts[0]; $show_name = ( $name_ph !== '' ); }  // a remaining text field = a Name field
-		$btn_label = ''; $btn_bg = ''; $btn_fg = ''; $field_bg = '';
+		$btn_label = ''; $btn_bg = ''; $btn_fg = ''; $field_bg = ''; $btn_bgi = '';
 		$btn_el = null;
 		foreach ( $el->getElementsByTagName( 'button' ) as $b ) { $btn_label = trim( self::text( $b ) ); $btn_el = $b; if ( $btn_label !== '' ) { break; } }
 		if ( $btn_label === '' ) {
@@ -29762,8 +32342,22 @@ class FW_Site_Converter_Stitch {
 		// so a white/light source button would render white-on-white — capture the real pair to override it).
 		if ( $btn_el instanceof DOMElement ) {
 			$bcs = (string) $btn_el->getAttribute( 'data-sc-cs' );
-			if ( preg_match( '/background-color:\s*([^;]+)/i', $bcs, $m ) ) { $btn_bg = self::color_to_hex( trim( $m[1] ) ); }
-			if ( preg_match( '/(?<![\w-])color:\s*([^;]+)/i', $bcs, $m ) )   { $btn_fg = self::color_to_hex( trim( $m[1] ) ); }
+			if ( preg_match( '/background-color:\s*([^;]+)/i', $bcs, $m ) ) {
+				$btn_bg = self::color_to_css( trim( $m[1] ) );
+				// A FULLY TRANSPARENT fill is a fact, not a blank. color_to_css returns '' for one (as color_to_hex
+				// always has), and the mapper reads '' as `the source said nothing` -- so the shortcode's own default
+				// took over and a GHOST submit button came back filled. On a dark page that is near-white text on a
+				// light slab, and where the fill happened to equal the text colour the label vanished outright.
+				// Saying 'transparent' lets the mapper reproduce the button the source actually drew.
+				if ( '' === $btn_bg && preg_match( '/background-color:\s*(transparent|rgba?\([^)]*[,\/]\s*0*(?:\.0+)?\s*\))/i', $bcs ) ) { $btn_bg = 'transparent'; }
+			}
+			// …and the button's GRADIENT fill, which many buttons use INSTEAD of a background-color (these declare no
+			// colour at all). Kept separately so the caller can put a gradient where a gradient belongs.
+			if ( preg_match( '/(?:^|;)\s*background-image:\s*([^;]+)/i', $bcs, $m ) ) {
+				$bi = trim( $m[1] );
+				if ( '' !== $bi && 'none' !== strtolower( $bi ) && false !== stripos( $bi, 'gradient' ) ) { $btn_bgi = $bi; }
+			}
+			if ( preg_match( '/(?<![\w-])color:\s*([^;]+)/i', $bcs, $m ) )   { $btn_fg = self::color_to_css( trim( $m[1] ) ); }
 		}
 		// The input field's own background (a source field is often transparent/dark, not the CSS default white).
 		foreach ( $el->getElementsByTagName( 'input' ) as $in ) {
@@ -29772,7 +32366,7 @@ class FW_Site_Converter_Stitch {
 				$ics = (string) $in->getAttribute( 'data-sc-cs' );
 				if ( preg_match( '/background-color:\s*([^;]+)/i', $ics, $m ) ) {
 					$c = trim( $m[1] );
-					if ( stripos( $c, 'transparent' ) === false && ! preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', $c ) ) { $field_bg = self::color_to_hex( $c ); }
+					if ( stripos( $c, 'transparent' ) === false && ! preg_match( '/(?:rgba?\((?:\s*[0-9.]+%?\s*[,\s]\s*){3}0*(?:\.0+)?%?\s*\)|rgba?\(\s*[0-9.]+%?\s+[0-9.]+%?\s+[0-9.]+%?\s*\/\s*0*(?:\.0+)?%?\s*\))/i', $c ) ) { $field_bg = self::color_to_css( $c ); }
 				}
 				break;
 			}
@@ -29846,19 +32440,65 @@ class FW_Site_Converter_Stitch {
 			$a = isset( $pm2[2] ) && '' !== $pm2[2] ? max( 0, min( 100, (int) $pm2[2] ) ) / 100 : 1;
 			$ph_color = 'rgba(' . ( 'white' === strtolower( $pm2[1] ) ? '255, 255, 255' : '0, 0, 0' ) . ', ' . $a . ')';
 		}
-		return array(
+		$nl_block = array(
 			't' => 'newsletter', 'role' => 'newsletter', 'capsule' => $capsule, 'wrap_max_width' => $wrap_mw, 'wrap_mt' => $wrap_mt,
+			'card' => self::form_card_of( $el ),   // the panel the form sits in (fill / hairline / radius / padding)
+			// The FIELD LABELS the source writes above its inputs. Carried so a signup that names its fields
+			// ('Business Name' / 'Email Address') keeps those words -- they used to vanish entirely, because the
+			// shortcode had placeholders and no labels at all.
+			'labels' => ( function () use ( $el ) {
+				$out = array( 'name' => '', 'email' => '', 'cs' => '', 'gap' => -1.0 );
+				foreach ( $el->getElementsByTagName( 'label' ) as $lb ) {
+					$txt = trim( preg_replace( '/\s+/', ' ', (string) self::text( $lb ) ) );
+					if ( '' === $txt ) { continue; }
+					if ( '' === $out['cs'] ) { $out['cs'] = (string) $lb->getAttribute( 'data-sc-cs' ); }
+					// The label's own distance from the input it names — a separate measurement from the gap
+					// between one field and the next, which is what the field row's `gap` carries. Read once,
+					// from the first label; -1 means the source said nothing and the default stands.
+					if ( $out['gap'] < 0 ) {
+						$lm = self::el_margin( $lb );
+						if ( isset( $lm['bottom'] ) && (float) $lm['bottom'] >= 0 && (float) $lm['bottom'] <= 40 ) { $out['gap'] = (float) $lm['bottom']; }
+					}
+					// Which control does it name? Prefer the `for` binding, else the input it wraps.
+					$ctrl = null;
+					$for  = trim( (string) $lb->getAttribute( 'for' ) );
+					if ( '' !== $for && $el->ownerDocument instanceof DOMDocument ) {
+						$xp = new DOMXPath( $el->ownerDocument );
+						$hit = $xp->query( './/*[@id="' . addslashes( $for ) . '"]', $el );
+						if ( $hit && $hit->length ) { $ctrl = $hit->item( 0 ); }
+					}
+					if ( ! ( $ctrl instanceof DOMElement ) ) {
+						foreach ( $lb->getElementsByTagName( 'input' ) as $in0 ) { $ctrl = $in0; break; }
+					}
+					$type = ( $ctrl instanceof DOMElement ) ? strtolower( (string) $ctrl->getAttribute( 'type' ) ) : '';
+					if ( 'email' === $type ) { if ( '' === $out['email'] ) { $out['email'] = $txt; } }
+					elseif ( '' === $out['name'] ) { $out['name'] = $txt; }
+				}
+				return $out;
+			} )(),
 			'mt' => (float) ( self::el_margin( $el )['top'] ?? 0 ), 'mb' => (float) ( self::el_margin( $el )['bottom'] ?? 0 ), // the form's own space above / below (a hero's mt-10)
 			'placeholder' => $email_ph, 'name_placeholder' => $name_ph, 'show_name' => $show_name,
 			'button_label' => $btn_label, 'align' => $align, 'rounded' => $rounded, 'design' => $design, 'gap' => $gap,
-			'button_bg' => $btn_bg, 'button_fg' => $btn_fg, 'field_bg' => $field_bg,
+			'button_bg' => $btn_bg, 'button_bgi' => $btn_bgi, 'button_fg' => $btn_fg, 'field_bg' => $field_bg,
 			'button_cls' => $btn_el instanceof DOMElement ? self::cls( $btn_el ) : '', 'button_cs' => $btn_el instanceof DOMElement ? (string) $btn_el->getAttribute( 'data-sc-cs' ) : '',
 			'field_cs' => $wrap_cs, 'input_cs' => $first_in instanceof DOMElement ? (string) $first_in->getAttribute( 'data-sc-cs' ) : '', 'placeholder_color' => $ph_color,
 			'field_hover' => ( $wrap instanceof DOMElement && preg_match( '/hover-self\{([^}]*)\}/', (string) $wrap->getAttribute( 'data-sc-hover' ), $fhm ) ) ? $fhm[1] : '', // the wrapper's OWN :hover (a glass pill that brightens under the pointer)
 			'field_focus' => $first_in instanceof DOMElement ? (string) $first_in->getAttribute( 'data-sc-focus' ) : '', // the field's :focus skin (capture >= 1.10.99 stamp: box-shadow / border-color / outline)
 			'icon' => $icon, 'icon_color' => $icon_color,
 			'cs' => (string) $el->getAttribute( 'data-sc-cs' ),
+			// The small print under the submit → the shortcode's own Consent / Fine Print field.
+			'fine_print' => self::form_fine_print( $el ),
 		);
+
+		$nl_notes = self::form_note_blocks( $el );
+		// …and it must not ALSO ride out as a loose text block, or the line appears twice.
+		if ( is_array( $nl_block['fine_print'] ) ) {
+			$fp = trim( wp_strip_all_tags( (string) $nl_block['fine_print']['html'] ) );
+			$nl_notes = array_values( array_filter( (array) $nl_notes, function ( $n ) use ( $fp ) {
+				return trim( (string) ( $n['text'] ?? '' ) ) !== $fp;
+			} ) );
+		}
+		return $nl_notes ? array_merge( array( $nl_block ), $nl_notes ) : $nl_block;
 	}
 
 	/**
@@ -30017,7 +32657,17 @@ class FW_Site_Converter_Stitch {
 		// The reverse: an <i> / <em> the source RESET to roman (`not-italic`, a computed font-style:normal) — the
 		// tag would re-italicise it once the class is gone, so the reset is re-expressed inline (a finding filed twice).
 		$want_roman = false;
-		if ( in_array( strtolower( $node->tagName ), array( 'i', 'em' ), true ) && ! $want_italic && $node->hasAttribute( 'data-sc-cs' ) && preg_match( '/font-style\s*:\s*normal/i', (string) $node->getAttribute( 'data-sc-cs' ) ) ) { $want_roman = true; }
+		// An <i>/<em> the source RESET to roman. The stamp is not reliable evidence here: `font-style:normal`
+		// is the CSS INITIAL value, so a capture that records only non-initial values omits it — even though for
+		// an <em> it overrides the UA's italic and is very much intentional. The utility class that did the reset
+		// (`not-italic`) and an inline `font-style:normal` are the evidence that survives. Without this an accent
+		// span the source draws upright came back italic (a real-site audit: a hero headline's `<em class="not-italic">`).
+		if ( in_array( strtolower( $node->tagName ), array( 'i', 'em' ), true ) && ! $want_italic ) {
+			$roman_cls = preg_match( '/(?:^|\s)not-italic(?:\s|$)/', ' ' . strtolower( (string) $node->getAttribute( 'class' ) ) . ' ' );
+			$roman_cs  = $node->hasAttribute( 'data-sc-cs' ) && preg_match( '/font-style\s*:\s*normal/i', (string) $node->getAttribute( 'data-sc-cs' ) );
+			$roman_st  = $node->hasAttribute( 'style' ) && preg_match( '/font-style\s*:\s*normal/i', (string) $node->getAttribute( 'style' ) );
+			if ( $roman_cls || $roman_cs || $roman_st ) { $want_roman = true; }
+		}
 		// A `<span class="block">` line of a heading ("Synthetic" / "Light" / "Architectures" stacked) — the LINE BREAK is the
 		// computed display:block, lost with the class; re-express it inline so the title keeps its three lines (measured: 2 vs 3).
 		$want_block = false;

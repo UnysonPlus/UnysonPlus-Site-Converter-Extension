@@ -797,7 +797,9 @@ class FW_Site_Converter_Theme_Generator {
 			$parts[] = 'family=' . str_replace( ' ', '+', $fam ) . ':ital,wght@0,300;0,400;0,500;0,600;0,700;1,400';
 		}
 		if ( ! $parts ) { return ''; }
-		return 'https://fonts.googleapis.com/css2?' . implode( '&', $parts ) . '&display=swap';
+		// `display=optional` for the same reason the self-hosted faces get it: `swap` guarantees a reflow
+		// when the face lands, and that reflow is the single largest contributor to a converted page's CLS.
+		return 'https://fonts.googleapis.com/css2?' . implode( '&', $parts ) . '&display=optional';
 	}
 
 	private static function pick_google_fonts( array $fonts, array $families ) {
@@ -934,9 +936,49 @@ class FW_Site_Converter_Theme_Generator {
 			$fams = array_values( array_unique( array_map( 'trim', $fm[2] ) ) );
 		}
 		$out['families'] = $fams;
+				// FONT-DISPLAY: the swap is what moves the page. A face with `font-display:swap` (the Google CSS2
+		// default, and what most sources carry) renders fallback text first and re-renders in the real face
+		// when it lands -- a guaranteed reflow of every line it touches. Measured on a conversion: CLS 0.195,
+		// of which 0.194 was one hero block moving under a single rehosted face.
+		//
+		// `optional` is the one value that cannot shift: the browser uses the face only if it arrives inside
+		// a ~100ms block period and otherwise keeps the fallback for that load, never swapping mid-page. That
+		// trade is right here because these faces are SELF-HOSTED by this point -- same origin, no CDN
+		// handshake -- so they normally win that window, and on any repeat visit they are cached and certain
+		// to. A face with no font-display at all behaves as `auto`, which most browsers treat like `block`:
+		// invisible text first, then the same reflow. So both the declared and the undeclared case are set.
+		$rewritten = self::normalize_font_display( $rewritten );
 		$out['css'] = "/* Site Converter — self-hosted webfonts (rehosted from source; no CDN dependency). */\n"
 			. trim( $rewritten ) . "\n\n";
 		return $out;
+	}
+
+	/**
+	 * Force `font-display:optional` on every @font-face in a CSS string.
+	 *
+	 * The swap is what moves the page. `swap` (the Google CSS2 default) renders fallback text and
+	 * re-renders in the real face when it lands -- a guaranteed reflow of every line it touches. A face with
+	 * NO font-display behaves as `auto`, which browsers treat like `block`: invisible text, then the same
+	 * reflow. Measured on a conversion whose 16 rehosted faces declared none at all: CLS 0.195, of which
+	 * 0.194 was a single hero block moving under one face.
+	 *
+	 * `optional` is the one value that cannot shift -- the browser uses the face only if it arrives inside a
+	 * ~100ms block period, and otherwise keeps the fallback for that load rather than swapping mid-page. The
+	 * trade is right here because these faces are SELF-HOSTED by this point (same origin, no CDN handshake),
+	 * so they normally win that window, and on a repeat visit they are cached and certain to.
+	 */
+	private static function normalize_font_display( $css ) {
+		return (string) preg_replace_callback(
+			'/@font-face\s*\{[^}]*\}/i',
+			function ( $fm ) {
+				$face = $fm[0];
+				if ( preg_match( '/font-display\s*:/i', $face ) ) {
+					return preg_replace( '/font-display\s*:\s*[a-z-]+/i', 'font-display:optional', $face );
+				}
+				return preg_replace( '/\}\s*$/', 'font-display:optional;}', $face );
+			},
+			(string) $css
+		);
 	}
 
 	/** Pull just the @font-face { … } blocks out of a CSS string. */
@@ -1058,6 +1100,22 @@ class FW_Site_Converter_Theme_Generator {
 	}
 
 	/** File extension of an image URL (theme asset — SVG allowed, unlike the WP media library). '' if not an image. */
+	/** The image type the BYTES actually are — png | jpg | gif | webp | avif | ico | svg — or '' when unknown.
+	 *  A URL's extension is a claim; this is the fact, and the two disagree often enough to matter. */
+	private static function image_ext_of_bytes( $bin ) {
+		$b = (string) $bin;
+		if ( strlen( $b ) < 4 ) { return ''; }
+		if ( 0 === strncmp( $b, "\x89PNG\r\n\x1a\n", 8 ) ) { return 'png'; }
+		if ( 0 === strncmp( $b, "\xff\xd8\xff", 3 ) ) { return 'jpg'; }
+		if ( 0 === strncmp( $b, 'GIF87a', 6 ) || 0 === strncmp( $b, 'GIF89a', 6 ) ) { return 'gif'; }
+		if ( 0 === strncmp( $b, 'RIFF', 4 ) && 0 === strncmp( substr( $b, 8, 4 ), 'WEBP', 4 ) ) { return 'webp'; }
+		if ( false !== strpos( substr( $b, 0, 16 ), 'ftypavif' ) ) { return 'avif'; }
+		if ( 0 === strncmp( $b, "\x00\x00\x01\x00", 4 ) ) { return 'ico'; }
+		$head = ltrim( substr( $b, 0, 512 ) );
+		if ( 0 === stripos( $head, '<svg' ) || ( 0 === strncmp( $head, '<?xml', 5 ) && false !== stripos( $head, '<svg' ) ) ) { return 'svg'; }
+		return '';
+	}
+
 	private static function image_ext( $url ) {
 		if ( preg_match( '/\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)(?:$|[?#])/i', (string) $url, $m ) ) {
 			$e = strtolower( $m[1] );
@@ -1530,6 +1588,14 @@ class FW_Site_Converter_Theme_Generator {
 				$ext = 'png';
 			}
 			$bin = self::http_get_bin( (string) $cfg['favicon'], 2 * 1024 * 1024 );
+			// The BYTES decide the extension, not the URL. Plenty of sites answer `/favicon.ico` with an SVG
+			// (a catch-all route, a CDN rewrite), and naming SVG bytes `.ico`/`.png` meant WP's sideload saw
+			// the real type, refused it, and the Site Icon silently kept whatever a PREVIOUS conversion set —
+			// so a reconverted site wore the previous source's mark in the tab with nothing to report it.
+			if ( '' !== $bin ) {
+				$sniff = self::image_ext_of_bytes( $bin );
+				if ( '' !== $sniff ) { $ext = $sniff; }
+			}
 			if ( $bin !== '' ) {
 				$favicon_file = 'favicon.' . $ext;
 				$favicon_bin  = $bin;
@@ -3020,12 +3086,34 @@ JS;
 		}
 
 		if ( $favicon_file !== '' ) {
-			$out .= "/** Self-contained favicon <head> link — only while no WP Site Icon is set. */\n";
-			$out .= "function {$fn}_favicon_link() {\n";
-			$out .= "\tif ( function_exists( 'has_site_icon' ) && has_site_icon() ) { return; }\n";
-			$out .= "\techo '<link rel=\"icon\" href=\"' . esc_url( get_theme_file_uri( '" . self::esc_php( $favicon_file ) . "' ) ) . '\">' . \"\\n\";\n";
-			$out .= "}\n";
-			$out .= "add_action( 'wp_head', '{$fn}_favicon_link' );\n\n";
+			// An SVG favicon must declare its type on the link, or a browser can refuse it.
+			$fav_mime_attr = ( 'svg' === strtolower( (string) pathinfo( $favicon_file, PATHINFO_EXTENSION ) ) )
+				? ' type="image/svg+xml"'
+				: '';
+			$out .= '/** Self-contained favicon <head> link. Emitted unless the USER picked their own Site Icon -' . "\n";
+			$out .= ' *  a Site Icon a PREVIOUS conversion set is not the user\'s choice and must not suppress this one. */' . "\n";
+			$out .= 'function ' . $fn . '_favicon_link() {' . "\n";
+			$out .= '	$sc_cur = (int) get_option( \'site_icon\' );' . "\n";
+			$out .= '	$sc_own = (int) get_option( \'_upw_conv_site_icon\' );' . "\n";
+			$out .= '	if ( $sc_cur && $sc_cur !== $sc_own ) { return; }' . "\n";
+			$out .= '	echo \'<link rel="icon"' . $fav_mime_attr . ' href="\' . esc_url( get_theme_file_uri( \'' . self::esc_php( $favicon_file ) . '\' ) ) . \'">\' . "\\n";' . "\n";
+			$out .= '}' . "\n";
+			$out .= 'add_action( \'wp_head\', \'' . $fn . '_favicon_link\', 5 );' . "\n\n";
+
+			if ( empty( $cfg['favicon_raster'] ) ) {
+				// A VECTOR favicon cannot become a WP Site Icon (WP crops rasters), so the <head> link above is
+				// the whole mechanism — and a Site Icon a previous conversion left behind would otherwise keep
+				// painting the wrong mark in the tab. Drop that one; a Site Icon the USER chose stays.
+				$out .= '/** A vector favicon rides the <head> link, so a Site Icon a PREVIOUS conversion set is cleared. */' . "\n";
+				$out .= 'function ' . $fn . '_clear_stale_site_icon() {' . "\n";
+				$out .= '	if ( get_option( \'' . $fn . '_favicon_seeded\' ) ) { return; }' . "\n";
+				$out .= '	$sc_cur = (int) get_option( \'site_icon\' );' . "\n";
+				$out .= '	$sc_own = (int) get_option( \'_upw_conv_site_icon\' );' . "\n";
+				$out .= '	if ( $sc_cur && $sc_own && $sc_cur === $sc_own ) { update_option( \'site_icon\', 0 ); delete_option( \'_upw_conv_site_icon\' ); }' . "\n";
+				$out .= '	update_option( \'' . $fn . '_favicon_seeded\', 1 );' . "\n";
+				$out .= '}' . "\n";
+				$out .= 'add_action( \'wp_loaded\', \'' . $fn . '_clear_stale_site_icon\', 20 );' . "\n\n";
+			}
 
 			if ( ! empty( $cfg['favicon_raster'] ) ) {
 				$out .= "/** Seed the WP Site Icon from the bundled favicon (once per theme, raster only). Seeds when\n";
