@@ -318,7 +318,6 @@ class FW_Site_Converter_Mapper {
 		self::$style_on    = class_exists( 'FW_Site_Converter_Tailwind' );
 		self::$style_key   = array();
 		self::$style_css   = array();
-		self::$main_is_container = false;
 		self::$style_count = array();
 		self::$style_claim = array();
 		self::$style_own   = '';
@@ -13611,19 +13610,16 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 
 	/** Sum a section's vertical rhythm utilities (pt/pb/py + mt/mb/my) → top/bottom pixels, so the builder
 	 *  section can reproduce the source's spacing (decompose sections otherwise have zero vertical spacing). */
-	/** Carry the source <main>'s vertical padding (pt-32 pb-32 …) AND — when the source <main> is a real
-	 *  CONTAINER (a `container`/`max-w-*` cap, e.g. `container mx-auto px-6`) — its max-width + horizontal
-	 *  padding onto the theme's #main wrapper via a scoped rule, so the whole page's content column matches
-	 *  the source instead of running full-width. Clean DOM (no class on <main>).
-	 *
-	 *  The max-width is only carried from a genuine computed `max-width` (400–1600px) — the source main then
-	 *  itself capped ALL its sections at that width, so centring #main reproduces that without clipping any
-	 *  intended full-bleed (a full-bleed source has NO max-width on <main>, so nothing is added). */
-	/** True when #main IS the page's content container (the source <main> capped + gutted it — main_style): the bands
-	 *  inside already sit in that gutter, so a band's flexbox takes the full width instead of the site cap (which
-	 *  shaved a second 24px gutter off a bento — a real-site audit). */
-	private static $main_is_container = false;
 
+	/** Carry the source <main>'s VERTICAL padding (pt-32 pb-32 …) onto the theme's #main wrapper via a scoped
+	 *  rule. Clean DOM (no class on <main>).
+	 *
+	 *  Its CONTENT COLUMN is deliberately NOT carried here. A genuine computed `max-width` (400-1600px) on the
+	 *  source <main> is the width of the content inside each section, and reproducing it by clamping the shell
+	 *  clamps every section background with it — a full-bleed wash becomes a panel floating mid-page. The
+	 *  measured width goes to the band content-width fallback instead, which is what the source actually does:
+	 *  full-bleed section, narrow container inside it. The horizontal gutter is left off #main for the same
+	 *  reason — on the shell it insets every section background. */
 	private static function main_style( $cls, $cs = '' ) {
 		if ( ! self::$style_on ) { return; }
 		$vs = self::section_vspace( (string) $cls );
@@ -13637,15 +13633,26 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 		if ( '' !== $cs && preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/i', $cs, $mw ) ) {
 			$w = (float) $mw[1];
 			if ( $w >= 400 && $w <= 1600 ) {
-				$d['max-width']    = round( $w ) . 'px';
-				$d['margin-left']  = 'auto';
-				$d['margin-right'] = 'auto';
-				// Horizontal padding: the computed `padding` shorthand's 2nd value (top RIGHT bottom left), else
-				// a `px-N` utility (N×4px), so the source gutter (px-6 = 24px) survives.
-				$px = '';
-				if ( preg_match( '/(?:^|;)\s*padding:\s*[0-9.]+px\s+([0-9.]+px)/i', $cs, $pm ) ) { $px = $pm[1]; }
-				elseif ( preg_match( '/(?:^|\s)px-(\d{1,2})(?:\s|$)/', ' ' . (string) $cls . ' ', $pc ) ) { $px = ( (int) $pc[1] * 4 ) . 'px'; }
-				if ( '' !== $px ) { $d['padding-left'] = $px; $d['padding-right'] = $px; self::$main_is_container = true; }
+				// THE SOURCE'S CONTENT COLUMN IS A SECTION WIDTH, NOT A PAGE CLAMP.
+				//
+				// Pinning it on #main was reproducing the column by shrinking the whole page shell, and a
+				// section lives INSIDE that shell — so every section's own background was clamped with it. A
+				// `bg-white/5` wash the source spreads edge to edge came out as a 720px panel floating in the
+				// middle of the page, and an image box got a width its height was never computed for (an empty
+				// band under the photo). It was emitted `!important`, so it also beat the full-bleed page width
+				// the importer sets, and the two converter behaviours fought each other.
+				//
+				// The source does the opposite of a clamp: the section spans the viewport and only the
+				// container inside it is narrow. That is exactly what `content_width` on each band expresses,
+				// so the measured width is handed to the band fallback instead. Sections stay full-bleed, their
+				// inner columns land on the source's width, and nothing needs !important to win.
+				//
+				// Vertical padding still belongs to #main (it is page padding, and clamps nothing). The
+				// horizontal padding does NOT: on #main it insets every section background by the gutter, when
+				// in the source that gutter sits inside the full-bleed section.
+				if ( self::$site_container_px <= 0 ) {
+					self::$site_container_px = (int) round( $w );
+				}
 			}
 		}
 		if ( ! $d ) { return; }
@@ -15242,13 +15249,12 @@ selector{max-width:100% !important;}" );
 			} else {
 			$cwpx = self::container_width_px( $sec['sectionBandW'] ?? null );
 			if ( $cwpx <= 0 ) { $cwpx = self::container_width_px( $sec['sectionContainerW'] ?? null ); }
-			$in_main_cap = ( $cwpx <= 0 && self::$main_is_container ); // no cap of its own, and #main is the container → full width
 			if ( $cwpx <= 0 ) { $cwpx = self::$site_container_px; }
 			// a LEFT-ANCHORED root cap (Stitch sectionLeftCap): the band's flexbox takes it as a left-aligned content width
 			$left_cap = (float) ( $sec['sectionLeftCap'] ?? 0 );
-			if ( $left_cap > 0 ) { $cwpx = (int) round( $left_cap ); $in_main_cap = false; }
+			if ( $left_cap > 0 ) { $cwpx = (int) round( $left_cap ); }
 			if ( $cwpx > 0 && isset( $sec_node['_items'] ) && is_array( $sec_node['_items'] ) ) {
-				$cw_val = $in_main_cap ? array( 'preset' => 'custom', 'custom' => array( 'custom_width' => array( 'value' => '100', 'unit' => '%' ) ) ) : self::content_width_value( $cwpx );
+				$cw_val = self::content_width_value( $cwpx );
 				foreach ( $sec_node['_items'] as &$child ) {
 					if ( ! is_array( $child ) || ( $child['type'] ?? '' ) !== 'flexbox' || ! isset( $child['atts'] ) ) { continue; }
 					// Already carries a real content-width cap (legacy {value} or the multi-picker's own preset/custom)? Leave it.
@@ -15267,11 +15273,9 @@ selector{max-width:100% !important;}" );
 					// Content Width renders `min(cap, 100% − 2·gutter)`, so the site gutter inset it a second
 					// time and its picture sat ~44px off the source's edge. No native option expresses
 					// "this band only, no gutter", so the cap is re-stated without it.
-					if ( ! empty( $sec['sectionNoGutter'] ) && ! $in_main_cap && $cwpx > 0 ) {
+					if ( ! empty( $sec['sectionNoGutter'] ) && $cwpx > 0 ) {
 						$child['atts']['custom_css'] = trim( (string) ( $child['atts']['custom_css'] ?? '' ) . "\n" . '@media (min-width:992px){selector{max-width:min(' . (int) round( $cwpx ) . 'px,100%) !important;}}' );
 					}
-					if ( $in_main_cap ) { $child['atts']['custom_css'] = trim( (string) ( $child['atts']['custom_css'] ?? '' ) . "
-selector{max-width:100% !important;}" ); } // (#main's gutter is the gutter — none again around the flexbox)
 				}
 				unset( $child );
 			}
