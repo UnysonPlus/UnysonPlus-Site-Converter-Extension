@@ -71,10 +71,10 @@ $body = $sec( 'Hero', '<img src="https://example.com/hero.svg" alt="Hero" width=
 $im = $images( $body );
 
 $ok( count( $im ) >= 2, 'both images convert to image nodes (got ' . count( $im ) . ')' );
-$ok( '1600' === ( $im[0]['w'] ?? '' ) && '500' === ( $im[0]['h'] ?? '' ),
-	'the author\'s own width/height attributes are carried (got ' . ( $im[0]['w'] ?? '' ) . 'x' . ( $im[0]['h'] ?? '' ) . ')' );
-$ok( '800' === ( $im[1]['w'] ?? '' ) && '600' === ( $im[1]['h'] ?? '' ),
-	'...and an image with NO attributes falls back to the computed stamp (got ' . ( $im[1]['w'] ?? '' ) . 'x' . ( $im[1]['h'] ?? '' ) . ')' );
+$ok( '1600' === ( $im[0]['w'] ?? '' ) && '' === ( $im[0]['h'] ?? '' ),
+	'the width attribute is carried and NO height is pinned, so the ratio follows the width (got ' . ( $im[0]['w'] ?? '' ) . 'x"' . ( $im[0]['h'] ?? '' ) . '")' );
+$ok( '800' === ( $im[1]['w'] ?? '' ) && '' === ( $im[1]['h'] ?? '' ),
+	'...and an image with no attributes still falls back to the computed stamp, width only (got ' . ( $im[1]['w'] ?? '' ) . 'x"' . ( $im[1]['h'] ?? '' ) . '")' );
 
 echo "\n== The page's FIRST image is the LCP candidate\n";
 

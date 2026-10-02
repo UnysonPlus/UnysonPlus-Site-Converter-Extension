@@ -258,7 +258,7 @@ class FW_Site_Converter_Bundle {
 		// left untouched (keep their pages.json). See capture.mjs (converter:'deterministic' + rendered.html).
 		// Pass the "import media" toggle through: the re-convert pre-seeds the sideloaded-media map so captured
 		// image URLs localize at build time (see maybe_reconvert_with_php) — skip that when media import is off.
-		self::maybe_reconvert_with_php( $dir, ! isset( $opts['media'] ) || ! empty( $opts['media'] ) );
+		self::maybe_reconvert_with_php( $dir, ! isset( $opts['media'] ) || ! empty( $opts['media'] ), $opts );
 
 		// Phase gating for the review-first flow: 'design' applies the design system
 		// (media, presets, theme settings, theme + the Style Guide page) and defers the
@@ -1068,7 +1068,7 @@ class FW_Site_Converter_Bundle {
 		return $structure;
 	}
 
-	private static function maybe_reconvert_with_php( $dir, $do_media = true ) {
+	private static function maybe_reconvert_with_php( $dir, $do_media = true, $opts = array() ) {
 		if ( ! class_exists( 'FW_Site_Converter_Sources' ) || ! method_exists( 'FW_Site_Converter_Sources', 'build_from_html' ) ) { return; }
 
 		$meta = self::read_json( $dir, self::FILE_MANIFEST );

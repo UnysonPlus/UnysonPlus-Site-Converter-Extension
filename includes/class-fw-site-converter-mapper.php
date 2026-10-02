@@ -4910,7 +4910,14 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			// reserved and CLS is still covered. The pin is kept only where that metadata does not exist:
 			// an SVG (WordPress stores no dimensions for one) or an image that never became an attachment.
 			'width'         => $pin_dims ? array( 'value' => self::img_attr_px( $html, 'width' ), 'unit' => 'px' ) : array( 'value' => '', 'unit' => 'px' ),
-			'height'        => $pin_dims ? array( 'value' => self::img_attr_px( $html, 'height' ), 'unit' => 'px' ) : array( 'value' => '', 'unit' => 'px' ),
+			// WIDTH ONLY, even when pinning. fw_image_tag writes a width+height pair into
+			// `style="width:Wpx;height:Hpx"`, and the theme's `img{max-width:100%}` then clamps the WIDTH to the
+			// column while the explicit height stays put -- so the box keeps its full intrinsic height and the
+			// artwork sits letterboxed inside it. Measured on a hero logo whose intrinsic size is 1600x500: the
+			// element rendered 672x500 instead of 672x210, and the eyebrow beneath it ran into a 290px band of
+			// empty box. With width alone the inherited `height:auto` applies and the ratio is kept; an SVG
+			// carries its own viewBox, so the browser still reserves the right box before paint.
+			'height'        => array( 'value' => '', 'unit' => 'px' ),
 			'fetchpriority' => 'auto',
 			'link'          => '',
 			'target'        => '_self',
@@ -9112,6 +9119,21 @@ selector .imgbox__row{" . $side_css . "}" );
 		// differs from the page ink (a coloured card). JS twin: imageBoxNode.
 		$tfs = (string) ( $card['titleFontSize'] ?? '' );
 		if ( preg_match( '/^[0-9.]+px$/', $tfs ) ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__title{font-size:" . $tfs . " !important;}" ); }
+		// ...and the CASE and TRACKING that go with it. An overlay caption is very often a small tracked
+		// uppercase label -- 10px / 700 / 2px / uppercase on a measured badge -- and carrying only the size,
+		// weight and colour left it rendering as ordinary sentence-case text, which reads as a different
+		// element entirely rather than as the label the source drew.
+		$ttp = self::cs_decls( (string) ( $card['titleCs'] ?? '' ), array( 'text-transform', 'letter-spacing' ) );
+		$ttd = array();
+		if ( isset( $ttp['text-transform'] ) && preg_match( '/^(uppercase|lowercase|capitalize|none)$/i', trim( $ttp['text-transform'] ) ) ) {
+			$ttd[] = 'text-transform:' . strtolower( trim( $ttp['text-transform'] ) );
+		}
+		if ( isset( $ttp['letter-spacing'] ) && preg_match( '/^-?[0-9.]+(px|em|rem)$/', trim( $ttp['letter-spacing'] ) ) ) {
+			$ttd[] = 'letter-spacing:' . trim( $ttp['letter-spacing'] );
+		}
+		if ( $ttd ) {
+			$atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__title{" . implode( ';', $ttd ) . ';}' );
+		}
 		$bfs = (string) ( $card['bodyFontSize'] ?? '' ); $blh = (string) ( $card['bodyLineHeight'] ?? '' );
 		if ( preg_match( '/^[0-9.]+px$/', $bfs ) ) { $atts['custom_css'] = trim( (string) ( $atts['custom_css'] ?? '' ) . "\nselector .imgbox__text{font-size:" . $bfs . " !important;" . ( preg_match( '/^[0-9.]+px$/', $blh ) ? 'line-height:' . $blh . ' !important;' : '' ) . '}' ); }
 		$bcol = self::cs_decls( (string) ( $card['bodyCs'] ?? '' ), array( 'color' ) );
@@ -12179,13 +12201,17 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 		$targets = array(); // ordered: each ['ref' => &$node, 'sec' => int]
 		foreach ( $builder as $si => &$section ) {
 			if ( ! is_array( $section ) || empty( $section['_items'] ) || ! is_array( $section['_items'] ) ) { continue; }
-			// THE FIRST SECTION IS NOT REVEALED. A view-triggered entrance hides its element until the trigger
-			// fires (`.sc-anim-pending{visibility:hidden}`), and the first section is the one already on screen
-			// at load -- it holds the LCP element. Hiding it until a fade-in delays Largest Contentful Paint by
-			// roughly the animation duration, trading a perf score for a motion flourish nobody asked for. The
-			// band is in view before any scroll happens, so there is no reveal to see in the first place.
-			if ( 0 === (int) $si ) { continue; }
-			self::collect_anim_targets( $section['_items'], (int) $si, $targets );
+			// THE FIRST SECTION ANIMATES, EXCEPT ITS LARGEST IMAGE. The whole band used to be skipped to protect
+			// Largest Contentful Paint: a view-triggered entrance hides its element until the trigger fires, and
+			// the hero holds the LCP candidate, so revealing it pushes LCP out by about the animation duration.
+			// That protected the number and looked wrong -- a static hero above a page where everything else
+			// rises reads as broken, and sources animate their heroes too.
+			//
+			// Only the LCP candidate actually costs anything, so only it is held back: the hero's heading, copy
+			// and call to action reveal normally while its largest image paints immediately. The candidate is
+			// the first image node in the first section -- the same one mark_lcp_image() later marks eager.
+			$skip_lcp = ( 0 === (int) $si );
+			self::collect_anim_targets( $section['_items'], (int) $si, $targets, $skip_lcp );
 		}
 		unset( $section );
 		// Deterministic BASE — a role-appropriate effect with a per-section incrementing stagger.
@@ -12194,7 +12220,7 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 			$s = $t['sec'];
 			$i = isset( $per_sec[ $s ] ) ? $per_sec[ $s ] : 0;
 			$per_sec[ $s ] = $i + 1;
-			self::set_entrance_anim( $t['ref'], $i );
+			self::set_entrance_anim( $t['ref'], $i, ! empty( $t['lcp'] ) );
 		}
 		unset( $t );
 		// Optional AI REFINEMENT layered on top (opt-in + service present). Silent no-op otherwise.
@@ -12209,18 +12235,45 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 	 *  `animation` att; finalize_widget nodes carry the modern {effect:'none'} default — both fine). A widget
 	 *  that already has a REAL modern effect (a detected/user intent) is left out. Collection widgets
 	 *  (galleries/pricing/testimonials) self-sequence their items, so we don't descend into them. */
-	private static function collect_anim_targets( array &$nodes, $si, array &$targets ) {
+	private static function collect_anim_targets( array &$nodes, $si, array &$targets, &$skip_lcp = false ) {
 		foreach ( $nodes as &$node ) {
 			if ( ! is_array( $node ) ) { continue; }
 			$is_widget = ( ( $node['type'] ?? '' ) === 'simple' ) && ! empty( $node['shortcode'] );
 			if ( $is_widget && ! in_array( (string) $node['shortcode'], self::$entrance_anim_exclude, true ) ) {
 				$anim = ( isset( $node['atts']['animation'] ) && is_array( $node['atts']['animation'] ) ) ? $node['atts']['animation'] : array();
 				$cur  = (string) ( $anim['effect'] ?? 'none' );
+				// The hero's own largest image is the LCP candidate: let it paint rather than reveal. One image
+				// only -- the flag is spent on the first one, so a second hero image still animates.
+				// THE LCP IMAGE ANIMATES TOO -- with an effect that cannot delay the paint. LCP is recorded when
+				// the element is PAINTED, and a fade starts at opacity:0, so the browser does not count it until
+				// the fade has run. A TRANSFORM-only entrance (animate.css slideIn* is translate3d with no opacity
+				// keyframes) paints at full opacity on the first frame and merely moves afterwards, so the hero
+				// can animate without pushing its own Largest Contentful Paint out.
+				if ( $skip_lcp && in_array( (string) $node['shortcode'], array( 'media_image', 'image_box', 'single_image' ), true ) ) {
+					$skip_lcp = false;
+					if ( '' === $cur || 'none' === $cur ) { $targets[] = array( 'ref' => &$node, 'sec' => $si, 'lcp' => true ); }
+					continue;
+				}
 				if ( '' === $cur || 'none' === $cur ) { $targets[] = array( 'ref' => &$node, 'sec' => $si ); }
 				continue; // a leaf widget — don't descend (a collection self-sequences its own items)
 			}
+			// A CONTAINER THAT CARRIES A BOX PRESET *IS* THE CARD, so it is what should reveal. Collecting only
+			// leaf widgets left the frame sitting still while its own heading, icon and copy faded in inside it
+			// -- the card looked painted on and its contents looked like they were arriving in someone else's
+			// box. Measured on a conversion: 9 boxed containers, 0 of them animated, against 18 animated widgets.
+			//
+			// Taking the container also means NOT descending into it: a card that rises while its contents
+			// separately rise inside it double-reveals and reads as jitter. One box, one reveal -- the same
+			// ownership rule that decides which node paints the skin decides which node animates it.
+			if ( in_array( (string) ( $node['type'] ?? '' ), array( 'flexbox', 'column' ), true )
+				&& ! empty( $node['atts']['border_preset'] ) ) {
+				$c_anim = ( isset( $node['atts']['animation'] ) && is_array( $node['atts']['animation'] ) ) ? $node['atts']['animation'] : array();
+				$c_cur  = (string) ( $c_anim['effect'] ?? 'none' );
+				if ( '' === $c_cur || 'none' === $c_cur ) { $targets[] = array( 'ref' => &$node, 'sec' => $si ); }
+				continue;
+			}
 			if ( ! empty( $node['_items'] ) && is_array( $node['_items'] ) ) {
-				self::collect_anim_targets( $node['_items'], $si, $targets );
+				self::collect_anim_targets( $node['_items'], $si, $targets, $skip_lcp );
 			}
 		}
 		unset( $node );
@@ -12312,10 +12365,12 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 	/** Set the modern Entrance-Animation atts on a widget node: a role-appropriate Animate.css effect on
 	 *  `animation.effect`, plus the shared `animation_settings` panel with a scroll-into-view trigger and a
 	 *  stagger delay (capped so long bands don't lag). Collections keep item sequencing on. */
-	private static function set_entrance_anim( array &$node, $i ) {
+	private static function set_entrance_anim( array &$node, $i, $is_lcp = false ) {
 		$tag   = (string) ( $node['shortcode'] ?? '' );
 		$delay = min( $i * 0.12, 0.72 ); // seconds; caps at ~6 steps so deep bands don't stall
-		$node['atts']['animation'] = array( 'effect' => self::entrance_effect_for( $tag ) );
+		// A TRANSFORM-ONLY entrance for the LCP candidate: it paints immediately and slides, where a fade
+		// would hold it at opacity:0 and defer the paint the score is measured on.
+		$node['atts']['animation'] = array( 'effect' => $is_lcp ? 'animate__slideInUp' : self::entrance_effect_for( $tag ) );
 		$node['atts']['animation_settings'] = array(
 			'trigger'          => array( 'view' ),
 			'speed_preset'     => '',
@@ -13438,6 +13493,40 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 			$place = (string) ( $ov['place'] ?? 'bottom' ); $align = (string) ( $ov['align'] ?? 'left' ); $inset = (float) ( $ov['inset'] ?? 0 );
 			$css .= "\nselector .imgbox__overlay{justify-content:" . ( 'center' === $place ? 'center' : ( 'top' === $place ? 'flex-start' : 'flex-end' ) ) . ( $inset > 0 ? ';padding:' . (int) round( $inset ) . 'px' : '' ) . ";}";
 			$css .= "\nselector .imgbox__overlay-inner{text-align:" . $align . ";align-items:" . ( 'center' === $align ? 'center' : 'flex-start' ) . ";}";
+			// THE CHIP THE LABEL SITS IN. A caption is often not bare text but a PILL -- a translucent fill, a
+			// hairline border, a full radius and a backdrop blur with the words inside it. Carrying only the
+			// words' own type left the label correctly sized and tracked while the chip around it vanished, so a
+			// badge centred on a photo read as loose text lying on the picture.
+			$pcs_raw = (string) ( $ov['titlePillCs'] ?? '' );
+			if ( '' !== $pcs_raw ) {
+				$pd    = self::cs_decls( $pcs_raw, array( 'background-color', 'border-top-width', 'border-top-color', 'border-radius', 'backdrop-filter', 'padding', 'gap' ) );
+				$pdecl = array( 'display:inline-flex', 'align-items:center' );
+				$psafe = function ( $v ) { return '' !== trim( (string) $v ) && preg_match( '/^[a-z0-9#(),.%\/\s-]+$/i', (string) $v ); };
+				if ( isset( $pd['background-color'] ) && $psafe( $pd['background-color'] ) ) { $pdecl[] = 'background-color:' . trim( $pd['background-color'] ); }
+				if ( isset( $pd['border-top-width'], $pd['border-top-color'] ) && $psafe( $pd['border-top-color'] ) ) { $pdecl[] = 'border:' . trim( $pd['border-top-width'] ) . ' solid ' . trim( $pd['border-top-color'] ); }
+				// a `rounded-full` radius computes to a huge px value; normalise it rather than echo 3.3e7px
+				if ( isset( $pd['border-radius'] ) && '' !== trim( $pd['border-radius'] ) ) { $pdecl[] = 'border-radius:999px'; }
+				if ( isset( $pd['backdrop-filter'] ) && $psafe( $pd['backdrop-filter'] ) ) { $pdecl[] = '-webkit-backdrop-filter:' . trim( $pd['backdrop-filter'] ); $pdecl[] = 'backdrop-filter:' . trim( $pd['backdrop-filter'] ); }
+				if ( isset( $pd['padding'] ) && $psafe( $pd['padding'] ) ) { $pdecl[] = 'padding:' . trim( $pd['padding'] ); }
+				if ( isset( $pd['gap'] ) && $psafe( $pd['gap'] ) ) { $pdecl[] = 'gap:' . trim( $pd['gap'] ); }
+				if ( count( $pdecl ) > 2 ) { $css .= "\nselector .imgbox__title{" . implode( ';', $pdecl ) . ';}'; }
+				// ...and the chip's LEADING MARK. A dot carries no text, so when it is dropped nothing reports a
+				// difference -- the label simply sits too far left in a pill that looks subtly empty. Drawn as a
+				// ::before rather than a real node so the caption stays a single text element.
+				$pdot = ( isset( $ov['titlePillDot'] ) && is_array( $ov['titlePillDot'] ) ) ? $ov['titlePillDot'] : null;
+				if ( $pdot && $psafe( (string) ( $pdot['color'] ?? '' ) ) ) {
+					$dsz  = max( 4, min( 20, (int) ( $pdot['size'] ?? 8 ) ) );
+					$ddec = array( 'content:""', 'flex:0 0 auto', 'width:' . $dsz . 'px', 'height:' . $dsz . 'px',
+						'border-radius:999px', 'background-color:' . trim( (string) $pdot['color'] ) );
+					if ( isset( $pdot['shadow'] ) && $psafe( (string) $pdot['shadow'] ) ) { $ddec[] = 'box-shadow:' . trim( (string) $pdot['shadow'] ); }
+					$css .= "\nselector .imgbox__title::before{" . implode( ';', $ddec ) . ';}';
+					// the pulse, when the source animated it. Reduced-motion users are left a still dot.
+					if ( ! empty( $pdot['anim'] ) ) {
+						$css .= "\n@media (prefers-reduced-motion: no-preference){selector .imgbox__title::before{animation:fw-sc-dot-pulse 2s cubic-bezier(.4,0,.6,1) infinite;}}";
+						$css .= "\n@keyframes fw-sc-dot-pulse{0%,100%{opacity:1}50%{opacity:.5}}";
+					}
+				}
+			}
 			// the caption's own ink (white over the photo, a gold link) — the overlay family paints white by default; keep the measured
 			$cc = self::cs_decls( (string) ( $ov['captionCs'] ?? '' ), array( 'color' ) );
 			// (a link-only caption keeps the link's own ink)

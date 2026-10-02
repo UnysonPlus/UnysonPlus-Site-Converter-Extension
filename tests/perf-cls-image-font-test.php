@@ -41,7 +41,7 @@ $ok    = function ( $cond, $msg ) use ( &$fails ) {
 	if ( $cond ) { echo "  \xe2\x9c\x93 $msg\n"; } else { $fails++; echo "  \xe2\x9c\x97 FAIL: $msg\n"; }
 };
 
-echo "\n== Fonts: every rehosted face is display:optional\n";
+echo "\n== Fonts: every rehosted face is display:swap\n";
 
 $norm = new ReflectionMethod( 'FW_Site_Converter_Theme_Generator', 'normalize_font_display' );
 $norm->setAccessible( true );
@@ -52,10 +52,10 @@ $block = "@font-face{font-family:'Z';src:url(fonts/sc-font-3.woff2);font-display
 
 $r = (string) $norm->invoke( null, $none . "\n" . $swap . "\n" . $block );
 
-$ok( 3 === preg_match_all( '/font-display\s*:\s*optional/i', $r ),
-	'all three faces end up optional (got ' . preg_match_all( '/font-display\s*:\s*optional/i', $r ) . ')' );
-$ok( ! preg_match( '/font-display\s*:\s*(swap|block|auto|fallback)/i', $r ),
-	'...and no swap / block / auto survives' );
+$ok( 3 === preg_match_all( '/font-display\s*:\s*swap/i', $r ),
+	'all three faces end up swap (got ' . preg_match_all( '/font-display\s*:\s*swap/i', $r ) . ')' );
+$ok( ! preg_match( '/font-display\s*:\s*(block|auto|fallback|optional)/i', $r ),
+	'...and no block / auto / optional survives' );
 $ok( false !== strpos( $r, "url(fonts/sc-font-1.woff2) format('woff2')" ) && false !== strpos( $r, 'font-weight:700' ),
 	'...while every other declaration in the face is left exactly as it was' );
 
@@ -90,13 +90,13 @@ $dims_of = function ( $img_html ) {
 // box -- this is the hero logo case on a real conversion.
 $svg_src = 'data:image/svg+xml;base64,' . base64_encode( '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="500"></svg>' );
 $d = $dims_of( '<img src="' . $svg_src . '" width="1600" height="500" alt="">' );
-$ok( is_array( $d ) && '1600' === $d['w'] && '500' === $d['h'],
-	'a data-URI image (no attachment) KEEPS its intrinsic size (got ' . ( is_array( $d ) ? $d['w'] . 'x' . $d['h'] : 'null' ) . ')' );
+$ok( is_array( $d ) && '1600' === $d['w'] && '' === $d['h'],
+	'a data-URI image (no attachment) keeps its intrinsic WIDTH, and pins no height so the ratio follows (got ' . ( is_array( $d ) ? $d['w'] . 'x"' . $d['h'] . '"' : 'null' ) . ')' );
 
 // A remote raster that never sideloaded has no attachment either, and is pinned for the same reason.
 $d2 = $dims_of( '<img src="https://example.invalid/a.webp" width="1440" height="611" alt="">' );
-$ok( is_array( $d2 ) && '1440' === $d2['w'] && '611' === $d2['h'],
-	'...and so does an image that never became an attachment (got ' . ( is_array( $d2 ) ? $d2['w'] . 'x' . $d2['h'] : 'null' ) . ')' );
+$ok( is_array( $d2 ) && '1440' === $d2['w'] && '' === $d2['h'],
+	'...and so does an image that never became an attachment (got ' . ( is_array( $d2 ) ? $d2['w'] . 'x"' . $d2['h'] . '"' : 'null' ) . ')' );
 
 
 echo "\n== The rule itself: a pin is for the no-metadata case only\n";

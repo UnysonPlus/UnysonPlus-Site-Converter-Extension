@@ -210,6 +210,29 @@ class FW_Site_Converter_Theme_Settings {
 		 */
 		$incoming = (array) apply_filters( 'fw_site_converter_theme_settings', $incoming, $replace_chrome, $force );
 
+		// A CONVERTED SITE IS FULL-BLEED. Its sections carry their own content widths (the `section--cw-*`
+		// classes), exactly as the source does: the <section> spans the viewport and only the container
+		// inside it is narrowed. The theme's default for a page is a reading column instead — 720px — and a
+		// conversion never set otherwise, so every converted page rendered inside it.
+		//
+		// That was invisible while sections had no background. Once a section's own fill is carried, the
+		// same bug paints: a `bg-white/5` wash the source spreads edge to edge is clipped to the reading
+		// column and reads as a floating panel in the middle of the page. Measured on a conversion: the
+		// source section 1350px wide at left 0, the converted one 672px at left 339 — same colour, same
+		// markup, a completely different design.
+		//
+		// Written as a normal incoming value, so the user-edit guard and the fingerprinting below both
+		// apply: set Default Content Width by hand afterwards and a later conversion will not overwrite it.
+		// Merged into whatever else the group holds, so Default Sidebar is not discarded with it.
+		if ( ! isset( $incoming['pages_layout'] ) || ! is_array( $incoming['pages_layout'] )
+			|| ! isset( $incoming['pages_layout']['default_content_width'] ) ) {
+			$pl = isset( $incoming['pages_layout'] ) && is_array( $incoming['pages_layout'] )
+				? $incoming['pages_layout']
+				: (array) fw_get_db_settings_option( 'pages_layout', array() );
+			$pl['default_content_width'] = 'full';
+			$incoming['pages_layout']    = $pl;
+		}
+
 		// Drop metadata keys (when given a raw map).
 		foreach ( array_keys( $incoming ) as $k ) {
 			if ( ! is_string( $k ) || $k === '' || $k[0] === '_' ) {

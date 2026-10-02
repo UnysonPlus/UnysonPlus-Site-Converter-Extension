@@ -7661,7 +7661,28 @@ class FW_Site_Converter_Stitch {
 				if ( $a <= 0.02 ) { return ''; }
 				return $a < 1 ? "rgba({$m[1]}, {$m[2]}, {$m[3]}, {$a})" : "rgb({$m[1]}, {$m[2]}, {$m[3]})";
 			}
-			return preg_match( '/^#[0-9a-f]{3,8}$/', $c ) ? $c : '';
+			if ( preg_match( '/^#[0-9a-f]{3,8}$/', $c ) ) { return $c; }
+			// A MODERN COLOUR FUNCTION is still a colour. This gate accepted only rgb()/rgba() and #hex, so a
+			// source writing its chip fill as `oklab(... / 0.05)` -- which is what a Tailwind v4 build emits --
+			// resolved to nothing and the social chips lost their fill entirely, falling back to the theme's
+			// transparent default. Same shape as the lab()/lch() gates fixed elsewhere in this file: the fix is
+			// to route through the shared converter rather than widen one more private whitelist.
+			if ( self::is_color_func( $c ) ) {
+				$hex = self::color_to_hex( $c );
+				if ( '' === $hex ) { return ''; }
+				// Keep the ALPHA: a 5%-white chip fill is the whole look, and flattening it to opaque white
+				// would repaint the footer. The slash form is the only alpha syntax these functions use.
+				if ( preg_match( '#/\s*([0-9.]+%?)\s*\)#', $c, $am ) ) {
+					$a = (float) rtrim( $am[1], '%' );
+					if ( false !== strpos( $am[1], '%' ) ) { $a /= 100; }
+					if ( $a <= 0.02 ) { return ''; }
+					if ( $a < 1 && preg_match( '/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i', $hex, $hm ) ) {
+						return 'rgba(' . hexdec( $hm[1] ) . ', ' . hexdec( $hm[2] ) . ', ' . hexdec( $hm[3] ) . ', ' . $a . ')';
+					}
+				}
+				return $hex;
+			}
+			return '';
 		};
 		$resolve = function ( $token ) use ( $sem, $norm ) {
 			$token = strtolower( trim( (string) $token ) ); if ( $token === '' ) { return ''; }
@@ -7694,8 +7715,13 @@ class FW_Site_Converter_Stitch {
 		$out = array( 'social_icon_style' => $shape );
 
 		$size_rem = '';
+		// A chip is SQUARE, and a source may declare that three ways. Reading only `width` and `w-N` missed
+		// both of the forms a Tailwind v4 build actually emits -- `size-10` for the class, and a stamp that
+		// carries HEIGHT but no width -- so the measured 40px chip fell back to the theme's 2.25rem default
+		// and every social ring came out 4px small with the glyph crowding it.
 		if ( isset( $props['width'] ) && preg_match( '/^([0-9.]+)px$/', trim( $props['width'] ), $wm ) ) { $size_rem = round( (float) $wm[1] / 16, 3 ); }
-		elseif ( preg_match( '/\sw-(\d+)\s/', $cls, $m ) ) { $size_rem = (float) $m[1] * 0.25; }
+		elseif ( isset( $props['height'] ) && preg_match( '/^([0-9.]+)px$/', trim( $props['height'] ), $hm2 ) ) { $size_rem = round( (float) $hm2[1] / 16, 3 ); }
+		elseif ( preg_match( '/\s(?:w|size)-(\d+)\s/', $cls, $m ) ) { $size_rem = (float) $m[1] * 0.25; }
 		if ( $size_rem !== '' && $size_rem > 0 ) { $out['social_icon_size'] = array( 'value' => (string) $size_rem, 'unit' => 'rem' ); }
 
 		$par = $chip->parentNode;
@@ -7712,6 +7738,11 @@ class FW_Site_Converter_Stitch {
 		// string the control put the colour into `predefined` (which holds a PALETTE SLUG, not a colour) and
 		// left `custom` empty, so the fill was lost on the first save of the tab.
 		if ( $bg !== '' ) { $out['social_icon_bg'] = array( 'predefined' => '', 'custom' => self::clean_color_value( $bg ) ); }
+		// THE RING'S OWN COLOUR. An outline chip's border used to follow the glyph colour, so a source drawing
+		// a faint ring (white at 0.1) around a much brighter mark (white at 0.7) came out with a ring six times
+		// too strong. Carried into the theme's Ring Color, which falls back to the glyph when unset.
+		$bdc = $norm( isset( $props['border-top-color'] ) ? $props['border-top-color'] : '' );
+		if ( $bdc !== '' && $has_border ) { $out['social_icon_border'] = array( 'predefined' => '', 'custom' => self::clean_color_value( $bdc ) ); }
 		if ( preg_match( '/\shover:bg-([a-z0-9\/-]+)\s/', $cls, $m ) ) {
 			$hb = $resolve( $m[1] );
 			if ( $hb !== '' ) { $out['social_icon_hover_bg'] = $hb; }
@@ -17708,7 +17739,14 @@ class FW_Site_Converter_Stitch {
 		// composite wrapper), so an `inset-0` blob / `top-10 -left-6` badge still anchors to the image
 		// even if the carried `.relative` class doesn't resolve (else the overlays fly to the section
 		// corner / balloon full-bleed). Cloned first so the live DOM isn't mutated for other recognizers.
-		self::register_recognizer( 'image_overlay', 30,
+		// PRIORITY 42, above `image` (40) and `image_wrapper` (35). Registered at 30 it ran AFTER both --
+		// priority here means HIGHER RUNS FIRST -- so a framed photo carrying an overlay was claimed by the
+		// plain image-wrapper recognizer and converted to a bare media_image, and everything layered on it was
+		// dropped. Measured on a real conversion: a hero banner lost the glass pill badge sitting over it,
+		// while `is_image_with_overlay()` returned true for that exact frame the whole time.
+		// Its matcher is strictly MORE specific than the two it now outranks (exactly one <img>, an absolute
+		// layer, and no content outside that layer), so running earlier cannot steal a plain image from them.
+		self::register_recognizer( 'image_overlay', 42,
 			function ( $el ) { return self::is_image_with_overlay( $el ); },
 			function ( $el ) {
 				// P0 fidelity fix: when the composite cleanly matches the "photo + floating badge / blob"
@@ -17779,12 +17817,22 @@ class FW_Site_Converter_Stitch {
 		// flex items-center justify-center` frame, plus a hover-only overlay). The fill, the inset and the measured
 		// height belong to THAT image — claimed as a panel instead, the tile came out as an empty coloured box with
 		// the photo floating beside it, unpadded and oversized (a real-site audit). Above `panel` on purpose.
+		// DEFERS TO image_overlay. A tile is a photo in a frame; a photo with something LAYERED ON IT is a
+		// composite, and image_overlay knows how to keep what is layered. Running at 87 against that
+		// recognizer's 42, image_tile claimed both and flattened the second to a bare photo -- a hero banner
+		// lost the glass pill badge sitting over it, while is_image_with_overlay() returned true for that
+		// exact frame throughout. Priority alone could not fix it without hoisting image_overlay above every
+		// container recognizer, so the narrower rule lives here: a tile stands down for a real overlay.
 		self::register_recognizer( 'image_tile', 87,
-			function ( $el ) { return null !== self::image_tile_of( $el ); },
+			function ( $el ) { return ! self::is_image_with_overlay( $el ) && null !== self::image_tile_of( $el ); },
 			function ( $el ) { return self::image_tile_of( $el ); }
 		);
+		// DEFERS TO image_overlay, for the same reason image_tile does. A panel builds its blocks as SIBLINGS,
+		// so a photo with a badge layered on it came out as an image and a pill stacked one after the other --
+		// the badge landed under the picture instead of centred on it. image_overlay knows the layer is a layer.
+		// (image_tile was taught to stand down first; panel, one priority below it, simply took its place.)
 		self::register_recognizer( 'panel', 86,
-			function ( $el ) { return self::is_panel( $el ); },
+			function ( $el ) { return ! self::is_image_with_overlay( $el ) && self::is_panel( $el ); },
 			function ( $el, $tag, $rules ) { return self::panel_build( $el, $tag, $rules ); }
 		);
 		self::register_recognizer( 'card_grid_cs', 85,
@@ -31140,6 +31188,39 @@ class FW_Site_Converter_Stitch {
 		return substr_replace( (string) $html, '<' . $tm[1][0] . $new_attrs . '>', $tm[0][1], strlen( $tm[0][0] ) );
 	}
 
+	/**
+	 * The PAINTED DOT inside a chip: a status LED, as in a pill that reads "* Local businesses".
+	 *
+	 * A dot carries no text and no children, so no text-matching parity lens can miss it -- it simply
+	 * vanishes from a conversion and nothing reports a difference. Shared by the badge path and the
+	 * overlay-caption path because both meet the identical chip; a second copy would have drifted from the
+	 * scientific-notation radius fix below the first time one of them was touched.
+	 *
+	 * @param DOMElement $el The chip.
+	 * @return array|null { size, color, anim?, shadow? } or null when the chip has no dot.
+	 */
+	private static function painted_dot_in( $el ) {
+		if ( ! $el instanceof DOMElement ) { return null; }
+		$dot = null;
+			foreach ( self::el_children( $el ) as $k ) {
+				if ( '' !== trim( self::text( $k ) ) || $k->getElementsByTagName( '*' )->length ) { continue; }
+				// normalize_sci: a fully-rounded mark stamps its radius in SCIENTIFIC notation (`3.35544e+07px`),
+				// which the radius test below cannot match — so a status dot beside a kicker was read as "not a
+				// dot" and dropped from the badge entirely. Nothing flagged it either: it carries no text, so a
+				// text-matching parity lens has nothing to miss. Same notation that hid a pill button's radius.
+				$kcs = self::normalize_sci( (string) $k->getAttribute( 'data-sc-cs' ) );
+				$kh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $kcs, $hm ) ? (float) $hm[1] : 0.0;
+				$kbg = preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $kcs, $bm ) ? trim( $bm[1] ) : '';
+				if ( $kh >= 4 && $kh <= 20 && '' !== $kbg && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent/i', $kbg ) && preg_match( '/(?:^|;)\s*border-radius:\s*(?:9999px|50%|[1-9][0-9]*px)/i', $kcs ) ) {
+					$dot = array( 'size' => (int) round( $kh ), 'color' => $kbg );
+					$la = self::loop_anim_of( $k ); if ( $la ) { $dot['anim'] = $la; } // the dot's pulse rides the overline mark
+					if ( preg_match( '/(?:^|;)\s*box-shadow:\s*([^;]+)/i', $kcs, $shm ) && 'none' !== strtolower( trim( $shm[1] ) ) ) { $dot['shadow'] = trim( $shm[1] ); } // …and its glow
+					break;
+				}
+			}
+		return $dot;
+	}
+
 	/** Pull a pill apart into { tag_text, message, icon (fa class), link }. The first short, badge-like inner
 	 *  span (rounded-full / uppercase / bg-*) is the sub-tag; a material-symbols / <i> span is the icon; the
 	 *  remaining text is the message. */
@@ -31196,24 +31277,10 @@ class FW_Site_Converter_Stitch {
 			if ( $message !== '' && $tag_text !== '' && strpos( $message, $tag_text ) === 0 ) { $message = trim( substr( $message, strlen( $tag_text ) ) ); }
 		}
 		if ( $message === '' && $tag_text !== '' ) { $message = $tag_text; $tag_text = ''; }
-		// a PAINTED DOT beside the label (a status LED: an empty, small, rounded, filled child) → the pill's leading mark
-		$dot = null;
-		foreach ( self::el_children( $el ) as $k ) {
-			if ( '' !== trim( self::text( $k ) ) || $k->getElementsByTagName( '*' )->length ) { continue; }
-			// normalize_sci: a fully-rounded mark stamps its radius in SCIENTIFIC notation (`3.35544e+07px`),
-			// which the radius test below cannot match — so a status dot beside a kicker was read as "not a
-			// dot" and dropped from the badge entirely. Nothing flagged it either: it carries no text, so a
-			// text-matching parity lens has nothing to miss. Same notation that hid a pill button's radius.
-			$kcs = self::normalize_sci( (string) $k->getAttribute( 'data-sc-cs' ) );
-			$kh = preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $kcs, $hm ) ? (float) $hm[1] : 0.0;
-			$kbg = preg_match( '/(?:^|;)\s*background-color:\s*([^;]+)/i', $kcs, $bm ) ? trim( $bm[1] ) : '';
-			if ( $kh >= 4 && $kh <= 20 && '' !== $kbg && ! preg_match( '/rgba\([^)]*,\s*0\s*\)|transparent/i', $kbg ) && preg_match( '/(?:^|;)\s*border-radius:\s*(?:9999px|50%|[1-9][0-9]*px)/i', $kcs ) ) {
-				$dot = array( 'size' => (int) round( $kh ), 'color' => $kbg );
-				$la = self::loop_anim_of( $k ); if ( $la ) { $dot['anim'] = $la; } // the dot's pulse rides the overline mark
-				if ( preg_match( '/(?:^|;)\s*box-shadow:\s*([^;]+)/i', $kcs, $shm ) && 'none' !== strtolower( trim( $shm[1] ) ) ) { $dot['shadow'] = trim( $shm[1] ); } // …and its glow
-				break;
-			}
-		}
+		// a PAINTED DOT beside the label (a status LED) -- shared with the overlay-caption path, which draws
+		// the same chip. Two copies of this detector would drift; one of them already had the
+		// scientific-notation radius fix and the other would not have.
+		$dot = self::painted_dot_in( $el );
 		return array( 'tag_text' => $tag_text, 'message' => $message, 'icon' => $icon, 'link' => $link,
 			'pillCls' => $pill_cls, 'tagCls' => $tag_cls, 'tagCs' => $tag_cs, 'msgCls' => $msg_cls, 'msgCs' => $msg_cs, 'pillCs' => $pill_cs, 'leadingSvg' => $lead_svg, 'pillDot' => $dot );
 	}
@@ -31390,7 +31457,7 @@ class FW_Site_Converter_Stitch {
 		// a SKINNED floating card (its own fill + radius) is the composite path's badge, not a caption
 		$ccs = (string) $caption->getAttribute( 'data-sc-cs' );
 		if ( preg_match( '/(?:^|;)\s*background-color:\s*(?!rgba\([^)]*,\s*0\s*\)|transparent)[^;]+/i', $ccs ) && preg_match( '/(?:^|;)\s*border-radius:\s*[1-9]/i', $ccs ) ) { return null; }
-		$lines = array(); $title = ''; $title_cs = ''; $link = null;
+		$lines = array(); $title = ''; $title_cs = ''; $link = null; $title_el = null;
 		foreach ( $caption->getElementsByTagName( '*' ) as $ln ) {
 			$lt = strtolower( $ln->tagName );
 			if ( in_array( $lt, array( 'a', 'button' ), true ) ) { $t = trim( self::text_no_icons( $ln ) ); if ( '' !== $t && ! $link ) { $link = array( 'label' => $t, 'href' => (string) $ln->getAttribute( 'href' ), 'cs' => (string) $ln->getAttribute( 'data-sc-cs' ), 'cls' => self::cls( $ln ) ); } continue; }
@@ -31401,17 +31468,48 @@ class FW_Site_Converter_Stitch {
 			$in_link = false; for ( $ap = $ln->parentNode; $ap instanceof DOMElement && $ap !== $caption; $ap = $ap->parentNode ) { if ( in_array( strtolower( $ap->tagName ), array( 'a', 'button' ), true ) ) { $in_link = true; break; } }
 			if ( $in_link ) { continue; }
 			$lcs = (string) $ln->getAttribute( 'data-sc-cs' );
-			if ( '' === $title && ( preg_match( '/^h[1-6]$/', $lt ) || ( preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', $lcs, $lf ) && (float) $lf[1] >= 18 ) ) ) { $title = $own; $title_cs = $lcs; continue; }
-			$lines[] = array( 'text' => $own, 'cs' => $lcs );
+			if ( '' === $title && ( preg_match( '/^h[1-6]$/', $lt ) || ( preg_match( '/(?:^|;)\s*font-size:\s*([0-9.]+)px/i', $lcs, $lf ) && (float) $lf[1] >= 18 ) ) ) { $title = $own; $title_cs = $lcs; $title_el = $ln; continue; }
+			$lines[] = array( 'text' => $own, 'cs' => $lcs, 'el' => $ln );
 		}
-		if ( '' === $title && $lines ) { $first = array_shift( $lines ); $title = $first['text']; $title_cs = $first['cs']; }
+		if ( '' === $title && $lines ) { $first = array_shift( $lines ); $title = $first['text']; $title_cs = $first['cs']; $title_el = ( $first['el'] ?? null ); }
 		if ( '' === $title && ! $link ) { return null; }
 		// hover-revealed (`opacity-0 group-hover:opacity-100` on the caption / its layer) → the Fade reveal; else the scrim
 		$hover = (bool) preg_match( '/(?:^|;)\s*opacity:\s*0(?:\.0+)?(?:;|$)/', $ccs ) || (bool) preg_match( '/\bopacity-0\b/', self::cls( $caption ) );
 		$scrim_bg = ''; if ( $scrim instanceof DOMElement ) { $scs = (string) $scrim->getAttribute( 'data-sc-cs' ); if ( preg_match( '/(?:^|;)\s*background-image:\s*((?:linear|radial)-gradient\([^;]*\))/i', $scs, $gm ) ) { $scrim_bg = $gm[1]; } elseif ( preg_match( '/(?:^|;)\s*background-color:\s*(rgba?\([^)]*\))/i', $scs, $bm ) && ! preg_match( '/,\s*0\s*\)$/', $bm[1] ) ) { $scrim_bg = $bm[1]; } }
 		if ( '' === $scrim_bg && preg_match( '/(?:^|;)\s*background-image:\s*((?:linear|radial)-gradient\([^;]*\))/i', $ccs, $gm2 ) ) { $scrim_bg = $gm2[1]; }
+		// THE CHIP THE LABEL SITS IN. A caption is often not bare text but a PILL -- a translucent fill, a
+		// hairline border, a full radius and a backdrop blur, with the words inside it. Only the words' own
+		// stamp was kept, so the label arrived correctly sized and tracked while the chip around it vanished
+		// and it read as loose text floating on the photo. Walk up from the label to the caption layer and
+		// keep the first ancestor that is actually painted.
+		$pill_cs = ''; $pill_dot = null;
+		if ( $title_el instanceof DOMElement ) {
+			for ( $pw = $title_el->parentNode; $pw instanceof DOMElement && $pw !== $caption; $pw = $pw->parentNode ) {
+				$pcs = (string) $pw->getAttribute( 'data-sc-cs' );
+				$has_fill = (bool) preg_match( '/(?:^|;)\s*background-color:\s*(?!rgba\([^)]*,\s*0\s*\)|transparent)[^;]+/i', $pcs );
+				$has_edge = (bool) preg_match( '/(?:^|;)\s*border-top-width:\s*(?!0)[0-9.]+px/i', $pcs );
+				if ( $has_fill || $has_edge ) { $pill_cs = $pcs; $pill_dot = self::painted_dot_in( $pw ); break; }
+			}
+		}
 		$place = 'bottom'; if ( preg_match( '/(?:^|;)\s*justify-content:\s*center/i', $ccs ) || preg_match( '/\b(?:items-center|justify-center|inset-0)\b/', self::cls( $caption ) ) && preg_match( '/(?:^|;)\s*align-items:\s*center/i', $ccs ) ) { $place = 'center'; } elseif ( preg_match( '/(?:^|\s)top-\d/', self::cls( $caption ) ) || preg_match( '/(?:^|;)\s*justify-content:\s*flex-start/i', $ccs ) && preg_match( '/inset-0/', self::cls( $caption ) ) ) { $place = 'top'; }
-		$align = ( preg_match( '/text-align:\s*center/i', $ccs ) || preg_match( '/\btext-center\b/', self::cls( $caption ) ) ) ? 'center' : 'left';
+		// HORIZONTAL placement comes from the LAYER'S OWN axis, not only from its text. A caption layer
+		// written `flex items-center justify-center` centres the BOX, while its text may still be
+		// `text-align:start` -- which is all this read. A centred badge was therefore reported left-aligned and
+		// rendered hard against the left edge of the photo: measured 447px off centre on a 1022px image.
+		// On a flex ROW justify-content is the horizontal axis; on a column it is align-items. text-align
+		// remains the fallback for a caption that is not a flex container at all.
+		$cap_cls = self::cls( $caption );
+		$is_flex = (bool) preg_match( '/(?:^|;)\s*display:\s*(?:inline-)?flex/i', $ccs )
+			|| (bool) preg_match( '/(?:^|\s)flex(?:\s|$)/', ' ' . $cap_cls . ' ' );
+		$is_col  = (bool) preg_match( '/(?:^|;)\s*flex-direction:\s*column/i', $ccs )
+			|| (bool) preg_match( '/\bflex-col\b/', $cap_cls );
+		$h_center = false;
+		if ( $is_flex && $is_col ) {
+			$h_center = (bool) ( preg_match( '/(?:^|;)\s*align-items:\s*center/i', $ccs ) || preg_match( '/\bitems-center\b/', $cap_cls ) );
+		} elseif ( $is_flex ) {
+			$h_center = (bool) ( preg_match( '/(?:^|;)\s*justify-content:\s*center/i', $ccs ) || preg_match( '/\bjustify-center\b/', $cap_cls ) );
+		}
+		$align = ( $h_center || preg_match( '/text-align:\s*center/i', $ccs ) || preg_match( '/\btext-center\b/', $cap_cls ) ) ? 'center' : 'left';
 		$pad = self::el_padding( $caption ); $inset = (float) ( $pad['base']['left'] ?? 0 );
 		if ( $inset <= 0 && preg_match( '/(?:^|\s)(?:left|bottom)-(\d{1,2})(?=\s|$)/', self::cls( $caption ), $lm ) ) { $inset = (int) $lm[1] * 4; }
 		if ( $inset <= 0 && preg_match( '/(?:^|;)\s*left:\s*([0-9.]+)px/i', $ccs, $lpx ) ) { $inset = (float) $lpx[1]; }
@@ -31427,7 +31525,7 @@ class FW_Site_Converter_Stitch {
 			'cls' => self::cls( $el ), 'cs' => (string) $el->getAttribute( 'data-sc-cs' ), 'cardCs' => (string) $el->getAttribute( 'data-sc-cs' ),
 		);
 		if ( '' === $ar && $fh >= 80 ) { $card['image']['frameHeight'] = $fh; }
-		return array( 't' => 'image_box', 'role' => 'image_box', 'card' => $card, 'overlay' => array( 'reveal' => $hover ? 'fade' : 'scrim', 'scrim' => $scrim_bg, 'place' => $place, 'align' => $align, 'inset' => $inset, 'captionCs' => $ccs ) );
+		return array( 't' => 'image_box', 'role' => 'image_box', 'card' => $card, 'overlay' => array( 'reveal' => $hover ? 'fade' : 'scrim', 'scrim' => $scrim_bg, 'place' => $place, 'align' => $align, 'inset' => $inset, 'captionCs' => $ccs, 'titlePillCs' => $pill_cs, 'titlePillDot' => $pill_dot ) );
 	}
 
 	private static function is_image_with_overlay( $el ) {

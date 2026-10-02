@@ -799,7 +799,7 @@ class FW_Site_Converter_Theme_Generator {
 		if ( ! $parts ) { return ''; }
 		// `display=optional` for the same reason the self-hosted faces get it: `swap` guarantees a reflow
 		// when the face lands, and that reflow is the single largest contributor to a converted page's CLS.
-		return 'https://fonts.googleapis.com/css2?' . implode( '&', $parts ) . '&display=optional';
+		return 'https://fonts.googleapis.com/css2?' . implode( '&', $parts ) . '&display=swap';
 	}
 
 	private static function pick_google_fonts( array $fonts, array $families ) {
@@ -941,15 +941,100 @@ class FW_Site_Converter_Theme_Generator {
 		// when it lands -- a guaranteed reflow of every line it touches. Measured on a conversion: CLS 0.195,
 		// of which 0.194 was one hero block moving under a single rehosted face.
 		//
-		// `optional` is the one value that cannot shift: the browser uses the face only if it arrives inside
-		// a ~100ms block period and otherwise keeps the fallback for that load, never swapping mid-page. That
-		// trade is right here because these faces are SELF-HOSTED by this point -- same origin, no CDN
-		// handshake -- so they normally win that window, and on any repeat visit they are cached and certain
-		// to. A face with no font-display at all behaves as `auto`, which most browsers treat like `block`:
-		// invisible text first, then the same reflow. So both the declared and the undeclared case are set.
+		// `optional` cannot shift at all, and was tried here and reverted: it keeps the FALLBACK for the whole
+		// load when the face misses its ~100ms window, so a cold visit rendered the converted headings in a
+		// serif that is not the source's typeface. Silently substituting the face is a worse defect, for this
+		// tool, than the shift it avoids. So `swap` -- what the sources themselves ship -- and the shift is
+		// addressed by PRELOADING the few faces first paint actually needs (fonts_preload_tags).
 		$rewritten = self::normalize_font_display( $rewritten );
 		$out['css'] = "/* Site Converter — self-hosted webfonts (rehosted from source; no CDN dependency). */\n"
 			. trim( $rewritten ) . "\n\n";
+		return $out;
+	}
+
+	/**
+	 * The <link rel="preload"> tags for the few faces FIRST PAINT actually needs.
+	 *
+	 * `swap` is correct (see normalize_font_display) but it does shift: the page paints in the fallback and
+	 * re-lays every line when the real face lands. Measured on a conversion: CLS 0.195, of which 0.194 was a
+	 * single hero block moving under one rehosted face. A preloaded face normally arrives before first paint,
+	 * so there is nothing to swap and nothing to move.
+	 *
+	 * The whole difficulty is restraint. A rehost of two families produced **65** @font-face blocks; preloading
+	 * them would fetch roughly a megabyte of Cyrillic, Greek and Vietnamese subsets before anything rendered
+	 * and be far worse than the shift. Only 15 of those 65 even cover basic latin, and most of those are
+	 * italic. So the filter is: UPRIGHT, covering basic latin, in a family the page actually sets, at a weight
+	 * it actually paints -- body text and the heading weight -- and hard-capped at four links.
+	 *
+	 * A face with no unicode-range is a whole-alphabet file and counts as covering latin.
+	 *
+	 * @param array  $cfg The theme config (reads fonts.heading, fonts.body, fonts.heading_weight).
+	 * @param string $css The rewritten @font-face CSS, with its relative url(fonts/…).
+	 * @return string[] Relative font paths, in order, at most four.
+	 */
+	private static function fonts_preload_tags( array $cfg, $css ) {
+		$css = (string) $css;
+		if ( '' === trim( $css ) || ! preg_match_all( '/@font-face\s*\{[^}]*\}/i', $css, $fm ) ) {
+			return array();
+		}
+
+		$fam_of = function ( $k ) use ( $cfg ) {
+			$v = isset( $cfg['fonts'][ $k ] ) ? trim( (string) $cfg['fonts'][ $k ] ) : '';
+			return strtolower( trim( $v, " " . chr( 34 ) . chr( 39 ) ) );
+		};
+		$head = $fam_of( 'heading' );
+		$body = $fam_of( 'body' );
+		$want = array_values( array_filter( array_unique( array( $body, $head ) ) ) ); // body first: it paints most
+		if ( ! $want ) {
+			return array();
+		}
+
+		$hw = isset( $cfg['fonts']['heading_weight'] ) ? (int) $cfg['fonts']['heading_weight'] : 0;
+		if ( $hw < 100 || $hw > 900 ) { $hw = 700; }
+
+		$cand = array(); $seen_url = array();
+		foreach ( $fm[0] as $face ) {
+			if ( preg_match( '/font-style\s*:\s*(?!normal)[a-z]+/i', $face ) ) { continue; } // italic/oblique
+			if ( ! preg_match( '/url\(\s*[\x22\x27]?(fonts\/[^)\x22\x27 ]+)/i', $face, $um ) ) { continue; }
+			$url = $um[1];
+			if ( ! preg_match( '/\.woff2(?:[?#]|$)/i', $url ) ) { continue; } // only the format every target browser takes
+
+			// A subset that does not include basic latin is never on the first-paint path. The test has to be
+			// EXACT: a loose one matched `U+2DE0-2DFF` and happily preloaded the Cyrillic subset instead of the
+			// latin one -- a rule that matches everything is as useless as one that matches nothing, and costs
+			// a wasted font fetch on the critical path. Basic latin is the range that starts at codepoint zero,
+			// which Google writes as `U+0000-00FF` and some sources shorten to `U+0-FF`.
+			if ( preg_match( '/unicode-range\s*:\s*([^;}]+)/i', $face, $rm ) ) {
+				$r = strtoupper( preg_replace( '/\s+/', '', $rm[1] ) );
+				if ( ! preg_match( '/(?:^|,)U\+0{1,4}-/', $r ) ) { continue; }
+			}
+
+			$fam = preg_match( '/font-family\s*:\s*([^;}]+)/i', $face, $ff )
+				? strtolower( trim( $ff[1], " " . chr( 34 ) . chr( 39 ) ) ) : '';
+			$idx = array_search( $fam, $want, true );
+			if ( false === $idx ) { continue; }
+
+			$w = preg_match( '/font-weight\s*:\s*([0-9]{3})/i', $face, $wf ) ? (int) $wf[1] : 400;
+			// Two weights per family earn a preload: the one body copy is set in, and the heading weight.
+			$keep = ( 400 === $w ) ? 0 : ( ( $w === $hw ) ? 1 : -1 );
+			if ( $keep < 0 ) { continue; }
+
+			// TWO guards, because two different things duplicate here. A family can arrive TWICE -- once from
+			// the source's Google stylesheet and once from an inline @font-face it also carried -- which the
+			// family+weight key collapses. And a VARIABLE font serves every weight from ONE file, which only a
+			// url check collapses. With either guard alone the same <head> preloaded a duplicate.
+			$key = $fam . '|' . $w;
+			if ( isset( $cand[ $key ] ) || isset( $seen_url[ $url ] ) ) { continue; }
+			$seen_url[ $url ] = true;
+			$cand[ $key ] = array( 'url' => $url, 'rank' => ( (int) $idx * 10 ) + $keep );
+		}
+
+		uasort( $cand, function ( $a, $b ) { return $a['rank'] - $b['rank']; } );
+		$out = array();
+		foreach ( $cand as $c ) {
+			$out[] = $c['url'];
+			if ( count( $out ) >= 4 ) { break; }
+		}
 		return $out;
 	}
 
@@ -962,20 +1047,24 @@ class FW_Site_Converter_Theme_Generator {
 	 * reflow. Measured on a conversion whose 16 rehosted faces declared none at all: CLS 0.195, of which
 	 * 0.194 was a single hero block moving under one face.
 	 *
-	 * `optional` is the one value that cannot shift -- the browser uses the face only if it arrives inside a
-	 * ~100ms block period, and otherwise keeps the fallback for that load rather than swapping mid-page. The
-	 * trade is right here because these faces are SELF-HOSTED by this point (same origin, no CDN handshake),
-	 * so they normally win that window, and on a repeat visit they are cached and certain to.
-	 */
+	 * `optional` LOOKS like the answer -- it is the one value that cannot shift -- and it was wrong here. It
+	 * tells the browser to use the face only if it arrives inside a ~100ms block period and otherwise keep the
+	 * fallback FOR THAT WHOLE LOAD. On a cold visit the brand face then never appears: a converted page whose
+	 * headings are Plus Jakarta Sans rendered in the fallback serif instead. For a tool whose whole promise is
+	 * reproducing a source, silently substituting the typeface is a worse defect than the shift it avoids.
+	 *
+	 * So: `swap`, which is also what sources themselves ship, so the converted page behaves as the original
+	 * does. The shift is addressed by PRELOADING the faces instead (see fonts_preload_tags) -- a preloaded
+	 * face usually arrives before first paint, so there is nothing to swap and nothing to move.	 */
 	private static function normalize_font_display( $css ) {
 		return (string) preg_replace_callback(
 			'/@font-face\s*\{[^}]*\}/i',
 			function ( $fm ) {
 				$face = $fm[0];
 				if ( preg_match( '/font-display\s*:/i', $face ) ) {
-					return preg_replace( '/font-display\s*:\s*[a-z-]+/i', 'font-display:optional', $face );
+					return preg_replace( '/font-display\s*:\s*[a-z-]+/i', 'font-display:swap', $face );
 				}
-				return preg_replace( '/\}\s*$/', 'font-display:optional;}', $face );
+				return preg_replace( '/\}\s*$/', 'font-display:swap;}', $face );
 			},
 			(string) $css
 		);
@@ -3000,8 +3089,65 @@ JS;
 		$out .= "\tadd_action( 'init', '{$fn}_disable_emoji' );\n";
 		$out .= "}\n\n";
 
+		// DECLARE the families this theme self-hosts, so the parent stops ALSO fetching them from Google.
+		// Rehosting bundles the faces into the theme for exactly that reason, but the Typography settings
+		// still name the family, so the parent requested the identical typeface from the CDN as well. That
+		// copy is fetched non-render-blocking, which means it lands AFTER first paint, re-enters font
+		// loading and relays the text: measured on a converted page, the h1 jumped between 189px and 126px
+		// -- one line -- for a CLS of 0.159, most of that page's total. Self-hosting alone did not stop it;
+		// nothing had told the parent the faces were already present.
+		$self_families = ( ! empty( $cfg['rehosted_fonts']['families'] ) && is_array( $cfg['rehosted_fonts']['families'] ) )
+			? array_values( array_filter( array_map( 'trim', $cfg['rehosted_fonts']['families'] ) ) )
+			: array();
+		if ( $self_families ) {
+			$fam_list = '';
+			foreach ( $self_families as $fam ) {
+				$fam_list .= "\t\t'" . esc_js( $fam ) . "',\n";
+			}
+			$out .= <<<SELFHOST
+/** Faces this theme ships itself — the parent must not also load them from Google. */
+function {$fn}_self_hosted_families( \$families ) {
+	return array_merge( (array) \$families, array(
+{$fam_list}	) );
+}
+add_filter( 'unysonplus_self_hosted_font_families', '{$fn}_self_hosted_families' );
+
+
+SELFHOST;
+		}
+
+		// PRELOAD the handful of self-hosted faces first paint needs, before anything else is enqueued.
+		// `font-display:swap` paints in the fallback and relays every line when the real face lands; a
+		// preloaded face normally arrives first, so there is nothing to swap and nothing to move. Emitted at
+		// wp_head priority 1 so the fetch starts ahead of the stylesheet that references it -- a preload
+		// placed after the CSS saves nothing, because the face is already discovered by then.
+		$preloads = ! empty( $cfg['rehosted_fonts']['css'] )
+			? self::fonts_preload_tags( $cfg, (string) $cfg['rehosted_fonts']['css'] )
+			: array();
+		if ( $preloads ) {
+			$list = '';
+			foreach ( $preloads as $rel ) {
+				$list .= "\t\t'" . esc_js( $rel ) . "',\n";
+			}
+			$out .= <<<PRELOAD
+/** Preload the first-paint webfaces (CLS: the swap is what moves the page). */
+function {$fn}_preload_fonts() {
+	\$dir = get_stylesheet_directory_uri();
+	foreach ( array(
+{$list}	) as \$f ) {
+		echo '<link rel="preload" as="font" type="font/woff2" crossorigin href="'
+			. esc_url( \$dir . '/' . \$f ) . '">' . "\\n";
+	}
+}
+add_action( 'wp_head', '{$fn}_preload_fonts', 1 );
+
+
+PRELOAD;
+		}
+
 		// In standalone mode this file is appended-included from the copied parent
 		// functions.php, so it must be self-guarding and not redeclare parent funcs.
+
 		$out .= "/** Webfonts + chrome stylesheet (priority 20 → loads after the parent). */\n";
 		$out .= "function {$fn}_assets() {\n";
 		// Pass #1: when the webfonts were rehosted into the theme (self-hosted @font-face in
