@@ -1917,10 +1917,24 @@ class FW_Site_Converter_Stitch {
 			$layers   = $grad_all !== '' ? preg_match_all( '/\b(?:linear|radial|conic)-gradient\s*\(/i', $grad_all ) : 0;
 			if ( $layers >= 2 && ! empty( $g['bdclear'] ) && '' !== (string) $g['bw']
 				&& preg_match( '/^[a-z0-9()%.,\s#\/_-]+$/i', $grad_all ) ) {
-				$ccss = trim( $ccss . "\n{{SELECTOR}} { background-image: " . $grad_all . '; '
+				// THE INNER LAYER FOLLOWS THE PRESET'S OWN BACKGROUND COLOUR, instead of repeating it as a
+				// literal. It is the same colour twice — the first layer is parsed into bg_color above, and
+				// then re-emitted here as an opaque layer sitting ON TOP of it. Editing Background Color in
+				// Theme Settings therefore did nothing visible: the value changed, the page repainted, and
+				// this layer still covered it. Reported from a converted site.
+				//
+				// `--btn-bg` is published beside background-color by the preset CSS generator, with the
+				// measured colour kept as the fallback so a preset that somehow has no bg_color still paints
+				// exactly what the source did.
+				$grad_css = self::btn_inner_layer_follows_bg( $grad_all );
+				$ccss = trim( $ccss . "\n{{SELECTOR}} { background-image: " . $grad_css . '; '
 					. 'background-origin: padding-box, border-box; '
 					. 'background-clip: padding-box, border-box; '
-					. 'border-color: transparent; }' );
+					// The edge defers to the Border Color picker. It must stay transparent by default so the ring
+					// shows through, but hardcoding that disabled the control outright: a colour set in Theme
+					// Settings simply never painted. With the variable, the default is unchanged and a chosen
+					// colour wins — which is exactly what choosing one means.
+					. 'border-color: var(--btn-border, transparent); }' );
 			}
 			// GRADIENT TEXT — on the label's own element, because the button box may already be spending its
 			// background on the gradient border above and one element gets one background-clip. The label span
@@ -31186,6 +31200,56 @@ class FW_Site_Converter_Stitch {
 			$new_attrs .= ' style="' . $style . '"';
 		}
 		return substr_replace( (string) $html, '<' . $tm[1][0] . $new_attrs . '>', $tm[0][1], strlen( $tm[0][0] ) );
+	}
+
+	/**
+	 * A gradient-border button's INNER layer, rewritten to follow the preset's own background colour.
+	 *
+	 * The idiom paints two layers: an inner solid clipped to the padding box, and the gradient clipped to the
+	 * border box so it shows through a transparent edge. The inner solid is the button's fill, and it is
+	 * already parsed into the preset's bg_color — so re-emitting it here as a literal puts an opaque layer on
+	 * top of the very colour the Background Color control edits, and that control silently stops working.
+	 *
+	 * The first layer becomes `linear-gradient(var(--btn-bg, C), var(--btn-bg, C))`, where C is the measured
+	 * colour: with the variable present the fill tracks every later preset edit, and without it the button
+	 * paints exactly what the source did. Anything this cannot parse confidently is returned untouched —
+	 * a button that still looks right beats one rewritten on a guess.
+	 *
+	 * @param string $grad_all the full multi-layer background-image value
+	 * @return string
+	 */
+	private static function btn_inner_layer_follows_bg( $grad_all ) {
+		$grad_all = (string) $grad_all;
+		// Split on TOP-LEVEL commas only: every layer is itself full of commas inside parentheses.
+		$layers = array(); $buf = ''; $depth = 0;
+		for ( $i = 0, $n = strlen( $grad_all ); $i < $n; $i++ ) {
+			$ch = $grad_all[ $i ];
+			if ( '(' === $ch ) { $depth++; } elseif ( ')' === $ch ) { $depth--; }
+			if ( ',' === $ch && 0 === $depth ) { $layers[] = $buf; $buf = ''; continue; }
+			$buf .= $ch;
+		}
+		if ( '' !== trim( $buf ) ) { $layers[] = $buf; }
+		if ( count( $layers ) < 2 ) { return $grad_all; }
+
+		// The inner layer is a SOLID: a linear-gradient whose stops are one repeated colour. Anything else is
+		// a real gradient and is left exactly as measured.
+		$first = trim( $layers[0] );
+		if ( ! preg_match( '/^linear-gradient\s*\((.+)\)$/is', $first, $m ) ) { return $grad_all; }
+		$inner = trim( $m[1] );
+		$parts = array(); $buf = ''; $depth = 0;
+		for ( $i = 0, $n = strlen( $inner ); $i < $n; $i++ ) {
+			$ch = $inner[ $i ];
+			if ( '(' === $ch ) { $depth++; } elseif ( ')' === $ch ) { $depth--; }
+			if ( ',' === $ch && 0 === $depth ) { $parts[] = trim( $buf ); $buf = ''; continue; }
+			$buf .= $ch;
+		}
+		if ( '' !== trim( $buf ) ) { $parts[] = trim( $buf ); }
+		if ( 2 !== count( $parts ) || $parts[0] !== $parts[1] || '' === $parts[0] ) { return $grad_all; }
+
+		$c = $parts[0];
+		if ( ! preg_match( '/^[a-z0-9()%.,\s#\/-]+$/i', $c ) ) { return $grad_all; }
+		$layers[0] = 'linear-gradient(var(--btn-bg, ' . $c . '), var(--btn-bg, ' . $c . '))';
+		return implode( ',', $layers );
 	}
 
 	/**

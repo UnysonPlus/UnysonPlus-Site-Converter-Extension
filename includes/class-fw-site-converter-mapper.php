@@ -4888,6 +4888,17 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		// metadata to read -- in both cases the only way to reserve the box is to declare it here.
 		$pin_dims = ( (int) ( $iv['attachment_id'] ?? 0 ) <= 0 )
 			|| (bool) preg_match( '/\.svgx?(?:[?#]|$)/i', (string) $src );
+		// The intrinsic ratio, for the aspect-ratio rule below. Both numbers must come from the SAME source,
+		// or the reserved box is the wrong shape: mixing a display width with a natural height is exactly how
+		// a 1600x500 logo once reserved 672x500 and letterboxed itself.
+		$ar_css = '';
+		if ( $pin_dims ) {
+			$iw = (float) self::img_attr_px( $html, 'width' );
+			$ih = (float) self::img_attr_px( $html, 'height' );
+			if ( $iw > 0 && $ih > 0 ) {
+				$ar_css = 'selector img{aspect-ratio:' . round( $iw ) . ' / ' . round( $ih ) . ';}';
+			}
+		}
 		return array( 'type' => 'simple', 'shortcode' => 'media_image', '_items' => array(), 'atts' => array(
 			'image'         => array( 'attachment_id' => $iv['attachment_id'], 'url' => $iv['url'], 'alt' => $alt ),
 			// THE SOURCE'S OWN INTRINSIC SIZE. These were hardcoded empty, so no converted image ever carried
@@ -4918,12 +4929,24 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			// carries its own viewBox, so the browser still reserves the right box before paint.
 			'height'        => array( 'value' => '', 'unit' => 'px' ),
 			'fetchpriority' => 'auto',
+			// …and the BOX IS RESERVED WITH A RATIO INSTEAD OF A HEIGHT, which is the piece the width-only
+			// rule above left out. Width alone tells the browser nothing about how tall the image will be, so
+			// it reserves zero height until the bytes arrive and everything below jumps down when they do.
+			// Measured on a converted page: a hero logo (intrinsic 1600x500, eager) rendering into a 672px
+			// column grew its block by 224px on load — CLS 0.1426, which was the whole page's score.
+			//
+			// `aspect-ratio` solves it without reintroducing either problem the height attribute caused: it
+			// is not a display size, so fw_image_tag does not switch to an exact-px crop and the responsive
+			// srcset survives; and with the inherited `height:auto` the ratio drives the height instead of
+			// fixing it, so nothing is letterboxed. Only emitted for the pinned case, because an attachment's
+			// own metadata already gives WordPress the attributes it needs.
 			'link'          => '',
 			'target'        => '_self',
 			'bg_color'      => self::empty_color(),
 			'spacing'       => self::def_spacing(),
 			'animation'     => self::def_animation(),
-			'unique_id'     => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => $skin_css, 'responsive_hide' => array(), 'custom_attrs' => array(),
+			'unique_id'     => self::uid(), 'css_id' => '', 'css_class' => '', 'custom_css' => trim( $skin_css . ( '' !== $ar_css ? "
+" . $ar_css : '' ) ), 'responsive_hide' => array(), 'custom_attrs' => array(),
 		) );
 	}
 

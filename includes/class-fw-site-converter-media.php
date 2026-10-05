@@ -72,7 +72,21 @@ class FW_Site_Converter_Media {
 	 */
 	private static function trim_image_sizes() {
 		return function ( $sizes ) {
-			$keep = apply_filters( 'fw_sc_media_image_sizes', array( 'thumbnail', 'medium' ) );
+			// thumbnail + medium alone leave a `srcset` with nothing between a 300px
+			// file and the full-size original, so every visitor downloads the
+			// original however small the slot: measured on a converted page, a
+			// 1024x434 slot pulled the 1440w file at 91.9 KiB where the 1024w file
+			// would have been 67.7 KiB, 26% less for identical rendered pixels.
+			// medium_large (768) and large (1024) are the two rungs that close that
+			// gap. They cost: resizing is the bulk of the media phase, and going
+			// from two sizes to four measured 61ms -> 162ms per image, about +5s on
+			// a 50-image conversion. The larger sizes (1536, 2048) are deliberately
+			// still skipped - they are rarely the chosen candidate and are the
+			// expensive ones. A site that wants a different trade-off has this
+			// filter; the Asset Optimizer's "Generate missing image sizes" fills in
+			// whatever is absent afterwards, including for libraries imported
+			// before this default changed.
+			$keep = apply_filters( 'fw_sc_media_image_sizes', array( 'thumbnail', 'medium', 'medium_large', 'large' ) );
 			if ( ! is_array( $keep ) ) { return $sizes; }
 			if ( ! $keep ) { return array(); }
 			return array_intersect_key( (array) $sizes, array_flip( $keep ) );
