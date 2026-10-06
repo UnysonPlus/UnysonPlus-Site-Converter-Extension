@@ -205,7 +205,19 @@ class FW_Site_Converter_Rerun {
 		// `import()` takes the ARRAY; `import_json()` takes a JSON string and quietly stringifies an array
 		// to "Array" if handed one — which is exactly what happened here first time, and the failure was
 		// invisible because the success check below used to accept an empty result as success.
-		$imported = FW_Site_Converter_Pages::import( array( 'pages' => array( $page ) ) );
+		// Rebuilt in the builder that wrote it: a page converted into another output target is re-run into that
+		// target, from the same rebuild's analysis pinned to this post, never silently turned back into
+		// page-builder content.
+		$tslug  = (string) get_post_meta( $post_id, '_fw_sc_target', true );
+		$target = ( '' !== $tslug && class_exists( 'FW_SC_Targets' ) ) ? FW_SC_Targets::resolve( $tslug ) : null;
+		if ( $target && 'page-builder' !== $target->slug() ) {
+			$mapping = isset( $res['mapping'] ) && is_array( $res['mapping'] ) ? $res['mapping'] : array( 'pages' => array() );
+			$mpage   = isset( $mapping['pages'][0] ) && is_array( $mapping['pages'][0] ) ? $mapping['pages'][0] : array();
+			foreach ( array( 'slug', 'title', 'front_page', 'source_url' ) as $k ) { $mpage[ $k ] = $page[ $k ]; }
+			$imported = $target->import_pages( array( 'pages' => array( $mpage ) ), array( 'pages' => array( $page ) ), array( 'source_url' => $src ) );
+		} else {
+			$imported = FW_Site_Converter_Pages::import( array( 'pages' => array( $page ) ) );
+		}
 		$rows     = ( is_array( $imported ) && ! empty( $imported['pages'] ) && is_array( $imported['pages'] ) )
 			? $imported['pages'] : array();
 		$row      = $rows ? reset( $rows ) : array();

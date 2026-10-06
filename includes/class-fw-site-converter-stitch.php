@@ -4004,7 +4004,10 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( $logo_css !== '' ) { $logo_custom['logo_custom_css'] = $logo_css; }
 
-		$logo_type = ( $logo['text'] === '' && $logo['image'] !== '' ) ? 'simple' : 'custom';
+		// A BARE logo image counts as image-only even when a title was detected. The title in that case comes
+		// from the document (the site name), not from a wordmark rendered beside the mark — so requiring an
+		// empty text put the source's own logo behind a text title that the source never shows.
+		$logo_type = ( ( '' === $logo['text'] || ! empty( $logo['image_bare'] ) ) && '' !== $logo['image'] ) ? 'simple' : 'custom';
 		$logo_simple = array();
 		if ( $logo['image'] !== '' ) {
 			// Portable upload shape; attachment_id is resolved when the media pipeline sideloads it.
@@ -4773,15 +4776,14 @@ class FW_Site_Converter_Stitch {
 		// The unit-input can hold any value, survives a save, and is applied AFTER the select (see the theme's
 		// theme-vars.php), so writing the exact measurement there is both faithful and safe. The select is
 		// then set only when the exact string really is one of its choices — a nicety, never load-bearing.
-		if ( preg_match( '/<footer[^>]*\sdata-sc-cs="([^"]*)"/i', (string) $html, $fcm ) ) {
-			$cs_raw = html_entity_decode( $fcm[1], ENT_QUOTES );
-			if ( preg_match( '/(?:^|;)\s*padding\s*:\s*([^;]+)/i', $cs_raw, $pm ) ) {
-				$parts = preg_split( '/\s+/', trim( $pm[1] ) );
-				$ptop  = isset( $parts[0] ) ? (float) $parts[0] : 0;
-				$pbot  = isset( $parts[2] ) ? (float) $parts[2] : $ptop;
-				if ( $ptop > 0 ) { $values['footer_padding_top_custom'] = array( 'value' => (string) (int) round( $ptop ), 'unit' => 'px' ); }
-				if ( $pbot > 0 ) { $values['footer_padding_bottom_custom'] = array( 'value' => (string) (int) round( $pbot ), 'unit' => 'px' ); }
-			}
+		// …read from wherever the footer actually carries it — the <footer> itself, or the wrapper below it
+		// that a page builder puts the band inset on (see footer_inset_px).
+		$f_inset = self::footer_inset_px( (string) $html );
+		if ( $f_inset ) {
+			$ptop = (float) $f_inset['top'];
+			$pbot = (float) $f_inset['bottom'];
+			if ( $ptop > 0 ) { $values['footer_padding_top_custom'] = array( 'value' => (string) (int) round( $ptop ), 'unit' => 'px' ); }
+			if ( $pbot > 0 ) { $values['footer_padding_bottom_custom'] = array( 'value' => (string) (int) round( $pbot ), 'unit' => 'px' ); }
 		}
 
 		/* --- SITE (body/page) background → the editable Site Background option (General Layout). The
@@ -5100,6 +5102,26 @@ class FW_Site_Converter_Stitch {
 				if ( $bwc !== '' && (float) $bwc > 0 && $bsc !== '' && $bsc !== 'none' ) { $copy_band = $p; break; }
 			}
 			$cfields = self::detect_band_custom_fields( $copy_band, 'copyright' );
+			// A rule drawn as its OWN ELEMENT is the same rule as a border on the band. The walk above only
+			// finds a hairline that an ANCESTOR carries (`<div class="border-t">`), which is how a hand-written
+			// footer draws it -- but a page builder emits a divider WIDGET instead: an empty element whose whole
+			// visual contribution is one horizontal border, sitting as a SIBLING before the copyright bar. On a
+			// measured source that was `<span class="elementor-divider-separator">` with border-top 1px solid
+			// white, no ancestor carried anything, and the converted footer simply had no rule above its copyright.
+			if ( empty( $cfields['copyright_border'] ) ) {
+				$rule = self::footer_rule_above( $copy_band, $cs_foot );
+				if ( $rule ) {
+					$cfields['copyright_border'] = array(
+						'width' => array( 'value' => (string) max( 1, (int) round( (float) $rule['width'] ) ), 'unit' => 'px' ),
+						'style' => $rule['style'],
+						'color' => array( 'predefined' => '', 'custom' => self::color_keep_alpha( $rule['color'] ) ),
+					);
+					$cfields['copyright_border_sides']  = array( 'top' );
+					// A divider widget is laid out INSIDE the content column, not bled to the viewport edges, so
+					// it reads as the container width -- unlike a band border, which spans whatever the band spans.
+					$cfields['copyright_border_extent'] = array( 'mode' => 'container' );
+				}
+			}
 			// COPYRIGHT TYPOGRAPHY — the © line commonly renders SMALLER + a muted colour than the footer
 			// body (e.g. Inter 12px / rgb(166,166,166)). Nothing else maps it, so without this it inherits the
 			// footer default and looks wrong. Read the © element's OWN computed type and fold it into
@@ -6746,6 +6768,34 @@ class FW_Site_Converter_Stitch {
 				if ( preg_match( '/^([0-9.]+)px$/', $iw, $wm ) && (float) $wm[1] >= 8 ) { $out['image_width'] = (float) $wm[1]; }
 			}
 			break;
+		}
+
+		// A BARE LOGO IMAGE — one that is not wrapped in a link. The search above only accepts an <img> found
+		// INSIDE the brand anchor, which is the classic `<a href="/"><img></a>` lockup. A page builder renders
+		// the logo as its own image widget instead, with no anchor around it and often an empty alt, so the
+		// header converted with the site TITLE as text where the source showed its wordmark.
+		//
+		// Take the first image in the header that is logo-shaped: wider than it is tall, and within the size a
+		// brand mark occupies. An icon (a 24px glyph) and a hero photo are both excluded by that, so a header
+		// that genuinely has no logo image still falls through to the text branch.
+		if ( '' === (string) ( $out['image'] ?? '' ) ) {
+			foreach ( $header->getElementsByTagName( 'img' ) as $img ) {
+				$src = trim( (string) $img->getAttribute( 'src' ) );
+				if ( '' === $src ) { continue; }
+				$iw = 0.0; $ih = 0.0;
+				if ( preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $img, 'width' ), $wm ) )  { $iw = (float) $wm[1]; }
+				if ( preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $img, 'height' ), $hm ) ) { $ih = (float) $hm[1]; }
+				if ( $iw <= 0 || $ih <= 0 ) {
+					$iw = (float) $img->getAttribute( 'width' );
+					$ih = (float) $img->getAttribute( 'height' );
+				}
+				if ( $iw < 40 || $iw > 420 || $ih < 12 || $ih > 140 || $ih > $iw ) { continue; }
+				$out['image'] = $src;
+				$out['image_width']  = $iw;
+				$out['image_height'] = $ih;
+				$out['image_bare'] = true; // a standalone logo image: no wordmark sits beside it
+				break;
+			}
 		}
 
 		// Wordmark text (icons stripped) + its computed color.
@@ -9047,18 +9097,66 @@ class FW_Site_Converter_Stitch {
 		if ( ! ( $footer instanceof DOMElement ) ) { return $out; }
 		foreach ( array( 'div', 'span', 'p' ) as $ltag ) {
 			foreach ( $footer->getElementsByTagName( $ltag ) as $lb ) {
-				if ( 0 !== $lb->getElementsByTagName( '*' )->length ) { continue; } // a leaf
+				// A heading WRAPPER counts, not only a bare leaf. A page builder wraps every heading in its own widget
+				// markup (`<div class="…widget-container"><p>Solutions</p></div>`), so the element that actually opens
+				// the column is never a leaf and each column heading was rejected — the footer converted as one list
+				// with its headings gone. What disqualifies a heading is holding a LINK (then it is the column itself,
+				// or a link row), not holding a <p>.
+				if ( $lb->getElementsByTagName( 'a' )->length ) { continue; }
+				if ( $lb->getElementsByTagName( '*' )->length > 3 ) { continue; } // a real column, not a heading
 				$lt = trim( preg_replace( '/\s+/', ' ', (string) $lb->textContent ) );
 				if ( '' === $lt || mb_strlen( $lt ) > 24 || str_word_count( $lt ) > 3 ) { continue; }
 				$lcs = (string) $lb->getAttribute( 'data-sc-cs' );
 				$upper = preg_match( '/text-transform:\s*uppercase/i', $lcs ) || ( preg_match( '/[a-z]/i', $lt ) && $lt === mb_strtoupper( $lt ) );
 				$tracked = preg_match( '/letter-spacing:\s*([0-9.]+)px/i', $lcs, $lsm ) && (float) $lsm[1] >= 1;
-				if ( ! $upper && ! $tracked ) { continue; }
+				// Keep the uppercase / tracked look as a fast path, but it cannot be REQUIRED: a builder renders the
+				// heading as a plain `<p>Solutions</p>` and gets its uppercase from a class rule, which the capture's
+				// per-element stamp does not record. Judged on that alone every column heading was rejected and a
+				// four-column footer converted as one list with its headings gone. The structural evidence below — a
+				// short leaf that OPENS a group of two or more links — is what a column heading actually is.
 				$par = $lb->parentNode; if ( ! ( $par instanceof DOMElement ) ) { continue; }
 				$first = null; foreach ( self::el_children( $par ) as $pc ) { $first = $pc; break; }
 				if ( $first !== $lb ) { continue; } // the label OPENS its column
 				$links = 0; foreach ( self::el_children( $par ) as $pc ) { if ( 'a' === strtolower( $pc->tagName ) ) { $links++; } } if ( $links < 2 ) { $links = $par->getElementsByTagName( 'a' )->length; }
-				if ( $links < 2 ) { continue; }
+				// …and if the label's own parent holds no links, CLIMB to the column that does. A page builder puts the
+				// heading and its link list in SEPARATE sibling widgets, so the heading's parent is a wrapper containing
+				// nothing but the heading — the link count was zero and every such column was rejected. A footer of four
+				// columns then converted as one undifferentiated list with its headings missing. Climb at most three
+				// levels, and require the label to still open whatever column is found, so a heading never adopts a
+				// neighbouring column's links.
+				if ( $links < 2 ) {
+					$up = $par;
+					for ( $lvl = 0; $lvl < 3 && $up instanceof DOMElement; $lvl++ ) {
+						$up = $up->parentNode;
+						if ( ! ( $up instanceof DOMElement ) || 'footer' === strtolower( $up->tagName ) ) { break; }
+						$n = $up->getElementsByTagName( 'a' )->length;
+						// ONE link is still a column. A footer routinely ends with a short call-to-action column holding a
+						// single link ("Get Started" → "Schedule a Call"); demanding two dropped it, so the converted footer
+						// came out a column short. The heading guards above — a short, link-free label that opens the group —
+						// already carry the weight here.
+						if ( $n < 1 ) { continue; }
+						// The label must come BEFORE this column's first link, so a heading never adopts the next column's
+						// links. PHP's DOM has no compareDocumentPosition(), so walk the column in document order and see
+						// which is reached first.
+						$first_a = $up->getElementsByTagName( 'a' )->item( 0 );
+						if ( $first_a instanceof DOMElement ) {
+							$stack = array( $up );
+							$hit   = '';
+							while ( $stack ) {
+								$node = array_shift( $stack );
+								if ( $node === $lb )      { $hit = 'label'; break; }
+								if ( $node === $first_a ) { $hit = 'link';  break; }
+								$kids = array();
+								foreach ( $node->childNodes as $c ) { if ( $c instanceof DOMElement ) { $kids[] = $c; } }
+								$stack = array_merge( $kids, $stack ); // depth-first, document order
+							}
+							if ( 'label' === $hit ) { $links = $n; }
+						}
+						break;
+					}
+				}
+				if ( $links < 1 ) { continue; } // one link is still a column (a short call-to-action column)
+				if ( ! $upper && ! $tracked && $links < 1 ) { continue; } // neither the look nor the structure
 				$out[] = $lb;
 			}
 		}
@@ -9153,6 +9251,17 @@ class FW_Site_Converter_Stitch {
 				// A column whose links are tel:/mailto: is a CONTACT column (address/phone/email), not a nav-link
 				// column — gather its icon+text rows so it maps to icon_text (incl. the address, which is not a link).
 				$contact_links = 0; foreach ( $links as $l ) { $lh = strtolower( (string) $l['href'] ); if ( 0 === strpos( $lh, 'tel:' ) || 0 === strpos( $lh, 'mailto:' ) ) { $contact_links++; } }
+				// ONE link is still a nav column. A footer routinely ends with a short call-to-action column holding a
+				// single link ("Get Started" → "Schedule a Call"), and requiring two dropped it: the converted footer
+				// came out a column short of its source. The contact test below still catches an address/phone column.
+				// NOTE: this stays at two. A single link here is ambiguous — it is as likely to be a contact column's
+				// lone mailto as a one-link nav column — and clearing it lets the contact branch below read the address
+				// rows properly. The ACCEPTANCE gate further down is the one that admits a one-link nav column.
+				// Keep a SOLO link aside before clearing. The clear above is right for an ambiguous single link — it
+				// lets the contact branch read address rows — but it also erased genuine one-link nav columns like a
+				// footer's closing "Get Started". Restored at the acceptance gate, and only when the column did not
+				// turn out to be a contact column, so both shapes survive.
+				$solo_link = ( 1 === count( $links ) && 0 === $contact_links ) ? $links : array();
 				if ( count( $links ) < 2 || ( $links && $contact_links >= (int) ceil( count( $links ) / 2 ) ) ) {
 					$links = array();
 					foreach ( $parent->getElementsByTagName( 'li' ) as $li ) {
@@ -9251,7 +9360,16 @@ class FW_Site_Converter_Stitch {
 						if ( $a->getElementsByTagName( 'svg' )->length || $a->getElementsByTagName( 'iconify-icon' )->length || $a->getElementsByTagName( 'i' )->length || $a->getElementsByTagName( 'img' )->length ) { $social_n++; }
 					}
 				}
-				if ( count( $links ) >= 2 || count( $items ) >= 2 || ( $kind === 'contact' && count( $rows ) >= 1 ) || $news !== null || $social_n >= 2 ) {
+				// A ONE-LINK column is a real column. Footers commonly close with a short call-to-action column —
+				// "Get Started" over a single "Schedule a Call" — and demanding two links dropped it, so a four-column
+				// footer converted as three. The heading guards upstream (a short, link-free label that opens the
+				// group) are what keep this from claiming stray text.
+				// …and only when the column produced NO rows and no list items of its own. A column that did is a
+				// contact or text block whose single link belongs inside one of those rows, not a nav column.
+				if ( ! $links && $solo_link && 'contact' !== $kind && null === $news && ! $rows && ! $items ) {
+					$links = $solo_link;
+				}
+				if ( count( $links ) >= 1 || count( $items ) >= 2 || ( $kind === 'contact' && count( $rows ) >= 1 ) || $news !== null || $social_n >= 2 ) {
 					$out[] = array( 'title' => $title, 'tag' => $htag, 'links' => $links, 'seq' => $seq, 'titleIcon' => $title_icon, 'items' => $items, 'kind' => ( $news !== null ? 'newsletter' : ( $social_n >= 2 ? 'social' : $kind ) ), 'rows' => ( $kind === 'contact' ? $rows : array() ), 'newsletter' => $news, 'cls' => self::cls( $parent ), 'append_social' => ( $social_n >= 2 ) );
 					$seen[ $title ] = true;
 				}
@@ -9516,6 +9634,23 @@ class FW_Site_Converter_Stitch {
 		if ( ! ( $h instanceof DOMElement ) ) { return ''; }
 		$decls = '';
 		$ff = self::sc_css( $h, 'font-family' );      if ( $ff !== '' && stripos( $ff, 'inherit' ) === false ) { $decls .= 'font-family:' . $ff . ';'; }
+		// READ THE TYPE OFF THE ELEMENT THAT CARRIES THE TEXT. A builder wraps the heading in widget markup, so
+		// the element that opens the column is a wrapper whose own stamp holds only inherited values — the
+		// measured colour there was the page's dark ink, and the converted footer painted its column titles
+		// near-black on a dark navy bar while the source showed them white. Descend to the innermost element
+		// that still holds the whole label before reading.
+		$ht = $h;
+		for ( $d = 0; $d < 3; $d++ ) {
+			$only = null;
+			foreach ( self::el_children( $ht ) as $c ) {
+				if ( '' === trim( (string) self::text( $c ) ) ) { continue; }
+				if ( null !== $only ) { $only = null; break; } // more than one text child: stop here
+				$only = $c;
+			}
+			if ( ! ( $only instanceof DOMElement ) ) { break; }
+			$ht = $only;
+		}
+		$h = $ht;
 		$tt = self::sc_css( $h, 'text-transform' );  if ( stripos( $tt, 'uppercase' ) !== false ) { $decls .= 'text-transform:uppercase;'; }
 		$ls = self::sc_css( $h, 'letter-spacing' );  if ( $ls !== '' && $ls !== 'normal' && $ls !== '0px' ) { $decls .= 'letter-spacing:' . $ls . ';'; }
 		$fw = self::sc_css( $h, 'font-weight' );     if ( preg_match( '/^(300|400|500|600|700|800|900)$/', trim( $fw ) ) ) { $decls .= 'font-weight:' . trim( $fw ) . ';'; }
@@ -9551,6 +9686,46 @@ class FW_Site_Converter_Stitch {
 	 * nav link's DISTINCTIVE utilities (text-transform / letter-spacing / font-weight) — colour is already the
 	 * native footer_link_color and size usually inherits, so only the residual look is carried here.
 	 */
+	/**
+	 * The footer's own vertical INSET, in px — { top, bottom } — or array() when it has none.
+	 *
+	 * This used to read the `padding` shorthand off the <footer> element and nothing else, which is right
+	 * for a hand-written footer. A page builder nests: measured on a captured footer, the <footer> and both
+	 * wrappers inside it pad 0, and the real `padding: 60px 0px 30px` sits THREE levels down. Nothing was
+	 * written, the footer fell back to the theme default, and it rendered 32/24 against the source's 60/30.
+	 *
+	 * The SHALLOWEST stamped vertical inset inside the footer wins. A footer also contains padded things
+	 * that are not its band — a link row at `0px 0px 9px`, a card, a button — and taking the first in
+	 * document order reaches the band before any of them. The depth limit keeps the walk out of content.
+	 */
+	private static function footer_inset_px( $html ) {
+		$footer = self::footer_root_el( $html );
+		if ( ! ( $footer instanceof DOMElement ) ) { return array(); }
+		$read = function ( $el ) {
+			$cs = html_entity_decode( (string) $el->getAttribute( 'data-sc-cs' ), ENT_QUOTES );
+			if ( '' === $cs || ! preg_match( '/(?:^|;)\s*padding\s*:\s*([^;]+)/i', $cs, $pm ) ) { return null; }
+			$parts = preg_split( '/\s+/', trim( $pm[1] ) );
+			$top   = isset( $parts[0] ) ? (float) $parts[0] : 0.0;
+			$bot   = isset( $parts[2] ) ? (float) $parts[2] : $top;
+			return ( $top > 0 || $bot > 0 ) ? array( 'top' => $top, 'bottom' => $bot ) : null;
+		};
+		// the footer's own inset still answers first when it has one
+		$own = $read( $footer );
+		if ( is_array( $own ) ) { return $own; }
+		// …otherwise the shallowest one inside it, in document order
+		$queue = array( array( $footer, 0 ) );
+		while ( $queue ) {
+			list( $node, $depth ) = array_shift( $queue );
+			if ( $depth >= 5 ) { continue; }
+			foreach ( self::el_children( $node ) as $kid ) {
+				$hit = $read( $kid );
+				if ( is_array( $hit ) ) { return $hit; }
+				$queue[] = array( $kid, $depth + 1 );
+			}
+		}
+		return array();
+	}
+
 	private static function footer_link_css( $html ) {
 		$footer = self::footer_root_el( $html );
 		if ( ! ( $footer instanceof DOMElement ) ) { return ''; }
@@ -9562,6 +9737,25 @@ class FW_Site_Converter_Stitch {
 				if ( $t !== '' && str_word_count( $t ) <= 4 && self::social_lucide( $href ) === '' ) { $a = $x; break 2; }
 			}
 		}
+		// A FOOTER'S LINKS ARE ITS LINKS, LIST OR NOT.
+		//
+		// The walk above wants `li > a`, which is how a hand-written footer marks up a nav column. A page
+		// builder does not: measured on a captured footer, 0 <li> elements and 8 <a>s, because each link is its
+		// own button widget (div.widget-container > div.button-wrapper > a). The sample came back null, this
+		// returned '', and not one footer-link rule reached the generated theme — the source's 500 weight, 21px
+		// line-height and centred alignment all lost at once to the theme's defaults.
+		//
+		// So when no list item holds a link, the footer's own anchors are scanned, under the SAME guards: real
+		// text, at most four words (a nav label, not a sentence), and not a social icon link.
+		if ( ! ( $a instanceof DOMElement ) ) {
+			foreach ( $footer->getElementsByTagName( 'a' ) as $x ) {
+				$t    = trim( preg_replace( '/\s+/', ' ', self::text_no_icons( $x ) ) );
+				$href = trim( (string) $x->getAttribute( 'href' ) );
+				if ( '' === $t || str_word_count( $t ) > 4 || '' !== self::social_lucide( $href ) ) { continue; }
+				$a = $x;
+				break;
+			}
+		}
 		if ( ! ( $a instanceof DOMElement ) ) { return ''; }
 		$decls = '';
 		$ff = self::sc_css( $a, 'font-family' );      if ( $ff !== '' && stripos( $ff, 'inherit' ) === false ) { $decls .= 'font-family:' . $ff . ';'; }
@@ -9569,6 +9763,11 @@ class FW_Site_Converter_Stitch {
 		$ls = self::sc_css( $a, 'letter-spacing' );  if ( $ls !== '' && $ls !== 'normal' && $ls !== '0px' ) { $decls .= 'letter-spacing:' . $ls . ';'; }
 		$fw = self::sc_css( $a, 'font-weight' );     if ( preg_match( '/^(300|400|500|600|700|800|900)$/', trim( $fw ) ) ) { $decls .= 'font-weight:' . trim( $fw ) . ';'; }
 		$fs = self::sc_css( $a, 'font-size' );        if ( preg_match( '/^[0-9.]+px$/', trim( $fs ) ) ) { $decls .= 'font-size:' . trim( $fs ) . ';'; }
+		// TEXT-ALIGN — never carried at all, and the most VISIBLE of these when it is wrong: a footer whose
+		// links centre under their column heading rendered flush left against the theme's `start` default.
+		// Only a deliberate centre/right is emitted; `start`/`left` is the default and says nothing.
+		$ta = strtolower( trim( (string) self::sc_css( $a, 'text-align' ) ) );
+		if ( in_array( $ta, array( 'center', 'right' ), true ) ) { $decls .= 'text-align:' . $ta . ';'; }
 		// LINE-HEIGHT — the source footer text sets its own (e.g. 20px for 14px links); the theme's tighter
 		// default (~15px) leaves the list looking cramped even once the item gap matches. Captured separately
 		// so it can be applied to EVERY list item (links AND plain-text contact rows), which inherit it.
@@ -9577,7 +9776,10 @@ class FW_Site_Converter_Stitch {
 		// Retarget: footer links now render as `.footer-link` (the unified List Item), not `.footer-menu a`.
 		$css = $decls !== '' ? '.footer-column .footer-link{' . $decls . '}' : '';
 		// line-height on the list items so both the links and the non-link (address) rows breathe like the source.
-		if ( $lh !== '' ) { $css .= '.footer-column .footer-links-list>li,.footer-column .footer-links-list .list-item__text{line-height:' . $lh . '}'; }
+		// …and on the LINK ITSELF, not only on the row. The theme sets its own line-height on `.footer-link`,
+		// which out-ranks anything inherited from the <li>, so a measured 21px sat on the row while the link
+		// kept rendering at the theme's 24.08px.
+		if ( $lh !== '' ) { $css .= '.footer-column .footer-links-list>li,.footer-column .footer-link,.footer-column .footer-links-list .list-item__text{line-height:' . $lh . '}'; }
 		// Hover colour (`hover:text-<token>`) → the theme's Color-Preset var (portable + editable) — ONLY when the
 		// capture did not MEASURE the hover (`data-sc-footer` link-hover → the native footer_link_hover_color option,
 		// which this scoped rule would out-rank at (0,3,0) and make un-editable), and only for a token the theme
@@ -10739,10 +10941,41 @@ class FW_Site_Converter_Stitch {
 		}
 		if ( null === $content ) { return null; }
 
+		// THE INSET CAN SIT DEEPER THAN ONE LEVEL.
+		//
+		// A hand-written band puts its padding on the section or on the one wrapper inside it, which is what
+		// this looked for. A page builder nests: section > container > column > widget-wrap, and the padding
+		// lands on the innermost of those. Measured on a captured band, `padding: 54px 0px 0px` sat three
+		// levels down, this returned null, and the converted section opened flush — 54px of breathing room
+		// above the eyebrow simply gone, which is the whole of that band's 70px height deficit.
+		//
+		// Descending is safe under the guards already established here: at every level there must be exactly
+		// ONE in-flow child (two means the padding is not the band's) and it must span the band's full height
+		// (otherwise it is a part of the band, not its container). So the walk below keeps looking only while
+		// the chain stays a single full-height wrapper, and stops at the first level that declares an inset.
+		$guard = 0;
+		while ( $content instanceof DOMElement && $guard++ < 4 ) {
+			$ccs = (string) $content->getAttribute( 'data-sc-cs' );
+			if ( '' === $ccs ) { return null; }
+			if ( ! preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $ccs, $chm ) ) { return null; }
+			if ( abs( (float) $chm[1] - $sec_h ) > 2.0 ) { return null; }   // it does not span the band
+			$try = self::cs_decls_pad( $ccs );
+			$tt  = is_array( $try ) ? (float) $try['top'] : (float) self::sc_css( $content, 'padding-top' );
+			$tb  = is_array( $try ) ? (float) $try['bottom'] : (float) self::sc_css( $content, 'padding-bottom' );
+			if ( $tt > 0 || $tb > 0 ) { break; }   // this level declares the band's inset
+			// …otherwise step into its single in-flow child and ask again.
+			$next = null;
+			foreach ( $content->childNodes as $kid2 ) {
+				if ( ! ( $kid2 instanceof DOMElement ) ) { continue; }
+				if ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', (string) $kid2->getAttribute( 'data-sc-cs' ) ) ) { continue; }
+				if ( null !== $next ) { return null; }   // two content children: the padding is not the band's
+				$next = $kid2;
+			}
+			if ( null === $next ) { return null; }
+			$content = $next;
+		}
 		$ccs = (string) $content->getAttribute( 'data-sc-cs' );
 		if ( '' === $ccs ) { return null; }
-		if ( ! preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $ccs, $chm ) ) { return null; }
-		if ( abs( (float) $chm[1] - $sec_h ) > 2.0 ) { return null; }   // it does not span the band
 
 		$cpad = self::cs_decls_pad( $ccs );
 		$ct   = is_array( $cpad ) ? (float) $cpad['top']    : (float) self::sc_css( $content, 'padding-top' );
@@ -10822,9 +11055,13 @@ class FW_Site_Converter_Stitch {
 		$cb  = is_array( $pad ) ? (float) $pad['bottom'] : (float) self::sc_css( $content, 'padding-bottom' );
 		if ( $ct <= 0 && $cb <= 0 ) { return array(); }
 
-		$decls = '';
-		if ( $ct > 0 ) { $decls .= ';padding-top:' . $ct . 'px'; }
-		if ( $cb > 0 ) { $decls .= ';padding-bottom:' . $cb . 'px'; }
+		// BOTH sides, always — including a zero. The section itself has no vertical inset (checked above), so
+		// this container's padding IS the band's, and a side it leaves at 0 is a real 0, not an absent value.
+		// Emitting only the non-zero side left the other undeclared, and the mapper's "zero is a value" rule
+		// could no longer see an explicit 0 — so the band fell back to the theme's default. Measured: carrying
+		// a 54px top correctly then added 48px of theme padding at the bottom the source does not have, turning
+		// a 70px deficit into a 50px surplus.
+		$decls = ';padding-top:' . $ct . 'px;padding-bottom:' . $cb . 'px';
 
 		$tier = function ( $attr ) use ( $content ) {
 			$v = (string) $content->getAttribute( $attr );
@@ -11165,7 +11402,7 @@ class FW_Site_Converter_Stitch {
 		$queue = array( array( $header, 0 ) );
 		while ( $queue ) {
 			list( $el, $d ) = array_shift( $queue );
-			if ( $el !== $header && self::el_is_header_surface( $el ) ) { return $el; }
+			if ( $el !== $header && self::el_is_header_surface( $el, $header ) ) { return $el; }
 			if ( $d >= 3 ) { continue; }
 			foreach ( self::el_children( $el ) as $c ) { $queue[] = array( $c, $d + 1 ); }
 		}
@@ -11173,7 +11410,7 @@ class FW_Site_Converter_Stitch {
 	}
 
 	/** Does this element read as a header "surface" — a blurred/shadowed/filled-pill bar that HOLDS nav content? */
-	private static function el_is_header_surface( $el ) {
+	private static function el_is_header_surface( $el, $header = null ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		if ( $el->getElementsByTagName( 'a' )->length < 1 ) { return false; } // must hold the nav, not a decorative layer
 		$bf = self::sc_css( $el, 'backdrop-filter' );
@@ -11187,7 +11424,17 @@ class FW_Site_Converter_Stitch {
 		$radius = self::sc_css( $el, 'border-top-left-radius' );
 		$pill   = (bool) preg_match( '/\srounded-(full|3xl|2xl)\s/', $cls ) || (float) $radius >= 16 || strpos( (string) $radius, '50%' ) !== false;
 		// a real header surface = blurred OR shadowed, OR a pill-radius bar carrying a translucent fill
-		return $glass || $shadow || ( $fill && $pill );
+		// …OR A PLAIN BAR INSIDE AN UNPAINTED HEADER. The tests above all describe a FLOATING header — frosted,
+		// shadowed, or a rounded pill. A page builder paints the ordinary case instead: the <header> root is a
+		// transparent wrapper and an inner container carries the fill. That matched none of them, so the chrome
+		// was read off the transparent root and the header arrived with no colour, falling back to the theme's
+		// light default — a dark blue bar converted to pale grey, with the source's white nav links left almost
+		// invisible on it. (The signal is the ROOT being bare, not the bar's width: the capture stamps no width
+		// on these elements, so a width comparison could never fire.)
+		$root_bg   = ( $header instanceof DOMElement ) ? (string) self::sc_css( $header, 'background-color' ) : '';
+		$root_bare = ( '' === $root_bg || false !== stripos( $root_bg, 'transparent' )
+			|| (bool) preg_match( '/rgba\([^)]*,\s*0\s*\)/i', $root_bg ) );
+		return $glass || $shadow || ( $fill && ( $pill || $root_bare ) );
 	}
 
 	private static function detect_header_chrome_styles( $html ) {
@@ -12169,6 +12416,65 @@ class FW_Site_Converter_Stitch {
 		return $best;
 	}
 
+	/**
+	 * The HAIRLINE RULE drawn immediately above the footer's copyright bar, when it is drawn as its own
+	 * element rather than as a border on the bar.
+	 *
+	 * Both spellings render the same line, so both have to reach the same theme setting:
+	 *
+	 *   <div class=\"border-t pt-8\"> (c) 2026 ...   <-- a border on the BAND; the ancestor walk finds this
+	 *   <span class=\"...divider-separator\"></span>  <-- a divider WIDGET; a sibling, found here
+	 *   <hr>                                         <-- the plain HTML spelling, also found here
+	 *
+	 * Only an element with no words and no pictures qualifies -- a rule is a rule precisely because it has
+	 * no content of its own -- so a bordered card or a bordered nav that happens to precede the bar cannot
+	 * be mistaken for one. The border is read from the element or from a lone descendant, because builders
+	 * wrap the hairline in a widget container and put the border on the inner span.
+	 *
+	 * @param DOMElement $band   the copyright band
+	 * @param DOMElement $footer the footer, which bounds the search
+	 * @return array|null { width, style, color } or null
+	 */
+	private static function footer_rule_above( $band, $footer ) {
+		if ( ! ( $band instanceof DOMElement ) || ! ( $footer instanceof DOMElement ) ) { return null; }
+		// The border, read from $n itself or from a lone descendant chain (a widget wrapper around the line).
+		$edge = function ( $n ) {
+			// Follows LONE children only, so it cannot wander into a sibling's content. The depth is what a
+			// builder's nesting needs: the measured divider sat five wrappers below the sibling element
+			// (inner > element > widget-container > divider > separator), and a limit of 3 found nothing.
+			for ( $i = 0; $i < 7 && $n instanceof DOMElement; $i++ ) {
+				$w = self::sc_css( $n, 'border-top-width' );
+				$s = self::sc_css( $n, 'border-top-style' );
+				$c = self::sc_css( $n, 'border-top-color' );
+				if ( '' !== $w && (float) $w > 0 && '' !== $s && 'none' !== $s && '' !== $c
+					&& ! preg_match( '/rgba?\([^)]*[,\/]\s*0*(?:\.0+)?\s*\)/i', $c ) ) {
+					return array( 'width' => (float) $w, 'style' => $s, 'color' => $c );
+				}
+				$kids = self::el_children( $n );
+				if ( 1 !== count( $kids ) ) { break; }
+				$n = $kids[0];
+			}
+			return null;
+		};
+		// Contentless: no words, no images. An <hr> is contentless by definition.
+		$bare = function ( $n ) {
+			if ( ! ( $n instanceof DOMElement ) ) { return false; }
+			if ( 'hr' === strtolower( $n->tagName ) ) { return true; }
+			if ( '' !== trim( preg_replace( '/\s+/u', '', (string) $n->textContent ) ) ) { return false; }
+			return ! $n->getElementsByTagName( 'img' )->length && ! $n->getElementsByTagName( 'svg' )->length;
+		};
+		// Walk back from the band, then from each ancestor up to the footer -- the divider is a sibling of the
+		// bar on a flat footer and a sibling of its wrapper on a nested one, and only the footer bounds it.
+		for ( $node = $band; $node instanceof DOMElement && $node !== $footer; $node = $node->parentNode ) {
+			for ( $p = $node->previousSibling; $p; $p = $p->previousSibling ) {
+				if ( ! ( $p instanceof DOMElement ) ) { continue; }
+				if ( ! $bare( $p ) ) { break; } // real content sits between: whatever is further back is not this bar's rule
+				$e = $edge( $p );
+				if ( $e ) { return $e; }
+			}
+		}
+		return null;
+	}
 	private static function detect_band_custom_fields( $el, $prefix ) {
 		$out = array();
 		if ( ! ( $el instanceof DOMElement ) ) { return $out; }
@@ -14231,25 +14537,42 @@ class FW_Site_Converter_Stitch {
 			if ( in_array( $lc, array( 'serif', 'sans-serif', 'monospace', 'system-ui', 'ui-sans-serif', 'ui-serif', 'ui-monospace', 'inherit', 'initial', '-apple-system', 'blinkmacsystemfont' ), true ) ) { return ''; }
 			return $first;
 		};
-		// The DISPLAY face lives on the PRIMARY headings (h1, then h2) — take the first one that carries a
-		// real family. Do NOT pool h3+ into the vote: card/section titles (icon-box, article, "Quick Links")
-		// are numerous and usually render in the BODY font, so tallying them lets the body font outvote the
-		// true display face (e.g. 11 Inter h3s drowning the 5 Playfair Display h1/h2s → heading mis-set to Inter).
-		$head = ''; $head_stack = '';
+		// The DISPLAY face lives on the PRIMARY headings (h1, h2). Do NOT pool h3+ into the vote: card/section
+		// titles (icon-box, article, quick-links) are numerous and usually render in the BODY font, so tallying
+		// them lets the body font outvote the true display face (e.g. 11 Inter h3s drowning the 5 Playfair
+		// Display h1/h2s -> heading mis-set to Inter).
+		//
+		// Among h1/h2 it is a VOTE, not the first one found. Taking the first match made the whole site's
+		// heading face a sample of ONE, and one heading is routinely the odd one out: on a measured source a
+		// single Roboto h1 (the hero) set `fonts.heading = Roboto` against ten Inter h2s, while 27 of that
+		// page's 29 visible headings were Inter. It then rendered WORSE than a merely wrong font would, because
+		// the Google stylesheet is built from the fonts actually in use -- Roboto was never requested, so every
+		// card title fell back to the system SERIF on a page with no serif anywhere in it.
+		//
+		// A bespoke face on the hero alone is still carried: it rides on that heading's own node styling. What
+		// it must not do is redefine every other heading on the site.
+		$head = ''; $head_stack = ''; $head_raw = '';
+		$votes = array(); $raws = array();
 		foreach ( array( 'h1', 'h2' ) as $tag ) {
 			foreach ( $dom->getElementsByTagName( $tag ) as $h ) {
 				$raw = self::sc_css( $h, 'font-family' );
 				$fam = $first_family( $raw );
-				if ( $fam !== '' ) {
-					$head = $fam;
-					// Keep the FULL computed stack too (e.g. `Neutraface Condensed Titling, Alfa Slab One, cursive`)
-					// so a licensed primary that we can't rehost still resolves to its web-safe NAMED fallback
-					// instead of a system serif — used for the global `--font-heading` / `:is(h…)` stack.
-					if ( class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
-						$head_stack = FW_Site_Converter_Theme_Generator::heading_fallback_stack( $raw );
-					}
-					break 2;
-				}
+				if ( '' === $fam ) { continue; }
+				$votes[ $fam ] = ( isset( $votes[ $fam ] ) ? $votes[ $fam ] : 0 ) + 1;
+				if ( ! isset( $raws[ $fam ] ) ) { $raws[ $fam ] = $raw; } // one full stack per family, for the fallback below
+			}
+		}
+		if ( $votes ) {
+			// arsort is stable here and h1s were inserted first, so a genuine TIE still resolves to the h1's
+			// face -- the display heading wins when the evidence is balanced, and only loses to a clear majority.
+			arsort( $votes );
+			$head     = (string) array_key_first( $votes );
+			$head_raw = isset( $raws[ $head ] ) ? (string) $raws[ $head ] : '';
+			// Keep the FULL computed stack too (e.g. `Neutraface Condensed Titling, Alfa Slab One, cursive`) so a
+			// licensed primary we cannot rehost still resolves to its web-safe NAMED fallback instead of a system
+			// serif -- used for the global `--font-heading` / `:is(h...)` stack.
+			if ( '' !== $head_raw && class_exists( 'FW_Site_Converter_Theme_Generator' ) ) {
+				$head_stack = FW_Site_Converter_Theme_Generator::heading_fallback_stack( $head_raw );
 			}
 		}
 		if ( $head === '' ) { // no h1/h2 face → fall back to the most common h3 face
@@ -17676,6 +17999,9 @@ class FW_Site_Converter_Stitch {
 				// product-row thumbnail) would render at natural size. Carry that size as skinCss.
 				$own = self::img_own_box( $el );
 				if ( '' !== $own ) { $blk['skinCss'] = $own; }
+				// …and the wrapper's side inset, which decides how wide a `max-width:100%` picture renders.
+				$ins = self::img_wrapper_inset_css( $el );
+				if ( '' !== $ins ) { $blk['skinCss'] = trim( (string) ( isset( $blk['skinCss'] ) ? $blk['skinCss'] : '' ) . ' ' . $ins ); }
 				// The image's OWN visual treatment (capture >= 1.10.95): a filter (grayscale / blur), the object-position of a
 				// cover crop, an aspect-ratio box → scoped CSS on the media_image's <img>. JS twin: imgSkin extra.
 				$ix = self::img_extra_css( $el );
@@ -17689,6 +18015,10 @@ class FW_Site_Converter_Stitch {
 			function ( $el ) {
 				$img = $el->getElementsByTagName( 'img' )->item( 0 ); if ( ! $img ) { return null; }
 				$blk = array( 't' => 'image', 'role' => 'image', 'html' => self::img_html( $img ) );
+				// The wrapper being flattened here is exactly the frame whose side inset decides the picture's
+				// rendered width — carry it (see img_wrapper_inset_css).
+				$ins0 = self::img_wrapper_inset_css( $img );
+				if ( '' !== $ins0 ) { $blk['skinCss'] = $ins0; }
 				// A FIXED-HEIGHT COVER FRAME (`w-full h-[80vh] overflow-hidden > img.w-full.h-full.object-cover`): the wrapper's measured
 				// height is the picture's height and the image covers it — it rendered at its natural 1024×544 inside the container
 				// (a fixture from the feed). The height is kept as the source wrote it (`80vh`) when a vh utility says so, else the px.
@@ -18292,6 +18622,17 @@ class FW_Site_Converter_Stitch {
 				if ( ! $lbig && ! preg_match( '/\btext-[2-9]xl\b/', ' ' . self::cls( $num_leaf ) . ' ' ) ) { return null; }
 			}
 		}
+		// THE CAPTION AND THE QUALIFIER ARE TWO LINES, NOT ONE SENTENCE.
+		//
+		// A stat cell routinely carries a bold caption on one side of the number and a quieter qualifier on the
+		// other — "Orders" above, "last 24 hours" below. Both land here as $before / $after, and concatenating
+		// them produced "Orders last 24 hours": one heavy run where the source has two lines of different weight.
+		// Measured on a captured stats band, all four cards read that way.
+		//
+		// `label` keeps its merged value so every existing reader is unaffected, and a cell carrying only one of
+		// the two is unchanged in every respect. The parts ride alongside it, for a reader that knows about them.
+		$label_cap = trim( preg_replace( '/\s+/', ' ', $before ) );
+		$label_sub = trim( preg_replace( '/\s+/', ' ', $after ) );
 		$label   = trim( preg_replace( '/\s+/', ' ', $before . ' ' . $after ) );
 		$label_first = '' !== trim( $before ) && '' === trim( $after ); // the caption sits ABOVE the number ("ENERGY STATE" over "98%") — keep that order
 		// A STAT cell is DOMINATED by its number: the leftover label is a short caption ("Happy pets",
@@ -18338,10 +18679,31 @@ class FW_Site_Converter_Stitch {
 				if ( $label_size === '' ) { $lfs = trim( (string) self::sc_css( $e, 'font-size' ) ); if ( preg_match( '/^([0-9.]+)px$/', $lfs, $lm ) ) { $label_size = $lm[1]; } }
 			}
 		}
+		// The qualifier's own WEIGHT, read from its leaf — never assumed. A source whose sub-line is the same
+		// weight as its caption must not have a lighter one invented for it, so an unstamped sub-line yields
+		// nothing and the mapper renders the line break alone.
+		$label_sub_weight = '';
+		if ( '' !== $label_sub && '' !== $label_cap ) {
+			foreach ( $cell->getElementsByTagName( '*' ) as $e ) {
+				if ( $e->getElementsByTagName( '*' )->length > 0 ) { continue; } // leaf only
+				if ( trim( preg_replace( '/\s+/', ' ', self::text( $e ) ) ) !== $label_sub ) { continue; }
+				$fw = strtolower( trim( (string) self::sc_css( $e, 'font-weight' ) ) );
+				if ( preg_match( '/^[1-9]00$/', $fw ) )  { $label_sub_weight = $fw; }
+				elseif ( 'bold' === $fw )   { $label_sub_weight = '700'; }
+				elseif ( 'normal' === $fw ) { $label_sub_weight = '400'; }
+				break;
+			}
+		}
 		// The stat cell's text-ALIGN (source hero stats are centered) → the counter + its label centre to match.
 		$ta = trim( (string) self::sc_css( $cell, 'text-align' ) );
 		$align = in_array( $ta, array( 'center', 'right' ), true ) ? $ta : '';
-		return array( 'number' => $number, 'prefix' => $prefix, 'suffix' => $suffix, 'decimals' => (string) $decimals, 'label' => $label, 'numberColor' => $num_color, 'suffixColor' => $num_color, 'prefixColor' => $num_color, 'labelColor' => $label_color, 'labelSize' => $label_size, 'numberSize' => $num_size, 'suffixSize' => $num_size, 'prefixSize' => $num_size, 'align' => $align, 'numberCs' => $num_cs, 'labelCs' => $label_cs, 'labelFirst' => $label_first );
+		// THOUSANDS SEPARATOR — the source's own writing decides. The counter shortcode defaults to inserting
+		// commas, and the mapper pinned that on, so a source that writes a bare `4499` was rendered `4,499`:
+		// a number the page never contained. `$num_raw` is the matched text exactly as the source wrote it, so
+		// it answers the question directly instead of guessing from the magnitude. (Below 1000 it cannot
+		// matter, and the flag is harmless there.)
+		$sep = ( false !== strpos( $num_raw, ',' ) ) ? 'yes' : 'no';
+		return array( 'number' => $number, 'prefix' => $prefix, 'suffix' => $suffix, 'decimals' => (string) $decimals, 'sep' => $sep, 'label' => $label, 'numberColor' => $num_color, 'suffixColor' => $num_color, 'prefixColor' => $num_color, 'labelColor' => $label_color, 'labelSize' => $label_size, 'numberSize' => $num_size, 'suffixSize' => $num_size, 'prefixSize' => $num_size, 'align' => $align, 'numberCs' => $num_cs, 'labelCs' => $label_cs, 'labelFirst' => $label_first, 'labelCap' => $label_cap, 'labelSub' => $label_sub, 'labelSubWeight' => $label_sub_weight );
 	}
 
 	/**
@@ -18856,15 +19218,52 @@ class FW_Site_Converter_Stitch {
 					array( 't' => 'heading', 'role' => 'heading', 'level' => 3, 'cls' => self::cls( $sw['value_el'] ), 'cs' => (string) $sw['value_el']->getAttribute( 'data-sc-cs' ), 'csSm' => '', 'align' => $sw['align'], 'text' => $sw['value'], 'html' => esc_html( $sw['value'] ) ),
 					array( 't' => 'text', 'role' => 'text', 'cls' => self::cls( $sw['label_el'] ), 'cs' => (string) $sw['label_el']->getAttribute( 'data-sc-cs' ), 'csSm' => '', 'maxWidth' => '', 'text' => $sw['label'], 'html' => '<p>' . esc_html( $sw['label'] ) . '</p>', 'linkCs' => '' ),
 				) ), self::cell_geometry( $k ) );
-				$box = self::read_card_skin( $k ); if ( $box ) { $col['cardBox'] = $box; }
+				$box = self::cell_card_skin( $k ); if ( $box ) { $col['cardBox'] = $box; }
 				$cols[] = $col;
 				continue;
 			}
 			// Each stat cell is often its OWN sub-card (source `text-center p-4 bg-white/10 rounded-xl`) —
 			// carry its box skin so the converted counters sit in matching sub-boxes, not bare on the panel.
 			$col = array_merge( array( 'counter' => $p, 'wResp' => array( 'desktop' => $desk ) ), self::cell_geometry( $k ) ); // + the cell's own placement / edge rule
-			$box = self::read_card_skin( $k );
+			// …and that skin is read with cell_card_skin, not read_card_skin: a page builder puts the box on the
+			// cell's inner wrapper (measured: div.column > div.widget-wrap carrying 1px #fff / radius 15px), where a
+			// cell-only lookup finds nothing and four bordered cards render as bare numbers. cell_card_skin descends
+			// into a dominant wrapper under the guards already established for card cells.
+			$box = self::cell_card_skin( $k );
 			if ( $box ) { $col['cardBox'] = $box; }
+			// THE GLYPH IS PART OF THE STAT, not decoration to drop. A stat card routinely opens with an icon above
+			// the number — measured on a captured band, a 35x35 inline SVG (cart, clipboard, printer, truck) on every
+			// one of four cards. The cell was reduced to its number and label, so all four rendered with an empty top
+			// third. step_icon() is the reader the steps recognizer already uses, so "what counts as this cell's icon"
+			// keeps ONE definition: a named library glyph when the source names one, raw markup when it does not.
+			$ic = self::step_icon( $k );
+			if ( $ic ) {
+				$col['icon'] = $ic;
+				// …at the size and colour the source measured, so a 35px glyph is not drawn at the shortcode default.
+				//
+				// An inline SVG is NOT itself stamped by the capture — measured: the <svg> carries no data-sc-cs at all,
+				// while the element wrapping it carries `color:rgb(255,255,255); font-size:35px`. That is where an icon
+				// font's treatment lives, so the glyph's own box is read first and its NEAREST STAMPED ANCESTOR second.
+				//
+				// Nearest, and no further. One level up again is the section's inherited ink (`color:rgb(34,34,34)` on
+				// a dark panel), which is not the glyph's colour at all — climbing to it rendered four white icons black.
+				foreach ( array( 'svg', 'img' ) as $gtag ) {
+					foreach ( $k->getElementsByTagName( $gtag ) as $g ) {
+						$probe = $g; $ghop = 0;
+						while ( $probe instanceof DOMElement && $ghop++ < 3 ) {
+							$pcs = trim( (string) $probe->getAttribute( 'data-sc-cs' ) );
+							if ( '' === $pcs ) { $probe = $probe->parentNode; continue; } // unstamped — ask the next one out
+							$gw = trim( (string) self::sc_css( $probe, 'width' ) );
+							if ( ! preg_match( '/^([0-9.]+)px$/', $gw, $gm ) ) { $gw = trim( (string) self::sc_css( $probe, 'font-size' ) ); preg_match( '/^([0-9.]+)px$/', $gw, $gm ); }
+							if ( ! empty( $gm[1] ) ) { $col['iconSize'] = (string) (int) round( (float) $gm[1] ); }
+							$gc = trim( (string) self::sc_css( $probe, 'color' ) );
+							if ( '' !== $gc && false === stripos( $gc, 'inherit' ) ) { $col['iconColor'] = self::color_to_hex( $gc ); }
+							break; // the FIRST stamped box answers; anything further out is inherited, not the glyph's
+						}
+						break 2;
+					}
+				}
+			}
 			$cols[] = $col;
 		}
 		return count( $cols ) >= 2 ? array( 't' => 'row', 'role' => 'columns', 'valign' => self::row_valign( $el ), 'stackBp' => self::grid_stack_bp( $el ), 'gap' => self::grid_gap_px( $el ), 'mb' => self::el_margin( $el )['bottom'], 'mt' => self::el_margin( $el )['top'], 'cols' => $cols ) : null;
@@ -19970,6 +20369,48 @@ class FW_Site_Converter_Stitch {
 				break;
 			}
 			$row = array( 'text' => $t, 'html' => self::clean_inline_html( $li ) );
+			// A LABELLED item is two things, not one sentence.
+			//
+			// The common shape is `<li><b>Label</b><br><span>the description…</span></li>`: a bold lead-in on its
+			// own line, then the explanation under it. Only the flattened `text` reached the mapper, so the two
+			// ran together into one grey paragraph — "Works beyond the preview Focuses on what happens after the
+			// customer personalizes a product." — losing the line break, the weight, and the shape of the list.
+			// The feature_list shortcode already models this exactly (`text` + `subtext`), so the split is a
+			// mapping that was simply missing, not a new capability.
+			//
+			// Deliberately narrow: the label must be the item's FIRST element, bold, and followed by a <br>.
+			// A bold word mid-sentence is emphasis, not a label, and must stay in the prose.
+			$lead = null;
+			foreach ( $li->childNodes as $lc ) {
+				if ( XML_TEXT_NODE === $lc->nodeType && '' === trim( (string) $lc->nodeValue ) ) { continue; }
+				$lead = $lc;
+				break;
+			}
+			if ( $lead instanceof DOMElement && in_array( strtolower( $lead->tagName ), array( 'b', 'strong' ), true ) ) {
+				$label = trim( preg_replace( '/\s+/u', ' ', (string) self::text( $lead ) ) );
+				// the rest of the item, in document order, with the <br> that separates them consumed
+				$rest = ''; $seen_lead = false; $seen_br = false;
+				foreach ( $li->childNodes as $lc ) {
+					if ( $lc === $lead ) { $seen_lead = true; continue; }
+					if ( ! $seen_lead ) { continue; }
+					if ( ! $seen_br ) {
+						if ( XML_ELEMENT_NODE === $lc->nodeType && 'br' === strtolower( $lc->nodeName ) ) { $seen_br = true; continue; }
+						if ( XML_TEXT_NODE === $lc->nodeType && '' === trim( (string) $lc->nodeValue ) ) { continue; }
+						break; // real content before any <br>: one sentence that happens to start bold, not a label
+					}
+					$rest .= ' ' . (string) $lc->textContent;
+				}
+				$rest = trim( preg_replace( '/\s+/u', ' ', $rest ) );
+				if ( $seen_br && '' !== $label && '' !== $rest ) {
+					$row['text'] = $label;
+					$row['sub']  = $rest;
+					// the description's own type, so the sub-line keeps the source's muted tone / size
+					foreach ( $li->getElementsByTagName( 'span' ) as $sp ) {
+						$scs = (string) $sp->getAttribute( 'data-sc-cs' );
+						if ( '' !== $scs ) { $row['sub_cs'] = $scs; break; }
+					}
+				}
+			}
 			if ( '' !== $icon_svg ) {
 				$row['icon_svg'] = $icon_svg;
 				$row['icon_cls'] = $icon_cls;
@@ -22210,6 +22651,51 @@ class FW_Site_Converter_Stitch {
 		return 'selector img{max-height:' . (int) round( $cap ) . 'px;width:auto;height:auto;max-width:100%;object-fit:' . $fit . ';display:block;margin-left:auto;margin-right:auto;}';
 	}
 
+	/**
+	 * A FLATTENED IMAGE WRAPPER'S SIDE PADDING IS A WIDTH CONSTRAINT — carry it.
+	 *
+	 * The image recognizers deliberately drop the wrapper and emit just the picture, because the wrapper is
+	 * usually chrome. Its horizontal padding is not chrome: with the near-universal `max-width:100%` on the
+	 * image, that padding is the only thing deciding how wide the picture renders.
+	 *
+	 * Measured on a captured hero: `<div style=\"padding:5px 30px\"><img></div>` inside a 516px column renders
+	 * the image at 456px. Dropping the padding let it fill the column — 576px, about a quarter too big, and
+	 * the one remaining difference in that band once its spurious border was gone.
+	 *
+	 * Only a wrapper that is genuinely just a frame around this picture qualifies: it must hold no text and
+	 * no second image, so a padded CARD that happens to contain a photo keeps its own treatment and is not
+	 * mistaken for a frame. The padding is emitted on the block rather than as a pixel width on the image, so
+	 * the picture stays fluid — it is the source's own expression of the constraint, not a snapshot of it.
+	 *
+	 * @param DOMElement $img the image whose wrapper is being flattened away
+	 * @return string scoped CSS, or '' when the wrapper insets nothing
+	 */
+	private static function img_wrapper_inset_css( $img ) {
+		if ( ! ( $img instanceof DOMElement ) ) { return ''; }
+		$wrap = $img->parentNode;
+		if ( ! ( $wrap instanceof DOMElement ) ) { return ''; }
+		if ( '' !== trim( preg_replace( '/\s+/u', '', (string) self::text( $wrap ) ) ) ) { return ''; }
+		if ( $wrap->getElementsByTagName( 'img' )->length > 1 ) { return ''; }
+		$pad = self::el_padding( $wrap );
+		$l = (float) ( isset( $pad['base']['left'] ) ? $pad['base']['left'] : 0 );
+		$r = (float) ( isset( $pad['base']['right'] ) ? $pad['base']['right'] : 0 );
+		// A SMALL MARK IS NOT A CONSTRAINED PICTURE. This rule reasons about an image that fills its frame, so
+		// the frame's inset decides the width. A card's 60x50 icon does not work that way: its box is pinned
+		// elsewhere from the measurement, and adding the wrapper's padding on top double-counts. Measured, that
+		// is exactly what happened -- `width:60px` plus this rule's `padding:20px` under border-box left a 20px
+		// content box, and a 300x251 icon was cropped by object-fit to 20x50: squashed, not merely small.
+		//
+		// So the image must actually be picture-sized. 200px is well above any mark or logo and well below any
+		// hero or feature image, and it is the image's OWN measured width, not a guess from its container.
+		$iw = 0.0;
+		if ( preg_match( '/^([0-9.]+)px$/', trim( (string) self::sc_css( $img, 'width' ) ), $iwm ) ) { $iw = (float) $iwm[1]; }
+		if ( $iw < 200 ) { return ''; }
+		// Under 8px is optical nudging, not a constraint; past 240px a side it is a layout the column owns.
+		if ( $l < 8 && $r < 8 ) { return ''; }
+		if ( $l > 240 || $r > 240 ) { return ''; }
+		$n = function ( $v ) { return rtrim( rtrim( number_format( (float) $v, 2, '.', '' ), '0' ), '.' ); };
+		return 'selector{padding-left:' . $n( $l ) . 'px;padding-right:' . $n( $r ) . 'px;box-sizing:border-box;}';
+	}
 	private static function img_own_box( $img ) {
 		if ( ! ( $img instanceof DOMElement ) ) { return ''; }
 		$cls = ' ' . preg_replace( '/\s+/', ' ', strtolower( (string) $img->getAttribute( 'class' ) ) ) . ' ';
@@ -22697,6 +23183,49 @@ class FW_Site_Converter_Stitch {
 		return true;
 	}
 
+	/**
+	 * Do these flex children STACK rather than sit side by side?
+	 *
+	 * `flex-direction:row` says how the main axis runs, not whether anything fits along it. A wrapping row
+	 * whose children are each the full width of their container renders as a vertical stack — the children
+	 * wrap, one per line. Page builders that nest wrapper divs emit this constantly (Elementor's
+	 * `elementor-widget-wrap` is the usual one), and reading the declaration instead of the measurement turned
+	 * every such section into a row of narrow columns.
+	 *
+	 * The test is physical: two children at >=90% of the container cannot share a line, because their widths
+	 * sum past it. `track-frac` is the capture's measured width / container width, so this asks the layout
+	 * rather than the stylesheet. A capture with no stamps answers false and the caller keeps its old
+	 * behaviour — an unmeasured page is not evidence of stacking.
+	 *
+	 * @param DOMElement[] $kids the container's element children (decor layers already removed)
+	 * @return bool true when the children demonstrably stack
+	 */
+	private static function flex_children_stack( array $kids, $own_cls = '' ) {
+		// SCOPED TO PAGE-BUILDER WRAPPER MARKUP. The same geometric test applied everywhere regressed corpus
+		// sites, so it is confined to a builder's structural wrapper — markup that only nests widgets.
+		$pad = ' ' . preg_replace( '/\s+/', ' ', (string) $own_cls ) . ' ';
+		if ( ! preg_match( '/(?:^|\s)(?:elementor-widget-wrap|elementor-column|e-con-inner|e-con)(?:\s|$)/', $pad ) ) { return false; }
+
+		$fr = array();
+		foreach ( $kids as $k ) {
+			if ( ! ( $k instanceof DOMElement ) ) { continue; }
+			$kcs = (string) $k->getAttribute( 'data-sc-cs' );
+			if ( ! preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/', $kcs, $m ) ) { return false; }
+			$fr[] = (float) $m[1];
+		}
+		if ( count( $fr ) < 2 ) { return false; }
+
+		// CAN ANY TWO ADJACENT CHILDREN SHARE A LINE? A flex row places children in order and wraps when the
+		// next does not fit, so if no neighbouring PAIR fits inside the container, every child begins its own
+		// line and the row renders as a stack. Requiring EVERY child to be full width was too strict: a real
+		// wrapper holds widgets at 1, 0.529, 1, 1 — the odd one still cannot sit beside either neighbour — and
+		// under the strict test that container became a four-column row, splitting a heading from its list.
+		for ( $i = 1, $n = count( $fr ); $i < $n; $i++ ) {
+			if ( ( $fr[ $i - 1 ] + $fr[ $i ] ) <= 1.02 ) { return false; }
+		}
+		return true;
+	}
+
 	private static function is_layout_row( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return false; }
 		if ( self::is_toolbar_row( $el ) ) { return false; } // a flex row of short labels (+ dot separators) is a toolbar line, not columns — a 24-char label counted as a "substantial cell"
@@ -22774,6 +23303,20 @@ class FW_Site_Converter_Stitch {
 		//     an explicit row signal is required so a centered single-column flex band never becomes a row.
 		$is_flex = (bool) preg_match( '/(?:^|\s)(?:inline-)?flex(?:\s|$)/', $pad ) || (bool) preg_match( '/display:\s*(?:inline-)?flex/i', $cs );
 		if ( $is_flex ) {
+			// …AND THE CELLS MUST ACTUALLY FIT BESIDE EACH OTHER. `flex-direction:row` is a declaration, not a
+			// layout: a WRAPPING row whose children are each the full width of the container renders as a
+			// vertical stack, and every page builder that nests wrappers emits exactly that. Elementor's
+			// `elementor-widget-wrap` is the common case — it computes `flex-direction:row` on a container
+			// whose widgets are 100% wide, so a section that reads "heading, then a card grid" was being built
+			// as "heading column | card column | card column", with the heading squeezed into a 377px strip
+			// beside the cards and every card a column of wrapped text. Measured on one such page: 587 of 1105
+			// stamped children were ≥90% of their container's width, the converted page came out 21% taller
+			// than its source, and band drift hit 45%.
+			//
+			// Two children at ≥90% cannot share a line — their widths sum past the container. That is a fact
+			// about the measured layout, so it outranks the declared direction. Captures with no `track-frac`
+			// stamp (older ones) keep the previous behaviour rather than guessing.
+			if ( self::flex_children_stack( $kids, $cls ) ) { return false; }
 			$has_col   = (bool) preg_match( '/(?:^|\s)(?:(?:sm|md|lg|xl|2xl):)?flex-col(?:\s|$)/', $pad );
 			$resp_row  = (bool) preg_match( '/(?:^|\s)(?:sm|md|lg|xl|2xl):flex-row(?:\s|$)/', $pad );
 			$base_row  = (bool) preg_match( '/(?:^|\s)flex-row(?:\s|$)/', $pad );
@@ -23455,6 +23998,18 @@ class FW_Site_Converter_Stitch {
 			// only a WRAPPER is descended (the child holds nearly all the text) — never one card of a grid of siblings (its skin
 			// would box the whole grid)
 			if ( $bestLen < 0.8 * mb_strlen( self::text( $node ) ) ) { break; }
+			// …and the text share alone is the wrong measure when the cell is MEDIA, not prose. A hero's image
+			// column holds a picture and one small captioned pill: the picture carries no text, so the pill holds
+			// 100% of it and reads as the cell's wrapper. It is not — it is a sibling. Measured on a captured hero,
+			// descending into it put the PILL's 3px white border and 15px radius around the whole 576x564 column,
+			// framing an image the source shows bare.
+			//
+			// A real wrapper contains everything the cell contains, media included. So a candidate that holds fewer
+			// images than the cell is a sibling and ends the descent. Cheap, structural, and it cannot be fooled by
+			// how the text happens to be distributed.
+			$node_media = $node->getElementsByTagName( 'img' )->length + $node->getElementsByTagName( 'svg' )->length;
+			$best_media = $best->getElementsByTagName( 'img' )->length + $best->getElementsByTagName( 'svg' )->length;
+			if ( $best_media < $node_media ) { break; }
 			$node = $best;
 		}
 		return null;
@@ -25575,6 +26130,11 @@ class FW_Site_Converter_Stitch {
 		if ( strpos( $cs, 'display:flex' ) === false && strpos( $cs, 'display:grid' ) === false && strpos( $cs, 'display:inline-flex' ) === false ) { return false; }
 		$kids = self::el_children( $el );
 		if ( count( $kids ) < 2 ) { return false; }
+		// …and a container whose MEASURED children each take their own line is a stack, not a grid. This
+		// recognizer outranks is_layout_row, so without the same guard it claimed a builder's widget wrapper
+		// first and the stack rule never ran: an eyebrow, a heading and a paragraph — stacked in the source —
+		// came out as three half-width cards side by side.
+		if ( self::flex_children_stack( $kids, self::cls( $el ) ) ) { return false; }
 		// Same guards as is_card_grid (computed-style twin): a fixed-width ASYMMETRIC layout (arbitrary px
 		// widths) defers to is_layout_row, and a VERTICAL stack (computed flex-direction:column) is never a
 		// card grid. Without these, a `flex flex-col` content stack was mis-claimed as a card grid at the wrong
@@ -26580,6 +27140,150 @@ class FW_Site_Converter_Stitch {
 
 	/** Build the logo-strip block: a native `logo_grid` when ≥2 VISUAL logos (svg or img) extract, else the
 	 *  verbatim strip. (A name-only extraction — icon-font with no resolvable mark — falls to verbatim.) */
+	/**
+	 * A LOGO STRIP'S LAYOUT COMES FROM THE SOURCE, NOT FROM HOW MANY LOGOS THERE ARE.
+	 *
+	 * `n_logo_grid` used to hardcode `design:'grid'` and take its column count from the logo COUNT, which
+	 * meant a strip was always a static grid and always as wide as it could be. Measured on one captured
+	 * source: a carousel of 45 logos -- a single 1150x92 row showing about seven at a time -- converted to
+	 * a 6-across grid 258px tall in eight rows. The shortcode could already express the right thing (its
+	 * `carousel` and `marquee` designs, where `columns` means logos VISIBLE per view); nothing asked the
+	 * source which it was.
+	 *
+	 * So ask. The signals, in the order they are trusted:
+	 *
+	 *   - `aria-roledescription=\"carousel\"` -- the W3C carousel pattern. A source that declares itself a
+	 *     carousel is the strongest evidence available and is library-agnostic, which matters because the
+	 *     slider could be anything.
+	 *   - a slider library's ROOT class (`swiper`, `slick-slider`, `splide`, `glide`, `tns-outer`,
+	 *     `owl-carousel`) -- the same conclusion for a source that does not carry the ARIA.
+	 *   - a horizontal SCROLL track (`overflow-x: auto|scroll`) -- a swipe strip with no library at all.
+	 *
+	 * An ANIMATED loop is a marquee rather than a carousel, and that distinction is already measured by
+	 * `marquee_is_animated()` (a running `animation ... infinite`, or a ticker/marquee class) -- a manual
+	 * slider must not be converted into something that scrolls by itself, or the other way round.
+	 *
+	 * PER VIEW is measured, never guessed: each slide carries `track-frac` (its width / the track's), so
+	 * `round( 1 / frac )` is how many fit across. On the measured strip the desktop stamp is 0.145 -> 6.9,
+	 * against the eight the rendered source shows with two part-visible at the edges. The widest
+	 * breakpoint stamped wins, because that is the layout the converted desktop page has to match.
+	 *
+	 * Returns `array()` when nothing says carousel -- a plain wall of logos IS a grid, and that stays the
+	 * default rather than becoming a slider because it happens to be wide.
+	 *
+	 * @param DOMElement $el the strip's row (or wrapper) as `logo_strip_build` resolved it
+	 * @return array { design:'carousel'|'marquee', perView:int } or array()
+	 */
+	/**
+	 * The MEASURED mark height for an <img> logo strip, in px, or '' when the strip has no images.
+	 *
+	 * The shortcode sizes logos by HEIGHT, so one number has to stand for the whole strip. Which number
+	 * matters more than it looks: the old rule took the FIRST image whose measured height fell in 12..96px,
+	 * and on a real strip that is close to arbitrary. Logos do not share an aspect ratio -- the captured
+	 * carousel constrains every mark to the same 167px WIDTH and its heights land anywhere from 33px to 68px
+	 * -- so whichever logo happens to come first decides how big all 45 render.
+	 *
+	 * The MEDIAN of the measured heights is the honest single answer: it is the height a typical mark in
+	 * this strip actually has, and it cannot be dragged by one unusually tall or flat logo at either end.
+	 *
+	 * Heights outside 8..120px are ignored rather than clamped, because they are usually not logos at all
+	 * (a 1px tracking pixel, a full-width background image that happens to sit inside the row).
+	 *
+	 * @param DOMElement $el the strip's row
+	 * @return string the median height in px as a string, or '' if nothing measurable
+	 */
+	private static function logo_strip_mark_px( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return ''; }
+		$h = array();
+		foreach ( $el->getElementsByTagName( 'img' ) as $im ) {
+			if ( ! preg_match( '/^([0-9.]+)px$/', (string) self::sc_css( $im, 'height' ), $m ) ) { continue; }
+			$v = (float) $m[1];
+			if ( $v >= 8 && $v <= 120 ) { $h[] = $v; }
+		}
+		if ( ! $h ) { return ''; }
+		sort( $h );
+		$mid = $h[ intdiv( count( $h ), 2 ) ];
+		// The option's own range is 24..120 in 2px steps; a smaller measurement is real (a 16px wordmark
+		// strip exists) so it is passed through and the option clamps it, rather than being inflated here.
+		return (string) (int) round( $mid );
+	}
+	private static function logo_strip_design( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return array(); }
+		$root_cls = '/(?:^|\s)(?:swiper|slick-slider|splide|glide|tns-outer|owl-carousel)(?:\s|$)/';
+		$is_host  = function ( $n ) use ( $root_cls ) {
+			if ( ! ( $n instanceof DOMElement ) ) { return false; }
+			if ( 'carousel' === strtolower( trim( (string) $n->getAttribute( 'aria-roledescription' ) ) ) ) { return true; }
+			$c = ' ' . preg_replace( '/\s+/', ' ', strtolower( self::cls( $n ) ) ) . ' ';
+			return (bool) preg_match( $root_cls, $c );
+		};
+		// The host can sit either side of the row the caller resolved: the row is the marks' common ancestor,
+		// which on a builder's markup lands INSIDE the slider (its inner container) as often as outside it.
+		$host = null;
+		if ( $is_host( $el ) ) { $host = $el; }
+		if ( ! $host ) {
+			$up = $el->parentNode;
+			for ( $i = 0; $i < 4 && $up instanceof DOMElement; $i++ ) {
+				if ( $is_host( $up ) ) { $host = $up; break; }
+				$up = $up->parentNode;
+			}
+		}
+		if ( ! $host ) {
+			$q = array( array( $el, 0 ) );
+			while ( $q ) {
+				list( $n, $d ) = array_shift( $q );
+				if ( $n !== $el && $is_host( $n ) ) { $host = $n; break; }
+				if ( $d >= 4 ) { continue; }
+				foreach ( self::el_children( $n ) as $c ) { $q[] = array( $c, $d + 1 ); }
+			}
+		}
+		// No library and no ARIA: a bare horizontal SCROLL track still reads as a swipe strip.
+		if ( ! $host ) {
+			$scroll = function ( $n ) {
+				$o = strtolower( trim( (string) self::sc_css( $n, 'overflow-x' ) ) );
+				if ( '' === $o ) { $o = strtolower( trim( (string) self::sc_css( $n, 'overflow' ) ) ); }
+				return ( 'auto' === $o || 'scroll' === $o );
+			};
+			$cand = array( $el );
+			foreach ( self::el_children( $el ) as $c ) { $cand[] = $c; }
+			foreach ( $cand as $c ) {
+				if ( $scroll( $c ) && count( self::el_children( $c ) ) >= 4 ) { $host = $c; break; }
+			}
+		}
+		if ( ! $host ) { return array(); }
+		// PER VIEW from the slides' measured `track-frac`, widest breakpoint first. The slides are the
+		// deepest generation under the host whose members carry the stamp, so collect from the whole subtree
+		// and take the median rather than assuming a particular nesting depth.
+		$fracs = array();
+		$walk  = array( $host );
+		while ( $walk ) {
+			$n = array_pop( $walk );
+			foreach ( self::el_children( $n ) as $c ) {
+				foreach ( array( 'data-sc-cs-xl', 'data-sc-cs-lg', 'data-sc-cs-md', 'data-sc-cs-sm', 'data-sc-cs' ) as $bp ) {
+					if ( preg_match( '/(?:^|;)\s*track-frac:\s*([0-9.]+)/', (string) $c->getAttribute( $bp ), $m ) ) {
+						$f = (float) $m[1];
+						if ( $f > 0.02 && $f <= 1.0 ) { $fracs[] = $f; }
+						break; // the widest stamped breakpoint for THIS slide
+					}
+				}
+				$walk[] = $c;
+			}
+		}
+		$per = 0;
+		if ( $fracs ) {
+			// The median, not the minimum: one odd slide (a wider feature tile, or a nested wrapper that also
+			// carries a stamp) must not decide the whole strip's per-view.
+			sort( $fracs );
+			$mid = $fracs[ intdiv( count( $fracs ), 2 ) ];
+			if ( $mid > 0 ) { $per = (int) round( 1 / $mid ); }
+		}
+		$design = self::marquee_is_animated( $host ) ? 'marquee' : 'carousel';
+		$out    = array( 'design' => $design );
+		// Clamped to what the shortcode offers (2..6). An unmeasurable strip leaves perView unset so the
+		// mapper keeps the shortcode's own default rather than inventing a number.
+		if ( $per >= 1 ) { $out['perView'] = max( 2, min( 6, $per ) ); }
+		return $out;
+	}
+
 	private static function logo_strip_build( $el ) {
 		$logos  = self::logo_strip_items( $el );
 		$visual = 0;
@@ -26615,10 +27319,19 @@ class FW_Site_Converter_Stitch {
 			if ( preg_match( '/(?:^|\s)opacity-(\d{1,3})(?:\s|$)/', $cls, $om ) ) { $opacity = rtrim( rtrim( sprintf( '%.2f', (int) $om[1] / 100 ), '0' ), '.' ); }
 			elseif ( ( $oc = self::sc_css( $el, 'opacity' ) ) !== '' && (float) $oc > 0 && (float) $oc < 1 ) { $opacity = (string) (float) $oc; }
 			$grayscale = ( strpos( $cls, ' grayscale ' ) !== false ) || ( stripos( self::sc_css( $el, 'filter' ), 'grayscale' ) !== false );
-			$isize = '';
-			foreach ( $el->getElementsByTagName( 'span' ) as $sp ) {
-				$fs = self::sc_css( $sp, 'font-size' );
-				if ( preg_match( '/^([0-9.]+)px$/', $fs, $fm ) ) { $isize = (string) (int) round( (float) $fm[1] * 1.2 ); break; }
+			// MARK SIZE -- measure the IMAGES when there are images, and only fall back to the type scale when
+			// the marks are glyphs. This used to run the other way round, and the font-size path is not a
+			// fallback for an image strip, it is a different thing entirely: on a captured logo carousel the row's
+			// spans are ordinary 18px body text, so 18 * 1.2 won, every image branch was skipped as already-set,
+			// and 45 logos rendered 70x22 against the source's 167x67 -- a third of the size, from a number that
+			// had nothing to do with them. The glyph heuristic still applies to a real icon-font mark
+			// (`<span class="text-xl">` + a name), where there is no image to measure.
+			$isize = self::logo_strip_mark_px( $el );
+			if ( '' === $isize ) {
+				foreach ( $el->getElementsByTagName( 'span' ) as $sp ) {
+					$fs = self::sc_css( $sp, 'font-size' );
+					if ( preg_match( '/^([0-9.]+)px$/', $fs, $fm ) ) { $isize = (string) (int) round( (float) $fm[1] * 1.2 ); break; }
+				}
 			}
 			// The ITEM's own treatment (a `<span class="text-xl font-bold flex items-center gap-2">` mark + name): its mark→label gap, its
 			// padding (the shortcode's .35rem default grew a 28px row to 35px) and the label's size / weight / line-height —
@@ -26632,14 +27345,7 @@ class FW_Site_Converter_Stitch {
 				foreach ( array( 'font-size' => 'fs', 'font-weight' => 'fw', 'line-height' => 'lh' ) as $pr => $k ) { $v = self::sc_css( $it, $pr ); if ( '' !== $v && preg_match( '/^[0-9.]+(?:px)?$/', $v ) ) { $item[ $k ] = $v; } }
 				break;
 			}
-			// an <img> strip: the mark height is the image's MEASURED height (`h-8` = 32px) — the 48px default drew every
-			// logo half again as big as the source's
-			if ( '' === $isize ) {
-				foreach ( $el->getElementsByTagName( 'img' ) as $im ) {
-					$ih = self::sc_css( $im, 'height' );
-					if ( preg_match( '/^([0-9.]+)px$/', $ih, $ihm ) && (float) $ihm[1] >= 12 && (float) $ihm[1] <= 96 ) { $isize = (string) (int) round( (float) $ihm[1] ); break; }
-				}
-			}
+
 			// the dim on each ITEM (`opacity-80` per child) when the strip itself carries none
 			if ( '' === $opacity ) {
 				$kids = self::el_children( $el ); $dims = array();
@@ -26652,6 +27358,11 @@ class FW_Site_Converter_Stitch {
 			}
 			$lg = array( 't' => 'logo_grid', 'role' => 'logo_grid', 'logos' => $logos,
 				'gap' => $gap, 'opacity' => $opacity, 'grayscale' => $grayscale ? 'yes' : 'no', 'iconSize' => $isize, 'item' => $item );
+			// The source's own layout (a carousel / marquee track, and how many logos it shows at once) rather
+			// than a grid as wide as the logo count. Absent unless the source says so -- see logo_strip_design().
+			$lay = self::logo_strip_design( $el );
+			if ( ! empty( $lay['design'] ) ) { $lg['design'] = $lay['design']; }
+			if ( ! empty( $lay['perView'] ) ) { $lg['perView'] = (int) $lay['perView']; }
 			if ( $captions_before || $captions_after ) { return array_merge( $captions_before, array( $lg ), $captions_after ); }
 			return $lg;
 		}
@@ -28113,7 +28824,14 @@ class FW_Site_Converter_Stitch {
 			$col  = array_merge( $col, self::cell_geometry( $cell ) );
 			// A card cell that is a TINTED BOX (source `p-5 rounded-xl border bg-*/5`, e.g. the Problem /
 			// Solution items) → carry its box skin so each item renders in its coloured card, not flat.
-			$ccard = self::read_card_skin( $cell );
+			// The box is sometimes the CELL and sometimes ONE WRAPPER DOWN, which is what cell_card_skin()
+			// exists to resolve -- the sibling grid paths already call it. This one read only the cell's own
+			// stamp, so a page builder's cards came out skinless: the builder nests a structural wrapper in the
+			// cell and paints THAT, leaving the cell bare. Measured on a captured source, three service cards
+			// (white, 15px radius, 2px border, 25px padding) rendered as flat text columns, and because no
+			// cardBox was carried the icon_box got no box_style either -- a Box Preset for that exact skin had
+			// been harvested and sat unused.
+			$ccard = self::cell_card_skin( $cell );
 			if ( $ccard ) { $col['cardBox'] = $ccard; }
 			if ( $card ) {
 				$col['card'] = $card;
@@ -30142,14 +30860,25 @@ class FW_Site_Converter_Stitch {
 	}
 
 	private static function footer_copyright_el( $footer ) {
-		$best = null; $best_kids = PHP_INT_MAX; $copy = chr( 0xC2 ) . chr( 0xA9 );
+		$copy = chr( 0xC2 ) . chr( 0xA9 );
+		// A COPYRIGHT MARKER BEATS A BARE YEAR. Matching "any element containing a year" also matches an
+		// address line ("... Est. 2014"), and because that line has fewer child elements it won the
+		// fewest-children tie-break and became the converted footer's copyright, replacing the real one.
+		// Rank an explicit marker first; a bare year is only the fallback for a footer with no marker.
+		$best = null; $best_kids = PHP_INT_MAX; $best_rank = -1;
 		foreach ( array( 'div', 'p', 'span' ) as $tag ) {
 			foreach ( $footer->getElementsByTagName( $tag ) as $el ) {
-				$t = trim( $el->textContent );
-				if ( $t === '' || mb_strlen( $t ) > 200 ) { continue; }
-				if ( ! preg_match( '/(?:19|20)\d{2}/', $t ) && stripos( $t, 'copyright' ) === false && strpos( $t, $copy ) === false ) { continue; }
+				$txt = trim( $el->textContent );
+				if ( '' === $txt || mb_strlen( $txt ) > 200 ) { continue; }
+				$has_mark = ( false !== strpos( $txt, $copy ) || false !== stripos( $txt, 'copyright' )
+					|| false !== stripos( $txt, 'all rights reserved' ) );
+				$has_year = (bool) preg_match( '/(?:19|20)\d{2}/', $txt );
+				if ( ! $has_mark && ! $has_year ) { continue; }
+				$rank = $has_mark ? 1 : 0;
 				$kids = $el->getElementsByTagName( '*' )->length;
-				if ( $kids < $best_kids ) { $best_kids = $kids; $best = $el; }
+				if ( $rank > $best_rank || ( $rank === $best_rank && $kids < $best_kids ) ) {
+					$best_rank = $rank; $best_kids = $kids; $best = $el;
+				}
 			}
 		}
 		return $best;
@@ -30573,6 +31302,14 @@ class FW_Site_Converter_Stitch {
 		foreach ( $bundle['files'] as $name => $data ) {
 			file_put_contents( trailingslashit( $tmp ) . $name, wp_json_encode( $data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) ); // phpcs:ignore
 		}
+		// The output target and the analysis behind the pages travel with the files, so import_dir() can
+		// write the bodies into a page builder other than the native one (see FW_SC_Target).
+		if ( ! empty( $bundle['target'] ) ) {
+			file_put_contents( trailingslashit( $tmp ) . 'target.json', wp_json_encode( array( 'target' => (string) $bundle['target'] ) ) ); // phpcs:ignore
+		}
+		if ( ! empty( $bundle['mapping'] ) && is_array( $bundle['mapping'] ) ) {
+			file_put_contents( trailingslashit( $tmp ) . 'site-mapping.json', wp_json_encode( $bundle['mapping'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) ); // phpcs:ignore
+		}
 		$result = FW_Site_Converter_Bundle::import_dir( $tmp );
 
 		global $wp_filesystem;
@@ -30886,7 +31623,63 @@ class FW_Site_Converter_Stitch {
 		libxml_clear_errors();
 		libxml_use_internal_errors( $prev );
 		self::unglue_line_breaks( $dom );
+		self::drop_slider_clones( $dom );
 		return $dom;
+	}
+
+	/**
+	 * A SLIDER'S CLONE SLIDES ARE NOT CONTENT — drop them once, for every reader of this tree.
+	 *
+	 * Looping carousels work by duplicating slides at each end of the track, so the strip can scroll past
+	 * its own edge without a visible seam. The library injects those copies into the DOM at runtime, which
+	 * means a capture of a rendered page contains them, and nothing in the markup says they are not real.
+	 *
+	 * Measured on one captured logo strip: a track of 57 slides, of which 13 were clones and 45 distinct
+	 * logos. The converter had no reason to tell them apart, so it emitted all 57 as content and built the
+	 * section as a wrapped grid of ~40 tiles, where the source shows a single row.
+	 *
+	 * The signal is the library's own clone class, and ONLY that. The obvious alternative — `aria-hidden`,
+	 * which every clone on that strip carried — is wrong, and measurably so: 26 of the strip's REAL slides
+	 * were also `aria-hidden="true"`, because a carousel marks whatever is currently off-screen as hidden
+	 * from assistive tech. Pruning on `aria-hidden` would have deleted 26 genuine logos to remove 13 copies.
+	 * So the clone class alone decides, and the class names are library-specific enough to be unambiguous.
+	 *
+	 * Dropping them is lossless, not a judgement call: a clone is by construction a copy of a slide that is
+	 * also present un-cloned. That is verified rather than assumed — the whole-document image set is
+	 * identical before and after the prune (57 srcs in, 57 out, 13 clone ELEMENTS removed), so the strip
+	 * keeps all 45 of its logos. The first version of this rule failed that check by one logo, which is how
+	 * the Swiper pointer-class trap below was found.
+	 *
+	 * @param DOMDocument $dom the freshly parsed tree, modified in place
+	 */
+	private static function drop_slider_clones( $dom ) {
+		if ( ! ( $dom instanceof DOMDocument ) ) { return; }
+		$body = $dom->getElementsByTagName( 'body' )->item( 0 );
+		if ( ! $body ) { return; }
+		// Library-specific clone tokens: Swiper, Slick, Splide, Glide, tiny-slider. Owl's token is the bare
+		// word `cloned`, which is too generic on its own, so it must sit beside an `owl-item`/slide class.
+		//
+		// Swiper needs the BARE `swiper-slide-duplicate` token and nothing else. Its `-duplicate-active`,
+		// `-duplicate-next` and `-duplicate-prev` classes read like narrower cases of the same thing but mean
+		// the opposite: they mark a REAL slide that merely has a clone counterpart elsewhere in the track.
+		// Treating them as clones cost exactly one logo on the measured strip — slide 50 of 57, the only copy
+		// of its image, labelled `swiper-slide swiper-slide-duplicate-prev`. A real slide can also carry the
+		// bare token alongside a pointer class, so the bare token decides and the pointers are ignored.
+		$clone = '/(?:^|\s)(?:swiper-slide-duplicate|slick-cloned|splide__slide--clone|glide__slide--clone|tns-slide-cloned)(?:\s|$)/';
+		$owl   = '/(?:^|\s)cloned(?:\s|$)/';
+		$slide = '/(?:^|\s)(?:owl-item|swiper-slide|slick-slide|splide__slide|glide__slide|tns-item)(?:\s|$)/';
+		$drop  = array();
+		// getElementsByTagName('*') is LIVE — snapshot before removing anything.
+		foreach ( $body->getElementsByTagName( '*' ) as $el ) {
+			if ( ! ( $el instanceof DOMElement ) ) { continue; }
+			$c = ' ' . preg_replace( '/\s+/', ' ', strtolower( (string) $el->getAttribute( 'class' ) ) ) . ' ';
+			if ( ' ' === $c ) { continue; }
+			if ( preg_match( $clone, $c ) || ( preg_match( $owl, $c ) && preg_match( $slide, $c ) ) ) { $drop[] = $el; }
+		}
+		foreach ( $drop as $el ) {
+			// A clone nested inside an already-removed clone has no parent any more; skip it rather than fatal.
+			if ( $el->parentNode ) { $el->parentNode->removeChild( $el ); }
+		}
 	}
 
 	/**

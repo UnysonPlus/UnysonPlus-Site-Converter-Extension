@@ -328,7 +328,17 @@ class FW_Site_Converter_Menus {
 		// Primary: among header-nav / nav / [role=navigation] / header, keep the
 		// container that yields the most top-level items.
 		$best = array();
-		foreach ( array( '//header//nav', '//nav', '//*[@role="navigation"]', '//header' ) as $q ) {
+		// A PAGE BUILDER'S HEADER IS NOT A <header>. Elementor renders its header as
+		// `<div data-elementor-type="header">` holding `ul.elementor-nav-menu`, so none of the structural
+		// queries below could see it: the only <nav> on the page was a secondary one, and the menu that won
+		// was a SUB-menu with four links. The converted header then carried the wrong items, flattened, which
+		// pushed the call-to-action off the viewport (measured at x=1604 on a 1440 page).
+		foreach ( array(
+			'//header//nav', '//nav', '//*[@role="navigation"]', '//header',
+			'//*[@data-elementor-type="header"]',
+			'//*[contains(concat(" ", normalize-space(@class), " "), " elementor-location-header ")]',
+			'//*[contains(concat(" ", normalize-space(@class), " "), " elementor-nav-menu--main ")]',
+		) as $q ) {
 			$nodes = $xpath->query( $q );
 			if ( ! $nodes ) {
 				continue;
@@ -363,7 +373,11 @@ class FW_Site_Converter_Menus {
 		$best_ul = null;
 		$best    = 0;
 		foreach ( $container->getElementsByTagName( 'ul' ) as $ul ) {
-			$n = count( self::direct_children( $ul, 'li' ) );
+			// Score the WHOLE TREE, not just the direct children. Counting only top-level <li> let a flat
+			// four-link SUB-menu outrank the real menu it belongs to, because that menu's own items hide their
+			// children one level down. A menu is richer than any list nested inside it, by definition.
+			$kids = self::direct_children( $ul, 'li' );
+			$n    = count( $kids ) + $ul->getElementsByTagName( 'li' )->length;
 			if ( $n > $best ) {
 				$best    = $n;
 				$best_ul = $ul;

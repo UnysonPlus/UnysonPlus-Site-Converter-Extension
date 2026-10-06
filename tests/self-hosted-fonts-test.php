@@ -107,9 +107,19 @@ if ( ! function_exists( 'unysonplus_drop_self_hosted_families' ) ) {
 
 	echo "\n== NEGATIVE: no claim, no change\n";
 
+	// "Nothing declared" has to MEAN nothing declared. This install's own converted child theme registers its
+	// families on the same hook, so the assertion silently depended on which typefaces that site happened to
+	// use: it passed against a site using Plus Jakarta Sans and failed the moment a converted site used Inter,
+	// which is in the sample link below. Detach the hook for this case, then put it back.
+	$hook_ns  = 'unysonplus_self_hosted_font_families';
+	$saved_ns = isset( $GLOBALS['wp_filter'][ $hook_ns ] ) ? $GLOBALS['wp_filter'][ $hook_ns ] : null;
+	unset( $GLOBALS['wp_filter'][ $hook_ns ] );
+
 	$link = $mk( array( 'Inter', 'Lora' ) );
 	$ok( $link === unysonplus_drop_self_hosted_families( $link ),
 		'NEGATIVE: with nothing declared the link is returned untouched' );
+
+	if ( null !== $saved_ns ) { $GLOBALS['wp_filter'][ $hook_ns ] = $saved_ns; }
 	$ok( '' === unysonplus_drop_self_hosted_families( '' ),
 		'NEGATIVE: an empty link stays empty' );
 

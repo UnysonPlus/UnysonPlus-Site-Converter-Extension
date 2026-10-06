@@ -48,6 +48,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-progress.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-intro.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-rerun.php' );
+		// OUTPUT TARGETS — the page builders a conversion can be written into (see includes/targets/).
+		require_once $this->get_declared_path( '/includes/targets/class-fw-sc-style.php' );
+		require_once $this->get_declared_path( '/includes/targets/class-fw-sc-site-model.php' );
+		require_once $this->get_declared_path( '/includes/targets/class-fw-sc-target.php' );
+		require_once $this->get_declared_path( '/includes/targets/class-fw-sc-target-unysonplus.php' );
+		require_once $this->get_declared_path( '/includes/targets/elementor/class-fw-sc-elementor-emitter.php' );
+		require_once $this->get_declared_path( '/includes/targets/elementor/class-fw-sc-target-elementor.php' );
+		FW_SC_Target_Elementor::boot();
 
 		// The site's OWN corrections, applied before anything converts. Boot happens on every request, not
 		// only in admin, because a conversion can be driven from the REST endpoint too.
@@ -96,6 +104,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			// File-upload Convert with review: prepare (build bundle + return mapping) → build (corrected).
 			add_action( 'wp_ajax_fw_sc_convert_prepare', array( $this, '_ajax_convert_prepare' ) );
 			add_action( 'wp_ajax_fw_sc_convert_build', array( $this, '_ajax_convert_build' ) );
+			add_action( 'wp_ajax_fw_sc_install_parent_theme', array( $this, '_ajax_install_parent_theme' ) );
 			// Read while the build POST is still running, from a second request — see the Progress class.
 			add_action( 'wp_ajax_fw_sc_progress', array( $this, '_ajax_progress' ) );
 			add_action( 'wp_ajax_fw_sc_rerun_page', array( $this, '_ajax_rerun_page' ) );
@@ -1425,6 +1434,13 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			return $out;
 		}
 
+		$pf = $this->preflight( isset( $opts['target'] ) ? (string) $opts['target'] : 'page-builder' );
+		if ( $pf ) {
+			$out['error'] = $pf['message'];
+			$out['code']  = $pf['code'];
+			return $out;
+		}
+		$bundle['target'] = isset( $opts['target'] ) ? (string) $opts['target'] : 'page-builder';
 		$imp = $this->import_and_activate_bundle(
 			$bundle,
 			isset( $bundle['source']['label'] ) ? (string) $bundle['source']['label'] : __( 'Source URL', 'fw' ),
@@ -1569,10 +1585,53 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		return $out;
 	}
 
-	/** OUTPUT TARGET request reader — 'block-theme' or the default 'page-builder'. */
+	/**
+	 * OUTPUT TARGET request reader — the slug of a selectable registered target (FW_SC_Targets), else the
+	 * default 'page-builder'. A roadmap slug therefore still converts to the native output.
+	 */
 	private static function sc_target_opt() {
 		$t = isset( $_POST['fw_sc_target'] ) ? sanitize_key( wp_unslash( $_POST['fw_sc_target'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
-		return ( 'block-theme' === $t ) ? 'block-theme' : 'page-builder';
+		return FW_SC_Targets::resolve( $t )->slug();
+	}
+
+	/**
+	 * What stops a conversion into $target_slug from running on this site, or null when nothing does.
+	 *
+	 * @param string $target_slug
+	 * @return array|null { code, message, unmet? } — `code` = 'needs_parent_theme' lets the panel offer the install
+	 */
+	private function preflight( $target_slug ) {
+		$t = FW_SC_Targets::resolve( $target_slug );
+		if ( 'block-theme' !== $t->slug() ) {
+			$unmet = $t->unmet_requirements();
+			if ( $unmet ) {
+				return array( 'code' => 'target_unmet', 'message' => implode( ' ', wp_list_pluck( $unmet, 'message' ) ), 'unmet' => $unmet );
+			}
+		}
+		if ( $t->needs_parent_theme() && ! wp_get_theme( 'unysonplus-theme' )->exists() ) {
+			return array(
+				'code'    => 'needs_parent_theme',
+				'message' => __( 'The converted site runs on the Unyson+ Theme, which is not installed. Install it now to continue — the conversion creates a child theme of it.', 'fw' ),
+			);
+		}
+		return null;
+	}
+
+	/**
+	 * AJAX: install the Unyson+ parent theme (from its GitHub release) without activating it — the
+	 * conversion then generates and activates a child theme of it. Backs the preflight's install prompt.
+	 *
+	 * @internal
+	 */
+	public function _ajax_install_parent_theme() {
+		check_ajax_referer( self::NONCE );
+		if ( ! current_user_can( 'install_themes' ) ) { wp_send_json_error( array( 'message' => __( 'You do not have permission to install themes.', 'fw' ) ), 403 ); }
+		if ( ! class_exists( 'UnysonPlus_Theme_Suggestion' ) || ! method_exists( 'UnysonPlus_Theme_Suggestion', 'install' ) ) {
+			wp_send_json_error( array( 'message' => __( 'The theme installer is not available — update the Unyson+ plugin, or install the Unyson+ Theme from Appearance → Themes.', 'fw' ) ) );
+		}
+		$res = UnysonPlus_Theme_Suggestion::install();
+		if ( is_wp_error( $res ) ) { wp_send_json_error( array( 'message' => $res->get_error_message() ) ); }
+		wp_send_json_success( array( 'installed' => true ) );
 	}
 
 	/** BLOCK VOCABULARY request reader — 'enriched' (UnysonPlus blocks) or the default 'core'. */
@@ -1719,7 +1778,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'dry_run'        => $dry_run,
 			'hifi_css'       => $hifi,
 			'rendered_html'  => $rendered_html,
-			'target'         => ( 'block-theme' === $target ) ? 'block-theme' : 'page-builder',
+			'target'         => FW_SC_Targets::resolve( $target )->slug(),
 			'vocabulary'     => ( 'enriched' === $vocab ) ? 'enriched' : 'core',
 		) );
 
@@ -2116,6 +2175,12 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		$sc_src = esc_url_raw( trim( (string) wp_unslash( $_POST['fw_sc_source_url'] ?? '' ) ) );
 		if ( $sc_src !== '' ) { $opts['source_url'] = $sc_src; }
 
+		// PREFLIGHT — the chosen target's own requirements, then the Unyson+ parent theme every target except the
+		// standalone block theme renders inside. A missing parent used to surface only after the conversion, as a
+		// child theme pointing at a theme that was not there; now the panel offers to install it first.
+		$pf = $this->preflight( self::sc_target_opt() );
+		if ( $pf ) { wp_send_json_error( $pf ); }
+
 		// BLOCK-THEME output target — skip the page-builder Mapper + per-element review and install a
 		// standalone FSE block theme from the source URL (capture.mjs --target=block-theme → import_dir →
 		// install_block_theme). Reuses the same "redirect to the done page" the faithful fast-path uses.
@@ -2223,6 +2288,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 			'theme-settings.json' => $bundle['files']['theme-settings.json'] ?? null,
 			'screens'           => $bundle['screens'] ?? 1,
 			'source'            => $bundle['source'] ?? null,
+			// The OUTPUT TARGET chosen at prepare time — step 2 writes the pages into it (FW_SC_Targets).
+			'target'            => self::sc_target_opt(),
 			// The pasted source URL — carried into step 2 (build) so the origin survives the review round-trip
 			// and relative /assets/*.svg icons + illustrations inline/absolutise instead of 404-ing. See
 			// resolve_source_url(): this is the authoritative origin for a URL conversion.
@@ -2578,7 +2645,14 @@ class FW_Extension_Site_Converter extends FW_Extension {
 
 		$__am = get_transient( $this->assets_key() );
 		FW_Site_Converter_Mapper::set_assets( is_array( $__am ) ? $__am : array() ); // "Attach media" uploads → used by the mapper
-		$result = FW_Site_Converter_Stitch::import_bundle( array( 'files' => $files, 'screens' => $stash['screens'] ?? 1, 'error' => '' ) );
+		$result = FW_Site_Converter_Stitch::import_bundle( array(
+			'files'   => $files,
+			'screens' => $stash['screens'] ?? 1,
+			'error'   => '',
+			// Which builder the pages go into, and the corrected mapping they are built from.
+			'target'  => isset( $stash['target'] ) ? (string) $stash['target'] : self::sc_target_opt(),
+			'mapping' => $mapping,
+		) );
 		if ( ! empty( $result['error'] ) && empty( $result['sections'] ) ) {
 			FW_Site_Converter_Progress::fail( $result['error'] );
 			wp_send_json_error( array( 'message' => $result['error'] ) );
@@ -3741,51 +3815,41 @@ class FW_Extension_Site_Converter extends FW_Extension {
 				<!-- Shared options (apply to whichever source is selected) -->
 				<div class="fw-sc-opts" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.5em 1.8em;margin:.7em 0 .4em;font-size:13px;color:#3c434a">
 				<?php
-				// Block Theme is the standalone, plugin-free FSE output — for people NOT using the Unyson+ page
-				// builder. Gate it on the Page Builder extension being ACTIVE (the normal case): the user
-				// deliberately deactivates the Page Builder to opt into a block theme, so it isn't an accidental
-				// sibling of the default builder path. (Was gated on the Classic Editor being enforced — a proxy
-				// for "wants the builder" that broke once the page builder stopped requiring Classic Editor.) It
-				// also needs the BLOCK editor, so it stays disabled while the Classic Editor is enforced too (an
-				// FSE theme can't be edited in the classic editor).
-				$upw_pb_active      = ( function_exists( 'fw_ext' ) && fw_ext( 'page-builder' ) );
-				$upw_classic        = ( class_exists( 'Classic_Editor' ) || 'classic' === get_option( 'classic-editor-replace' ) );
-				$upw_block_disabled = $upw_pb_active || $upw_classic;
+				// THE OUTPUT PICKER — one row per registered target (FW_SC_Targets), so a new page builder appears
+				// here by registering itself, and each row's state comes from the target: its status badge, and
+				// whatever this site is missing to run it (which disables the row and says why).
+				// SHOWCASE mode — define( 'FW_SITE_CONVERTER_ALL', true ) in wp-config.php (a recording / demo
+				// install) lists the roadmap targets as ordinary enabled options without the badge. Presentation
+				// only: a Convert with a roadmap target still runs the Page Builder output. Never set on a release.
+				$upw_show_all = defined( 'FW_SITE_CONVERTER_ALL' ) && FW_SITE_CONVERTER_ALL;
+				$upw_badges   = array(
+					FW_SC_Target::STATUS_EXPERIMENTAL => array( __( 'Experimental', 'fw' ), 'color:#8a6d00;background:var(--sc-note-bg,#fcf3cd);border:1px solid var(--sc-note-bd,#f0e3a8)' ),
+					FW_SC_Target::STATUS_PRE_ALPHA    => array( __( 'Pre-Alpha', 'fw' ), 'color:#8a2be2;background:#f3ebff;border:1px solid #dcc8fb' ),
+					FW_SC_Target::STATUS_COMING_SOON  => array( __( 'Coming soon', 'fw' ), 'color:#646970;background:var(--sc-inset,#f0f0f1);border:1px solid var(--sc-border,#dcdcde)' ),
+				);
+				$upw_notes = array();
 				?>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Output', 'fw' ); ?></legend>
-						<label style="display:block;margin:.2em 0" title="<?php echo esc_attr__( 'A child theme of the UnysonPlus parent theme, with the body as editable page-builder sections and the full framework — Theme Settings, presets, shortcodes.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="page-builder" checked onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display='none';}"> <?php esc_html_e( 'Unyson+ Page Builder', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'child theme', 'fw' ); ?>)</span></label>
-						<label style="display:block;margin:.2em 0<?php echo $upw_block_disabled ? ';opacity:.5' : ''; ?>" title="<?php echo esc_attr__( 'Generate a standalone WordPress block theme (FSE): theme.json, editable header/footer parts, templates and section patterns, in core blocks — it renders with no plugin dependency. Requires the local capture service, and converts from a URL.', 'fw' ); ?>"><input type="radio" name="fw_sc_target" value="block-theme" id="fw-sc-target-block"<?php disabled( $upw_block_disabled ); ?> onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display=this.checked?'block':'none';}"> <?php esc_html_e( 'Block Theme', 'fw' ); ?> <span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#8a6d00;background:var(--sc-note-bg,#fcf3cd);border:1px solid var(--sc-note-bd,#f0e3a8);border-radius:3px;padding:0 .35em;vertical-align:middle"><?php esc_html_e( 'Experimental', 'fw' ); ?></span> <span style="color:#646970">(<?php esc_html_e( 'standalone FSE, no plugin', 'fw' ); ?>)</span></label>
+						<?php foreach ( FW_SC_Targets::all() as $upw_t ) :
+							$upw_d       = $upw_t->describe();
+							$upw_unmet   = $upw_d['unmet'];
+							$upw_off     = ( ! $upw_d['selectable'] && ! $upw_show_all ) || ( $upw_d['selectable'] && $upw_unmet );
+							$upw_badge   = ( $upw_show_all && FW_SC_Target::STATUS_COMING_SOON === $upw_d['status'] ) ? null : ( $upw_badges[ $upw_d['status'] ] ?? null );
+							$upw_title   = $upw_unmet ? implode( ' ', wp_list_pluck( $upw_unmet, 'message' ) ) : $upw_d['description'];
+							$upw_isblock = ( 'block-theme' === $upw_d['slug'] );
+							if ( $upw_unmet ) { $upw_notes[] = $upw_title; }
+							?>
+						<label style="display:block;margin:.2em 0<?php echo $upw_off ? ';opacity:.5;cursor:default' : ''; ?>" title="<?php echo esc_attr( $upw_title ); ?>"><input type="radio" name="fw_sc_target" value="<?php echo esc_attr( $upw_d['slug'] ); ?>"<?php echo $upw_isblock ? ' id="fw-sc-target-block"' : ''; ?><?php checked( FW_SC_Targets::DEFAULT_SLUG, $upw_d['slug'] ); ?><?php disabled( $upw_off ); ?> onchange="var w=document.getElementById('fw-sc-vocab-wrap');if(w){w.style.display=(this.value==='block-theme'&&this.checked)?'block':'none';}"> <?php echo esc_html( $upw_d['label'] ); ?><?php if ( $upw_badge ) : ?> <span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;<?php echo esc_attr( $upw_badge[1] ); ?>;border-radius:3px;padding:0 .35em;vertical-align:middle"><?php echo esc_html( $upw_badge[0] ); ?></span><?php endif; ?><?php if ( '' !== $upw_d['note'] ) : ?> <span style="color:#646970">(<?php echo esc_html( $upw_d['note'] ); ?>)</span><?php endif; ?></label>
+						<?php if ( $upw_isblock ) : ?>
 						<div id="fw-sc-vocab-wrap" style="display:none;margin:.15em 0 0 1.4em">
 							<span style="color:#646970;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em"><?php esc_html_e( 'Blocks', 'fw' ); ?></span>
 							<label style="display:block;margin:.1em 0" title="<?php echo esc_attr__( 'Portable: WordPress core blocks only. The theme runs with no plugin dependency — the broadest-reach option.', 'fw' ); ?>"><input type="radio" name="fw_sc_vocab" value="core" checked> <?php esc_html_e( 'Core blocks', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'portable', 'fw' ); ?>)</span></label>
 							<label style="display:block;margin:.1em 0" title="<?php echo esc_attr__( 'Richer: emit UnysonPlus blocks where they map (button / heading / text / section). The output then depends on the UnysonPlus plugin being active.', 'fw' ); ?>"><input type="radio" name="fw_sc_vocab" value="enriched"> <?php esc_html_e( 'UnysonPlus blocks', 'fw' ); ?> <span style="color:#646970">(<?php esc_html_e( 'needs the plugin', 'fw' ); ?>)</span></label>
 						</div>
-						<?php
-						// ROADMAP targets — other page builders the converter will emit to. Listed (disabled) so the
-						// output picker shows where the converter is heading; each flips to "Pre-Alpha build" when its
-						// emitter starts, and to a live option once it passes the same checks as the Unyson+ output.
-						// (Mirrors the docs-site Site Converter roadmap page — keep the two lists in step.)
-						$upw_roadmap_targets = array(
-							'elementor'      => __( 'Elementor', 'fw' ),
-							'divi'           => __( 'Divi', 'fw' ),
-							'bricks'         => __( 'Bricks', 'fw' ),
-							'beaver-builder' => __( 'Beaver Builder', 'fw' ),
-							'wpbakery'       => __( 'WPBakery', 'fw' ),
-							'oxygen'         => __( 'Oxygen', 'fw' ),
-							'breakdance'     => __( 'Breakdance', 'fw' ),
-							'kadence-blocks' => __( 'Kadence Blocks', 'fw' ),
-							'generateblocks' => __( 'GenerateBlocks', 'fw' ),
-							'spectra'        => __( 'Spectra', 'fw' ),
-						);
-						// SHOWCASE mode — define( 'FW_SITE_CONVERTER_ALL', true ) in wp-config.php (a recording / demo install) lists the
-						// roadmap targets as ordinary enabled options without the badge. Presentation only: the emitters don't exist,
-						// so a Convert with such a target still runs the Page Builder output. Never set on a public release.
-						$upw_show_all = defined( 'FW_SITE_CONVERTER_ALL' ) && FW_SITE_CONVERTER_ALL;
-						foreach ( $upw_roadmap_targets as $upw_rt_slug => $upw_rt_label ) : ?>
-						<label style="display:block;margin:.2em 0<?php echo $upw_show_all ? '' : ';opacity:.5;cursor:default'; ?>" title="<?php echo $upw_show_all ? '' : esc_attr( sprintf( __( '%s output is on the roadmap — not available yet.', 'fw' ), $upw_rt_label ) ); ?>"><input type="radio" name="fw_sc_target" value="<?php echo esc_attr( $upw_rt_slug ); ?>"<?php echo $upw_show_all ? '' : ' disabled'; ?>> <?php echo esc_html( $upw_rt_label ); ?> <?php if ( ! $upw_show_all ) : ?><span style="display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#646970;background:var(--sc-inset,#f0f0f1);border:1px solid var(--sc-border,#dcdcde);border-radius:3px;padding:0 .35em;vertical-align:middle"><?php esc_html_e( 'Coming soon', 'fw' ); ?></span><?php endif; ?></label>
+						<?php endif; ?>
 						<?php endforeach; ?>
-						<?php if ( $upw_pb_active ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme is a standalone, plugin-free output — deactivate the Page Builder extension (Unyson+ → Extensions) to use it.', 'fw' ); ?></p><?php elseif ( $upw_block_disabled ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php esc_html_e( 'Block Theme needs the block editor — it is disabled while the Classic Editor is enforced.', 'fw' ); ?></p><?php endif; ?>
+						<?php foreach ( $upw_notes as $upw_note ) : ?><p class="description" style="margin:.3em 0 0;color:#8a6d00"><?php echo esc_html( $upw_note ); ?></p><?php endforeach; ?>
 					</fieldset>
 					<fieldset class="fw-sc-optgroup" style="margin:0;padding:.5em .8em .6em;border:1px solid var(--sc-border,#dcdcde);border-radius:6px;min-width:0">
 						<legend style="padding:0 .4em;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#646970"><?php esc_html_e( 'Destination', 'fw' ); ?></legend>
@@ -4298,6 +4362,17 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							} )
 							.catch( function ( e ) { serviceMode = false; wrap.innerHTML = '<div class="notice notice-error"><p>' + escH( e.message ) + '</p></div>'; } );
 					}
+					// THE UNYSON+ THEME GATE — the preflight refused because the parent theme every output renders inside
+					// is not installed. Offer to install it (from its GitHub release), then send the same request again.
+					function parentThemeGate( res, retry ) {
+						if ( ! ( res && ! res.success && res.data && res.data.code === 'needs_parent_theme' ) ) { return null; }
+						if ( ! window.confirm( res.data.message + ' ' + '<?php echo esc_js( __( 'Install the Unyson+ Theme now?', 'fw' ) ); ?>' ) ) { return Promise.reject( new Error( res.data.message ) ); }
+						var f = new FormData(); f.append( 'action', 'fw_sc_install_parent_theme' ); f.append( '_wpnonce', nonce );
+						return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: f } ).then( function ( r ) { return r.json(); } ).then( function ( ir ) {
+							if ( ! ( ir && ir.success ) ) { throw new Error( ( ir && ir.data && ir.data.message ) || '<?php echo esc_js( __( 'The Unyson+ Theme could not be installed.', 'fw' ) ); ?>' ); }
+							return retry();
+						} );
+					}
 					// POST a rendered-HTML string to the PHP prepare endpoint (the SAME engine + stash a file upload uses).
 					function prepareFromHtml( renderedHtml, screens ) {
 						var fd = new FormData();
@@ -4342,6 +4417,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 							} ).catch( function () {} );
 						} )();
 						return preBundle.then( function () { return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ); } ).then( function ( r ) { return r.json(); } ).then( function ( res ) {
+							var gate = parentThemeGate( res, function () { return prepareFromHtml( renderedHtml, screens ); } );
+							if ( gate ) { return gate; }
 							if ( ! ( res && res.success ) ) { throw new Error( ( res && res.data && res.data.message ) || '<?php echo esc_js( __( 'Could not map the rendered page.', 'fw' ) ); ?>' ); }
 							if ( res.data && res.data.redirect ) { window.location.href = res.data.redirect; return new Promise( function () {} ); }
 							return res.data;
@@ -4355,6 +4432,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					}
 					var fd = new FormData( form ); fd.append( 'action', 'fw_sc_convert_prepare' ); fd.append( '_wpnonce', nonce );
 					return fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: fd } ).then( function ( r ) { return r.json(); } ).then( function ( res ) {
+						var gate = ( typeof parentThemeGate === 'function' ) ? parentThemeGate( res, prepare ) : null;
+						if ( gate ) { return gate; }
 						if ( ! ( res && res.success ) ) { throw new Error( ( res && res.data && res.data.message ) || '<?php echo esc_js( __( 'Could not analyze the export.', 'fw' ) ); ?>' ); }
 						if ( res.data && res.data.redirect ) { window.location.href = res.data.redirect; return new Promise( function () {} ); } // faithful import (bundle / local capture) — go straight to the result
 						return res.data;

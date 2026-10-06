@@ -260,6 +260,19 @@ class FW_Site_Converter_Bundle {
 		// image URLs localize at build time (see maybe_reconvert_with_php) — skip that when media import is off.
 		self::maybe_reconvert_with_php( $dir, ! isset( $opts['media'] ) || ! empty( $opts['media'] ), $opts );
 
+		// OUTPUT TARGET — which page builder the bodies are written into. The caller's option wins, then the
+		// bundle's own target.json; anything unknown or not selectable is the native page builder. Every
+		// site-level phase below runs the same for every target; only the pages phases route through it.
+		$tj = self::read_json( $dir, array( 'target.json' ) );
+		self::$target = class_exists( 'FW_SC_Targets' )
+			? FW_SC_Targets::resolve( isset( $opts['target'] ) ? (string) $opts['target'] : ( is_array( $tj ) ? (string) ( $tj['target'] ?? '' ) : '' ) )
+			: null;
+		// The analysis behind the pages (the Site Model's input): the build that produced this bundle, when it
+		// recorded one, else the capture's own mapping.
+		$site_mapping = self::read_json( $dir, array( 'site-mapping.json' ) );
+		if ( ! is_array( $site_mapping ) ) { $site_mapping = self::read_json( $dir, self::FILE_MAPPING ); }
+		$out['target'] = self::$target ? self::$target->slug() : 'page-builder';
+
 		// Phase gating for the review-first flow: 'design' applies the design system
 		// (media, presets, theme settings, theme + the Style Guide page) and defers the
 		// content pages; 'pages' applies only pages + menus. '' (default) = everything.
@@ -507,6 +520,12 @@ class FW_Site_Converter_Bundle {
 			}
 		}
 
+		// --- Phase 3d: the target mirrors the imported design into its builder's globals ---
+		if ( $do_design && ! $scoped && self::$target ) {
+			$td_rep = self::$target->after_design_import( array( 'dir' => $dir ) );
+			if ( $td_rep ) { $out['target_design'] = $td_rep; }
+		}
+
 		// --- Phase 3c: Style Guide page (review artifact from the captured design tokens) ---
 		$styleguide = self::read_json( $dir, self::FILE_STYLEGUIDE );
 		if ( $do_design && ! $scoped && $styleguide !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
@@ -534,7 +553,9 @@ class FW_Site_Converter_Bundle {
 		$pages = self::read_json( $dir, self::FILE_PAGES );
 		if ( $do_pages && $scope_sections && $pages !== null && class_exists( 'FW_Site_Converter_Pages' ) ) {
 			FW_Site_Converter_Progress::step( 'content' );
-			$out['pages']      = FW_Site_Converter_Pages::import( $pages );
+			$out['pages']      = self::$target
+				? self::$target->import_pages( is_array( $site_mapping ) ? $site_mapping : array(), $pages, array( 'source_url' => is_array( $td_early ) ? (string) ( $td_early['source_url'] ?? '' ) : '' ) )
+				: FW_Site_Converter_Pages::import( $pages );
 			$out['sections'][] = 'pages';
 		}
 
@@ -614,6 +635,29 @@ class FW_Site_Converter_Bundle {
 				if ( '' !== $sd_src ) { FW_Site_Converter_Menus::set_source_origin( $sd_src ); }
 			}
 			$out['menus']      = FW_Site_Converter_Menus::import( $menus );
+			// THE IMPORTED MENU OUTRANKS THE THEME'S BAKED ONE.
+			//
+			// The generated child theme carries its own menu bootstrap, built from the capture's flat nav data, and
+			// claims the location on activation behind a one-shot flag. It runs on a request AFTER this import, so
+			// the nav the user saw was the theme's flat copy — a source menu of three items with five children
+			// rendered as nine top-level links, which overflowed the bar and pushed the call-to-action off screen.
+			//
+			// This importer parses the source's real <ul>, nesting included, so its menu is the better one. Setting
+			// the theme's own `_assigned` flag here tells that bootstrap the location is already settled, which is
+			// exactly what the flag is for — it stops claiming, and a later hand edit still sticks.
+			if ( ! empty( $out['menus']['menus'] ) && function_exists( 'get_stylesheet' ) ) {
+				foreach ( (array) $out['menus']['menus'] as $row ) {
+					if ( ! is_array( $row ) || empty( $row['assigned'] ) || 'primary' !== ( $row['location'] ?? '' ) ) { continue; }
+					// Built exactly as the generator's fn_prefix() does, or the flag lands on a key nothing reads.
+					$fn_pref = preg_replace( '/[^a-z0-9_]/', '_', strtolower( (string) get_stylesheet() ) );
+					$fn_pref = preg_replace( '/_+/', '_', trim( (string) $fn_pref, '_' ) );
+					if ( '' === $fn_pref || is_numeric( $fn_pref[0] ) ) { $fn_pref = 'sc_' . $fn_pref; }
+					foreach ( array( 'header_menu', 'header_menu_secondary' ) as $sfx ) {
+						update_option( $fn_pref . '_' . $sfx . '_assigned', 1 );
+					}
+					break;
+				}
+			}
 			$out['sections'][] = 'menus';
 		}
 
@@ -850,6 +894,14 @@ class FW_Site_Converter_Bundle {
 	private static $snapshot_coverage = array();
 
 	/**
+	 * The output target of the import in progress (FW_SC_Target), so the per-page snapshot imports that run
+	 * inside it write their pages the same way the front page was written.
+	 *
+	 * @var FW_SC_Target|null
+	 */
+	private static $target = null;
+
+	/**
 	 * Reconcile a bundle's `pages-manifest.json` rows with the snapshots actually on disk.
 	 *
 	 * The manifest is an INDEX of the snapshots, and the two can disagree: a capture that writes
@@ -957,7 +1009,9 @@ class FW_Site_Converter_Bundle {
 			$snap_cov = $res['files']['conversion-drops.json']['text_coverage'] ?? null;
 			if ( is_array( $snap_cov ) ) { self::$snapshot_coverage[ $slug ] = $snap_cov; }
 
-			$imp = FW_Site_Converter_Pages::import( $built );
+			$imp = self::$target
+				? self::$target->import_pages( isset( $res['mapping'] ) && is_array( $res['mapping'] ) ? $res['mapping'] : array(), $built, array( 'source_url' => $url ) )
+				: FW_Site_Converter_Pages::import( $built );
 			// The trail labels this page's own capture taught us (its ancestors', and its own).
 			$cl = $res['files']['theme-design.json']['crumb_labels'] ?? null;
 			if ( is_array( $cl ) && method_exists( 'FW_Site_Converter_Pages', 'apply_crumb_labels' ) ) {
@@ -1214,6 +1268,10 @@ class FW_Site_Converter_Bundle {
 				}
 			}
 			@file_put_contents( rtrim( $dir, '/\\' ) . '/' . $fn, wp_json_encode( $out ) );
+		}
+		// The analysis behind those pages — what a non-native output target builds from (FW_SC_Site_Model).
+		if ( isset( $res['mapping'] ) && is_array( $res['mapping'] ) ) {
+			@file_put_contents( rtrim( $dir, '/\\' ) . '/site-mapping.json', wp_json_encode( $res['mapping'] ) );
 		}
 		// THE EXECUTED BUILD'S OWN REPORT. The service's conversion-report.csv describes the JS twin's build, which this
 		// import just REPLACED — an agent reading it after an import measured the wrong engine (a hero "kept verbatim" that

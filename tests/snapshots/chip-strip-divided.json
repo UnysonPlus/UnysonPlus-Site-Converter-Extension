@@ -1,0 +1,615 @@
+{
+    "mapping": {
+        "include_animations": false,
+        "pages": [
+            {
+                "title": "Snapshot",
+                "slug": "",
+                "front_page": true,
+                "sections": [],
+                "mainClass": "",
+                "mainCs": "",
+                "chrome": {
+                    "header": false,
+                    "footer": false
+                },
+                "source_url": "https://fixture.invalid"
+            }
+        ]
+    },
+    "files": {
+        "bundle.json": {
+            "name": "Google Stitch import",
+            "source": "stitch"
+        },
+        "conversion-drops.json": {
+            "total": 0,
+            "rescued": 0,
+            "decorative": 0,
+            "by_kind": [],
+            "top_patterns": [],
+            "items": [],
+            "text_coverage": {
+                "checked": 5,
+                "missing": 5,
+                "coverage_pct": 0,
+                "pages": 1,
+                "by_page": {
+                    "page-1": {
+                        "checked": 5,
+                        "missing": 5,
+                        "coverage_pct": 0
+                    }
+                },
+                "note": "Visible source phrases (2+ real words, excluding hidden / display:none twins) absent from the built pages + theme settings, checked on EVERY captured page. Unlike the drop log above, this shares no code path with the builder, so it also catches text lost to a RECOGNIZER claiming a container and ignoring part of it, and text glued to a neighbour so the phrase no longer exists as itself. `items` is content we should have kept (each tagged with the page it came from); `out_of_scope` is text we deliberately did not carry.",
+                "items": [
+                    {
+                        "tag": "span",
+                        "class": "flex items-center gap-2",
+                        "text": "Alle Marken",
+                        "page": "page-1"
+                    },
+                    {
+                        "tag": "span",
+                        "class": "flex items-center gap-2",
+                        "text": "Chip-Level Spezialist",
+                        "page": "page-1"
+                    },
+                    {
+                        "tag": "span",
+                        "class": "flex items-center gap-2",
+                        "text": "12 Monate Garantie",
+                        "page": "page-1"
+                    },
+                    {
+                        "tag": "span",
+                        "class": "flex items-center gap-2",
+                        "text": "Überprüfung für 40 €",
+                        "page": "page-1"
+                    },
+                    {
+                        "tag": "span",
+                        "class": "flex items-center gap-2",
+                        "text": "Kein Termin nötig",
+                        "page": "page-1"
+                    }
+                ],
+                "out_of_scope": []
+            }
+        },
+        "class-coverage.json": {
+            "schema": "unysonplus-class-coverage/1",
+            "elements_audited": 0,
+            "elements_with_untranslated": 0,
+            "untranslated_significant": [],
+            "note": "Significant (look-carrying) SOURCE classes that became NO native option and NO scoped CSS — ranked by how many elements dropped each. Each is a candidate for a new deterministic class→value translation rule (fix the rule in BOTH the PHP + JS paths, then re-prove). Coverage spans elements that pass through the class-drop collector (headings / text / cards); whole-element structural drops live in conversion-drops.json."
+        },
+        "theme-design.json": {
+            "theme": {
+                "name": "Snapshot",
+                "slug": "snapshot",
+                "mode": "child"
+            },
+            "favicon": "",
+            "css_vars": [],
+            "fonts": {
+                "heading": "",
+                "heading_stack": "",
+                "body": "",
+                "google": "https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap"
+            },
+            "colors": {
+                "ink": "#1a1a1a",
+                "accent": "#141414",
+                "bg": "#ffffff",
+                "header_bg": "",
+                "header_border": "#ececec",
+                "footer_bg": "#141414",
+                "footer_text": "#f5f5f5"
+            },
+            "header": {
+                "style": "bar",
+                "sticky": false,
+                "menu_location": "primary",
+                "menu": [],
+                "menu_secondary": [],
+                "cta": {
+                    "enabled": false,
+                    "label": "Get started",
+                    "href": "#"
+                }
+            },
+            "footer": {
+                "brand": true,
+                "widget_area": false,
+                "copyright": "All rights reserved.",
+                "menu": []
+            },
+            "background": {
+                "dotted": false,
+                "canvas": "#ffffff"
+            },
+            "custom_css": ".sc-tw .material-symbols-outlined{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;word-wrap:normal;direction:ltr;-webkit-font-feature-settings:'liga';font-feature-settings:'liga';-webkit-font-smoothing:antialiased;}\n.sc-tw .custom-logo{max-height:2.4rem;width:auto;height:auto;display:inline-block;vertical-align:middle;}\r\n.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:32px !important;}\n@media screen and (max-width:782px){.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:46px !important;}}\n.sc-mirror{padding-top:0 !important;padding-bottom:0 !important;}\n.sc-mirror .fw-container{max-width:none !important;width:100% !important;padding-left:0 !important;padding-right:0 !important;}\n.sc-mirror .fw-row{margin-left:0 !important;margin-right:0 !important;}\n.sc-mirror .fw-row > .fw-col-12{padding-left:0 !important;padding-right:0 !important;}\n/* ---- reproduced Tailwind CSS (offline) ---- */\n.sc-tw{font-family:'Inter',system-ui,-apple-system,sans-serif;}\n.sc-tw *,.sc-tw ::before,.sc-tw ::after{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}\n.sc-tw ::before,.sc-tw ::after{--tw-content:''}\n.sc-tw h1,.sc-tw h2,.sc-tw h3,.sc-tw h4,.sc-tw h5,.sc-tw h6{font-size:inherit;font-weight:inherit;margin:0}\n.sc-tw p,.sc-tw blockquote,.sc-tw figure,.sc-tw pre,.sc-tw dl,.sc-tw dd{margin:0}\n.sc-tw a{color:inherit;text-decoration:inherit}\n.sc-tw b,.sc-tw strong{font-weight:bolder}\n.sc-tw ul,.sc-tw ol,.sc-tw menu{list-style:none;margin:0;padding:0}\n.sc-tw button,.sc-tw input,.sc-tw select,.sc-tw textarea{font-family:inherit;font-size:100%;font-weight:inherit;line-height:inherit;color:inherit;margin:0;padding:0}\n.sc-tw button,.sc-tw [role=button]{cursor:pointer;background-color:transparent;background-image:none}\n.sc-tw img,.sc-tw svg,.sc-tw video,.sc-tw canvas,.sc-tw audio,.sc-tw iframe,.sc-tw embed,.sc-tw object{display:block;vertical-align:middle}\n.sc-tw img,.sc-tw video{max-width:100%;height:auto}\n.sc-tw .py-6{padding-top:1.5rem !important;padding-bottom:1.5rem !important}\n.sc-tw .flex{display:flex !important}\n.sc-tw .flex-wrap{flex-wrap:wrap !important}\n.sc-tw .justify-center{justify-content:center !important}\n.sc-tw .items-center{align-items:center !important}\n.sc-tw .gap-x-8{column-gap:2rem !important}\n.sc-tw .gap-y-3{row-gap:0.75rem !important}\n.sc-tw .text-sm{font-size:0.875rem !important;line-height:1.25rem !important}\n.sc-tw .font-medium{font-weight:500 !important}\n.sc-tw .gap-2{gap:0.5rem !important}\n.sc-tw .opacity-50{opacity:0.5 !important}",
+            "font_links": [],
+            "raw_chrome": {
+                "header_html": "",
+                "footer_html": "",
+                "nav_tree": [],
+                "nav_style": [],
+                "footer_cols": [],
+                "footer_copyright": ""
+            },
+            "source_url": "https://fixture.invalid",
+            "chrome_via_settings": true
+        },
+        "pages.json": {
+            "pages": [
+                {
+                    "title": "Snapshot",
+                    "slug": "home",
+                    "status": "publish",
+                    "front_page": true,
+                    "source_url": "https://fixture.invalid",
+                    "builder": [],
+                    "page_options": {
+                        "hide_site_footer": "yes",
+                        "hide_site_header": "yes"
+                    }
+                }
+            ]
+        },
+        "theme-settings.json": {
+            "values": {
+                "header_logo": {
+                    "logo_type": {
+                        "logo_type": "custom",
+                        "custom": {
+                            "site_title": "Snapshot",
+                            "logo_layout": "inline-left",
+                            "title_weight": "700",
+                            "color": {
+                                "predefined": "",
+                                "custom": "#111111"
+                            }
+                        },
+                        "simple": []
+                    }
+                },
+                "header_main": {
+                    "main_left": [
+                        {
+                            "element_type": {
+                                "element": "logo"
+                            }
+                        }
+                    ],
+                    "main_center": [
+                        {
+                            "element_type": {
+                                "element": "menu_area",
+                                "menu_area": {
+                                    "menu_location": "primary"
+                                }
+                            }
+                        }
+                    ],
+                    "main_right": []
+                },
+                "header_menu": {
+                    "menu_link_color": {
+                        "predefined": "",
+                        "custom": "#94a3b8"
+                    },
+                    "menu_link_hover_color": {
+                        "predefined": "",
+                        "custom": "#94a3b8"
+                    }
+                },
+                "header_layout": {
+                    "header_mode": {
+                        "mode": "top",
+                        "top": {
+                            "header_design": {
+                                "design": "classic"
+                            }
+                        }
+                    },
+                    "header_position": "static",
+                    "header_uppercase_nav": "no",
+                    "bg_color": {
+                        "predefined": "bg-white",
+                        "custom": ""
+                    },
+                    "header_glass": "no",
+                    "header_border": "no",
+                    "header_shadow": "no"
+                },
+                "drawer_link_color": "#1a1a1a",
+                "mobile_bar_bg": "#141414",
+                "header_topbar": {
+                    "topbar_left": [],
+                    "topbar_center": [],
+                    "topbar_right": [],
+                    "topbar_custom_styling": {
+                        "enabled": "no"
+                    }
+                },
+                "header_bottombar": {
+                    "bottombar_left": [],
+                    "bottombar_center": [],
+                    "bottombar_right": []
+                },
+                "footer_background": {
+                    "color": {
+                        "value": {
+                            "predefined": "",
+                            "custom": "#141414"
+                        }
+                    }
+                },
+                "footer_text_color": {
+                    "predefined": "",
+                    "custom": "#94a3b8"
+                },
+                "footer_link_color": {
+                    "predefined": "",
+                    "custom": "#94a3b8"
+                },
+                "general_layout": {
+                    "layout_container_width": {
+                        "base": {
+                            "value": "100",
+                            "unit": "%"
+                        },
+                        "md": {
+                            "value": "720",
+                            "unit": "px"
+                        },
+                        "lg": {
+                            "value": "1152",
+                            "unit": "px"
+                        }
+                    }
+                },
+                "misc_custom_css": {
+                    "custom_css": "/* converted header/footer styles */\n.footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:#94a3b8 !important}\n.footer .site-logo__mark:not(.site-logo__mark--framed){color:#94a3b8 !important}"
+                },
+                "main_footer_columns": {
+                    "count": "1",
+                    "1": {
+                        "main_footer_col_1": [
+                            {
+                                "element_type": {
+                                    "element": "logo"
+                                }
+                            }
+                        ]
+                    }
+                },
+                "copyright_settings": {
+                    "enabled": "no"
+                },
+                "container_width_presets": [
+                    {
+                        "id": "cw_small",
+                        "width_name": "Small",
+                        "width": {
+                            "value": "640",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_prose",
+                        "width_name": "Prose",
+                        "width": {
+                            "value": "672",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_narrow",
+                        "width_name": "Narrow",
+                        "width": {
+                            "value": "768",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_medium",
+                        "width_name": "Medium",
+                        "width": {
+                            "value": "896",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide",
+                        "width_name": "Wide",
+                        "width": {
+                            "value": "1024",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-l",
+                        "width_name": "Wide L",
+                        "width": {
+                            "value": "1152",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xl",
+                        "width_name": "Wide XL",
+                        "width": {
+                            "value": "1280",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xxl",
+                        "width_name": "Wide XXL",
+                        "width": {
+                            "value": "1440",
+                            "unit": "px"
+                        }
+                    }
+                ],
+                "theme_colors": [
+                    {
+                        "name": "Primary",
+                        "color": "#141414"
+                    },
+                    {
+                        "name": "Ink",
+                        "color": "#1a1a1a"
+                    },
+                    {
+                        "name": "Secondary",
+                        "color": "#6c757d"
+                    },
+                    {
+                        "name": "Accent",
+                        "color": "#fd7e14"
+                    },
+                    {
+                        "name": "Muted",
+                        "color": "#5f6773"
+                    },
+                    {
+                        "name": "Black",
+                        "color": "#000"
+                    },
+                    {
+                        "name": "White",
+                        "color": "#fff"
+                    },
+                    {
+                        "name": "Gray",
+                        "color": "#636c72"
+                    },
+                    {
+                        "name": "Light Gray",
+                        "color": "#bdbdbd"
+                    },
+                    {
+                        "name": "Red",
+                        "color": "#dc3545"
+                    },
+                    {
+                        "name": "Pink",
+                        "color": "#e91e63"
+                    },
+                    {
+                        "name": "Purple",
+                        "color": "#9c27b0"
+                    },
+                    {
+                        "name": "Deep Purple",
+                        "color": "#673ab7"
+                    },
+                    {
+                        "name": "Indigo",
+                        "color": "#3f51b5"
+                    },
+                    {
+                        "name": "Blue",
+                        "color": "#286090"
+                    },
+                    {
+                        "name": "Light Blue",
+                        "color": "#03a9f4"
+                    },
+                    {
+                        "name": "Cyan",
+                        "color": "#00bcd4"
+                    },
+                    {
+                        "name": "Teal",
+                        "color": "#009688"
+                    },
+                    {
+                        "name": "Green",
+                        "color": "#5cb85c"
+                    },
+                    {
+                        "name": "Light Green",
+                        "color": "#8bc34a"
+                    },
+                    {
+                        "name": "Lime",
+                        "color": "#cddc39"
+                    },
+                    {
+                        "name": "Yellow",
+                        "color": "#ffeb3b"
+                    },
+                    {
+                        "name": "Amber",
+                        "color": "#ffc107"
+                    },
+                    {
+                        "name": "Orange",
+                        "color": "#ff9800"
+                    },
+                    {
+                        "name": "Deep Orange",
+                        "color": "#ff5722"
+                    },
+                    {
+                        "name": "Brown",
+                        "color": "#795548"
+                    },
+                    {
+                        "name": "Blue Gray",
+                        "color": "#607d8b"
+                    }
+                ],
+                "spacing_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    }
+                ],
+                "gap_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "[32px]",
+                        "size": "32px"
+                    },
+                    {
+                        "name": "[40px]",
+                        "size": "40px"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    },
+                    {
+                        "name": "[12px]",
+                        "size": "12px"
+                    }
+                ]
+            }
+        },
+        "conversion-parity.json": {
+            "schema": "unysonplus-conversion-parity/1",
+            "score": 100,
+            "passed": 2,
+            "total": 2,
+            "checks": [
+                {
+                    "id": "dropped_measures",
+                    "label": "Unmapped width classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "max-w/min-w must map to a native width or carried CSS"
+                },
+                {
+                    "id": "dropped_chrome",
+                    "label": "Unmapped chrome classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "logo/menu/footer typography must map to a native option or carried CSS"
+                }
+            ]
+        }
+    }
+}

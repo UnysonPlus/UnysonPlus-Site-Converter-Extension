@@ -53,6 +53,18 @@ class FW_Site_Converter_Pages {
 	private static $replace_run = array();
 
 	/**
+	 * The content writer for THIS import() call, or null for the native page-builder tree.
+	 *
+	 * Creating the page — slug, parent chain, the cross-source fork guard, the front-page pointer, the source
+	 * URL — is the same for every output target; only how the BODY is stored differs. An output target that
+	 * is not the Unyson+ page builder passes `writer` to import(), and import_one() hands it the post id once
+	 * the post exists instead of writing a builder tree.
+	 *
+	 * @var callable|null function ( int $post_id, array $spec, bool $existed ) : array — merged into the row
+	 */
+	private static $writer = null;
+
+	/**
 	 * Approve these slugs for replacement for the rest of this request.
 	 *
 	 * Only slugs listed here (or passed to import()) may overwrite a page belonging to a DIFFERENT source.
@@ -78,6 +90,7 @@ class FW_Site_Converter_Pages {
 			$sl = sanitize_title( (string) $sl );
 			if ( '' !== $sl ) { self::$replace_ok[ $sl ] = true; }
 		}
+		self::$writer = ( isset( $opts['writer'] ) && is_callable( $opts['writer'] ) ) ? $opts['writer'] : null;
 
 		if ( ! is_array( $data ) ) {
 			$out['error'] = __( 'Invalid pages payload — expected a JSON object.', 'fw' );
@@ -102,6 +115,7 @@ class FW_Site_Converter_Pages {
 			}
 			$out['pages'][] = self::import_one( $spec );
 		}
+		self::$writer = null;
 
 		return $out;
 	}
@@ -312,6 +326,12 @@ class FW_Site_Converter_Pages {
 			$row['source_url'] = esc_url_raw( $src_url );
 		}
 
+		// ANOTHER OUTPUT TARGET writes the body (see $writer). Everything above — the post, its path, its
+		// source URL — is shared; the page-builder tree below is the native target's storage only.
+		if ( self::$writer ) {
+			$wrote = call_user_func( self::$writer, $post_id, $spec, ! empty( $existing ) );
+			if ( is_array( $wrote ) ) { $row = array_merge( $row, $wrote ); }
+		} else {
 		// TARGETED RE-IMPORT (region scope): merge the reconverted sections INTO the existing page by
 		// their original index, so the sections you did NOT reconvert stay exactly as they were, instead
 		// of the whole page being replaced. Only when the page already exists (a re-import) and the bundle
@@ -345,6 +365,7 @@ class FW_Site_Converter_Pages {
 			$added = unysonplus_register_arbitrary_spacing_scale( (string) $json );
 			if ( $added > 0 ) { $row['spacing_presets_added'] = $added; }
 		}
+		} // end native page-builder storage
 
 		// Per-page layout options the build asked for (e.g. hide_site_footer = 'yes' when the source has no footer) — the
 		// theme's own page switches, so the editor shows them and the user can flip them back.

@@ -34,6 +34,7 @@ class FW_Site_Converter_Mapper {
 	private static $style_on    = false;
 	private static $style_key   = array(); // declset hash → class name
 	private static $style_css   = array(); // class name → CSS rule
+	private static $sec_reg     = array(); // section selector → the style_css key it registered
 	private static $style_count = array(); // base name → count
 	// A section-scoped prose selector (`#sec .text-block`) is SHARED by every block of that role in the
 	// band. Two blocks with DIFFERENT measured type both register under it, same specificity — so the
@@ -318,6 +319,7 @@ class FW_Site_Converter_Mapper {
 		self::$style_on    = class_exists( 'FW_Site_Converter_Tailwind' );
 		self::$style_key   = array();
 		self::$style_css   = array();
+		self::$sec_reg     = array();
 		self::$style_count = array();
 		self::$style_claim = array();
 		self::$style_own   = '';
@@ -1765,6 +1767,34 @@ class FW_Site_Converter_Mapper {
 	private static function box_style_class( $cls, $cs = '' ) {
 		$inline = '' !== (string) $cs ? self::cs_decls( $cs, self::$cs_box ) : array();
 		return self::register_style( $cls, 'box', true, '', $inline );
+	}
+
+	/**
+	 * Does this registered class actually PAINT a box — a fill, a border or a shadow?
+	 *
+	 * box_style_class() reads the CELL's own classes and computed style. When a page builder paints the card
+	 * on a WRAPPER inside the cell, that compile still succeeds — on the leftovers. Measured on a captured
+	 * band it produced `.box{border-radius:0px;box-sizing:border-box}`: a rule with no fill, no border and no
+	 * shadow, whose name is nonetheless non-empty. Callers that read a non-empty name as "this card is
+	 * boxed" then suppress the Box Preset built from the wrapper's real skin, and the cards render bare.
+	 *
+	 * Radius and box-sizing are SHAPE, not paint: they describe a box that something else has to draw.
+	 *
+	 * This asks only about the rule; it does not change what box_style_class() returns, so the class is still
+	 * applied wherever it was before and no routing shifts underneath a caller that does not ask.
+	 */
+	private static function box_class_paints( $name ) {
+		$name = trim( (string) $name );
+		if ( '' === $name ) { return false; }
+		$css = (string) ( isset( self::$style_css[ $name ] ) ? self::$style_css[ $name ] : '' );
+		// The test is stated as the negative deliberately: a rule that carries ONLY shape (border-radius,
+		// box-sizing) paints nothing. Enumerating the paint properties instead was too strict — it rejected
+		// real card classes whose skin is written in ways the list missed, and broke 20 golden assertions.
+		$decls = array();
+		if ( preg_match_all( '/([a-z-]+)\s*:/i', $css, $dm ) ) { $decls = array_map( 'strtolower', $dm[1] ); }
+		$shape = array( 'border-radius', 'box-sizing' );
+		foreach ( $decls as $d ) { if ( ! in_array( $d, $shape, true ) ) { return true; } }
+		return false;
 	}
 
 	/**
@@ -5435,9 +5465,24 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 	 *  leftovers (a mono face, tracking) on the block's own Custom CSS — never an inline style on the paragraph. */
 	private static function counter_label_node( array $c ) {
 		$clbl = trim( (string) ( $c['label'] ?? '' ) ); if ( '' === $clbl ) { return null; }
+		// TWO RUNS, TWO LINES. The stitch carries a stat's caption and its qualifier separately (labelCap /
+		// labelSub) because the source renders them as two lines of different weight. Merged, they read as one
+		// heavy sentence. The break is restored here, and the qualifier wears the weight the source measured —
+		// when none was stamped, none is applied rather than guessed.
+		$l_cap = trim( (string) ( $c['labelCap'] ?? '' ) );
+		$l_sub = trim( (string) ( $c['labelSub'] ?? '' ) );
+		$l_w   = trim( (string) ( $c['labelSubWeight'] ?? '' ) );
+		$two_line = ( '' !== $l_cap && '' !== $l_sub );
+		$lbl_html = function ( $plain ) use ( $l_cap, $l_sub, $l_w, $two_line ) {
+			if ( ! $two_line ) { return esc_html( $plain ); }
+			$tail = ( '' !== $l_w )
+				? '<span style="font-weight:' . esc_attr( $l_w ) . '">' . esc_html( $l_sub ) . '</span>'
+				: esc_html( $l_sub );
+			return esc_html( $l_cap ) . '<br>' . $tail;
+		};
 		$lcs = (string) ( $c['labelCs'] ?? '' );
 		if ( '' !== $lcs ) {
-			$node = self::n_text( '<p>' . esc_html( $clbl ) . '</p>', '', (string) ( $c['align'] ?? '' ), $lcs );
+			$node = self::n_text( '<p>' . $lbl_html( $clbl ) . '</p>', '', (string) ( $c['align'] ?? '' ), $lcs );
 			$props = array( 'font-family', 'line-height', 'color', 'text-align', 'margin-top', 'margin-bottom' );
 			if ( ! empty( $node['atts']['font_size_preset'] ) ) { $props[] = 'font-size'; }
 			$node = self::apply_hifi_base( $node, $lcs, $props );
@@ -5447,7 +5492,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		}
 		$lc = trim( (string) ( $c['labelColor'] ?? '' ) ); $ls = trim( (string) ( $c['labelSize'] ?? '' ) );
 		$lsty = ( $lc !== '' ? 'color:' . esc_attr( $lc ) . ';' : '' ) . ( $ls !== '' ? 'font-size:' . esc_attr( $ls ) . 'px;' : '' );
-		return self::n_text( '<p' . ( $lsty !== '' ? ' style="' . $lsty . '"' : '' ) . '>' . esc_html( $clbl ) . '</p>' );
+		return self::n_text( '<p' . ( $lsty !== '' ? ' style="' . $lsty . '"' : '' ) . '>' . $lbl_html( $clbl ) . '</p>' );
 	}
 	/** A compact color value: a near-white source color → the `text-white` preset, else custom hex. */
 	private static function counter_color( $hex ) {
@@ -5466,7 +5511,9 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			'prefix'    => (string) ( $c['prefix'] ?? '' ),
 			'suffix'    => (string) ( $c['suffix'] ?? '' ),
 			'decimals'  => (string) ( $c['decimals'] ?? '0' ),
-			'separator' => 'yes',
+			// …as the source wrote it (stitch `sep`), not as the shortcode prefers. A captured stats band writes
+			// `4499`; pinning 'yes' rendered `4,499`, a number that appears nowhere in the source.
+			'separator' => in_array( ( $c['sep'] ?? '' ), array( 'yes', 'no' ), true ) ? (string) $c['sep'] : 'yes',
 			'duration'  => '2000',
 			'easing'    => 'ease-out',
 			'alignment' => in_array( (string) ( $c['align'] ?? '' ), array( 'center', 'right' ), true ) ? (string) $c['align'] : '',
@@ -6703,10 +6750,24 @@ selector.fw-fl--orient-horizontal{" . implode( ';', $rd ) . ';}' ); }
 			if ( ( ! $is_img || ! empty( $labels[ $li ] ) ) && trim( (string) ( $l['name'] ?? '' ) ) !== '' ) { $icon_named++; }
 		}
 		$show_labels = ( $icon_named >= (int) ceil( count( $logos ) * 0.5 ) ) ? 'yes' : 'no';
+		// LAYOUT from the SOURCE (stitch logo_strip_design), not from the logo count. `design` was pinned to
+		// 'grid' here and `columns` came from how many logos there were, so a captured 45-logo CAROUSEL -- one
+		// 1150x92 row showing about seven at a time -- became a 6-across static grid eight rows and 258px tall.
+		// For the carousel/marquee designs the shortcode reads `columns` as logos VISIBLE PER VIEW, so the
+		// measured per-view belongs there; a grid keeps the count-derived column rule, which is right for a
+		// genuine wall of logos. JS twin: logoGridNode.
+		$design = in_array( ( $b['design'] ?? '' ), array( 'grid', 'boxed', 'carousel', 'marquee' ), true ) ? (string) $b['design'] : 'grid';
+		$cols   = min( 6, max( 2, count( $logos ) ) );
+		if ( 'carousel' === $design || 'marquee' === $design ) {
+			$pv = (int) ( $b['perView'] ?? 0 );
+			// Unmeasurable per-view falls back to the shortcode's own default rather than to the logo count,
+			// which for a 45-logo track would ask the slider to show 6 and is only right by coincidence.
+			$cols = ( $pv >= 2 ) ? min( 6, $pv ) : 4;
+		}
 		$atts = array(
 			'logos'       => $logos,
-			'design'      => 'grid',
-			'columns'     => (string) min( 6, max( 2, count( $logos ) ) ),
+			'design'      => $design,
+			'columns'     => (string) $cols,
 			'grayscale'   => ( ( $b['grayscale'] ?? 'yes' ) === 'no' ) ? 'no' : 'yes',
 			'show_labels' => $show_labels,
 		);
@@ -8216,9 +8277,30 @@ selector.fw-steps .fw-steps__item{padding:" . $dz['box']['padding'] . ';}' ); } 
 		return $node;
 	}
 
+	/**
+	 * An inline glyph INHERITS its colour, or it renders black.
+	 *
+	 * An <svg> shape with no `fill` of its own paints BLACK — SVG's own default, not the theme's. A source page
+	 * escapes it because its icon stylesheet sets `fill: currentColor`; the converted page carries no such rule, so
+	 * the glyph ignores the icon colour entirely. Measured on the live page: the svg's computed `color` was
+	 * correctly rgb(255,255,255) while its `fill` was rgb(0,0,0) — four white icons rendered black inside their
+	 * cards, with icon_color set exactly as intended.
+	 *
+	 * So a fill-less glyph is made to inherit. A glyph that states a fill of its own — on the <svg>, on a shape, or
+	 * in a style attribute — is the source's own choice and is left exactly as it was drawn.
+	 */
+	private static function svg_inherits_ink( $svg ) {
+		$svg = (string) $svg;
+		if ( '' === trim( $svg ) ) { return $svg; }
+		if ( preg_match( '/<svg\b[^>]*\sfill\s*=/i', $svg ) ) { return $svg; }
+		if ( preg_match( '/<(?:path|circle|rect|polygon|polyline|ellipse|line|g)\b[^>]*\sfill\s*=/i', $svg ) ) { return $svg; }
+		if ( preg_match( '/style\s*=\s*"[^"]*\bfill\s*:/i', $svg ) ) { return $svg; }
+		return preg_replace( '/<svg\b/i', '<svg fill="currentColor"', $svg, 1 );
+	}
 	private static function n_lone_icon( array $b ) {
 		$svg = (string) ( $b['svg'] ?? '' ); $fa = (string) ( $b['fa'] ?? '' );
 		if ( '' === trim( $svg ) && '' === $fa ) { return null; }
+		$svg = self::svg_inherits_ink( $svg ); // a fill-less glyph paints black whatever icon_color says
 		$over = array( 'title' => '' );
 		$over['icon'] = ( '' !== trim( $svg ) ) ? array( 'type' => 'svg', 'svg-source' => 'inline', 'markup' => $svg, 'svg-id' => '' ) : array( 'type' => 'icon-font', 'icon-class' => $fa, 'icon-class-without-root' => '', 'pack-name' => '', 'pack-css-uri' => '' );
 		// a Lucide glyph whose inline svg carries no geometry (the capture keeps `<path></path>` only) → the library icon; the empty
@@ -8991,7 +9073,29 @@ selector .imgbox__media{aspect-ratio:" . $arm[1] . ' / ' . $arm[2] . ';}' );
 		$cta_label = ''; $cta_href = ''; $cta_arrow = false;
 		$try = function ( $lbl, $href, $extra ) use ( &$cta_label, &$cta_href, &$cta_arrow, $title ) {
 			$lbl = trim( wp_strip_all_tags( (string) $lbl ) );
-			if ( $lbl === '' || mb_strlen( $lbl ) > 32 || ( $title !== '' && stripos( $lbl, $title ) !== false ) ) { return; }
+			// A CTA MUST NOT BE THE TITLE AGAIN — but "contains the title" is not the same as "is the title".
+			//
+			// The guard exists because a whole-card link often carries the card's own heading as its text, and
+			// repeating it as a CTA label reads as a stutter. Testing it with a SUBSTRING match threw away real
+			// buttons whose label happens to name the thing they lead to, which is how most of them are written.
+			//
+			// Measured on a captured band of four identical cards: "For Event Planners →" and
+			// "For Brands & Merchants →" were dropped because each contains its card's title, while
+			// "For Printers →" survived only because its card is titled "Fulfillment Printers". Two of four
+			// buttons vanished on a coin-flip of wording, and the converter's own coverage audit listed both as
+			// missing text (90.2%).
+			//
+			// So compare for EQUALITY once both sides are normalised — case, arrows and surrounding punctuation
+			// removed. A label that is the title wearing a chevron is still refused; a label that says something
+			// more than the title is a real CTA and is kept.
+			$norm = function ( $s ) {
+				$s = mb_strtolower( trim( (string) $s ) );
+				$s = preg_replace( '/[\x{2190}-\x{21FF}\x{2794}-\x{27BF}\x{00BB}\x{203A}]/u', ' ', $s ); // arrows / guillemets
+				$s = preg_replace( '/[^\p{L}\p{N}]+/u', ' ', $s );
+				return trim( preg_replace( '/\s+/u', ' ', $s ) );
+			};
+			if ( $lbl === '' || mb_strlen( $lbl ) > 32 ) { return; }
+			if ( '' !== $title && $norm( $lbl ) === $norm( $title ) ) { return; }
 			$cta_label = $lbl; $cta_href = (string) $href;
 			$cta_arrow = (bool) preg_match( '/→|➔|»|\barrow\b|chevron/i', $lbl . ' ' . (string) $extra );
 		};
@@ -9210,7 +9314,13 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 			if ( preg_match( '/(?:^|;)width:\s*([0-9]+px);height:\s*([0-9]+px)/', (string) $card['image']['extra'], $own ) ) {
 				$atts['image_ratio'] = 'original';
 				// !important: the shortcode's own `.imgbox .imgbox__img{width:100%;height:100%}` (0,2,0) outranks the scoped `selector img`.
-				$atts['custom_css'] = trim( (string) $atts['custom_css'] . "\nselector .imgbox__media{width:" . $own[1] . " !important;height:" . $own[2] . " !important;aspect-ratio:auto !important;}selector .imgbox__img{width:" . $own[1] . " !important;height:" . $own[2] . " !important;}" );
+				// …and the frame cannot both HUG the image and inset it. The frame padding written earlier from the
+				// source wrapper (framePad) lands on this same box, while these widths are the IMAGE's own measured
+				// size rather than the frame's — so under border-box that padding is subtracted from the picture
+				// instead of sitting around it. Measured on a captured card row: width:60px with padding:20px left a
+				// 20px content box, and object-fit cropped a 300x251 icon to 20x50 — squashed, not merely small, on
+				// all four cards of the band. Hugging wins, because that is what this branch decided.
+				$atts['custom_css'] = trim( (string) $atts['custom_css'] . "\nselector .imgbox__media{width:" . $own[1] . " !important;height:" . $own[2] . " !important;aspect-ratio:auto !important;padding:0 !important;}selector .imgbox__img{width:" . $own[1] . " !important;height:" . $own[2] . " !important;}" );
 			}
 		}
 		return array( 'type' => 'simple', 'shortcode' => 'image_box', '_items' => array(), 'atts' => $atts );
@@ -10738,6 +10848,18 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 						$ci   = array( self::n_counter( $cc['counter'] ) );
 						$clbl = trim( (string) ( $cc['counter']['label'] ?? '' ) );
 						if ( '' !== $clbl ) { $ln = self::counter_label_node( $cc['counter'] ); if ( is_array( $ln ) ) { if ( ! empty( $cc['counter']['labelFirst'] ) ) { array_unshift( $ci, $ln ); } else { $ci[] = $ln; } } } // the caption keeps its side of the number
+						// The cell's GLYPH sits above the number in the source, so it leads the column — added last so it
+						// precedes the caption whichever side of the number that caption took.
+						if ( ! empty( $cc['icon'] ) && is_array( $cc['icon'] ) ) {
+							$icn = self::n_lone_icon( array(
+								'svg'    => (string) ( $cc['icon']['svg'] ?? '' ),
+								'lucide' => (string) ( $cc['icon']['lucide'] ?? '' ),
+								'size'   => (int) ( $cc['iconSize'] ?? 0 ),
+								'color'  => (string) ( $cc['iconColor'] ?? '' ),
+								'center' => ( 'center' === (string) ( $cc['counter']['align'] ?? '' ) ),
+							) );
+							if ( is_array( $icn ) ) { array_unshift( $ci, $icn ); }
+						}
 						$lay = self::geom_layout( isset( $cc['wResp'] ) ? $cc['wResp'] : null );
 						$w   = ( null !== $lay ) ? $lay['width'] : self::frac12( (int) round( 12 / max( 1, count( $b['cols'] ) ) ) );
 						$cCol = self::carry_cell_geometry( self::n_column( $w, $ci ), $cc );
@@ -13049,6 +13171,18 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 				$node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "\n" . 'selector{opacity:' . ( isset( $hop['opacity'] ) ? (float) $hop['opacity'] : 1 ) . ';pointer-events:none;z-index:0;white-space:nowrap;user-select:none;}' );
 				$node['atts']['custom_attrs'] = array_merge( is_array( $node['atts']['custom_attrs'] ?? null ) ? $node['atts']['custom_attrs'] : array(), array( array( 'name' => 'aria-hidden', 'value' => 'true' ) ) );
 			}
+			// The band's shared `#sec hN` rule was already claimed by an EARLIER heading with different type, so
+			// this heading's own measured type has to ride on the node at higher specificity (see claim_or_own).
+			// The prose builder has always done this; the heading builder did not, so the narrowed rule was
+			// computed and then thrown away -- and the shared rule, an ID selector with !important, beat the
+			// heading's own per-element CSS. Measured on a captured source: a band with a 16px uppercase eyebrow h2
+			// and a 31px mixed-case headline h2 rendered the headline at 16px AND UPPERCASE. Its own correct rule
+			// was present the whole time and simply outranked.
+			if ( '' !== self::$style_own ) {
+				$node['atts']['custom_css'] = trim( (string) ( $node['atts']['custom_css'] ?? '' ) . "
+" . self::$style_own );
+				self::$style_own = '';
+			}
 			self::carry_wrap_margins( $node, $b ); // a flattened wrapper's own margin (mtAdd / mbAdd / an mt-auto push)
 			return $node;
 		} );
@@ -13809,7 +13943,9 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 		$key = md5( $sel . '|' . $body );
 		if ( isset( self::$style_key[ $key ] ) ) { return; }
 		self::$style_key[ $key ] = $sel;
-		self::$style_css[ 'sec-' . substr( $key, 0, 8 ) ] = $sel . '{' . $body . '}';
+		$css_key = 'sec-' . substr( $key, 0, 8 );
+		self::$sec_reg[ $sel ] = $css_key; // so a later clash can withdraw this exact rule
+		self::$style_css[ $css_key ] = $sel . '{' . $body . '}';
 	}
 
 	/** Collect the section-scoped style rule for ONE prose block, driven by the expandable profile table. */
@@ -13877,7 +14013,7 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 		if ( ! empty( $b['mbAdd'] ) ) { $decls['margin-bottom'] = round( max( self::px_of( isset( $decls['margin-bottom'] ) ? $decls['margin-bottom'] : '' ), (float) $b['mbAdd'] ) ) . 'px'; }
 		if ( ! empty( $b['mtAdd'] ) ) { $decls['margin-top']    = round( max( self::px_of( isset( $decls['margin-top'] ) ? $decls['margin-top'] : '' ), (float) $b['mtAdd'] ) ) . 'px'; }
 		}
-		self::claim_or_own( $css_id, $sel, $decls );
+		self::claim_or_own( $css_id, $sel, $decls, ! empty( $heading_owns_color ) );
 	}
 
 	/**
@@ -13891,7 +14027,7 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 	 * class — strictly more specific, so it wins regardless of emission order) via its node's Custom CSS.
 	 * (PHP-only: the unified element styler has no JS twin.)
 	 */
-	private static function claim_or_own( $css_id, $sel, array $decls ) {
+	private static function claim_or_own( $css_id, $sel, array $decls, $withdraw_on_clash = false ) {
 		if ( ! $decls ) { return; }
 		$body = '';
 		foreach ( $decls as $pr => $v ) { $body .= $pr . ':' . $v . ' !important;'; }
@@ -13899,6 +14035,27 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 		if ( ! isset( self::$style_claim[ $claim ] ) || self::$style_claim[ $claim ] === $body ) {
 			self::$style_claim[ $claim ] = $body;
 			self::register_section_rule( $css_id, $sel, $decls );
+			return;
+		}
+		// HEADINGS WITHDRAW INSTEAD OF NARROWING.
+		//
+		// Narrowing works for prose because the block that needs the narrowed rule is the one being built
+		// right now. A heading is not: a heading and its subtitle are merged into ONE special_heading cluster
+		// that is flushed later, so by the time the node exists the rule has nowhere to attach — and attaching
+		// it to whatever cluster happened to be pending put the headline's 31px rule on the EYEBROW's node,
+		// one node too early. Both failure modes were measured on the same source.
+		//
+		// Withdrawing is sound here in a way it would not be for prose: every heading already carries its own
+		// complete `selector .heading-title{…}` rule (face, size, weight, line-height, tracking, case) from
+		// apply_hifi_base. The shared `#sec hN` rule is a convenience, not the carrier — so when two headings
+		// in one band disagree, dropping it loses nothing and stops an id selector with !important overriding
+		// the per-heading truth. Measured: the headline rendered 16px AND UPPERCASE against the source's 31px
+		// mixed-case, two lines where the source has five — the page's single largest spacing drift, -178px.
+		if ( $withdraw_on_clash ) {
+			// register_section_rule() keys by the FULL selector it builds ('#id sel'), not the bare one passed
+			// here — looking up the bare form silently matched nothing and withdrew nothing.
+			$full = '#' . (string) $css_id . ( '' !== (string) $sel ? ' ' . $sel : '' );
+			if ( isset( self::$sec_reg[ $full ] ) ) { unset( self::$style_css[ self::$sec_reg[ $full ] ] ); }
 			return;
 		}
 		// A class selector sits ON the block's own element (compound); a tag selector is a DESCENDANT of it.
@@ -14320,6 +14477,11 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 			}
 
 			self::collect_section_style( $css_id, $b ); // unified element styler: section-scoped prose styling
+			// A narrowed rule is produced for the block being collected, but its node is often built LATER: a
+			// heading followed by a subtitle is merged into ONE special_heading cluster and flushed further down
+			// the loop. By then the next block's collect_section_style has cleared the single global slot, so the
+			// rule was computed, stored and thrown away every time -- which is why the section rule kept winning.
+			// Park it on the cluster instead, so it travels with the thing it describes.
 			if ( ! empty( $b['mtAuto'] ) ) { $flush_buf(); $mt_auto_col = true; } // an `mt-auto` wrapper's first block starts its own pushed column
 
 			// A WIDE media widget (image_overlay player / hero graphic — source `w-full max-w-[…]`) → its
@@ -14685,6 +14847,13 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 					$grid_stack_gap = false; // a single-column card stack was emitted directly into this column → gap it
 					$stack_gap_slug = ""; // the source between-card gap (from a card space-y-* margin) → the stack content_gap (avoids doubling)
 					$box_via_class = false; // a class-based box (box_style_class) was painted for this cell — so the
+					// …and whether that box actually PAINTS. `$box_via_class` means "a box class was applied", which
+					// is what the routing below depends on and must not change. But a class can be applied and paint
+					// nothing: when a page builder puts the card's skin on a WRAPPER inside the cell, the compile
+					// succeeds on the leftovers and yields `.box{border-radius:0px;box-sizing:border-box}`. Measured on
+					// a captured band, that empty rule suppressed the Box Preset built from the wrapper's real skin and
+					// four bordered cards rendered bare. Only the cardBox fallback needs this second, stricter answer.
+					$box_painted = false;
 					// computed-skin cardBox fallback (line ~6086) must NOT also paint, or the card double-boxes
 					// (icon_box box + column cardBox = 2 borders, 2× padding). Set when 6010/6014/6025/6034 fire.
 						$btn_row_on_column = ''; // .btn-row class for a CTA button-group cell (side-by-side buttons)
@@ -14770,6 +14939,18 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 						$inner_items = array( self::n_counter( $c['counter'] ) );
 						$clbl = trim( (string) ( $c['counter']['label'] ?? '' ) );
 						if ( $clbl !== '' ) { $ln = self::counter_label_node( $c['counter'] ); if ( is_array( $ln ) ) { if ( ! empty( $c['counter']['labelFirst'] ) ) { array_unshift( $inner_items, $ln ); } else { $inner_items[] = $ln; } } }
+						// …and the cell's GLYPH leads it, as it does in the source (a stat card opens with its icon above
+						// the number). Prepended after the caption so it precedes whichever side the caption took.
+						if ( ! empty( $c['icon'] ) && is_array( $c['icon'] ) ) {
+							$icn = self::n_lone_icon( array(
+								'svg'    => (string) ( $c['icon']['svg'] ?? '' ),
+								'lucide' => (string) ( $c['icon']['lucide'] ?? '' ),
+								'size'   => (int) ( $c['iconSize'] ?? 0 ),
+								'color'  => (string) ( $c['iconColor'] ?? '' ),
+								'center' => ( 'center' === (string) ( $c['counter']['align'] ?? '' ) ),
+							) );
+							if ( is_array( $icn ) ) { array_unshift( $inner_items, $icn ); }
+						}
 					} elseif ( ! empty( $c['paint'] ) && is_array( $c['paint'] ) ) {
 						$inner_items = array(); // a painted empty panel → an empty cell carrying the paint (apply_panel_paint below)
 					} elseif ( isset( $c['text'] ) && is_array( $c['text'] ) ) {
@@ -14789,11 +14970,31 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 						$ban    = ( ! empty( $card['ba'] ) && is_array( $card['ba'] ) ) ? self::n_before_after( $card['ba'] ) : null;
 						$ibx    = is_array( $ban ) ? $ban : ( $titled ? self::n_image_box( $card ) : array() );
 						if ( ! empty( $ibx ) ) {
-							if ( $is_box ) { $ibx['atts']['css_class'] = trim( (string) ( $ibx['atts']['css_class'] ?? '' ) . ' ' . self::box_style_class( $cc, $ccs ) ); $box_via_class = true; }
+							// …and the flag means "a box WAS painted", not "we tried". box_style_class() reads the CELL's own
+							// class/computed style, so when a page builder paints the skin on a WRAPPER inside the cell it
+							// returns nothing — yet the flag was set anyway, which suppressed the cardBox fallback that WOULD
+							// have found it (cell_card_skin descends). Measured: three bands of bordered cards converted with
+							// no box at all, while the skin sat one level in and the Box Preset for it was already registered.
+							if ( $is_box ) {
+								$bcls = trim( (string) self::box_style_class( $cc, $ccs ) );
+								if ( '' !== $bcls ) {
+									$ibx['atts']['css_class'] = trim( (string) ( $ibx['atts']['css_class'] ?? '' ) . ' ' . $bcls );
+									$box_via_class = true;
+									// …and separately, whether that class actually PAINTS. The two are not the same question
+									// and only the cardBox fallback needs the second one — see $box_painted below.
+									if ( self::box_class_paints( $bcls ) ) { $box_painted = true; }
+								}
+							}
 							$inner_items = array( $ibx );
 						} else {
 							$inner_items = self::n_image_card( $card );
-							if ( $is_box ) { $box_on_column = self::box_style_class( $cc, $ccs ); $box_via_class = true; }
+							if ( $is_box ) {
+								$box_on_column = trim( (string) self::box_style_class( $cc, $ccs ) );
+								if ( '' !== $box_on_column ) {
+									$box_via_class = true;
+									if ( self::box_class_paints( $box_on_column ) ) { $box_painted = true; }
+								}
+							}
 						}
 					} elseif ( isset( $c['card'] ) && is_array( $c['card'] ) ) {
 						$card = $c['card'];
@@ -14975,7 +15176,7 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 						// CARD skin -> the column INNER WRAPPER (a matching Box Preset, else a scoped inner class), NOT the
 						// column element - painting the column filled the whole 50% track incl. the gutter, so the card read
 						// WIDER + edge-to-edge. Gutter now stays OUTSIDE the box (parity with the grid-cell path).
-						if ( ! empty( $c['cardBox'] ) && is_array( $c['cardBox'] ) && ! $box_via_class ) {
+						if ( ! empty( $c['cardBox'] ) && is_array( $c['cardBox'] ) && ! $box_painted ) {
 							$cb    = $c['cardBox'];
 							// A FROSTED / organic-blob card (a backdrop-filter, or an arbitrary %-based radius like
 							// `42% 58% 61% 39%`) cannot round-trip through a standard Box Preset — force the scoped-class
@@ -15154,6 +15355,22 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 				$bld      = isset( $builders[ $role ] ) ? $builders[ $role ] : $builders['code'];
 				$item     = call_user_func( $bld['build'], $b );
 				if ( $item !== null ) {
+					// The band's shared `#sec <sel>` rule was already claimed by an earlier block with DIFFERENT
+					// declarations, so this block's own measured styling has to ride on its node at higher
+					// specificity (claim_or_own). Applied HERE, at the dispatcher, because it has to hold for every
+					// role: doing it inside the prose builder covered prose only, and the roles that actually
+					// collided were headings, which arrive as role `title` and never reach that builder at all.
+					//
+					// Measured on a captured source: a band whose eyebrow h2 is 16px uppercase and whose headline h2
+					// is 31px mixed-case emitted one `#section-2 h2{font-size:16px !important}` for the eyebrow, and
+					// an id selector beats the headline's own `.uXXXX .heading-title` rule. The headline rendered at
+					// 16px AND UPPERCASE -- two lines where the source has five, and the single largest spacing
+					// drift on the page at -178px.
+					if ( is_array( $item ) && '' !== self::$style_own ) {
+						$item['atts']['custom_css'] = trim( (string) ( isset( $item['atts']['custom_css'] ) ? $item['atts']['custom_css'] : '' ) . "
+" . self::$style_own );
+						self::$style_own = '';
+					}
 					if ( is_array( $item ) ) { self::apply_block_anim( $item, $b ); } // source reveal/scroll-animation intent → node Animations tab
 					if ( ! empty( $bld['full_width'] ) ) { $flush_buf(); $items[] = self::n_column( '1_1', array( $item ) ); }
 					else { $buf[] = $item; }

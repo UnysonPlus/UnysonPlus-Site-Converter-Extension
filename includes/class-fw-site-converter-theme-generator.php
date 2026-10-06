@@ -1458,7 +1458,7 @@ class FW_Site_Converter_Theme_Generator {
 		$literal = self::php_menu_literal( $items );
 		$out  = "/**\n * Build the \"{$menu_name}\" menu from the converted links and assign it to the\n";
 		$out .= " * '{$location}' location on activation. Idempotent (reuses an existing menu);\n";
-		$out .= " * only assigns when the location is empty, so it never clobbers a user choice.\n */\n";
+		$out .= " * only claims the location when it is empty/dangling AND no RICHER menu already holds\n * it, so it never clobbers a user choice nor the converter's own nested menu.\n */\n";
 		$out .= "function {$fn}_bootstrap_{$suffix}() {\n";
 		$out .= "\t\$items = {$literal};\n";
 		$out .= "\tif ( ! \$items ) { return; }\n";
@@ -1512,8 +1512,61 @@ class FW_Site_Converter_Theme_Generator {
 		// of the same site still exists, so the rebuilt menu was never assigned and the header rendered with no
 		// nav. A location pointing at ANOTHER existing menu is the user's choice and stays.
 		$out .= "\t\$cur = isset( \$locations['" . self::esc_php( $location ) . "'] ) ? (int) \$locations['" . self::esc_php( $location ) . "'] : 0;\n";
-		$out .= "\tif ( ! get_option( '{$fn}_{$suffix}_assigned' ) || \$cur <= 0 || ! wp_get_nav_menu_object( \$cur ) ) {\n";
-		$out .= "\t\t\$locations['" . self::esc_php( $location ) . "'] = \$menu_id;\n";
+		// …and NEVER take the location away from a RICHER menu. This bootstrap builds its menu from the
+		// capture's FLAT nav list, while the converter's own menu importer parses the source's real <ul> and
+		// keeps the nesting, so the two disagree about the same location and whichever ran last used to win.
+		// A reconvert can produce a NEW theme slug, which means a FRESH (unset) flag, so on the next front-end
+		// request this theme reclaimed the location and replaced a 3-item menu carrying 5 children with 9 flat
+		// links — which overflowed the header bar. That read as a header "regression" with nothing in the diff.
+		//
+		// Comparing item counts settles it without either side having to know the other exists: a menu with MORE
+		// items than this one carries structure this one lacks, so it stays. An equal or smaller menu is a stale
+		// or demo assignment and is replaced exactly as before.
+		// …and when the location is EMPTY, do not reach for this menu without looking around first.
+		//
+		// Comparing against the CURRENTLY ASSIGNED menu is not enough, because there is a window in which
+		// nothing is assigned at all: `nav_menu_locations` is a PER-THEME theme_mod, so the instant the
+		// converter switches to the freshly generated theme, that theme's locations are empty — and they stay
+		// empty until the menu importer runs, seconds later. A front-end request landing in that window found
+		// an empty location, claimed it with this baked FLAT menu, and set the flag. The importer's own menu
+		// (the one that parsed the source's real <ul> and kept its nesting) then existed but held nothing, and
+		// the header rendered nine flat links in a bar built for four.
+		//
+		// So an empty location is filled with the RICHEST menu available, which is this one only when nothing
+		// better exists. Item count is the measure, as above: a menu with more items carries structure this
+		// flat list lacks. It also makes the two sides order-independent — whichever runs first, the better
+		// menu ends up assigned — which is what makes this a fix rather than a faster race.
+		$out .= "\t\$cur_n  = \$cur > 0 ? count( (array) wp_get_nav_menu_items( \$cur ) ) : 0;\n";
+		$out .= "\t\$mine_n = count( (array) wp_get_nav_menu_items( \$menu_id ) );\n";
+		$out .= "\t\$best   = \$menu_id; \$best_n = \$mine_n;\n";
+		$out .= "\tif ( \$cur_n <= \$mine_n ) {\n";
+		$out .= "\t\tforeach ( (array) wp_get_nav_menus() as \$m ) {\n";
+		$out .= "\t\t\t\$mid = (int) \$m->term_id;\n";
+		$out .= "\t\t\tif ( \$mid === \$menu_id ) { continue; }\n";
+		// A menu already parked on ANOTHER location belongs to that location; taking it would strip the
+		// footer to fill the header.
+		$out .= "\t\t\tif ( in_array( \$mid, array_map( 'intval', (array) \$locations ), true ) ) { continue; }\n";
+		$out .= "			\$items = (array) wp_get_nav_menu_items( \$mid );
+";
+		// A candidate must carry NESTING. Size alone is too greedy: an orphan flat menu left behind by an
+		// earlier conversion, or any unrelated menu the site happens to own, out-counts this one and would be
+		// adopted purely for being bigger -- measured, it picked exactly such a stray. Nesting is the thing this
+		// baked menu provably cannot have, since it is built from the capture's FLAT nav list, so a menu with
+		// children is the importer's, which parsed the source's real <ul>. When nothing qualifies, this menu is
+		// used exactly as before.
+		$out .= "			\$nested = false;
+";
+		$out .= "			foreach ( \$items as \$it ) { if ( (int) \$it->menu_item_parent ) { \$nested = true; break; } }
+";
+		$out .= "			if ( ! \$nested ) { continue; }
+";
+		$out .= "			\$n = count( \$items );
+";
+		$out .= "\t\t\tif ( \$n > \$best_n ) { \$best = \$mid; \$best_n = \$n; }\n";
+		$out .= "\t\t}\n";
+		$out .= "\t}\n";
+		$out .= "\tif ( ( ! get_option( '{$fn}_{$suffix}_assigned' ) || \$cur <= 0 || ! wp_get_nav_menu_object( \$cur ) ) && \$cur_n <= \$best_n ) {\n";
+		$out .= "\t\t\$locations['" . self::esc_php( $location ) . "'] = \$best;\n";
 		$out .= "\t\tset_theme_mod( 'nav_menu_locations', \$locations );\n";
 		$out .= "\t\tupdate_option( '{$fn}_{$suffix}_assigned', 1 );\n";
 		$out .= "\t}\n";
@@ -2501,8 +2554,10 @@ JS;
 				if ( $fh !== '' )  { $hd .= "font-family:{$head_stack} !important;"; }
 				if ( $hwt !== '' ) { $hd .= "font-weight:{$hwt};"; }
 				// the header / footer builder's own headings (`.hf-heading`) carry their MEASURED type (footer_heading_css) —
-				// the site-wide !important family must not outrank it (footer column titles rendered in the heading font, 3 sites)
-				$out .= ":is(h1,h2,h3,h4,h5,h6):not(.hf-heading) { {$hd} }\n";
+				// the site-wide !important family must not outrank it (footer column titles rendered in the heading font, 3 sites).
+				// Elementor's heading widget is excluded for the same reason: a page converted into Elementor sets each
+				// heading's measured family on the widget, and its default already follows the synced global font.
+				$out .= ":is(h1,h2,h3,h4,h5,h6):not(.hf-heading):not(.elementor-heading-title) { {$hd} }\n";
 			}
 			// Heading color is emitted as a PLAIN element-selector rule (specificity 0,0,1) so it acts
 			// only as the default — any component/section rule that sets a heading color (e.g. a dark
