@@ -383,7 +383,7 @@ class FW_Site_Converter_Menus {
 				$best_ul = $ul;
 			}
 		}
-		return $best_ul ? self::parse_ul( $best_ul, $base, 0 ) : self::flat_links( $container, $base, 30 );
+		return $best_ul ? self::parse_ul( $best_ul, $base, 0 ) : self::flat_links( $container, $base, 30, true );
 	}
 
 	/** Walk a <ul>'s direct <li> children into items, recursing into submenus. */
@@ -420,15 +420,93 @@ class FW_Site_Converter_Menus {
 	}
 
 	/** Collect a container's <a> links as a flat, de-duped item list. */
-	private static function flat_links( $container, $base, $cap ) {
+	/**
+	 * Is this the header's BRAND link rather than a menu item?
+	 *
+	 * A nav item points somewhere; a brand points home. So: a link to the site root that also carries a mark
+	 * (an image / svg) or a brand-ish class. A plain labelled `Home` link has neither and stays a menu item.
+	 */
+	private static function is_brand_link( $a, $base ) {
+		// Only an ANCHOR can be the brand. A <button> has no href, so an empty-href test read every dropdown
+		// trigger as a root link, and its chevron <svg> then read as the brand mark — measured: the Practice
+		// Areas trigger was skipped as "the brand" and the nav came back one item short.
+		if ( 'a' !== strtolower( $a->tagName ) ) { return false; }
+		$href = trim( (string) $a->getAttribute( 'href' ) );
+		$root = ( '' === $href || '/' === $href || '#' === $href
+			|| ( '' !== $base && ( rtrim( $href, '/' ) === rtrim( $base, '/' ) ) ) );
+		if ( ! $root ) { return false; }
+		if ( $a->getElementsByTagName( 'img' )->length > 0 || $a->getElementsByTagName( 'svg' )->length > 0 ) { return true; }
+		// the token may be HYPHENATED into a utility class — measured: `animate-logo text-xl font-extrabold`
+		return (bool) preg_match( '/(^|[\s-])(brand|logo|site-?title|navbar-brand)([\s-]|$)/i', (string) $a->getAttribute( 'class' ) );
+	}
+
+	/**
+	 * Is this link the header's CALL TO ACTION rather than a menu item?
+	 *
+	 * The converter already carries a header CTA as a native button, so sweeping it into the menu renders it
+	 * twice — measured: a phone number appeared both as the first menu item and as the button it already was.
+	 */
+	private static function is_cta_link( $a ) {
+		$href = strtolower( trim( (string) $a->getAttribute( 'href' ) ) );
+		if ( 0 === strpos( $href, 'tel:' ) || 0 === strpos( $href, 'mailto:' ) ) { return true; }
+		return (bool) preg_match( '/(^|\s)(btn|button|cta)(\s|$|-)/i', (string) $a->getAttribute( 'class' ) );
+	}
+
+	/**
+	 * Flatten a container's links. In NAV mode the brand and the CTA are not menu items.
+	 *
+	 * parse_nav() prefers the richest <ul> and falls back here when a header has none — which is the ordinary
+	 * shape of a React/Tailwind header, a row of <a> elements. The sweep took every link, so a measured header
+	 * produced `Apex… | About Us | Costs | Contact | 415-789-2200`: the brand as the first item and the phone
+	 * CTA as the last, against the source's own four-item menu.
+	 *
+	 * Nav mode is off for the footer sweep, where a flat list of every link is exactly what is wanted.
+	 */
+	private static function flat_links( $container, $base, $cap, $nav = false ) {
 		$items = array();
 		$seen  = array();
-		foreach ( $container->getElementsByTagName( 'a' ) as $a ) {
+		// In NAV mode a <button> is swept too, in DOCUMENT ORDER with the links. A React/Tailwind header renders
+		// a submenu parent as `<div class="relative"><button>Practice Areas</button></div>` whose panel is not in
+		// the DOM until opened — measured, that wrapper held 0 links — so an anchor-only sweep dropped the item
+		// entirely and the converted nav came back one short. Order matters because the trigger sits BETWEEN two
+		// links, so the two kinds cannot be collected separately and concatenated.
+		$nodes = array();
+		if ( $nav ) {
+			foreach ( $container->getElementsByTagName( '*' ) as $el ) {
+				$tn = strtolower( $el->tagName );
+				if ( 'a' === $tn || 'button' === $tn ) { $nodes[] = $el; }
+			}
+		} else {
+			foreach ( $container->getElementsByTagName( 'a' ) as $el ) { $nodes[] = $el; }
+		}
+		foreach ( $nodes as $a ) {
+			// …but a CONTROL is not navigation: a hamburger, a search or a close button. They carry a control word
+			// as their label or aria-label, or no text at all (an icon-only button), and the empty-label skip
+			// below already removes the latter.
+			if ( $nav && 'button' === strtolower( $a->tagName ) ) {
+				$aria = strtolower( trim( (string) $a->getAttribute( 'aria-label' ) ) );
+				$btxt = strtolower( trim( preg_replace( '/\s+/', ' ', (string) $a->textContent ) ) );
+				$ctrl = '/(^|\s)(menu|toggle|open|close|search|cart|account|login|language|skip)(\s|$)/';
+				if ( '' !== $aria && preg_match( $ctrl, $aria ) ) { continue; }
+				if ( preg_match( $ctrl, $btxt ) ) { continue; }
+				// A DEAD END IS NOT A DESTINATION — mirrors the capture service's rule (capture-extract.mjs).
+				// A trigger with no href earns its place only when its submenu was actually captured; otherwise it
+				// becomes a menu item that goes nowhere. Measured: a React dropdown renders its panel on interaction,
+				// so the wrapper held 0 links at capture time and the parent has nothing to offer.
+				$href_b = trim( (string) $a->getAttribute( 'href' ) );
+				if ( '' === $href_b || '#' === $href_b ) {
+					$panel = $a->parentNode instanceof DOMElement ? $a->parentNode->getElementsByTagName( 'a' )->length : 0;
+					if ( $panel < 1 ) { continue; }
+				}
+			}
 			$label = self::clean_text( $a->textContent );
 			if ( $label === '' ) {
 				continue; // skip icon-only links
 			}
-			$url = self::href( $a, $base );
+			if ( $nav && ( self::is_brand_link( $a, $base ) || self::is_cta_link( $a ) ) ) {
+				continue; // the brand and the CTA are carried natively, not as menu items
+			}
+			$url = ( 'button' === strtolower( $a->tagName ) ) ? '' : self::href( $a, $base ); // a trigger has no destination of its own
 			$key = strtolower( $label ) . '|' . $url;
 			if ( isset( $seen[ $key ] ) ) {
 				continue;

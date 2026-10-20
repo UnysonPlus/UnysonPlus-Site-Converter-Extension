@@ -715,7 +715,7 @@ class FW_Site_Converter_Bundle {
 		}
 
 		// --- Phase 5c: NEEDED BUNDLED EXTENSIONS — auto-activate each bundled extension this conversion depends
-		// on (animation-engine for engine features like svg_draw; newsletter-crm for a converted signup form;
+		// on (animation-engine for engine features like svg_draw; crm for a converted signup form;
 		// OUR woocommerce extension for a store the user opted into), so the converted output works without the
 		// user hunting in the Extensions manager. Same activate-on-need pattern as the Mega Menu above; for the
 		// WooCommerce case, our extension's own admin notice then nags to install/activate the third-party
@@ -980,6 +980,32 @@ class FW_Site_Converter_Bundle {
 				$title = FW_Site_Converter_Stitch::page_title_from_html( $html, $title );
 			}
 
+			// A BLOG ARTICLE IS NOT A PAGE, so it does not go through the page build at all.
+			//
+			// Discovery classified this URL from the source's own sitemap (a post-sitemap, else the path shape).
+			// A post wants its body in post_content, where the editor reads it, and its date, excerpt and terms on
+			// the post -- then ONE template styles every article. Converted as a page it gets a builder tree nobody
+			// wants to edit a paragraph in, and it is absent from the blog index, the feed, its category and its tag.
+			//
+			// The extractor may DISAGREE with the classification, and is allowed to: it reads the page and refuses
+			// when there is no dated article body in it. A refusal falls through to the page path below -- the
+			// behaviour that existed before posts -- because the two errors do not cost the same. Minting a post out
+			// of a teaser card is expensive; converting an article as a page is merely what used to happen.
+			if ( 'post' === strtolower( trim( (string) ( $pg['kind'] ?? '' ) ) )
+				&& method_exists( 'FW_Site_Converter_Stitch', 'post_spec_from_html' ) ) {
+				$spec = FW_Site_Converter_Stitch::post_spec_from_html( $html, $url, $title );
+				if ( is_array( $spec ) ) {
+					$imp = FW_Site_Converter_Pages::import( array( 'pages' => array( $spec ) ) );
+					$row = array( 'slug' => $slug, 'ok' => true, 'kind' => 'post', 'result' => $imp );
+					foreach ( (array) ( $imp['pages'] ?? array() ) as $pp ) {
+						if ( ! empty( $pp['created'] ) ) { $row['created'] = true; }
+						if ( isset( $pp['id'] ) ) { $row['id'] = $pp['id']; }
+					}
+					$rows[] = $row;
+					continue;
+				}
+			}
+
 			$res = FW_Site_Converter_Sources::build_from_html( $html, $title, array(
 				'dynamic_chrome' => true,
 				'hifi_css'       => true,
@@ -1053,7 +1079,15 @@ class FW_Site_Converter_Bundle {
 	private static function capture_is_inner_page( $dir ) {
 		$url  = '';
 		$meta = self::read_json( $dir, self::FILE_MANIFEST );
-		if ( is_array( $meta ) && ! empty( $meta['source'] ) ) { $url = (string) $meta['source']; }
+		// `source` is a URL only for a URL capture; an HTML / file import stores a FORMAT label there ("stitch"),
+		// which read as a path made every such import an "inner page" — and a site that already had a converted
+		// theme kept it instead of getting the new one. Only an address counts.
+		if ( is_array( $meta ) && ! empty( $meta['source'] ) && preg_match( '#^https?://#i', (string) $meta['source'] ) ) { $url = (string) $meta['source']; }
+		if ( '' === $url ) {
+			// A bundle built from rendered HTML (URL convert, dashboard, AI Assistant) records the address here.
+			$td = self::read_json( $dir, self::FILE_THEME_DESIGN );
+			if ( is_array( $td ) && ! empty( $td['source_url'] ) && preg_match( '#^https?://#i', (string) $td['source_url'] ) ) { $url = (string) $td['source_url']; }
+		}
 		if ( '' === $url ) {
 			$dc = self::read_json( $dir, array( 'design-capture.json' ) );
 			foreach ( array( 'url', 'source_url', 'page_url' ) as $k ) {
@@ -1431,7 +1465,7 @@ class FW_Site_Converter_Bundle {
 	private static function activate_bundled_exts( array $slugs ) {
 		$done = array();
 		if ( ! function_exists( 'fw' ) || ! function_exists( 'fw_ext' ) ) { return $done; }
-		$allowed = array( 'animation-engine', 'woocommerce', 'newsletter-crm', 'breadcrumbs', 'chat', 'portfolio', 'snippets', 'forms' );
+		$allowed = array( 'animation-engine', 'woocommerce', 'crm', 'breadcrumbs', 'chat', 'portfolio', 'snippets', 'forms' );
 		if ( ! fw()->extensions->manager->can_activate() ) { return $done; }
 		foreach ( array_values( array_unique( $slugs ) ) as $slug ) {
 			$slug = (string) $slug;

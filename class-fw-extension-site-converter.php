@@ -3633,8 +3633,8 @@ class FW_Extension_Site_Converter extends FW_Extension {
 						</li>
 						<li style="margin-bottom:.4em">
 							<strong><?php esc_html_e( 'Run the launcher.', 'fw' ); ?></strong><br>
-							<span class="description"><?php echo wp_kses_post( __( 'In the kit folder, double-click <code>start-converter.bat</code> (Windows) — or run <code>./start-converter.command</code> on macOS. Keep the window open while you convert sites.', 'fw' ) ); ?></span>
-							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">start-converter.bat</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
+							<span class="description"><?php echo wp_kses_post( __( 'In the kit folder, double-click <code>start.bat</code> (Windows) — or run <code>./start.command</code> on macOS. Keep the window open while you convert sites.', 'fw' ) ); ?></span>
+							<div class="fw-sc-code"><pre style="background:var(--sc-inset,#f6f7f7);padding:.5em .8em;border-radius:4px;overflow:auto;margin:.4em 0;padding-right:2.6em">start.bat</pre><button type="button" class="fw-sc-copy" title="Copy"><span class="dashicons dashicons-admin-page"></span></button></div>
 							<span class="description"><?php echo wp_kses_post( __( '<strong>First run</strong> auto-downloads the capture service, its dependencies, and (for the optional local-AI models) the Ollama runtime — all self-contained inside the kit folder, so deleting the kit removes everything cleanly. Then it starts:', 'fw' ) ); ?></span>
 							<ul style="margin:.35em 0 .2em 1.2em;padding:0;list-style:disc;color:#50575e;font-size:13px">
 								<li><?php echo wp_kses_post( __( 'the <strong>capture service</strong> at <code>http://localhost:8787</code> — the status below turns green once it is detected;', 'fw' ) ); ?></li>
@@ -3721,7 +3721,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 					<h4 style="margin:1em 0 .2em"><?php esc_html_e( 'Option C — Local AI, no cloud (Experimental)', 'fw' ); ?></h4>
 					<p class="description"><?php echo wp_kses_post( __( 'No Claude sign-in and no API key? The <strong>AI Dev Kit launcher</strong> also fetches a small, self-contained <strong>Ollama</strong> runtime into the kit, and the <a href="http://localhost:4600" target="_blank" rel="noopener">dashboard</a> lets you download and pick a local model with one click — it runs entirely on your machine. Claude is still the best quality; a local model is a fallback. Open the dashboard, go to <strong>Local AI</strong>, pull the recommended model, and it is used automatically. (Leave the model unselected to prefer Claude Code when it is configured.)', 'fw' ) ); ?></p>
 
-					<p class="description" style="margin:.4em 0"><span class="dashicons dashicons-info-outline" style="vertical-align:text-bottom"></span> <?php echo wp_kses_post( __( 'After configuring AI, <strong>restart the service</strong> — with the Dev Kit, just close its window and run <code>start-converter.bat</code> again; run by hand, restart <code>node serve.mjs</code>. Its log should say <em>“AI ON”</em>.', 'fw' ) ); ?></p>
+					<p class="description" style="margin:.4em 0"><span class="dashicons dashicons-info-outline" style="vertical-align:text-bottom"></span> <?php echo wp_kses_post( __( 'After configuring AI, <strong>restart the service</strong> — with the Dev Kit, just close its window and run <code>start.bat</code> again; run by hand, restart <code>node serve.mjs</code>. Its log should say <em>“AI ON”</em>.', 'fw' ) ); ?></p>
 
 					<h4 style="margin:1em 0 .2em"><?php esc_html_e( 'Troubleshooting', 'fw' ); ?></h4>
 					<ul style="margin:.3em 0 .2em 1.4em;padding:0;list-style:disc">
@@ -5061,6 +5061,10 @@ class FW_Extension_Site_Converter extends FW_Extension {
 								// A bare "/" is the home page, but only to someone who already knows that. Now that it
 								// is a row people tick and untick, it says what it is.
 								+ fwSCEsc( p.home ? '<?php echo esc_js( __( '/  (home page)', 'fw' ) ); ?>' : p.path )
+								// WHAT IT IS, not just where it lives. A WordPress source splits its sitemap by post type, so a
+								// blog archive arrives classified; without saying so, 120 articles look exactly like 120 pages and
+								// the handful of real pages is buried among them.
+								+ ( 'post' === p.kind ? ' <span style="color:#8a6d00;font-size:11px"><?php echo esc_js( __( 'post', 'fw' ) ); ?></span>' : '' )
 								+ ( p.inNav ? ' <span style="color:#2271b1;font-size:11px"><?php echo esc_js( __( 'in nav', 'fw' ) ); ?></span>' : '' )
 								// The row the user actually asked for, named as such — it is the one page they typed.
 								+ ( p.pasted ? ' <span style="color:#00a32a;font-size:11px"><?php echo esc_js( __( 'the URL you pasted', 'fw' ) ); ?></span>' : '' )
@@ -5189,11 +5193,22 @@ class FW_Extension_Site_Converter extends FW_Extension {
 										// pretending otherwise made the batch size a lie.
 										if ( p.home ) { fwSCPicked[ p.url ] = true; n++; return; }
 										if ( n >= cap ) { return; }
+										// A POST is not pre-ticked. Converting one as a WordPress page is exactly the mistake this
+										// classification exists to stop — it would never appear in the blog index, the feed or a
+										// category. Tick it deliberately if you want it; nothing stops you.
+										if ( 'post' === p.kind ) { return; }
 										if ( p.inNav || p.depth === 1 ) { fwSCPicked[ p.url ] = true; n++; }
 									} );
 								}
 								if ( panel ) { panel.style.display = ''; }
-								if ( msg ) { msg.textContent = ''; }
+								// A BLOCKED SCAN MUST NOT READ AS A ONE-PAGE SITE. When the source turns the capture service
+								// away (bot protection), every discovery source comes back empty and the only entry left is the
+								// URL that was pasted — which looks exactly like a site that genuinely has one page, and gives
+								// the user no reason to doubt it. Say what happened, and point at the way round it.
+								if ( msg ) {
+									if ( d.blocked && d.warning ) { msg.style.color = '#b32d2e'; msg.textContent = d.warning; }
+									else { msg.textContent = ''; }
+								}
 								// A LATER BATCH of the same site: untick "Replace existing site". That reset wipes
 								// Theme Settings back to defaults and rebuilds them from the same source, so on a
 								// second round it is pure churn — and leaving it ticked invites the reading that

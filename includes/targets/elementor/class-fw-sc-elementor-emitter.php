@@ -20,7 +20,7 @@
  *   media    callable( string $url ) : array{ id:int, url:string }  — resolve an image to the media library
  *   html     callable( string $html ) : string  — point the image URLs inside raw markup at the media library
  *   native   callable( string $block_type ) : array{ widget:string, settings:array }|null  — the block's own
- *            Unyson+ element as an Elementor widget, when one is registered (the Elementor Widgets
+ *            Unyson+ element as an Elementor widget, when one is registered (the Elementor
  *            extension's `up-<tag>` widgets). Asked once per block, in document order; null = not available.
  *   colors   array( '#hex' => 'global id' )   — palette colours to bind as Elementor globals
  *   fonts    array( heading, body )            — the site fonts; widgets inherit these instead of repeating them
@@ -59,6 +59,16 @@ class FW_SC_Elementor_Emitter {
 		foreach ( (array) ( $page['sections'] ?? array() ) as $s ) {
 			$elements[] = $this->section( $s );
 		}
+		// The page root clips horizontal overflow, as the native page-builder wrapper does (`overflow-x:clip`, which
+		// keeps sticky children working): a marquee track or an oversized word must not make a phone scroll sideways.
+		$this->css['root'] = '.elementor[data-elementor-type="wp-page"]{overflow-x:clip}';
+		// The source <main>'s vertical padding, where the native output puts it on #main: on the page's own
+		// Elementor root (this CSS is printed only on this page).
+		$mt = (float) ( $page['main']['padding_top'] ?? 0 );
+		$mb = (float) ( $page['main']['padding_bottom'] ?? 0 );
+		if ( $mt > 0 || $mb > 0 ) {
+			$this->css['main'] = '.elementor[data-elementor-type="wp-page"]{' . ( $mt > 0 ? 'padding-top:' . round( $mt ) . 'px;' : '' ) . ( $mb > 0 ? 'padding-bottom:' . round( $mb ) . 'px;' : '' ) . '}';
+		}
 		return array(
 			'elements'  => $elements,
 			'css'       => implode( "\n", array_filter( $this->css ) ),
@@ -87,6 +97,21 @@ class FW_SC_Elementor_Emitter {
 		$set['content_width'] = empty( $s['full_bleed'] ) ? 'boxed' : 'full';
 		if ( 'boxed' === $set['content_width'] && $cw <= 0 ) { $cw = (int) $this->opts['container']; }
 		if ( 'boxed' === $set['content_width'] && $cw > 0 ) { $set['boxed_width'] = $this->size( $cw ); }
+		// Vertical rhythm set by the section's own MARGIN (`mb-24 md:mb-32`). On a transparent band a margin and
+		// the same padding render alike, so it folds into padding, as the native output does. A painted band keeps
+		// a real margin, so the gap stays outside its background. Horizontal / `auto` margins only centre: ignored.
+		$mv = $this->vmargin( (string) ( $st['margin'] ?? '' ) );
+		if ( $mv[0] > 0 || $mv[1] > 0 ) {
+			$bgc     = (string) ( $st['background-color'] ?? '' );
+			$painted = ( '' !== $bgc && ! FW_SC_Style::is_transparent( $bgc ) ) || ! empty( $s['background']['image'] ) || ! empty( $s['background']['video'] )
+				|| ( ! empty( $st['background-image'] ) && 'none' !== $st['background-image'] );
+			if ( $painted ) {
+				$set['margin'] = $this->dims( array( $mv[0], 0, $mv[1], 0 ) );
+			} else {
+				$pad[0] += $mv[0];
+				$pad[2] += $mv[1];
+			}
+		}
 		$set['padding'] = $this->dims( $pad );
 		if ( ! empty( $s['id'] ) ) { $set['_element_id'] = sanitize_title( $s['id'] ); }
 
@@ -96,7 +121,7 @@ class FW_SC_Elementor_Emitter {
 			$set['flex_justify_content'] = ( 'top' === ( $s['valign'] ?? '' ) ) ? 'flex-start' : 'center';
 		}
 		$cls = $this->cls( 'sec' );
-		$set['css_classes'] = $cls;
+		$set['css_classes'] = trim( ( $set['css_classes'] ?? '' ) . ' ' . $cls );
 		if ( ! empty( $s['background']['overlay'] ) ) {
 			// A gradient overlay over a photo: Elementor's overlay control takes two colour stops; the measured
 			// CSS is exact, so it rides the page stylesheet instead.
@@ -212,6 +237,9 @@ class FW_SC_Elementor_Emitter {
 			case 'box':          return $this->box( $b );
 			case 'icon':         return $this->html_widget( $b['svg'] ?? '', $b, 'icon' );
 			case 'badge':        return $this->badge( $b );
+			case 'chips':        return $this->chips( $b );
+			case 'video':        return $this->video( $b );
+			case 'image_box':    return $this->image_box( $b );
 			case 'list':         return $this->icon_list( $b );
 			case 'testimonials': return $this->testimonials( $b );
 			case 'accordion':    return $this->accordion( $b );
@@ -221,7 +249,7 @@ class FW_SC_Elementor_Emitter {
 			case 'card':         return $this->card( $b );
 			case 'heading_link': return $this->heading_link( $b );
 			case 'decor':        $this->trace['skipped']++; return null; // a decorative paint layer
-			case 'html':         return $this->html_widget( $b['html'] ?? '', $b, 'html' );
+			case 'html':         return $this->leaf_row( (string) ( $b['html'] ?? '' ), $b ) ?: $this->html_widget( $b['html'] ?? '', $b, 'html' );
 		}
 		return $this->unknown( $b );
 	}
@@ -235,8 +263,23 @@ class FW_SC_Elementor_Emitter {
 		$this->color( $set, 'title_color', $b['style']['color'] ?? '' );
 		$this->align( $set, 'align', $this->text_align( $b ) );
 		$this->gradtext( $set['title'] );
+		$this->clip_gradient( $set, (array) $b['style'], '.elementor-heading-title' );
 		$this->trace['native']++;
 		return $this->widget( 'heading', $set, $b );
+	}
+
+	/**
+	 * A block that is ITSELF gradient-clipped text (a transparent colour over a gradient background clipped to
+	 * the glyphs). Elementor's colour control cannot express it, so the widget gets a class whose page rule
+	 * carries the gradient and the clip; without it the widget fell to the kit's global heading colour.
+	 */
+	private function clip_gradient( array &$set, array $st, $inner ) {
+		$img  = (string) ( $st['background-image'] ?? '' );
+		$clip = (string) ( $st['-webkit-background-clip'] ?? ( $st['background-clip'] ?? '' ) );
+		if ( false === stripos( $img, 'gradient' ) || 'text' !== trim( $clip ) ) { return; }
+		$cls = $this->cls( 'gtext' );
+		$set['_css_classes'] = trim( ( $set['_css_classes'] ?? '' ) . ' ' . $cls );
+		$this->css[] = '.' . $cls . ' ' . $inner . '{background-image:' . $img . ';-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}';
 	}
 
 	/**
@@ -258,7 +301,8 @@ class FW_SC_Elementor_Emitter {
 		$this->color( $set, 'link_color', $b['link_style']['color'] ?? '' );
 		$this->align( $set, 'align', $this->text_align( $b ) );
 		$cls = $this->cls( 'txt' );
-		$set['_css_classes'] = $cls;
+		$set['_css_classes'] = trim( ( $set['_css_classes'] ?? '' ) . ' ' . $cls );
+		$this->clip_gradient( $set, (array) $b['style'], '.elementor-widget-container' );
 		$this->css[] = '.' . $cls . ' p:last-child{margin-bottom:0}';
 		$this->trace['native']++;
 		return $this->widget( 'text-editor', $set, $b );
@@ -273,7 +317,7 @@ class FW_SC_Elementor_Emitter {
 		$this->typography( $set, 'typography', $st, array(), 'body' );
 		$this->color( $set, 'button_text_color', $st['color'] ?? '' );
 		// Every property is SET, never left to default: an unset button property falls through to the Site
-		// Kit's global button style, which Builder Sync fills from the theme's primary button — so an
+		// Kit's global button style, which the design sync fills from the theme's primary button — so an
 		// outline button would come out filled.
 		$bg = $st['background-color'] ?? '';
 		$set['background_background'] = 'classic';
@@ -288,8 +332,9 @@ class FW_SC_Elementor_Emitter {
 		}
 		$pad = FW_SC_Style::box( $st['padding'] ?? '' );
 		if ( $pad ) { $set['text_padding'] = $this->dims( $pad ); }
-		$rad = FW_SC_Style::px( $st['border-radius'] ?? ( $st['border-top-left-radius'] ?? '' ) );
-		if ( null !== $rad ) { $set['border_radius'] = $this->dims( array( $rad, $rad, $rad, $rad ) ); }
+		// A measured radius is always written, a zero one included: an unset button radius falls through to the kit's.
+		$rv = (string) ( $st['border-radius'] ?? ( $st['border-top-left-radius'] ?? '' ) );
+		if ( '' !== $rv ) { $set['border_radius'] = $this->radius( $rv ) ?: $this->dims( array( 0, 0, 0, 0 ) ); }
 		$bw = FW_SC_Style::px( $st['border-width'] ?? ( $st['border-top-width'] ?? '' ) );
 		$bs = strtolower( (string) ( $st['border-style'] ?? ( $st['border-top-style'] ?? 'solid' ) ) );
 		if ( $bw && 'none' !== $bs ) {
@@ -299,7 +344,7 @@ class FW_SC_Elementor_Emitter {
 		} else {
 			$set['border_border'] = 'none';
 		}
-		if ( null === $rad ) { $set['border_radius'] = $this->dims( array( 0, 0, 0, 0 ) ); }
+		if ( ! isset( $set['border_radius'] ) ) { $set['border_radius'] = $this->dims( array( 0, 0, 0, 0 ) ); } // unmeasured → explicit 0, never the kit's
 		$hover = FW_SC_Style::parse( preg_replace( '/^[^{]*\{|\}[^}]*$/', '', (string) $b['hover_css'] ) );
 		if ( ! empty( $hover['background-color'] ) ) {
 			$set['button_background_hover_background'] = 'classic';
@@ -316,11 +361,11 @@ class FW_SC_Elementor_Emitter {
 	private function image( array $b ) {
 		$src = (string) ( $b['src'] ?? '' );
 		if ( '' === $src ) { return $this->html_widget( $b['html'] ?? '', $b, 'image' ); }
-		$m   = $this->media( $src );
+		$m   = $this->media( $src, (string) $b['alt'] );
 		$set = array( 'image' => array( 'url' => $m['url'], 'id' => $m['id'], 'alt' => (string) $b['alt'], 'source' => 'library' ), 'image_size' => 'full' );
 		if ( '' !== (string) $b['css'] ) {
 			$cls = $this->cls( 'img' );
-			$set['_css_classes'] = $cls;
+			$set['_css_classes'] = trim( ( $set['_css_classes'] ?? '' ) . ' ' . $cls );
 			$this->css[] = str_replace( 'selector', '.' . $cls, (string) $b['css'] );
 		}
 		$this->trace['native']++;
@@ -335,6 +380,8 @@ class FW_SC_Elementor_Emitter {
 		if ( 'lg' === ( $b['stack_bp'] ?? '' ) ) { $set['flex_direction_tablet'] = 'column'; }
 		$va = array( 'center' => 'center', 'middle' => 'center', 'bottom' => 'flex-end', 'end' => 'flex-end', 'top' => 'flex-start', 'start' => 'flex-start', 'stretch' => 'stretch' );
 		if ( isset( $va[ $b['valign'] ?? '' ] ) ) { $set['flex_align_items'] = $va[ $b['valign'] ]; }
+		$ju = array( 'space-between' => 'space-between', 'between' => 'space-between', 'center' => 'center', 'end' => 'flex-end', 'flex-end' => 'flex-end', 'right' => 'flex-end', 'space-around' => 'space-around', 'space-evenly' => 'space-evenly' );
+		if ( isset( $ju[ $b['justify'] ?? '' ] ) ) { $set['flex_justify_content'] = $ju[ $b['justify'] ]; }
 		$cols = array();
 		$gap  = (float) $b['gap'];
 		// Spans that add up past 12 are a grid that wraps (eight span-3 cards = two rows of four), or a
@@ -343,6 +390,8 @@ class FW_SC_Elementor_Emitter {
 		$sum = 0;
 		foreach ( (array) $b['columns'] as $c ) { if ( empty( $c['hidden']['desktop'] ) ) { $sum += max( 1, min( 12, (int) $c['span'] ) ); } }
 		if ( $sum > 12 ) { $set['flex_wrap'] = 'wrap'; }
+		$tracks = (int) ( $b['tracks'] ?? 0 );
+		if ( $tracks > 0 ) { $set['flex_wrap'] = 'nowrap'; }
 		foreach ( (array) $b['columns'] as $c ) {
 			$cs = $this->container_base( 'column' );
 			$span = max( 1, min( 12, (int) $c['span'] ) );
@@ -350,6 +399,24 @@ class FW_SC_Elementor_Emitter {
 			$per_row = max( 1, (int) round( 12 / $span ) );
 			$share   = $span / 12;
 			$cs['width']        = array( 'unit' => 'custom', 'size' => sprintf( 'calc(%s%% - %spx)', round( $share * 100, 4 ), round( $gap * ( $per_row - 1 ) * $share, 2 ) ), 'sizes' => array() );
+			if ( $tracks > 0 ) {
+				// N equal tracks on one line: a 1/N share minus its share of the N-1 gaps.
+				$cs['width'] = array( 'unit' => 'custom', 'size' => sprintf( 'calc(%s%% - %spx)', round( 100 / $tracks, 4 ), round( $gap * ( $tracks - 1 ) / $tracks, 2 ) ), 'sizes' => array() );
+			}
+			if ( ! empty( $b['content_sized'] ) ) {
+				// Content-sized items (a CTA beside a stat, a heading beside an intro): each hugs its content and may
+				// shrink so a long heading wraps; a cell with a width cap holds it (the uncapped cells absorb the shrink).
+				$cs['width']      = array( 'unit' => 'custom', 'size' => 'auto', 'sizes' => array() );
+				$cs['_flex_size'] = 'shrink';
+				$cap = FW_SC_Style::px( $c['max_width'] ?? '' );
+				if ( $cap ) {
+					// The cap IS the cell's width here (a boxed inner cap left the cell at its text's one-line width,
+					// which squeezed the heading beside it to a sliver).
+					$cs['width']      = array( 'unit' => 'custom', 'size' => 'min(100%, ' . round( $cap ) . 'px)', 'sizes' => array() );
+					$cs['_flex_size'] = 'none';
+					$c['max_width']   = '';
+				}
+			}
 			$cs['width_tablet'] = ( 'lg' === ( $b['stack_bp'] ?? '' ) ) ? $this->size( 100, '%' ) : $cs['width'];
 			$cs['width_mobile'] = $this->size( 100, '%' );
 			$mw = FW_SC_Style::px( $c['max_width'] ?? '' );
@@ -378,9 +445,26 @@ class FW_SC_Elementor_Emitter {
 		$kind = ! empty( $c['counter'] ) ? 'counter' : ( ! empty( $c['card'] ) ? 'card' : '' );
 		if ( '' !== $kind ) {
 			$w = $this->native( $kind );
-			if ( $w ) { $this->trace['native']++; return $this->container( $cs, array( $this->widget( (string) $w['widget'], (array) $w['settings'] ) ) ); }
+			if ( $w ) {
+				$this->trace['native']++;
+				$ws = (array) $w['settings'];
+				// The widget paints a card only through its own box style / background; when the native build put
+				// the skin on the surrounding column instead, the column keeps it.
+				if ( ! empty( $c['box'] ) && '' === (string) ( $ws['box_style'] ?? '' ) && '' === (string) ( $ws['bg_color'] ?? '' ) && '' === (string) ( $ws['bg_color__custom'] ?? '' ) ) {
+					$this->card_skin( $cs, (array) $c['box'] );
+				}
+				$kids = array( $this->widget( (string) $w['widget'], $ws ) );
+				$cta  = 'card' === $kind ? $this->card_button( (array) $c['card'] ) : null;
+				if ( $cta ) { $kids[] = $cta; }
+				return $this->container( $cs, $kids );
+			}
 		}
-		if ( ! empty( $c['box'] ) ) { $this->card_skin( $cs, (array) $c['box'] ); }
+		// A raw-HTML column that converts to a card wearing its OWN skin (leaf_row) takes no column skin on top —
+		// the mapping's card box describes the same element, and painting both boxed the card twice.
+		$leaf = ( '' === $kind && '' !== trim( (string) ( $c['html'] ?? '' ) ) && empty( $c['blocks'] ) ) ? $this->leaf_row( (string) $c['html'], array() ) : null;
+		$self_skinned = $leaf && false !== strpos( (string) ( $leaf['settings']['css_classes'] ?? '' ), 'upw-leafbox' );
+		if ( ! empty( $c['box'] ) && ! $self_skinned ) { $this->card_skin( $cs, (array) $c['box'] ); }
+		if ( $leaf ) { return $this->container( $cs, array( $leaf ) ); }
 		if ( 'counter' === $kind ) { return $this->counter_column( $cs, (array) $c['counter'] ); }
 		if ( 'card' === $kind ) { return $this->card_column( $cs, $c['card'] ); }
 		if ( '' !== trim( (string) ( $c['html'] ?? '' ) ) && empty( $c['blocks'] ) ) {
@@ -417,18 +501,18 @@ class FW_SC_Elementor_Emitter {
 		if ( '' !== $bg && ! FW_SC_Style::is_transparent( $bg ) ) { $cs['background_background'] = 'classic'; $this->color( $cs, 'background_color', $bg ); }
 		$pad = FW_SC_Style::box( $st['padding'] ?? '' );
 		if ( $pad ) { $cs['padding'] = $this->dims( $pad ); }
-		$rad = FW_SC_Style::px( $st['border-radius'] ?? '' );
-		if ( $rad ) { $cs['border_radius'] = $this->dims( array( $rad, $rad, $rad, $rad ) ); }
+		$rad = $this->radius( $st['border-radius'] ?? '' );
+		if ( $rad ) { $cs['border_radius'] = $rad; }
 		if ( ! empty( $st['box-shadow'] ) && 'none' !== $st['box-shadow'] ) {
 			$cls = $this->cls( 'card' );
-			$cs['css_classes'] = $cls;
+			$cs['css_classes'] = trim( ( $cs['css_classes'] ?? '' ) . ' ' . $cls );
 			$this->css[] = '.' . $cls . '{box-shadow:' . $st['box-shadow'] . '}';
 		}
 		if ( ! empty( $k['center'] ) ) { $cs['flex_align_items'] = 'center'; }
 		$kids  = array();
 		$align = ! empty( $k['center'] ) ? 'center' : '';
 		if ( '' !== (string) $k['image'] ) {
-			$m  = $this->media( (string) $k['image'] );
+			$m  = $this->media( (string) $k['image'], wp_strip_all_tags( (string) $k['title'] ) );
 			$is = array( 'image' => array( 'url' => $m['url'], 'id' => $m['id'], 'alt' => wp_strip_all_tags( (string) $k['title'] ), 'source' => 'library' ), 'image_size' => 'full' );
 			if ( $k['image_height'] ) { $is['height'] = $this->size( (float) $k['image_height'] ); $is['object-fit'] = 'contain'; }
 			if ( '' !== $align ) { $is['align'] = 'center'; }
@@ -459,9 +543,13 @@ class FW_SC_Elementor_Emitter {
 			$this->align( $xs, 'align', $align );
 			$kids[] = $this->widget( 'text-editor', $xs );
 		}
-		// The card's link, unless its label is just the title again (the title already carries the link).
+		// The card's call to action: a styled button when the card has one, else its link — unless the label is
+		// just the title again (the title already carries the link).
+		$cta = $this->card_button( $k );
 		$lbl = trim( wp_strip_all_tags( (string) $k['link']['label'] ) );
-		if ( '' !== $lbl && '' !== (string) $k['link']['href'] && 0 !== strcasecmp( $lbl, trim( wp_strip_all_tags( (string) $k['title'] ) ) ) ) {
+		if ( $cta ) {
+			$kids[] = $cta;
+		} elseif ( '' !== $lbl && '' !== (string) $k['link']['href'] && 0 !== strcasecmp( $lbl, trim( wp_strip_all_tags( (string) $k['title'] ) ) ) ) {
 			$kids[] = $this->widget( 'text-editor', array( 'editor' => '<p><a href="' . esc_url( $k['link']['href'] ) . '">' . esc_html( $k['link']['label'] ) . '</a></p>' ) );
 		}
 		$this->trace['composed']++;
@@ -527,8 +615,8 @@ class FW_SC_Elementor_Emitter {
 			$set['background_background'] = 'classic';
 			$this->color( $set, 'background_color', $box['background'] );
 		}
-		$rad = FW_SC_Style::px( $box['radius'] );
-		if ( $rad ) { $set['border_radius'] = $this->dims( array( $rad, $rad, $rad, $rad ) ); }
+		$rad = $this->radius( $box['radius'] );
+		if ( $rad ) { $set['border_radius'] = $rad; }
 		$bw = FW_SC_Style::px( $box['border_width'] );
 		if ( $bw ) {
 			$set['border_border'] = 'solid';
@@ -549,7 +637,7 @@ class FW_SC_Elementor_Emitter {
 		if ( '' !== $box['extra_css'] ) { $extra[] = rtrim( $box['extra_css'], ';' ); }
 		if ( $extra ) {
 			$cls = $this->cls( 'box' );
-			$set['css_classes'] = $cls;
+			$set['css_classes'] = trim( ( $set['css_classes'] ?? '' ) . ' ' . $cls );
 			$this->css[] = '.' . $cls . '{' . implode( ';', $extra ) . '}';
 		}
 		if ( 'center' === ( $b['align'] ?? '' ) ) { $set['flex_align_items'] = 'center'; }
@@ -581,16 +669,121 @@ class FW_SC_Elementor_Emitter {
 		}
 		$pad = FW_SC_Style::box( $st['padding'] ?? '' );
 		if ( $pad ) { $set['_padding'] = $this->dims( $pad ); }
-		$rad = FW_SC_Style::px( $st['border-radius'] ?? '' );
-		if ( $rad ) { $set['_border_radius'] = $this->dims( array( $rad, $rad, $rad, $rad ) ); }
+		$rad = $this->radius( $st['border-radius'] ?? '' );
+		if ( $rad ) { $set['_border_radius'] = $rad; }
+		// A pill's hairline: the capture records one side (`border-top-*`) for a uniform border.
+		$bw = FW_SC_Style::px( $st['border-width'] ?? ( $st['border-top-width'] ?? '' ) );
+		$bc = (string) ( $st['border-color'] ?? ( $st['border-top-color'] ?? '' ) );
+		if ( $bw && 'none' !== ( $st['border-top-style'] ?? 'solid' ) && '' !== $bc && ! FW_SC_Style::is_transparent( $bc ) ) {
+			$set['_border_border'] = 'solid';
+			$set['_border_width']  = $this->dims( array( $bw, $bw, $bw, $bw ) );
+			$this->color( $set, '_border_color', $bc );
+		}
 		$set['_element_width'] = 'auto';
 		$a = $this->text_align( $b );
 		if ( 'center' === $a ) { $set['_flex_align_self'] = 'center'; }
 		$cls = $this->cls( 'badge' );
-		$set['_css_classes'] = $cls;
+		$set['_css_classes'] = trim( ( $set['_css_classes'] ?? '' ) . ' ' . $cls );
 		$this->css[] = '.' . $cls . ' .elementor-heading-title{display:inline-flex;align-items:center;gap:.5em}';
 		$this->trace['composed']++;
 		return $this->widget( 'heading', $set, $b );
+	}
+
+	/**
+	 * A photo card. With an overlay the photo is the card's cover background, the scrim is layered over it and the
+	 * caption (title, text, button) is placed where the source puts it; the card fills its column's height. Without
+	 * one it is an image above the card's content.
+	 */
+	private function image_box( array $b ) {
+		$k  = (array) $b['card'];
+		$ov = $b['overlay'] ?? null;
+		if ( ! is_array( $ov ) || '' === (string) $k['image'] ) {
+			return $this->card_column( $this->container_base( 'column' ), $k );
+		}
+		$set = $this->container_base( 'column' );
+		$m   = $this->media( (string) $k['image'], wp_strip_all_tags( (string) $k['title'] ) );
+		$set['background_background'] = 'classic';
+		$set['background_image']      = array( 'url' => $m['url'], 'id' => $m['id'], 'source' => 'library' );
+		$set['background_size']       = 'cover';
+		$set['background_position']   = 'center center';
+		$set['background_repeat']     = 'no-repeat';
+		$place = array( 'bottom' => 'flex-end', 'top' => 'flex-start', 'center' => 'center', 'middle' => 'center' );
+		$set['flex_justify_content'] = $place[ $ov['place'] ] ?? 'flex-end';
+		if ( 'center' === $ov['align'] ) { $set['flex_align_items'] = 'center'; } elseif ( 'right' === $ov['align'] ) { $set['flex_align_items'] = 'flex-end'; }
+		$in = (float) $ov['inset'];
+		if ( $in > 0 ) { $set['padding'] = $this->dims( array( $in, $in, $in, $in ) ); }
+		$set['min_height'] = $this->size( 280 );
+		$cls = $this->cls( 'ibox' );
+		$set['css_classes'] = trim( ( $set['css_classes'] ?? '' ) . ' ' . $cls . ' e-no-lazyload' );
+		$css = '.' . $cls . '{position:relative;overflow:hidden;height:100%}';
+		$rad = (string) ( $k['style']['border-radius'] ?? '' );
+		if ( '' !== $rad && '0px' !== $rad ) { $css .= '.' . $cls . '{border-radius:' . $rad . '}'; }
+		if ( '' !== (string) $ov['scrim'] ) { $css .= '.' . $cls . '::before{content:"";position:absolute;inset:0;pointer-events:none;background:' . $ov['scrim'] . '}.' . $cls . '>*{position:relative;z-index:1}'; }
+		$this->css[] = $css;
+		$kids = array();
+		if ( '' !== (string) $k['title'] ) {
+			$ts = array( 'title' => wp_kses_post( (string) $k['title'] ), 'header_size' => $k['title_tag'] );
+			$this->typography( $ts, 'typography', (array) $k['title_style'], array(), 'heading' );
+			$this->color( $ts, 'title_color', $k['title_style']['color'] ?? '' );
+			$kids[] = $this->widget( 'heading', $ts );
+		}
+		if ( '' !== trim( wp_strip_all_tags( (string) $k['text'] ) ) ) {
+			$xs = array( 'editor' => wp_kses_post( (string) $k['text'] ) );
+			$this->typography( $xs, 'typography', (array) $k['text_style'], array(), 'body' );
+			$this->color( $xs, 'text_color', $k['text_style']['color'] ?? '' );
+			$kids[] = $this->widget( 'text-editor', $xs );
+		}
+		$cta = $this->card_button( $k );
+		if ( $cta ) { $cta['settings']['_element_width'] = 'auto'; $kids[] = $cta; }
+		$this->apply_container_margin( $set, $b );
+		$this->trace['composed']++;
+		return $this->container( $set, $kids );
+	}
+
+	/** An inline video as Elementor's hosted Video widget, with its card skin (`selector{…}`) and measured height. */
+	private function video( array $b ) {
+		if ( '' === (string) $b['src'] ) { $this->trace['skipped']++; return null; }
+		$set = array(
+			'video_type'     => 'hosted',
+			'hosted_url'     => array( 'url' => (string) $b['src'], 'id' => '' ),
+			'autoplay'       => ! empty( $b['autoplay'] ) ? 'yes' : '',
+			'mute'           => ! empty( $b['muted'] ) ? 'yes' : '',
+			'loop'           => ! empty( $b['loop'] ) ? 'yes' : '',
+			'controls'       => ! empty( $b['controls'] ) ? 'yes' : '',
+			'play_on_mobile' => 'yes',
+		);
+		if ( '' !== (string) $b['poster'] ) { $m = $this->media( (string) $b['poster'] ); $set['image_overlay'] = array( 'url' => $m['url'], 'id' => $m['id'] ); }
+		$cls = $this->cls( 'video' );
+		$set['_css_classes'] = trim( ( $set['_css_classes'] ?? '' ) . ' ' . $cls );
+		$css = '';
+		if ( (float) $b['height'] > 0 ) {
+			$css .= '.' . $cls . ' .elementor-wrapper{height:' . round( (float) $b['height'] ) . 'px;aspect-ratio:auto}.' . $cls . ' video{width:100%;height:100%;object-fit:' . ( ! empty( $b['cover'] ) ? 'cover' : 'contain' ) . '}';
+		}
+		// The card skin goes on the player's own wrapper: the widget container is not rendered by every Elementor version.
+		if ( preg_match( '/selector\s*\{([^}]*)\}/', (string) $b['card_css'], $cm ) ) { $css .= '.' . $cls . ' .elementor-wrapper{' . trim( $cm[1] ) . '}'; }
+		if ( '' !== $css ) { $this->css[] = $css; }
+		$this->trace['native']++;
+		return $this->widget( 'video', $set, $b );
+	}
+
+	/** A row of pills: a wrapping row container of badge widgets, aligned like the source row. */
+	private function chips( array $b ) {
+		$kids = array();
+		foreach ( (array) $b['items'] as $it ) {
+			$kids[] = $this->badge( array( 'text' => (string) $it['text'], 'icon_svg' => (string) $it['icon_svg'], 'href' => '', 'align' => '',
+				'style' => (array) $it['style'], 'text_style' => array(), 'style_sm' => array(), 'margin' => array() ) );
+		}
+		if ( ! $kids ) { $this->trace['skipped']++; return null; }
+		$set = $this->container_base( 'row' );
+		$set['flex_wrap'] = 'wrap';
+		$set['flex_gap']  = $this->gap( (float) $b['gap'] );
+		$set['flex_align_items'] = 'center';
+		$a = (string) $b['align'];
+		if ( in_array( $a, array( 'end', 'right', 'flex-end' ), true ) ) { $set['flex_justify_content'] = 'flex-end'; }
+		elseif ( 'center' === $a ) { $set['flex_justify_content'] = 'center'; }
+		$this->apply_container_margin( $set, $b );
+		$this->trace['composed']++;
+		return $this->container( $set, $kids );
 	}
 
 	private function icon_list( array $b ) {
@@ -653,19 +846,35 @@ class FW_SC_Elementor_Emitter {
 	private function card_skin( array &$set, array $card ) {
 		$bg = $card['bg'] ?? ( $card['background'] ?? '' );
 		if ( '' !== $bg && ! FW_SC_Style::is_transparent( $bg ) ) { $set['background_background'] = 'classic'; $this->color( $set, 'background_color', $bg ); }
-		$rad = FW_SC_Style::px( $card['radius'] ?? '' );
-		if ( $rad ) { $set['border_radius'] = $this->dims( array( $rad, $rad, $rad, $rad ) ); }
+		$rad = $this->radius( $card['radius'] ?? '' );
+		if ( $rad ) { $set['border_radius'] = $rad; }
 		$pad = FW_SC_Style::box( $card['padding'] ?? '' );
 		if ( $pad ) { $set['padding'] = $this->dims( $pad ); }
 		$extra = array();
+		if ( ! empty( $card['gradient'] ) && false !== stripos( (string) $card['gradient'], 'gradient' ) ) { $extra[] = 'background-image:' . $card['gradient']; }
 		if ( ! empty( $card['shadow'] ) ) { $extra[] = 'box-shadow:' . $card['shadow']; }
 		if ( ! empty( $card['border'] ) ) { $extra[] = 'border:' . $card['border']; }
 		if ( ! empty( $card['css'] ) ) { $extra[] = rtrim( (string) $card['css'], ';' ); }
 		if ( $extra ) {
 			$cls = $this->cls( 'card' );
-			$set['css_classes'] = $cls;
+			$set['css_classes'] = trim( ( $set['css_classes'] ?? '' ) . ' ' . $cls );
 			$this->css[] = '.' . $cls . '{' . implode( ';', $extra ) . '}';
 		}
+	}
+
+	/** A card's call to action as a button widget (its measured skin), unless its label repeats the title. */
+	private function card_button( array $k ) {
+		$b = $k['button'] ?? null;
+		if ( ! is_array( $b ) || '' === trim( (string) $b['label'] ) ) { return null; }
+		if ( 0 === strcasecmp( trim( wp_strip_all_tags( (string) $b['label'] ) ), trim( wp_strip_all_tags( (string) ( $k['title'] ?? '' ) ) ) ) ) { return null; }
+		$w = $this->button( $b );
+		// Inside a card (a block container) a block-level CTA spans the card. A standalone button's computed
+		// `display:block` is usual for a flex-row CTA and says nothing about its width, so only here.
+		$kd = trim( (string) ( $k['style']['display'] ?? 'block' ) );
+		$ka = trim( (string) ( $k['style']['align-items'] ?? 'normal' ) );
+		$spans = ( false === strpos( $kd, 'flex' ) && false === strpos( $kd, 'grid' ) ) || in_array( $ka, array( 'normal', 'stretch' ), true );
+		if ( $spans && 'block' === trim( (string) ( $b['style']['display'] ?? '' ) ) ) { $w['settings']['align'] = 'justify'; }
+		return $w;
 	}
 
 	private function accordion( array $b ) {
@@ -684,7 +893,7 @@ class FW_SC_Elementor_Emitter {
 		$rad = FW_SC_Style::px( $b['item']['radius'] );
 		if ( $rad ) {
 			$cls = $this->cls( 'acc' );
-			$set['_css_classes'] = $cls;
+			$set['_css_classes'] = trim( ( $set['_css_classes'] ?? '' ) . ' ' . $cls );
 			$this->css[] = '.' . $cls . ' .elementor-accordion-item{border-radius:' . $rad . 'px;overflow:hidden;margin-bottom:12px}';
 		}
 		$this->trace['native']++;
@@ -738,7 +947,7 @@ class FW_SC_Elementor_Emitter {
 				if ( '' !== (string) $l['svg'] ) { $kids[] = $this->html_widget( $l['svg'], array(), 'logo', false ); }
 				continue;
 			}
-			$m  = $this->media( (string) $l['url'] );
+			$m  = $this->media( (string) $l['url'], (string) $l['name'] );
 			$is = array( 'image' => array( 'url' => $m['url'], 'id' => $m['id'], 'alt' => (string) $l['name'], 'source' => 'library' ), 'image_size' => 'full', '_element_width' => 'auto' );
 			if ( $b['height'] ) { $is['height'] = $this->size( (float) $b['height'] ); $is['width'] = array( 'unit' => 'px', 'size' => '', 'sizes' => array() ); }
 			if ( '' !== (string) $l['href'] ) { $is['link_to'] = 'custom'; $is['link'] = array( 'url' => (string) $l['href'], 'is_external' => 'on', 'nofollow' => '' ); }
@@ -746,7 +955,7 @@ class FW_SC_Elementor_Emitter {
 		}
 		if ( $b['opacity'] < 1 || $b['grayscale'] ) {
 			$cls = $this->cls( 'logos' );
-			$set['css_classes'] = $cls;
+			$set['css_classes'] = trim( ( $set['css_classes'] ?? '' ) . ' ' . $cls );
 			$this->css[] = '.' . $cls . ' img{' . ( $b['opacity'] < 1 ? 'opacity:' . (float) $b['opacity'] . ';' : '' ) . ( $b['grayscale'] ? 'filter:grayscale(1);' : '' ) . '}';
 		}
 		$this->apply_container_margin( $set, $b );
@@ -777,7 +986,7 @@ class FW_SC_Elementor_Emitter {
 	private function card( array $b ) {
 		$set = $this->container_base( 'column' );
 		$cls = $this->cls( 'float' );
-		$set['css_classes'] = $cls;
+		$set['css_classes'] = trim( ( $set['css_classes'] ?? '' ) . ' ' . $cls );
 		if ( '' !== (string) $b['position_css'] ) { $this->css[] = str_replace( 'selector', '.' . $cls, (string) $b['position_css'] ); }
 		$set['padding'] = $this->dims( array( 16, 16, 16, 16 ) );
 		$kids = array();
@@ -795,6 +1004,181 @@ class FW_SC_Elementor_Emitter {
 		}
 		$this->trace['composed']++;
 		return $this->container( $set, $kids );
+	}
+
+	/**
+	 * A verbatim block that is only a flex row of TEXT LEAVES (`<div class="flex justify-between"><span>Label</span>
+	 * <span>01</span></div>`) → a native row container of text widgets, laid out like the source (direction,
+	 * justify, align, gap from its computed style) with each leaf's own computed type. Anything richer — a nested
+	 * element, an SVG, an image, a form — returns null and stays verbatim.
+	 */
+	private function leaf_row( $html, array $b ) {
+		$html = trim( (string) $html );
+		if ( '' === $html || strlen( $html ) > 6000 || ! class_exists( 'DOMDocument' ) ) { return null; }
+		$doc  = new DOMDocument();
+		$prev = libxml_use_internal_errors( true );
+		$ok   = $doc->loadHTML( '<?xml encoding="utf-8"?><div id="upw-leafroot">' . $html . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+		libxml_clear_errors(); libxml_use_internal_errors( $prev );
+		if ( ! $ok ) { return null; }
+		$wrap = $doc->getElementById( 'upw-leafroot' );
+		$root = null;
+		foreach ( $wrap ? $wrap->childNodes : array() as $n ) {
+			if ( XML_ELEMENT_NODE === $n->nodeType ) { if ( $root ) { return null; } $root = $n; }
+			elseif ( XML_TEXT_NODE === $n->nodeType && '' !== trim( $n->textContent ) ) { return null; }
+		}
+		if ( ! $root ) { return null; }
+		$rcs  = FW_SC_Style::parse( (string) $root->getAttribute( 'data-sc-cs' ) );
+		$cls  = ' ' . (string) $root->getAttribute( 'class' ) . ' ';
+		$flex = false !== strpos( (string) ( $rcs['display'] ?? '' ), 'flex' ) || preg_match( '/\s(inline-)?flex\s/', $cls );
+		// A plain wrapper around ONE element (the converter's `sc-tw` shell) is unwrapped; its computed style is
+		// inherited by what it wraps.
+		for ( $guard = 0; ! $flex && $guard < 3; $guard++ ) {
+			$only = null;
+			foreach ( $root->childNodes as $n ) {
+				if ( XML_ELEMENT_NODE === $n->nodeType ) { if ( $only ) { return null; } $only = $n; }
+				elseif ( XML_TEXT_NODE === $n->nodeType && '' !== trim( $n->textContent ) ) { return null; }
+			}
+			if ( ! $only || ! in_array( strtolower( $only->nodeName ), array( 'div', 'span', 'p', 'li' ), true ) ) { return null; }
+			$root = $only;
+			$rcs  = FW_SC_Style::parse( (string) $root->getAttribute( 'data-sc-cs' ) ) + $rcs;
+			$cls  = ' ' . (string) $root->getAttribute( 'class' ) . ' ';
+			$flex = false !== strpos( (string) ( $rcs['display'] ?? '' ), 'flex' ) || preg_match( '/\s(inline-)?flex\s/', $cls );
+		}
+		if ( ! $flex ) { return null; }
+		// MIXED inline content (text beside inline spans: "Atmospheric O₂ <span>+340 ppm</span>") is ONE line of rich
+		// text: a single leaf whose inline spans keep their own colour / weight as inline styles.
+		$mixed = false;
+		foreach ( $root->childNodes as $n ) { if ( XML_TEXT_NODE === $n->nodeType && '' !== trim( $n->textContent ) ) { $mixed = true; break; } }
+		if ( $mixed ) {
+			$rich = $this->inline_rich( $root );
+			if ( null === $rich || '' === trim( wp_strip_all_tags( $rich ) ) ) { return null; }
+			$leaves = array( array( 'tag' => 'span', 'text' => '', 'rich' => $rich, 'href' => '', 'style' => array() ) );
+		}
+		$leaves = $mixed ? $leaves : array();
+		foreach ( $mixed ? array() : $root->childNodes as $n ) {
+			if ( XML_TEXT_NODE === $n->nodeType ) { if ( '' !== trim( $n->textContent ) ) { return null; } continue; }
+			if ( XML_ELEMENT_NODE !== $n->nodeType ) { continue; }
+			$tag = strtolower( $n->nodeName );
+			if ( 'img' === $tag ) {
+				// An image leaf (an avatar): its size from the source's own w-/h- utilities, its skin from its style.
+				if ( '' === (string) $n->getAttribute( 'src' ) ) { return null; }
+				$leaves[] = array( 'tag' => 'img', 'src' => (string) $n->getAttribute( 'src' ), 'alt' => (string) $n->getAttribute( 'alt' ),
+					'class' => ' ' . (string) $n->getAttribute( 'class' ) . ' ', 'style' => FW_SC_Style::parse( (string) $n->getAttribute( 'data-sc-cs' ) ) );
+				continue;
+			}
+			if ( ! in_array( $tag, array( 'span', 'p', 'div', 'a', 'small', 'strong', 'em', 'b', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' ), true ) ) { return null; }
+			foreach ( $n->childNodes as $k ) { if ( XML_ELEMENT_NODE === $k->nodeType ) { return null; } }
+			$text = trim( preg_replace( '/\s+/', ' ', $n->textContent ) );
+			if ( '' === $text ) { continue; } // an empty decorative leaf (a status dot): its size is not in the capture, so it is dropped
+			$leaves[] = array( 'tag' => $tag, 'text' => $text, 'href' => 'a' === $tag ? (string) $n->getAttribute( 'href' ) : '', 'style' => FW_SC_Style::parse( (string) $n->getAttribute( 'data-sc-cs' ) ) );
+		}
+		if ( count( $leaves ) < 1 || count( $leaves ) > 6 ) { return null; }
+		$imgs = 0; foreach ( $leaves as $l ) { if ( 'img' === $l['tag'] ) { $imgs++; } }
+		if ( $imgs > 2 || $imgs === count( $leaves ) ) { return null; } // an image alone, or a gallery, is not this shape
+
+		$set = $this->container_base( false !== strpos( (string) ( $rcs['flex-direction'] ?? '' ), 'column' ) || preg_match( '/\sflex-col\s/', $cls ) ? 'column' : 'row' );
+		$ju  = array( 'space-between' => 'space-between', 'center' => 'center', 'flex-end' => 'flex-end', 'end' => 'flex-end', 'space-around' => 'space-around', 'space-evenly' => 'space-evenly' );
+		$jv  = (string) ( $rcs['justify-content'] ?? '' );
+		if ( '' === $jv && preg_match( '/\sjustify-(between|center|end|around|evenly)\s/', $cls, $jm ) ) { $jv = array( 'between' => 'space-between', 'end' => 'flex-end', 'around' => 'space-around', 'evenly' => 'space-evenly', 'center' => 'center' )[ $jm[1] ]; }
+		if ( isset( $ju[ $jv ] ) ) { $set['flex_justify_content'] = $ju[ $jv ]; }
+		$av  = (string) ( $rcs['align-items'] ?? '' );
+		if ( '' === $av && preg_match( '/\sitems-(center|start|end|baseline)\s/', $cls, $am ) ) { $av = 'center' === $am[1] ? 'center' : ( 'start' === $am[1] ? 'flex-start' : ( 'end' === $am[1] ? 'flex-end' : 'baseline' ) ); }
+		if ( in_array( $av, array( 'center', 'flex-start', 'flex-end', 'baseline', 'stretch' ), true ) ) { $set['flex_align_items'] = $av; }
+		$g = FW_SC_Style::px( preg_replace( '/\s.*$/', '', (string) ( $rcs['gap'] ?? ( $rcs['column-gap'] ?? '' ) ) ) );
+		if ( $g ) { $set['flex_gap'] = $this->gap( $g ); }
+		$set['flex_wrap'] = 'nowrap';
+		$this->apply_container_margin( $set, $b );
+		$this->leaf_skin( $set, $rcs );
+
+		$kids = array();
+		foreach ( $leaves as $l ) {
+			if ( 'img' === $l['tag'] ) { $kids[] = $this->leaf_image( $l ); continue; }
+			$st = $l['style'] + $rcs; // a leaf without its own computed style inherits the row's
+			$ws = array( 'title' => ! empty( $l['rich'] ) ? $l['rich'] : esc_html( $l['text'] ), 'header_size' => preg_match( '/^h[1-6]$/', $l['tag'] ) ? $l['tag'] : 'span' );
+			$this->typography( $ws, 'typography', $st, array(), 'label' );
+			$this->color( $ws, 'title_color', $st['color'] ?? '' );
+			if ( '' !== $l['href'] ) { $ws['link'] = array( 'url' => $l['href'], 'is_external' => '', 'nofollow' => '' ); }
+			$ws['_element_width'] = 'auto';
+			if ( 'center' === trim( (string) ( $st['text-align'] ?? '' ) ) ) { $ws['align'] = 'center'; }
+			$this->leaf_margin( $ws, $l['style'] );
+			$kids[] = $this->widget( 'heading', $ws );
+		}
+		$this->trace['composed']++;
+		return $this->container( $set, $kids );
+	}
+
+	/** A leaf's own measured vertical margin (`mt-1`, `mb-4`) → the widget's margin. */
+	private function leaf_margin( array &$ws, array $st ) {
+		$m = $this->vmargin( (string) ( $st['margin'] ?? '' ) );
+		if ( $m[0] > 0 || $m[1] > 0 ) { $ws['_margin'] = $this->dims( array( $m[0], 0, $m[1], 0 ) ); }
+	}
+
+	/** The wrapper's own card skin (fill, gradient, border, radius, shadow, blur, padding) → the leaf container. */
+	private function leaf_skin( array &$set, array $st ) {
+		$pad = FW_SC_Style::box( $st['padding'] ?? '' );
+		if ( $pad && array_filter( $pad ) ) { $set['padding'] = $this->dims( $pad ); }
+		$css = array();
+		$bg  = (string) ( $st['background-color'] ?? '' );
+		if ( '' !== $bg && ! FW_SC_Style::is_transparent( $bg ) ) { $css[] = 'background-color:' . $bg; }
+		if ( ! empty( $st['background-image'] ) && 'none' !== $st['background-image'] && false !== stripos( $st['background-image'], 'gradient' ) ) { $css[] = 'background-image:' . $st['background-image']; }
+		$bw = FW_SC_Style::px( $st['border-width'] ?? ( $st['border-top-width'] ?? '' ) );
+		$bc = (string) ( $st['border-color'] ?? ( $st['border-top-color'] ?? '' ) );
+		if ( $bw && 'none' !== ( $st['border-top-style'] ?? 'solid' ) && '' !== $bc && ! FW_SC_Style::is_transparent( $bc ) ) { $css[] = 'border:' . $bw . 'px solid ' . $bc; }
+		foreach ( array( 'border-radius', 'box-shadow', 'backdrop-filter' ) as $k ) {
+			if ( ! empty( $st[ $k ] ) && 'none' !== $st[ $k ] && '0px' !== $st[ $k ] && ! preg_match( '/[;{}<>]/', $st[ $k ] ) ) { $css[] = $k . ':' . $st[ $k ]; }
+		}
+		if ( ! $css ) { return; }
+		$cls = $this->cls( 'leafbox' );
+		$set['css_classes'] = trim( ( $set['css_classes'] ?? '' ) . ' ' . $cls );
+		$this->css[] = '.' . $cls . '{' . implode( ';', $css ) . '}';
+	}
+
+	/** An image leaf → an image widget at the source's w-/h- size, with its own radius / border / fit. */
+	private function leaf_image( array $l ) {
+		$m   = $this->media( (string) $l['src'], (string) $l['alt'] );
+		$set = array( 'image' => array( 'url' => $m['url'], 'id' => $m['id'], 'alt' => (string) $l['alt'], 'source' => 'library' ), 'image_size' => 'full' );
+		$tw  = function ( $axis ) use ( $l ) {
+			if ( preg_match( '/\s' . $axis . '-\[([\d.]+)(px|rem)\]\s/', $l['class'], $m ) ) { return 'rem' === $m[2] ? (float) $m[1] * 16 : (float) $m[1]; }
+			if ( preg_match( '/\s' . $axis . '-(\d+(?:\.\d+)?)\s/', $l['class'], $m ) ) { return (float) $m[1] * 4; }
+			return 0;
+		};
+		$w = $tw( 'w' ); $h = $tw( 'h' );
+		if ( $w > 0 ) { $set['width'] = $this->size( $w ); }
+		if ( $h > 0 ) { $set['height'] = $this->size( $h ); $set['object-fit'] = preg_match( '/\sobject-contain\s/', $l['class'] ) ? 'contain' : 'cover'; }
+		$st  = (array) $l['style'];
+		$css = array();
+		if ( ! empty( $st['border-radius'] ) && '0px' !== $st['border-radius'] ) { $css[] = 'border-radius:' . $st['border-radius']; }
+		$bw = FW_SC_Style::px( $st['border-width'] ?? ( $st['border-top-width'] ?? '' ) );
+		$bc = (string) ( $st['border-color'] ?? ( $st['border-top-color'] ?? '' ) );
+		if ( $bw && '' !== $bc && ! FW_SC_Style::is_transparent( $bc ) ) { $css[] = 'border:' . $bw . 'px solid ' . $bc; }
+		$cls = $this->cls( 'leafimg' );
+		$set['_css_classes'] = $cls;
+		if ( $css ) { $this->css[] = '.' . $cls . ' img{' . implode( ';', $css ) . '}'; }
+		$this->leaf_margin( $set, $st );
+		return $this->widget( 'image', $set );
+	}
+
+	/**
+	 * An element of inline content → safe inline HTML: text escaped, each inline child (span / strong / em / b / small)
+	 * a `<span style>` carrying its computed colour / weight / style / size / tracking / case / opacity. An empty
+	 * inline child (a dot) is dropped; a child that nests further elements makes the whole thing non-inline (null).
+	 */
+	private function inline_rich( DOMNode $el ) {
+		$keep = array( 'color', 'font-weight', 'font-style', 'font-size', 'letter-spacing', 'text-transform', 'opacity' );
+		$out  = '';
+		foreach ( $el->childNodes as $n ) {
+			if ( XML_TEXT_NODE === $n->nodeType ) { $out .= esc_html( preg_replace( '/\s+/', ' ', $n->textContent ) ); continue; }
+			if ( XML_ELEMENT_NODE !== $n->nodeType ) { continue; }
+			if ( ! in_array( strtolower( $n->nodeName ), array( 'span', 'strong', 'em', 'b', 'i', 'small' ), true ) ) { return null; }
+			foreach ( $n->childNodes as $k ) { if ( XML_ELEMENT_NODE === $k->nodeType ) { return null; } }
+			$t = trim( preg_replace( '/\s+/', ' ', $n->textContent ) );
+			if ( '' === $t ) { continue; }
+			$st  = FW_SC_Style::parse( (string) $n->getAttribute( 'data-sc-cs' ) );
+			$css = '';
+			foreach ( $keep as $k ) { if ( isset( $st[ $k ] ) && '' !== $st[ $k ] && ! preg_match( '/[;{}<>"]/', $st[ $k ] ) ) { $css .= $k . ':' . $st[ $k ] . ';'; } }
+			$out .= '' !== $css ? '<span style="' . esc_attr( $css ) . '">' . esc_html( $t ) . '</span>' : esc_html( $t );
+		}
+		return trim( $out );
 	}
 
 	/** Last rung: the markup as an HTML widget. */
@@ -850,7 +1234,12 @@ class FW_SC_Elementor_Emitter {
 		if ( ! empty( $st['text-transform'] ) && 'none' !== $st['text-transform'] ) { $g['text_transform'] = $st['text-transform']; }
 		if ( ! empty( $st['font-style'] ) && 'italic' === $st['font-style'] ) { $g['font_style'] = 'italic'; }
 		$fsm = FW_SC_Style::px( $sm['font-size'] ?? '' );
-		if ( $fsm && $fsm !== $fs ) { $g['font_size_mobile'] = $this->size( $fsm ); }
+		if ( $fsm && $fsm !== $fs ) {
+			$g['font_size_mobile'] = $this->size( $fsm );
+			// Tracking in px was measured at the desktop size (tight display type: -5.6px at 112px); it scales with
+			// the type on phones rather than crushing the smaller letters.
+			if ( null !== $ls && 0.0 !== $ls && $fs ) { $g['letter_spacing_mobile'] = $this->size( round( $ls * $fsm / $fs, 2 ) ); }
+		}
 		if ( ! $g ) { return; }
 		$set[ $prefix . '_typography' ] = 'custom'; // Elementor group control: <name>_typography = 'custom', then <name>_<prop>
 		foreach ( $g as $k => $v ) { $set[ $prefix . '_' . $k ] = $v; }
@@ -894,12 +1283,15 @@ class FW_SC_Elementor_Emitter {
 			$set['background_repeat']     = 'no-repeat';
 		} elseif ( ! empty( $st['background-image'] ) && false !== stripos( $st['background-image'], 'gradient' ) ) {
 			$cls = $this->cls( 'grad' );
-			$set['css_classes'] = trim( ( $set['css_classes'] ?? '' ) . ' ' . $cls );
+			// `e-no-lazyload`: Elementor blanks container background images below the fold until they scroll in,
+			// gradients included; a CSS gradient downloads nothing, so it paints with the page instead of popping in.
+			$set['css_classes'] = trim( ( $set['css_classes'] ?? '' ) . ' ' . $cls . ' e-no-lazyload' );
 			$this->css[] = '.' . $cls . '{background-image:' . $st['background-image'] . '}';
 		}
 		if ( ! empty( $bg['video'] ) ) {
 			$set['background_background'] = 'video';
 			$set['background_video_link'] = (string) $bg['video'];
+			$set['background_play_on_mobile'] = 'yes'; // Elementor hides a background video on phones unless told; the source plays it
 		}
 	}
 
@@ -907,9 +1299,10 @@ class FW_SC_Elementor_Emitter {
 	 * Value helpers
 	 * ------------------------------------------------------------------ */
 
-	private function media( $url ) {
+	/** A source image → its imported attachment; the source alt text rides along so the attachment can carry it. */
+	private function media( $url, $alt = '' ) {
 		if ( is_callable( $this->opts['media'] ) ) {
-			$r = call_user_func( $this->opts['media'], (string) $url );
+			$r = call_user_func( $this->opts['media'], (string) $url, trim( (string) $alt ) );
 			if ( is_array( $r ) && ! empty( $r['url'] ) ) { return array( 'id' => (int) ( $r['id'] ?? 0 ), 'url' => (string) $r['url'] ); }
 		}
 		return array( 'id' => 0, 'url' => (string) $url );
@@ -937,6 +1330,25 @@ class FW_SC_Elementor_Emitter {
 	private function dims( array $px ) {
 		list( $t, $r, $b, $l ) = array_map( function ( $v ) { return (string) round( (float) $v, 2 ); }, array_pad( $px, 4, 0 ) );
 		return array( 'unit' => 'px', 'top' => $t, 'right' => $r, 'bottom' => $b, 'left' => $l, 'isLinked' => ( $t === $r && $r === $b && $b === $l ) );
+	}
+
+	/**
+	 * A CSS border-radius (1–4 values: an arch is `160px 160px 40px 40px`) → Elementor's corner dims, whose order
+	 * (top-left, top-right, bottom-right, bottom-left) is the shorthand's own. Null when there is no radius.
+	 */
+	private function radius( $v ) {
+		$b = FW_SC_Style::box( (string) $v );
+		if ( ! $b || ! array_filter( $b ) ) { return null; }
+		return $this->dims( $b );
+	}
+
+	/** A `margin` shorthand → its [top, bottom] px; a non-px part (`auto`) counts as 0. */
+	private function vmargin( $v ) {
+		$p = preg_split( '/\s+/', trim( (string) $v ) );
+		if ( ! $p || '' === $p[0] ) { return array( 0, 0 ); }
+		$t = FW_SC_Style::px( $p[0] );
+		$b = FW_SC_Style::px( $p[2] ?? $p[0] );
+		return array( max( 0, (float) $t ), max( 0, (float) $b ) );
 	}
 
 	private function gap( $n ) {

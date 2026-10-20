@@ -1,0 +1,1573 @@
+{
+    "mapping": {
+        "include_animations": false,
+        "pages": [
+            {
+                "title": "Snapshot",
+                "slug": "",
+                "front_page": true,
+                "sections": [
+                    {
+                        "sectionClass": "",
+                        "sectionRawClass": "",
+                        "sectionCs": "padding:80px 0px",
+                        "sectionCsSm": "",
+                        "sectionCsMd": "",
+                        "sectionCsXl": "",
+                        "bandPlace": [],
+                        "phonePass": false,
+                        "sectionLayers": [
+                            {
+                                "cls": "",
+                                "style": "",
+                                "cs": "font-size:56px"
+                            }
+                        ],
+                        "sectionBgImage": [],
+                        "sectionBgVideo": [],
+                        "sectionContainerW": null,
+                        "sectionFullBleed": false,
+                        "sectionHeroHeight": "",
+                        "sectionValign": "middle",
+                        "sectionBandW": null,
+                        "sectionLeftCap": 0,
+                        "sectionNoGutter": false,
+                        "css_id": "section-1",
+                        "sectionId": "",
+                        "heroTopPad": 0,
+                        "heroInFlowClear": false,
+                        "omit": false,
+                        "verbatim": false,
+                        "align": "",
+                        "bgPattern": null,
+                        "bgEffects": [],
+                        "divider": null,
+                        "blocks": [
+                            {
+                                "t": "heading",
+                                "role": "title",
+                                "level": 1,
+                                "cls": "",
+                                "cs": "font-size:56px",
+                                "csSm": "",
+                                "align": "",
+                                "text": "Page",
+                                "html": "Page"
+                            }
+                        ]
+                    }
+                ],
+                "mainClass": "",
+                "mainCs": "",
+                "chrome": {
+                    "header": false,
+                    "footer": true
+                },
+                "source_url": "https://fixture.invalid"
+            }
+        ]
+    },
+    "files": {
+        "bundle.json": {
+            "name": "Google Stitch import",
+            "source": "stitch"
+        },
+        "conversion-drops.json": {
+            "total": 0,
+            "rescued": 0,
+            "decorative": 0,
+            "by_kind": [],
+            "top_patterns": [],
+            "items": [],
+            "text_coverage": {
+                "checked": 15,
+                "missing": 0,
+                "coverage_pct": 100,
+                "pages": 1,
+                "by_page": {
+                    "page-1": {
+                        "checked": 15,
+                        "missing": 0,
+                        "coverage_pct": 100
+                    }
+                },
+                "note": "Visible source phrases (2+ real words, excluding hidden / display:none twins) absent from the built pages + theme settings, checked on EVERY captured page. Unlike the drop log above, this shares no code path with the builder, so it also catches text lost to a RECOGNIZER claiming a container and ignoring part of it, and text glued to a neighbour so the phrase no longer exists as itself. `items` is content we should have kept (each tagged with the page it came from); `out_of_scope` is text we deliberately did not carry.",
+                "items": [],
+                "out_of_scope": []
+            }
+        },
+        "class-coverage.json": {
+            "schema": "unysonplus-class-coverage/1",
+            "elements_audited": 0,
+            "elements_with_untranslated": 0,
+            "untranslated_significant": [],
+            "note": "Significant (look-carrying) SOURCE classes that became NO native option and NO scoped CSS — ranked by how many elements dropped each. Each is a candidate for a new deterministic class→value translation rule (fix the rule in BOTH the PHP + JS paths, then re-prove). Coverage spans elements that pass through the class-drop collector (headings / text / cards); whole-element structural drops live in conversion-drops.json."
+        },
+        "theme-design.json": {
+            "theme": {
+                "name": "Snapshot",
+                "slug": "snapshot",
+                "mode": "child"
+            },
+            "favicon": "",
+            "css_vars": [],
+            "fonts": {
+                "heading": "",
+                "heading_stack": "",
+                "body": "Plus Jakarta Sans",
+                "google": "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap"
+            },
+            "colors": {
+                "ink": "#1a1a1a",
+                "accent": "#141414",
+                "bg": "#08090c",
+                "header_bg": "",
+                "header_border": "#ececec",
+                "footer_bg": "#141414",
+                "footer_text": "#f5f5f5"
+            },
+            "header": {
+                "style": "bar",
+                "sticky": false,
+                "menu_location": "primary",
+                "menu": [],
+                "menu_secondary": [],
+                "cta": {
+                    "enabled": false,
+                    "label": "Get started",
+                    "href": "#"
+                }
+            },
+            "footer": {
+                "brand": true,
+                "widget_area": false,
+                "copyright": "&copy; {{current_year}} BRANDMARK. ALL RIGHTS RESERVED.",
+                "menu": [
+                    {
+                        "label": "BRANDMARKTAGLINE",
+                        "url": "/"
+                    },
+                    {
+                        "label": "AFRICA",
+                        "url": "/destinations?region=Africa"
+                    },
+                    {
+                        "label": "ASIA",
+                        "url": "/destinations?region=Asia"
+                    },
+                    {
+                        "label": "EUROPE",
+                        "url": "/destinations?region=Europe"
+                    },
+                    {
+                        "label": "NORTH AMERICA",
+                        "url": "/destinations?region=Americas"
+                    },
+                    {
+                        "label": "SOUTH AMERICA",
+                        "url": "/destinations?region=Americas"
+                    },
+                    {
+                        "label": "AUSTRALIA & PACIFIC",
+                        "url": "/destinations?region=Polar%20&%20Island"
+                    },
+                    {
+                        "label": "BESPOKE TRAVEL",
+                        "url": "/section-a"
+                    },
+                    {
+                        "label": "GROUP VOYAGES",
+                        "url": "/destinations"
+                    },
+                    {
+                        "label": "FAMILY TRAVEL",
+                        "url": "/section-a"
+                    },
+                    {
+                        "label": "HONEYMOONS",
+                        "url": "/section-a"
+                    },
+                    {
+                        "label": "SPECIAL OCCASIONS",
+                        "url": "/section-a"
+                    },
+                    {
+                        "label": "hello@example.com",
+                        "url": "mailto:hello@example.com"
+                    },
+                    {
+                        "label": "+1 555 010 0100",
+                        "url": "tel:+15550100100"
+                    },
+                    {
+                        "label": "Inquire Now",
+                        "url": "/section-a"
+                    }
+                ]
+            },
+            "background": {
+                "dotted": false,
+                "canvas": "#08090c"
+            },
+            "custom_css": ".sc-tw .material-symbols-outlined{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;word-wrap:normal;direction:ltr;-webkit-font-feature-settings:'liga';font-feature-settings:'liga';-webkit-font-smoothing:antialiased;}\n.sc-tw .custom-logo{max-height:2.4rem;width:auto;height:auto;display:inline-block;vertical-align:middle;}\r\n.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:32px !important;}\n@media screen and (max-width:782px){.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:46px !important;}}\n.sc-mirror{padding-top:0 !important;padding-bottom:0 !important;}\n.sc-mirror .fw-container{max-width:none !important;width:100% !important;padding-left:0 !important;padding-right:0 !important;}\n.sc-mirror .fw-row{margin-left:0 !important;margin-right:0 !important;}\n.sc-mirror .fw-row > .fw-col-12{padding-left:0 !important;padding-right:0 !important;}\n/* ---- reproduced Tailwind CSS (offline) ---- */\n.sc-tw{font-family:'Inter',system-ui,-apple-system,sans-serif;}\n.sc-tw *,.sc-tw ::before,.sc-tw ::after{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}\n.sc-tw ::before,.sc-tw ::after{--tw-content:''}\n.sc-tw h1,.sc-tw h2,.sc-tw h3,.sc-tw h4,.sc-tw h5,.sc-tw h6{font-size:inherit;font-weight:inherit;margin:0}\n.sc-tw p,.sc-tw blockquote,.sc-tw figure,.sc-tw pre,.sc-tw dl,.sc-tw dd{margin:0}\n.sc-tw a{color:inherit;text-decoration:inherit}\n.sc-tw b,.sc-tw strong{font-weight:bolder}\n.sc-tw ul,.sc-tw ol,.sc-tw menu{list-style:none;margin:0;padding:0}\n.sc-tw button,.sc-tw input,.sc-tw select,.sc-tw textarea{font-family:inherit;font-size:100%;font-weight:inherit;line-height:inherit;color:inherit;margin:0;padding:0}\n.sc-tw button,.sc-tw [role=button]{cursor:pointer;background-color:transparent;background-image:none}\n.sc-tw img,.sc-tw svg,.sc-tw video,.sc-tw canvas,.sc-tw audio,.sc-tw iframe,.sc-tw embed,.sc-tw object{display:block;vertical-align:middle}\n.sc-tw img,.sc-tw video{max-width:100%;height:auto}\n.sc-tw .text-gray-400{--tw-text-opacity:1 !important;color:rgb(156 163 175 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .border-t{border-top-width:1px !important}\n.sc-tw .border-white\\/10{border-color:rgb(255 255 255 / 0.1) !important}\n.sc-tw .pt-16{padding-top:4rem !important}\n.sc-tw .pb-12{padding-bottom:3rem !important}\n.sc-tw .max-w-7xl{max-width:80rem !important}\n.sc-tw .mx-auto{margin-left:auto !important;margin-right:auto !important}\n.sc-tw .px-6{padding-left:1.5rem !important;padding-right:1.5rem !important}\n.sc-tw .grid{display:grid !important}\n.sc-tw .grid-cols-1{grid-template-columns:repeat(1, minmax(0, 1fr)) !important}\n.sc-tw .gap-10{gap:2.5rem !important}\n.sc-tw .pb-16{padding-bottom:4rem !important}\n.sc-tw .border-b{border-bottom-width:1px !important}\n.sc-tw .inline-block{display:inline-block !important}\n.sc-tw .mb-6{margin-bottom:1.5rem !important}\n.sc-tw .text-2xl{font-size:1.5rem !important;line-height:2rem !important}\n.sc-tw .font-bold{font-weight:700 !important}\n.sc-tw .text-white{--tw-text-opacity:1 !important;color:rgb(255 255 255 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .uppercase{text-transform:uppercase !important}\n.sc-tw .block{display:block !important}\n.sc-tw .text-xs{font-size:0.75rem !important;line-height:1rem !important}\n.sc-tw .font-medium{font-weight:500 !important}\n.sc-tw .text-sm{font-size:0.875rem !important;line-height:1.25rem !important}\n.sc-tw .max-w-sm{max-width:24rem !important}\n.sc-tw .leading-relaxed{line-height:1.625 !important}\n.sc-tw .flex{display:flex !important}\n.sc-tw .items-center{align-items:center !important}\n.sc-tw .gap-4{gap:1rem !important}\n.sc-tw .w-9{width:2.25rem !important}\n.sc-tw .h-9{height:2.25rem !important}\n.sc-tw .rounded-full{border-radius:9999px !important}\n.sc-tw .border{border-width:1px !important}\n.sc-tw .justify-center{justify-content:center !important}\n.sc-tw .transition-colors{transition-property:color,background-color,border-color,fill,stroke !important;transition-timing-function:cubic-bezier(0.4,0,0.2,1) !important;transition-duration:150ms !important}\n.sc-tw .w-4{width:1rem !important}\n.sc-tw .h-4{height:1rem !important}\n.sc-tw .font-semibold{font-weight:600 !important}\n.sc-tw .mb-5{margin-bottom:1.25rem !important}\n.sc-tw .space-y-3 > :not([hidden]) ~ :not([hidden]){margin-top:0.75rem !important;margin-bottom:0 !important}\n.sc-tw .tracking-wider{letter-spacing:0.05em !important}\n.sc-tw .gap-2{gap:0.5rem !important}\n.sc-tw .w-3\\.5{width:0.875rem !important}\n.sc-tw .h-3\\.5{height:0.875rem !important}\n.sc-tw .mt-6{margin-top:1.5rem !important}\n.sc-tw .inline-flex{display:inline-flex !important}\n.sc-tw .transition-transform{transition-property:transform !important;transition-timing-function:cubic-bezier(0.4,0,0.2,1) !important;transition-duration:150ms !important}\n.sc-tw .pt-8{padding-top:2rem !important}\n.sc-tw .flex-col{flex-direction:column !important}\n.sc-tw .justify-between{justify-content:space-between !important}\n.sc-tw .text-\\[11px\\]{font-size:11px !important}\n.sc-tw .text-gray-500{--tw-text-opacity:1 !important;color:rgb(107 114 128 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .gap-6{gap:1.5rem !important}\n.sc-tw .hover\\:text-gray-300:hover{--tw-text-opacity:1 !important;color:rgb(209 213 219 / var(--tw-text-opacity, 1)) !important}\n@media (min-width:640px){.sc-tw .sm\\:flex-row{flex-direction:row !important}}\n@media (min-width:768px){.sc-tw .md\\:grid-cols-2{grid-template-columns:repeat(2, minmax(0, 1fr)) !important}}\n@media (min-width:1024px){.sc-tw .lg\\:px-12{padding-left:3rem !important;padding-right:3rem !important}.sc-tw .lg\\:grid-cols-5{grid-template-columns:repeat(5, minmax(0, 1fr)) !important}.sc-tw .lg\\:col-span-2{grid-column:span 2 / span 2 !important}}\n\n/* SC:REGCSS:START */\n/* ---- mapped box containers (clean semantic CSS from the source) ---- */\n#section-1 h1:not([class*=\"boxp-\"] *){font-size:56px !important;}\n/* SC:REGCSS:END */",
+            "font_links": [],
+            "raw_chrome": {
+                "header_html": "",
+                "footer_html": "<footer class=\"bg-dark-950 text-gray-400 border-t border-white/10 pt-16 pb-12\" data-sc-footer=\"col-gap:40px;link-hover:rgb(251, 191, 36)\"><div class=\"max-w-7xl mx-auto px-6 lg:px-12\" data-sc-cs-sm=\"padding:0px 24px;margin:0px\" data-sc-cs-md=\"padding:0px 24px;margin:0px\" data-sc-cs-xl=\"margin:0px 320px\"><div class=\"grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-10 pb-16 border-b border-white/10\" data-sc-cs-sm=\"grid-template-columns:342px\" data-sc-cs-md=\"grid-template-columns:366px 366px\"><!--SC_FCOL_0--><!--SC_FCOL_1--><!--SC_FCOL_2--><!--SC_FCOL_3--></div><div class=\"pt-8 flex flex-col sm:flex-row items-center justify-between text-[11px] text-gray-500 gap-4\" data-sc-cs-sm=\"flex-direction:column\"><div class=\"flex items-center gap-6\" data-sc-cs-md=\"track-frac:0.298\" data-sc-cs-xl=\"track-frac:0.195\"><span class=\"hover:text-gray-300 transition-colors cursor-pointer\" data-sc-cs-sm=\"track-frac:0.383\" data-sc-cs-md=\"track-frac:0.383\" data-sc-cs-xl=\"track-frac:0.383\">PRIVACY POLICY</span><span class=\"hover:text-gray-300 transition-colors cursor-pointer\" data-sc-cs-sm=\"track-frac:0.513\" data-sc-cs-md=\"track-frac:0.513\" data-sc-cs-xl=\"track-frac:0.513\">TERMS &amp; CONDITIONS</span></div><!--SC_FCOPY--></div></div></footer>",
+                "nav_tree": [],
+                "nav_style": [],
+                "footer_cols": [
+                    "<a class=\"inline-block mb-6\" href=\"/\" data-discover=\"true\"><span class=\"font-serif tracking-[0.25em] text-2xl font-bold text-white uppercase block\">BRANDMARK</span><span class=\"text-xs tracking-[0.35em] text-gold-400 uppercase font-medium\">TAGLINE</span></a><p class=\"text-sm text-gray-400 max-w-sm leading-relaxed mb-6\">Crafting extraordinary bespoke VOYAGES, private expeditions, and secluded luxury stays across all seven continents since 2012.</p><div class=\"flex items-center gap-4 text-gray-400\"><a href=\"https://instagram.com\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"w-9 h-9 rounded-full border border-white/10 flex items-center justify-center hover:text-gold-400 hover:border-gold-400/50 transition-colors\" aria-label=\"Instagram\" data-sc-cs-sm=\"track-frac:0.105\" data-sc-cs-md=\"track-frac:0.098\" data-sc-cs-xl=\"track-frac:0.08\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-instagram w-4 h-4\" aria-hidden=\"true\"><rect width=\"20\" height=\"20\" x=\"2\" y=\"2\" rx=\"5\" ry=\"5\"></rect><path d=\"M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z\"></path><line x1=\"17.5\" x2=\"17.51\" y1=\"6.5\" y2=\"6.5\"></line></svg></a><a href=\"https://facebook.com\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"w-9 h-9 rounded-full border border-white/10 flex items-center justify-center hover:text-gold-400 hover:border-gold-400/50 transition-colors\" aria-label=\"Facebook\" data-sc-cs-sm=\"track-frac:0.105\" data-sc-cs-md=\"track-frac:0.098\" data-sc-cs-xl=\"track-frac:0.08\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-facebook w-4 h-4\" aria-hidden=\"true\"><path d=\"M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z\"></path></svg></a><a href=\"https://linkedin.com\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"w-9 h-9 rounded-full border border-white/10 flex items-center justify-center hover:text-gold-400 hover:border-gold-400/50 transition-colors\" aria-label=\"LinkedIn\" data-sc-cs-sm=\"track-frac:0.105\" data-sc-cs-md=\"track-frac:0.098\" data-sc-cs-xl=\"track-frac:0.08\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-linkedin w-4 h-4\" aria-hidden=\"true\"><path d=\"M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z\"></path><rect width=\"4\" height=\"12\" x=\"2\" y=\"9\"></rect><circle cx=\"4\" cy=\"4\" r=\"2\"></circle></svg></a></div>",
+                    "<h4 class=\"text-xs tracking-[0.2em] font-semibold text-white uppercase mb-5\">DESTINATIONS</h4><ul class=\"space-y-3 text-xs tracking-wider\"><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/destinations?region=Africa\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">AFRICA</a></li><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/destinations?region=Asia\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">ASIA</a></li><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/destinations?region=Europe\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">EUROPE</a></li><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/destinations?region=Americas\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">NORTH AMERICA</a></li><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/destinations?region=Americas\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">SOUTH AMERICA</a></li><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/destinations?region=Polar%20&amp;%20Island\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">AUSTRALIA &amp; PACIFIC</a></li></ul>",
+                    "<h4 class=\"text-xs tracking-[0.2em] font-semibold text-white uppercase mb-5\">CUSTOM VOYAGES</h4><ul class=\"space-y-3 text-xs tracking-wider\"><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/section-a\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">BESPOKE TRAVEL</a></li><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/destinations\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">GROUP VOYAGES</a></li><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/section-a\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">FAMILY TRAVEL</a></li><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/section-a\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">HONEYMOONS</a></li><li><a class=\"hover:text-gold-400 transition-colors\" href=\"/section-a\" data-discover=\"true\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">SPECIAL OCCASIONS</a></li></ul>",
+                    "<h4 class=\"text-xs tracking-[0.2em] font-semibold text-white uppercase mb-5\">CONTACT</h4><div class=\"space-y-3 text-xs\"><a href=\"mailto:hello@example.com\" class=\"flex items-center gap-2 hover:text-gold-400 transition-colors\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-mail w-3.5 h-3.5 text-gold-400\" aria-hidden=\"true\"><path d=\"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7\"></path><rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\"></rect></svg>hello@example.com</a><a href=\"tel:+15550100100\" class=\"flex items-center gap-2 hover:text-gold-400 transition-colors\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-phone w-3.5 h-3.5 text-gold-400\" aria-hidden=\"true\"><path d=\"M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384\"></path></svg>+1 555 010 0100</a><div class=\"flex items-center gap-2 text-gray-400\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-map-pin w-3.5 h-3.5 text-gold-400\" aria-hidden=\"true\"><path d=\"M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0\"></path><circle cx=\"12\" cy=\"10\" r=\"3\"></circle></svg><span data-sc-cs-sm=\"track-frac:0.441\" data-sc-cs-md=\"track-frac:0.412\" data-sc-cs-xl=\"track-frac:0.737\">12 Example Street, Springfield</span></div></div><div class=\"mt-6\"><a class=\"inline-flex items-center gap-2 text-xs font-semibold text-gold-400 hover:text-gold-300 tracking-wider uppercase group\" href=\"/section-a\" data-discover=\"true\">Inquire Now <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-arrow-right w-3.5 h-3.5 group-hover:translate-x-1 transition-transform\" aria-hidden=\"true\" data-sc-hover-group=\"transform:translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));--tw-translate-x:.25rem\"><path d=\"M5 12h14\"></path><path d=\"m12 5 7 7-7 7\"></path></svg></a></div>"
+                ],
+                "footer_copyright": "© 2026 BRANDMARK. ALL RIGHTS RESERVED."
+            },
+            "source_url": "https://fixture.invalid",
+            "conversion_map": {
+                "h-1": {
+                    "sc": "section",
+                    "mapped": {
+                        "content_valign": "top"
+                    }
+                },
+                "h-2": {
+                    "sc": "flexbox",
+                    "mapped": {
+                        "html_tag": "div",
+                        "display": "block",
+                        "grid_columns": "3",
+                        "grid_min": "240px",
+                        "content_width": "wide-xl"
+                    },
+                    "custom_css": "selector{width:100%;}"
+                },
+                "h-3": {
+                    "sc": "special_heading",
+                    "mapped": {
+                        "overline_icon_position": "before",
+                        "title": "Page",
+                        "heading": "h1"
+                    },
+                    "custom_css": "selector .heading-title{text-transform:none !important;}selector .heading-title{font-size:56px !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:0 !important;}"
+                }
+            },
+            "chrome_via_settings": true
+        },
+        "pages.json": {
+            "pages": [
+                {
+                    "title": "Snapshot",
+                    "slug": "home",
+                    "status": "publish",
+                    "front_page": true,
+                    "source_url": "https://fixture.invalid",
+                    "builder": [
+                        {
+                            "type": "section",
+                            "atts": {
+                                "variant": "",
+                                "is_fullwidth": false,
+                                "min_height": {
+                                    "preset": "auto",
+                                    "custom": {
+                                        "custom_height": {
+                                            "value": "",
+                                            "unit": "px"
+                                        }
+                                    }
+                                },
+                                "content_valign": "top",
+                                "text_align": "",
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": ""
+                                        }
+                                    },
+                                    "gradient": {
+                                        "data": {
+                                            "type": "linear",
+                                            "angle": 90,
+                                            "stops": []
+                                        }
+                                    },
+                                    "image": {
+                                        "src": [],
+                                        "position": "center center",
+                                        "size": {
+                                            "selected": "cover",
+                                            "custom": ""
+                                        },
+                                        "repeat": "no-repeat",
+                                        "attachment": "scroll"
+                                    },
+                                    "video": {
+                                        "enabled": "no",
+                                        "external_url": "",
+                                        "source_mp4": [],
+                                        "source_webm": [],
+                                        "poster": [],
+                                        "fallback": [],
+                                        "loop": "yes",
+                                        "autoplay": "yes",
+                                        "mute": "yes",
+                                        "playsinline": "yes"
+                                    },
+                                    "advanced": []
+                                },
+                                "padding_top": {
+                                    "base": "pt-9",
+                                    "md": "",
+                                    "lg": ""
+                                },
+                                "padding_bottom": {
+                                    "base": "pb-9",
+                                    "md": "",
+                                    "lg": ""
+                                },
+                                "gap": "",
+                                "gap_x": "",
+                                "gap_y": "",
+                                "animation": {
+                                    "effect": "none"
+                                },
+                                "unique_id": "uid-1",
+                                "css_id": "section-1",
+                                "css_class": "",
+                                "custom_css": "",
+                                "responsive_hide": [],
+                                "custom_attrs": []
+                            },
+                            "_items": [
+                                {
+                                    "type": "flexbox",
+                                    "atts": {
+                                        "html_tag": "div",
+                                        "display": "block",
+                                        "grid_columns": "3",
+                                        "grid_autofit": "no",
+                                        "grid_min": {
+                                            "value": "240",
+                                            "unit": "px"
+                                        },
+                                        "direction": {
+                                            "base": "row",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "gap": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "justify_content": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_items": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "wrap": {
+                                            "base": "yes",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "reverse": {
+                                            "base": "no",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_content": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "width": {
+                                            "base": {
+                                                "preset": "none"
+                                            },
+                                            "md": {
+                                                "preset": "none"
+                                            },
+                                            "lg": {
+                                                "preset": "none"
+                                            }
+                                        },
+                                        "flex_grow": {
+                                            "base": "no",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_self": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "order": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "background": {
+                                            "color": {
+                                                "value": {
+                                                    "predefined": "",
+                                                    "custom": ""
+                                                }
+                                            },
+                                            "gradient": {
+                                                "data": {
+                                                    "type": "linear",
+                                                    "angle": 90,
+                                                    "stops": []
+                                                }
+                                            },
+                                            "image": {
+                                                "src": [],
+                                                "position": "center center",
+                                                "size": {
+                                                    "selected": "cover",
+                                                    "custom": ""
+                                                },
+                                                "repeat": "no-repeat",
+                                                "attachment": "scroll"
+                                            },
+                                            "video": {
+                                                "enabled": "no",
+                                                "external_url": "",
+                                                "source_mp4": [],
+                                                "source_webm": [],
+                                                "poster": [],
+                                                "fallback": [],
+                                                "loop": "yes",
+                                                "autoplay": "yes",
+                                                "mute": "yes",
+                                                "playsinline": "yes"
+                                            },
+                                            "advanced": []
+                                        },
+                                        "border_preset": "",
+                                        "min_height": {
+                                            "base": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            },
+                                            "md": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            },
+                                            "lg": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            }
+                                        },
+                                        "spacing": {
+                                            "margin": {
+                                                "all": "",
+                                                "top": "",
+                                                "right": "",
+                                                "bottom": "",
+                                                "left": ""
+                                            },
+                                            "padding": {
+                                                "all": "",
+                                                "top": "",
+                                                "right": "",
+                                                "bottom": "",
+                                                "left": ""
+                                            },
+                                            "advanced": {
+                                                "md": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    }
+                                                },
+                                                "lg": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "animation": {
+                                            "effect": "none"
+                                        },
+                                        "unique_id": "uid-2",
+                                        "css_id": "",
+                                        "css_class": "",
+                                        "custom_css": "selector{width:100%;}",
+                                        "responsive_hide": [],
+                                        "custom_attrs": [],
+                                        "content_width": {
+                                            "preset": "wide-xl"
+                                        }
+                                    },
+                                    "_items": [
+                                        {
+                                            "type": "simple",
+                                            "shortcode": "special_heading",
+                                            "_items": [],
+                                            "atts": {
+                                                "unique_id": "uid-3",
+                                                "css_id": "",
+                                                "css_class": "",
+                                                "custom_css": "selector .heading-title{text-transform:none !important;}selector .heading-title{font-size:56px !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:0 !important;}",
+                                                "overline": "",
+                                                "overline_uppercase": "no",
+                                                "overline_icon": {
+                                                    "type": "none"
+                                                },
+                                                "overline_icon_position": "before",
+                                                "overline_container": "",
+                                                "overline_color": {
+                                                    "predefined": "",
+                                                    "custom": ""
+                                                },
+                                                "title": "Page",
+                                                "subtitle": "",
+                                                "heading": "h1",
+                                                "alignment": "",
+                                                "element_spacing": "",
+                                                "block_max_width": {
+                                                    "value": "",
+                                                    "unit": "px"
+                                                },
+                                                "spacing": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "mb-0",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "advanced": []
+                                                },
+                                                "overline_class": "",
+                                                "title_class": "",
+                                                "subtitle_class": "",
+                                                "subtitle_size": "",
+                                                "subtitle_color": {
+                                                    "predefined": "",
+                                                    "custom": ""
+                                                },
+                                                "title_color": {
+                                                    "predefined": "",
+                                                    "custom": ""
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "page_options": {
+                        "hide_site_header": "yes"
+                    }
+                }
+            ]
+        },
+        "theme-settings.json": {
+            "values": {
+                "header_logo": {
+                    "logo_type": {
+                        "logo_type": "custom",
+                        "custom": {
+                            "site_title": "Snapshot",
+                            "logo_layout": "inline-left",
+                            "title_weight": "700",
+                            "color": {
+                                "predefined": "",
+                                "custom": "#111111"
+                            }
+                        },
+                        "simple": []
+                    }
+                },
+                "header_main": {
+                    "main_left": [
+                        {
+                            "element_type": {
+                                "element": "logo"
+                            }
+                        }
+                    ],
+                    "main_center": [
+                        {
+                            "element_type": {
+                                "element": "menu_area",
+                                "menu_area": {
+                                    "menu_location": "primary"
+                                }
+                            }
+                        }
+                    ],
+                    "main_right": []
+                },
+                "header_menu": {
+                    "menu_link_color": {
+                        "predefined": "",
+                        "custom": "#94a3b8"
+                    },
+                    "menu_link_hover_color": {
+                        "predefined": "",
+                        "custom": "#94a3b8"
+                    }
+                },
+                "header_layout": {
+                    "header_mode": {
+                        "mode": "top",
+                        "top": {
+                            "header_design": {
+                                "design": "classic"
+                            }
+                        }
+                    },
+                    "header_position": "static",
+                    "header_uppercase_nav": "no",
+                    "bg_color": {
+                        "predefined": "bg-white",
+                        "custom": ""
+                    },
+                    "header_glass": "no",
+                    "header_border": "no",
+                    "header_shadow": "no"
+                },
+                "drawer_link_color": "#1a1a1a",
+                "mobile_bar_bg": "#141414",
+                "header_topbar": {
+                    "topbar_left": [],
+                    "topbar_center": [],
+                    "topbar_right": [],
+                    "topbar_custom_styling": {
+                        "enabled": "no"
+                    }
+                },
+                "header_bottombar": {
+                    "bottombar_left": [],
+                    "bottombar_center": [],
+                    "bottombar_right": []
+                },
+                "footer_background": {
+                    "color": {
+                        "value": {
+                            "predefined": "",
+                            "custom": "rgb(6, 7, 9)"
+                        }
+                    }
+                },
+                "footer_text_color": {
+                    "predefined": "",
+                    "custom": "#9ca3af"
+                },
+                "footer_link_color": {
+                    "predefined": "",
+                    "custom": "#9ca3af"
+                },
+                "footer_link_hover_color": {
+                    "predefined": "",
+                    "custom": "#fbbf24"
+                },
+                "footer_padding_top_custom": {
+                    "value": "64",
+                    "unit": "px"
+                },
+                "footer_padding_bottom_custom": {
+                    "value": "48",
+                    "unit": "px"
+                },
+                "general_layout": {
+                    "site_background": {
+                        "color": {
+                            "value": {
+                                "predefined": "",
+                                "custom": "#08090c"
+                            }
+                        }
+                    },
+                    "layout_container_width": {
+                        "base": {
+                            "value": "100",
+                            "unit": "%"
+                        },
+                        "md": {
+                            "value": "720",
+                            "unit": "px"
+                        },
+                        "lg": {
+                            "value": "1232",
+                            "unit": "px"
+                        }
+                    },
+                    "layout_border_color": {
+                        "predefined": "",
+                        "custom": "rgba(255, 255, 255, 0.1)"
+                    },
+                    "layout_roundness": "soft"
+                },
+                "footer_padding_top": "4rem",
+                "footer_padding_bottom": "3rem",
+                "main_footer_custom_styling": {
+                    "enabled": "yes",
+                    "yes": {
+                        "main_footer_padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "",
+                                "top": "pt-0",
+                                "right": "",
+                                "bottom": "pb-7",
+                                "left": ""
+                            },
+                            "advanced": []
+                        },
+                        "main_footer_typography": {
+                            "size": {
+                                "value": "12",
+                                "unit": "px"
+                            }
+                        },
+                        "main_footer_container": "container"
+                    }
+                },
+                "footer_border_top": {
+                    "width": {
+                        "value": "1",
+                        "unit": "px"
+                    },
+                    "style": "solid",
+                    "color": {
+                        "predefined": "",
+                        "custom": "rgba(255, 255, 255, 0.1)"
+                    }
+                },
+                "footer_border_sides": [
+                    "top"
+                ],
+                "footer_border_top_extent": {
+                    "mode": "full"
+                },
+                "misc_custom_css": {
+                    "custom_css": "/* converted header/footer styles */\n.footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:rgb(156, 163, 175) !important}\n.footer .site-logo__mark:not(.site-logo__mark--framed){color:rgb(156, 163, 175) !important}\n.footer-links-title{font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif !important;text-transform:uppercase !important;letter-spacing:2.4px !important;font-weight:600 !important;font-size:12px !important;line-height:16px !important;color:rgb(255, 255, 255) !important;}\n.footer-column .footer-link{font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-weight:400;font-size:16px;}.footer-column .footer-links-list>li,.footer-column .footer-link,.footer-column .footer-links-list .list-item__text{line-height:24px}.footer-column .footer-links-list>li:not(:last-child){margin-bottom:40px}\n.footer-tagline{font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif !important;max-width:384px !important;margin-bottom:24px !important;font-size:14px !important;line-height:22.75px !important;color:rgb(156, 163, 175) !important;}\r\n/* Footer bands: the source's exact vertical padding (off the spacing scale) */\r\n.footer-section--copyright{padding-top:32px !important;}\n\r\n/* Footer: the source grid's measured tracks */\r\n@media (min-width:783px){.footer-section .footer-row--grid{grid-template-columns:2.2fr 1fr 1fr 1fr;column-gap:40px;}}\n/* Footer column titles: the source's own gap under a column heading */\n.footer-column .footer-links-title,.footer-column .hf-heading{margin-top:0 !important;margin-bottom:20px !important;}\n"
+                },
+                "social_profiles": [
+                    {
+                        "name": "Instagram",
+                        "link": "https://instagram.com",
+                        "new_tab": "yes",
+                        "icon": {
+                            "type": "svg",
+                            "svg-source": "library",
+                            "svg-id": "tabler/brand-instagram"
+                        }
+                    },
+                    {
+                        "name": "Facebook",
+                        "link": "https://facebook.com",
+                        "new_tab": "yes",
+                        "icon": {
+                            "type": "svg",
+                            "svg-source": "library",
+                            "svg-id": "tabler/brand-facebook"
+                        }
+                    },
+                    {
+                        "name": "Linkedin",
+                        "link": "https://linkedin.com",
+                        "new_tab": "yes",
+                        "icon": {
+                            "type": "svg",
+                            "svg-source": "library",
+                            "svg-id": "tabler/brand-linkedin"
+                        }
+                    }
+                ],
+                "social_style": {
+                    "social_icon_style": "circle-outline",
+                    "social_icon_size": {
+                        "value": "2.25",
+                        "unit": "rem"
+                    },
+                    "social_icon_gap": {
+                        "value": "1",
+                        "unit": "rem"
+                    },
+                    "social_icon_border": {
+                        "predefined": "",
+                        "custom": "rgba(255, 255, 255, 0.1)"
+                    }
+                },
+                "main_footer_columns": {
+                    "count": "4",
+                    "4": {
+                        "main_footer_col_1": [
+                            {
+                                "element_type": {
+                                    "element": "logo"
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "text",
+                                    "text": {
+                                        "text_content": "<p class=\"footer-tagline\">Crafting extraordinary bespoke VOYAGES, private expeditions, and secluded luxury stays across all seven continents since 2012.</p>"
+                                    }
+                                }
+                            }
+                        ],
+                        "main_footer_col_2": [
+                            {
+                                "element_type": {
+                                    "element": "heading",
+                                    "heading": {
+                                        "heading_text": "DESTINATIONS",
+                                        "heading_level": "h4"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "AFRICA",
+                                        "li_link_type": "url",
+                                        "li_link": "/destinations?region=Africa",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "ASIA",
+                                        "li_link_type": "url",
+                                        "li_link": "/destinations?region=Asia",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "EUROPE",
+                                        "li_link_type": "url",
+                                        "li_link": "/destinations?region=Europe",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "NORTH AMERICA",
+                                        "li_link_type": "url",
+                                        "li_link": "/destinations?region=Americas",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "SOUTH AMERICA",
+                                        "li_link_type": "url",
+                                        "li_link": "/destinations?region=Americas",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "AUSTRALIA & PACIFIC",
+                                        "li_link_type": "url",
+                                        "li_link": "/destinations?region=Polar%20&%20Island",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            }
+                        ],
+                        "main_footer_col_3": [
+                            {
+                                "element_type": {
+                                    "element": "heading",
+                                    "heading": {
+                                        "heading_text": "CUSTOM VOYAGES",
+                                        "heading_level": "h4"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "BESPOKE TRAVEL",
+                                        "li_link_type": "url",
+                                        "li_link": "/section-a",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "GROUP VOYAGES",
+                                        "li_link_type": "url",
+                                        "li_link": "/destinations",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "FAMILY TRAVEL",
+                                        "li_link_type": "url",
+                                        "li_link": "/section-a",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "HONEYMOONS",
+                                        "li_link_type": "url",
+                                        "li_link": "/section-a",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "SPECIAL OCCASIONS",
+                                        "li_link_type": "url",
+                                        "li_link": "/section-a",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            }
+                        ],
+                        "main_footer_col_4": [
+                            {
+                                "element_type": {
+                                    "element": "heading",
+                                    "heading": {
+                                        "heading_text": "CONTACT",
+                                        "heading_level": "h4"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "hello@example.com",
+                                        "li_link_type": "email",
+                                        "li_icon": {
+                                            "type": "svg",
+                                            "svg-source": "inline",
+                                            "markup": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"rgb(251, 191, 36)\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-mail w-3.5 h-3.5 text-gold-400\" aria-hidden=\"true\"><path d=\"m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7\"></path><rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\" data-sc-cs='color:rgb(251, 191, 36);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:12px;font-weight:400;line-height:16px;text-align:start;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;height:16px;display:inline;justify-content:normal;align-items:normal;flex-direction:row;transition:all'></rect></svg>",
+                                            "svg-id": ""
+                                        },
+                                        "li_link": "mailto:hello@example.com"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "+1 555 010 0100",
+                                        "li_link_type": "phone",
+                                        "li_icon": {
+                                            "type": "svg",
+                                            "svg-source": "inline",
+                                            "markup": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"rgb(251, 191, 36)\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-phone w-3.5 h-3.5 text-gold-400\" aria-hidden=\"true\"><path d=\"M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384\"></path></svg>",
+                                            "svg-id": ""
+                                        },
+                                        "li_link": "tel:+15550100100"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "12 Example Street, Springfield",
+                                        "li_link_type": "none",
+                                        "li_icon": {
+                                            "type": "svg",
+                                            "svg-source": "inline",
+                                            "markup": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"rgb(251, 191, 36)\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-map-pin w-3.5 h-3.5 text-gold-400\" aria-hidden=\"true\"><path d=\"M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0\"></path><circle cx=\"12\" cy=\"10\" r=\"3\" data-sc-cs='color:rgb(251, 191, 36);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:12px;font-weight:400;line-height:16px;text-align:start;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;display:inline;justify-content:normal;align-items:normal;flex-direction:row;transition:all'></circle></svg>",
+                                            "svg-id": ""
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Inquire Now",
+                                        "li_link_type": "url",
+                                        "li_icon": {
+                                            "type": "svg",
+                                            "svg-source": "inline",
+                                            "markup": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"rgb(251, 191, 36)\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-arrow-right w-3.5 h-3.5 group-hover:translate-x-1 transition-transform\" aria-hidden=\"true\" data-sc-hover-group=\"transform:translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));--tw-translate-x:.25rem\"><path d=\"M5 12h14\"></path><path d=\"m12 5 7 7-7 7\"></path></svg>",
+                                            "svg-id": ""
+                                        },
+                                        "li_link": "/section-a",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "social_icons"
+                                }
+                            }
+                        ],
+                        "main_footer_split": [
+                            {
+                                "w": 50,
+                                "name": ""
+                            },
+                            {
+                                "w": 16.6666666667,
+                                "name": ""
+                            },
+                            {
+                                "w": 16.6666666667,
+                                "name": ""
+                            },
+                            {
+                                "w": 16.6666666667,
+                                "name": ""
+                            }
+                        ]
+                    }
+                },
+                "copyright_settings": {
+                    "enabled": "yes",
+                    "yes": {
+                        "copyright_columns": {
+                            "count": "2",
+                            "2": {
+                                "copyright_col_1": [
+                                    {
+                                        "element_type": {
+                                            "element": "text",
+                                            "text": {
+                                                "text_content": "<p style=\"display:inline-flex;flex-wrap:wrap;gap:24px\"><a href=\"#\">PRIVACY POLICY</a><a href=\"#\">TERMS &amp; CONDITIONS</a></p>"
+                                            }
+                                        }
+                                    }
+                                ],
+                                "copyright_col_2": [
+                                    {
+                                        "element_type": {
+                                            "element": "text",
+                                            "text": {
+                                                "text_content": "&copy; {{current_year}} BRANDMARK. ALL RIGHTS RESERVED."
+                                            }
+                                        },
+                                        "element_css_class": "text-end"
+                                    }
+                                ],
+                                "copyright_auto": "yes",
+                                "copyright_justify": "between"
+                            }
+                        },
+                        "copyright_custom_styling": {
+                            "enabled": "yes",
+                            "yes": {
+                                "copyright_container": "container",
+                                "copyright_padding": {
+                                    "margin": {
+                                        "all": "",
+                                        "top": "",
+                                        "right": "",
+                                        "bottom": "",
+                                        "left": ""
+                                    },
+                                    "padding": {
+                                        "all": "",
+                                        "top": "pt-4",
+                                        "right": "",
+                                        "bottom": "",
+                                        "left": ""
+                                    },
+                                    "advanced": []
+                                },
+                                "copyright_typography": {
+                                    "family": "'Plus Jakarta Sans', Inter, system-ui, sans-serif",
+                                    "size": {
+                                        "value": "11",
+                                        "unit": "px"
+                                    },
+                                    "line-height": "17",
+                                    "weight": "400",
+                                    "color": "#6b7280"
+                                }
+                            }
+                        }
+                    }
+                },
+                "container_width_presets": [
+                    {
+                        "id": "cw_small",
+                        "width_name": "Small",
+                        "width": {
+                            "value": "640",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_prose",
+                        "width_name": "Prose",
+                        "width": {
+                            "value": "672",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_narrow",
+                        "width_name": "Narrow",
+                        "width": {
+                            "value": "768",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_medium",
+                        "width_name": "Medium",
+                        "width": {
+                            "value": "896",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide",
+                        "width_name": "Wide",
+                        "width": {
+                            "value": "1024",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-l",
+                        "width_name": "Wide L",
+                        "width": {
+                            "value": "1152",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xl",
+                        "width_name": "Wide XL",
+                        "width": {
+                            "value": "1280",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xxl",
+                        "width_name": "Wide XXL",
+                        "width": {
+                            "value": "1440",
+                            "unit": "px"
+                        }
+                    }
+                ],
+                "font_sizes": [
+                    {
+                        "name": "Lead",
+                        "size": "20",
+                        "weight": "",
+                        "line_height": "",
+                        "letter_spacing": "",
+                        "transform": "",
+                        "class": "lead"
+                    },
+                    {
+                        "name": "Eyebrow",
+                        "size": "12",
+                        "weight": "600",
+                        "line_height": "",
+                        "letter_spacing": "0.05em",
+                        "transform": "uppercase",
+                        "class": ""
+                    }
+                ],
+                "theme_colors": [
+                    {
+                        "name": "Primary",
+                        "color": "#e5e7eb"
+                    },
+                    {
+                        "name": "Muted",
+                        "color": "#9ca3af"
+                    },
+                    {
+                        "name": "Light",
+                        "color": "#08090c"
+                    },
+                    {
+                        "name": "Secondary",
+                        "color": "#6c757d"
+                    },
+                    {
+                        "name": "Accent",
+                        "color": "#fd7e14"
+                    },
+                    {
+                        "name": "Black",
+                        "color": "#000"
+                    },
+                    {
+                        "name": "White",
+                        "color": "#fff"
+                    },
+                    {
+                        "name": "Gray",
+                        "color": "#636c72"
+                    },
+                    {
+                        "name": "Light Gray",
+                        "color": "#bdbdbd"
+                    },
+                    {
+                        "name": "Red",
+                        "color": "#dc3545"
+                    },
+                    {
+                        "name": "Pink",
+                        "color": "#e91e63"
+                    },
+                    {
+                        "name": "Purple",
+                        "color": "#9c27b0"
+                    },
+                    {
+                        "name": "Deep Purple",
+                        "color": "#673ab7"
+                    },
+                    {
+                        "name": "Indigo",
+                        "color": "#3f51b5"
+                    },
+                    {
+                        "name": "Blue",
+                        "color": "#286090"
+                    },
+                    {
+                        "name": "Light Blue",
+                        "color": "#03a9f4"
+                    },
+                    {
+                        "name": "Cyan",
+                        "color": "#00bcd4"
+                    },
+                    {
+                        "name": "Teal",
+                        "color": "#009688"
+                    },
+                    {
+                        "name": "Green",
+                        "color": "#5cb85c"
+                    },
+                    {
+                        "name": "Light Green",
+                        "color": "#8bc34a"
+                    },
+                    {
+                        "name": "Lime",
+                        "color": "#cddc39"
+                    },
+                    {
+                        "name": "Yellow",
+                        "color": "#ffeb3b"
+                    },
+                    {
+                        "name": "Amber",
+                        "color": "#ffc107"
+                    },
+                    {
+                        "name": "Orange",
+                        "color": "#ff9800"
+                    },
+                    {
+                        "name": "Deep Orange",
+                        "color": "#ff5722"
+                    },
+                    {
+                        "name": "Brown",
+                        "color": "#795548"
+                    },
+                    {
+                        "name": "Blue Gray",
+                        "color": "#607d8b"
+                    }
+                ],
+                "spacing_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    }
+                ],
+                "gap_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "[32px]",
+                        "size": "32px"
+                    },
+                    {
+                        "name": "[40px]",
+                        "size": "40px"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    }
+                ],
+                "typography": {
+                    "body": {
+                        "family": "Plus Jakarta Sans",
+                        "variation": "regular",
+                        "color": "#e5e7eb",
+                        "size": {
+                            "value": "14",
+                            "unit": "px"
+                        },
+                        "line-height": "1.63"
+                    },
+                    "h1": {
+                        "family": "",
+                        "variation": "regular",
+                        "color": "",
+                        "size": {
+                            "value": "56",
+                            "unit": "px"
+                        }
+                    },
+                    "h4": {
+                        "family": "Plus Jakarta Sans",
+                        "variation": "600",
+                        "color": "",
+                        "size": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "line-height": "1.33",
+                        "letter-spacing": "2.4",
+                        "text-transform": "uppercase"
+                    },
+                    "type_fluid_enable": "no"
+                }
+            }
+        },
+        "conversion-parity.json": {
+            "schema": "unysonplus-conversion-parity/1",
+            "score": 100,
+            "passed": 6,
+            "total": 6,
+            "checks": [
+                {
+                    "id": "border_color",
+                    "label": "Border / divider colour",
+                    "source": "rgba(255, 255, 255, 0.1)",
+                    "converted": "rgba(255, 255, 255, 0.1)",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "roundness",
+                    "label": "Corner roundness",
+                    "source": "soft",
+                    "converted": "soft",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "section_count",
+                    "label": "Section count",
+                    "source": 1,
+                    "converted": 1,
+                    "pass": true,
+                    "note": "tolerance ±1"
+                },
+                {
+                    "id": "footer",
+                    "label": "Footer chrome",
+                    "source": "present",
+                    "converted": "mapped",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "dropped_measures",
+                    "label": "Unmapped width classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "max-w/min-w must map to a native width or carried CSS"
+                },
+                {
+                    "id": "dropped_chrome",
+                    "label": "Unmapped chrome classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "logo/menu/footer typography must map to a native option or carried CSS"
+                }
+            ]
+        }
+    }
+}

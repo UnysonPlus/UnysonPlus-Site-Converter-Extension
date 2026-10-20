@@ -262,8 +262,13 @@ $texts_all  = implode( ' | ', array_map( function ( $it ) { return $it['li_text'
 ga( "footer contact rows carry inline-svg icons", substr_count( $markup_all, '<svg' ) >= 3, $markup_all );
 ga( "footer contact leading icons tinted brand green", substr_count( $markup_all, 'rgb(33, 196, 93)' ) >= 3, $markup_all );
 ga( "footer contact map-pin icon present", strpos( $markup_all, 'lucide-map-pin' ) !== false );
-ga( "footer contact address folded to single line (comma, not glued)",
-	strpos( $texts_all, 'Fresh Meadow Lane, Springfield' ) !== false && strpos( $texts_all, 'LaneSpringfield' ) === false );
+// The two address lines must be SEPARATED, which is what this always checked — the comma was simply the only
+// separator available while these rows emitted the single-line `icon_text` element. A `list_item` renders its
+// text through a filter that allows `<br>`, so the row now carries the source's own break. Still never glued.
+ga( "footer contact address keeps its two lines (a break, not glued)",
+	( strpos( $texts_all, 'Fresh Meadow Lane<br>Springfield' ) !== false
+		|| strpos( $texts_all, 'Fresh Meadow Lane, Springfield' ) !== false )
+	&& strpos( $texts_all, 'LaneSpringfield' ) === false );
 
 /* --- Negative controls + isolated positives via Reflection (targeted detector behavior) --- */
 $rm_cols = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'detect_footer_columns' );
@@ -2597,7 +2602,7 @@ ga( "the 12px stack gap between field and button", strpos( $n_css, 'selector .fw
 ga( "an envelope from ANOTHER icon set → the native field_icon (Lucide 'mail' by meaning)", ( $n_a['field_icon']['svg-source'] ?? '' ) === 'library' && ( $n_a['field_icon']['svg-id'] ?? '' ) === 'lucide/mail' );
 ga( "field icon keeps its colour", preg_match( '/^#84725d$/i', (string) ( $n_a['field_icon_color']['custom'] ?? '' ) ) === 1, $n_a['field_icon_color'] ?? null );
 ga( "the submit keeps its OWN type (14px sentence-case, 54px) over any preset", preg_match( '/selector \.fw-nl__btn\{font-size:14px !important;[^}]*text-transform:none !important;[^}]*height:54px !important/', $n_css ) === 1, $n_css );
-ga( "the import REQUIRES the Newsletter CRM (a signup form must capture submissions)", strpos( wp_json_encode( $n_bl['files']['bundle.json'] ?? array() ) . wp_json_encode( $n_bl['files']['theme-design.json'] ?? array() ), 'newsletter-crm' ) !== false );
+ga( "the import REQUIRES the Newsletter CRM (a signup form must capture submissions)", strpos( wp_json_encode( $n_bl['files']['bundle.json'] ?? array() ) . wp_json_encode( $n_bl['files']['theme-design.json'] ?? array() ), 'crm' ) !== false );
 
 /* --- [P] CHROME PRESENCE: a source with NO <footer> (its last band carries the brand line itself) must not grow a
  *     theme footer → the page entry asks the importer for the native per-page 'Hide Site Footer' switch; a source WITH a
@@ -3483,7 +3488,10 @@ $w_srow = $r_find( $w_pg, function ( $n ) { return 'flexbox' === ( $n['type'] ??
 ga( "a stat band with a GLYPH value ('∞' over 'Creativity') is still a 4-column counter row: three counters + the glyph as a heading over its caption", is_array( $w_srow ) && is_array( $w_inf ) && 3 === count( $w_cnt ) );
 $w_fc = $w_v['main_footer_columns'] ?? array(); $w_fcj = json_encode( $w_fc );
 ga( "footer link columns titled by uppercase LABEL divs (no heading tag) are columns: 'Navigation' + 'Social Signal' with their links; the lead heading's signup rides the LEAD column (title / description blank), not a second column", '3' === (string) ( $w_fc['count'] ?? '' ) && false !== strpos( $w_fcj, '"heading_text":"Navigation"' ) && false !== strpos( $w_fcj, '"heading_text":"Social Signal"' ) && (bool) preg_match( '/footer-lead-title[^\]]*"element":"newsletter","newsletter":\{"newsletter_title":"","newsletter_desc":"","newsletter_email_ph":"your@email.com","newsletter_button":"Connect"/', $w_fcj ) );
-ga( "…the footer column-title rule reads THOSE titles (10px tracked uppercase lantern), not the 48px lead h2", (bool) preg_match( '/\.footer-links-title\{[^}]*text-transform:uppercase !important;letter-spacing:3px !important;font-size:10px !important;color:rgb\(255, 170, 80\) !important/', $w_mc ) );
+// The values are what prove this reads the COLUMN titles and not the 48px lead h2; their ADJACENCY never
+// did. The rule now also carries the titles' measured line-height, which sits between size and colour, so
+// the gaps are open. Tightening them back would only re-break on the next declaration the rule learns.
+ga( "…the footer column-title rule reads THOSE titles (10px tracked uppercase lantern), not the 48px lead h2", (bool) preg_match( '/\.footer-links-title\{[^}]*text-transform:uppercase !important;[^}]*letter-spacing:3px !important;[^}]*font-size:10px !important;[^}]*color:rgb\(255, 170, 80\) !important/', $w_mc ) );
 $w_cp = $w_v['copyright_settings']['yes']['copyright_columns'] ?? array();
 ga( "the page SHELL's own rules (never a dropped class): the <main>'s scroll-driven background shift (view-timeline + animation-timeline + its @keyframes) rides Misc Custom CSS re-targeted at main.site-main, its wrapper layout dropped; a <body> class whose rule is only type / smoothing adds nothing (Typography owns it)", false !== strpos( $w_mc, 'main.site-main{view-timeline-name:--section-scroll;animation:bg-shift linear both;animation-timeline:--section-scroll;}' ) && false !== strpos( $w_mc, '@keyframes bg-shift{0%{background:oklch(20% 0.08 280)}100%{background:oklch(5% 0.02 280)}}' ) && false === strpos( $w_mc, 'body{' ) && false === strpos( $w_mc, 'position:relative' ) );
 ga( "the © bar's status lockup (a dot + 'System Operational: Clouds Clear') is the bar's right column", '2' === (string) ( $w_cp['count'] ?? '' ) && false !== strpos( json_encode( $w_cp ), 'System Operational: Clouds Clear' ) );
@@ -3808,7 +3816,14 @@ $t_cf = $r_find( $t_pg, function ( $n ) { return 'contact_form' === ( $n['shortc
 $t_cf_items = is_array( $t_cf ) ? json_decode( (string) ( $t_cf['atts']['form']['json'] ?? '[]' ), true ) : array();
 $t_cf_types = is_array( $t_cf_items ) ? array_map( function ( $i ) { return (string) ( $i['type'] ?? '' ); }, $t_cf_items ) : array();
 ga( "a CONTACT form (name + email + a message textarea + send) is the native contact_form (the forms extension), its fields in order as form-builder items with labels / required / half-widths and the send label — it was mapped to the two-field newsletter with the textarea dropped (a RECURRING finding)", is_array( $t_cf ) && array( 'form-header-title', 'text', 'email', 'textarea' ) === $t_cf_types && 'Transmit' === (string) ( $t_cf['atts']['submit_button_text'] ?? '' ) && '1_2' === (string) ( $t_cf_items[1]['width'] ?? '' ) && '1_1' === (string) ( $t_cf_items[3]['width'] ?? '' ) && ! empty( $t_cf_items[1]['options']['required'] ) && 'Name' === (string) ( $t_cf_items[1]['options']['label'] ?? '' ) );
-ga( "…the source's underline-only mono inputs ride the form's scoped CSS (border-bottom kept, the other edges zeroed, the mono face), the submit its fill / ink / case", is_array( $t_cf ) && (bool) preg_match( '/textarea,selector select\\{[^}]*border-bottom:1px solid rgba\\(255, 255, 255, 0\\.2\\) !important[^}]*border-top:0 !important/', (string) ( $t_cf['atts']['custom_css'] ?? '' ) ) && false !== strpos( (string) ( $t_cf['atts']['custom_css'] ?? '' ), 'font-family:ui-monospace' ) && (bool) preg_match( '/\\.fw-form-submit\\{[^}]*background-color:rgb\\(255, 255, 255\\) !important[^}]*text-transform:uppercase/', (string) ( $t_cf['atts']['custom_css'] ?? '' ) ) );
+// The field skin is a Form Styles preset now (form-skin-is-a-form-style-preset-test.php): the form points at it and
+// the theme-settings pass carries it in `form_style_presets`; only the submit's own fill stays on the element.
+$t_fs  = is_array( $t_cf ) ? (string) ( $t_cf['atts']['form_style'] ?? '' ) : '';
+$t_fsp = null;
+foreach ( (array) ( $t_bl['files']['theme-settings.json']['values']['form_style_presets'] ?? array() ) as $t_p ) {
+	if ( 'formp-' . trim( preg_replace( '/[^a-z0-9]+/', '-', strtolower( (string) ( $t_p['style_name'] ?? '' ) ) ), '-' ) === $t_fs ) { $t_fsp = $t_p; }
+}
+ga( "…the source's underline-only mono inputs become the form's Form Styles preset (one bottom edge in the measured rgba, the mono face in its Custom CSS) and leave the element; the submit keeps its fill / ink / case", 1 === preg_match( '/^formp-form-[0-9a-f]{8}$/', $t_fs ) && is_array( $t_fsp ) && 'bottom' === (string) ( $t_fsp['border_sides'] ?? '' ) && false !== strpos( (string) ( $t_fsp['field_border']['custom'] ?? '' ), 'rgba(255, 255, 255, 0.2)' ) && false !== strpos( (string) ( $t_fsp['custom_css'] ?? '' ), 'font-family:ui-monospace' ) && false === strpos( (string) ( $t_cf['atts']['custom_css'] ?? '' ), 'font-family:ui-monospace' ) && (bool) preg_match( '/\\.fw-form-submit\\{[^}]*background-color:rgb\\(255, 255, 255\\) !important[^}]*text-transform:uppercase/', (string) ( $t_cf['atts']['custom_css'] ?? '' ) ) );
 $t_nl2 = array(); $r_all( $t_pg, function ( $n ) { return 'newsletter' === ( $n['shortcode'] ?? '' ); }, $t_nl2 );
 ga( "…and the band's signup (one field + a button) is still the newsletter — the contact form never steals it, nor the reverse", 1 === count( $t_nl2 ) );
 $t_lone = $r_find( $t_pg, function ( $n ) { return 'flexbox' === ( $n['type'] ?? '' ) && false !== strpos( (string) ( $n['atts']['custom_css'] ?? '' ), 'selector{width:100%;}' ); } );
@@ -5201,7 +5216,12 @@ $ap_v   = FW_Site_Converter_Sources::build_from_html( $ap_html, 'Brandy', array(
 $ap_css = (string) ( $ap_v['misc_custom_css']['custom_css'] ?? '' );
 $ap_cols = wp_json_encode( $ap_v['main_footer_columns'] ?? array() );
 ga( "[AP] the five source columns become five footer columns", '5' === (string) ( $ap_v['main_footer_columns']['count'] ?? '' ), mb_substr( $ap_cols, 0, 200 ) );
-ga( "[AP] the source's MEASURED tracks ride as scoped CSS — the fifths picker cannot express a wide brand beside four equal link columns", (bool) preg_match( '/\.footer-row--grid\{grid-template-columns:2fr 1fr 1fr 1fr 1fr/', $ap_css ), ( preg_match( '/footer-row--grid\{[^}]*\}/', $ap_css, $apm ) ? $apm[0] : '(no track rule)' ) );
+// EXPECTED 2fr UNTIL THE GAPS WERE COUNTED. A cell spanning N tracks also owns the N-1 GUTTERS it spans
+// over, which the emitter was not adding. This fixture is a 12-track grid of 97.5px with a 32px gap: the
+// brand spans 4 (4x97.5 + 3x32 = 486) and each link column spans 2 (2x97.5 + 32 = 227), so the true ratio
+// is 486/227 = 2.14, and the fixture's own stamped widths (425 / 197 = 2.16) agree. The old 2fr came from
+// summing tracks alone (390/195), so this assertion had been holding the bug in place.
+ga( "[AP] the source's MEASURED tracks ride as scoped CSS, with the spanned gutters counted — the fifths picker cannot express a wide brand beside four equal link columns", (bool) preg_match( '/\.footer-row--grid\{grid-template-columns:2\.14fr 1fr 1fr 1fr 1fr/', $ap_css ), ( preg_match( '/footer-row--grid\{[^}]*\}/', $ap_css, $apm ) ? $apm[0] : '(no track rule)' ) );
 ga( "[AP] …and the source's own column gap with it", (bool) preg_match( '/\.footer-row--grid\{[^}]*column-gap:32px/', $ap_css ), ( preg_match( '/footer-row--grid\{[^}]*\}/', $ap_css, $apm2 ) ? $apm2[0] : '(none)' ) );
 ga( "[AP] a plain TEXT link to a social network stays an entry of its own column", false !== stripos( $ap_cols, 'Instagram' ) && false !== stripos( $ap_cols, 'Facebook' ), mb_substr( $ap_cols, -420 ) );
 ga( "[AP] …and is NOT also drawn as a social glyph in the brand column", false === stripos( $ap_cols, 'social_icons' ), mb_substr( $ap_cols, 0, 300 ) );
@@ -6309,7 +6329,15 @@ ga( '[BM] …while the typography option still carries a save-safe HEX, never th
 
 // NEGATIVE: an OPAQUE legal colour is fully expressible on the option and must gain NO residual.
 list( $bm_json2 ) = $bm_misc( $bm_page( 'rgb(250, 244, 232)' ) );
-ga( '[BM] NEGATIVE: an OPAQUE legal colour gains no copyright-bar override', false === strpos( $bm_json2, '.footer-section--copyright' ), preg_match( '/\.footer-section--copyright[^}]*\}/', $bm_json2, $bm_m2 ) ? $bm_m2[0] : 'none (correct)' );
+// NARROWED TO WHAT IT IS ABOUT. This asserted that NO rule mentions the copyright bar, while the claim it
+// makes is about COLOUR: an opaque legal colour fits the native option, so it needs no colour residual.
+// The bar in this fixture also carries `padding:32px 0px 0px`, which the spacing ladder cannot say (its
+// nearest step is 24px), so an exact padding override is correct and expected. It had always been emitted
+// and then silently destroyed, because misc_custom_css was ASSIGNED later in the assembly and discarded
+// everything written before it — so the broad form of this assertion was passing only for as long as that
+// bug survived. It now tests the colour alone.
+$bm_cp_rule = preg_match( '/\.footer-section--copyright\{([^}]*)\}/', $bm_json2, $bm_m2 ) ? $bm_m2[1] : '';
+ga( '[BM] NEGATIVE: an OPAQUE legal colour gains no copyright-bar COLOUR override', false === stripos( $bm_cp_rule, 'color' ), '' !== $bm_cp_rule ? $bm_cp_rule : 'no rule at all (also correct)' );
 
 
 /* ============================================================================================

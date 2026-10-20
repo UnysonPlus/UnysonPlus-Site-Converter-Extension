@@ -200,7 +200,159 @@ class FW_Site_Converter_Pages {
 	 * @param array $spec
 	 * @return array{title: string, slug: string, id: int, created: bool, front_page: bool, error: string}
 	 */
+	/**
+	 * A blog ARTICLE → a WordPress post.
+	 *
+	 * Every converted URL used to be inserted with `post_type => 'page'`. An article imported that way is
+	 * invisible exactly where a reader looks for it — absent from the blog index, the feed, its category and
+	 * its tag — and it carries a builder tree nobody wants to edit a paragraph in. A post's body belongs in
+	 * `post_content`, where the editor reads it, and then ONE template styles every article on the site.
+	 *
+	 * Two restraints, because an import must not take liberties with the site it lands on:
+	 *
+	 * - NO WordPress user is created for the author. The source gives a display name, not an account, and
+	 *   minting users as a side effect of a conversion is not something anyone asked for. The name is kept as
+	 *   post meta, so a template can print it and a human can map it to a real account later.
+	 * - Re-importing the same source URL UPDATES that post instead of adding a second one, which is how the
+	 *   page path already behaves.
+	 *
+	 * @param array $spec { title, slug, content, date, author, excerpt, categories, tags, featured, source_url, status }
+	 * @return array row
+	 */
+	private static function import_post( array $spec ) {
+		$title  = trim( (string) self::pluck( $spec, array( 'title', 'name', 'label' ), '' ) );
+		$slug   = sanitize_title( (string) self::pluck( $spec, array( 'slug', 'post_name' ), '' ) );
+		$status = sanitize_key( (string) self::pluck( $spec, array( 'status', 'post_status' ), 'publish' ) );
+		$body   = (string) self::pluck( $spec, array( 'content', 'post_content', 'body' ), '' );
+		$src    = trim( (string) self::pluck( $spec, array( 'source_url', 'src_url' ), '' ) );
+
+		$row = array( 'title' => $title, 'slug' => '', 'id' => 0, 'created' => false, 'post_type' => 'post', 'error' => '' );
+		if ( '' === $title && '' === trim( $body ) ) {
+			$row['error'] = __( 'A post needs a title or a body.', 'fw' );
+			return $row;
+		}
+		if ( '' === $slug ) { $slug = sanitize_title( $title ); }
+		if ( '' === $slug ) { $row['error'] = __( 'Could not work out a slug for this post.', 'fw' ); return $row; }
+
+		// Idempotent on the SOURCE URL first, then the slug: a second round of the same article must update
+		// it, not fork a `-2`.
+		$existing = null;
+		if ( '' !== $src ) {
+			$hit = get_posts( array(
+				'post_type'   => 'post',
+				'post_status' => 'any',
+				'numberposts' => 1,
+				'meta_key'    => '_upw_source_url',
+				'meta_value'  => $src,
+			) );
+			if ( ! empty( $hit ) ) { $existing = $hit[0]; }
+		}
+		if ( ! $existing ) {
+			$hit = get_posts( array( 'name' => $slug, 'post_type' => 'post', 'post_status' => 'any', 'numberposts' => 1 ) );
+			if ( ! empty( $hit ) ) { $existing = $hit[0]; }
+		}
+
+		$postarr = array(
+			'post_type'    => 'post',
+			'post_title'   => $title,
+			'post_name'    => $slug,
+			'post_status'  => $status,
+			'post_content' => $body,
+		);
+
+		$excerpt = trim( (string) self::pluck( $spec, array( 'excerpt', 'post_excerpt', 'description' ), '' ) );
+		if ( '' !== $excerpt ) { $postarr['post_excerpt'] = $excerpt; }
+
+		// The source's own publication date, so the archive reads in the order the site was written in. An
+		// unparseable date is left to WordPress rather than guessed at.
+		$date = trim( (string) self::pluck( $spec, array( 'date', 'post_date', 'published' ), '' ) );
+		if ( '' !== $date ) {
+			// THE DAY THE SOURCE PUBLISHED IT. `2026-04-18T09:30+10:00` is 2026-04-17 in UTC, so storing the UTC
+			// moment as post_date moves the article back a day in the archive — the reader sees a date the source
+			// never showed. post_date is WordPress's LOCAL time, so it takes the source's own wall clock, and
+			// post_date_gmt takes the UTC instant. An unparseable date is left to WordPress rather than guessed.
+			try {
+				$dt = new DateTime( $date );
+				$postarr['post_date'] = $dt->format( 'Y-m-d H:i:s' );
+				$dt->setTimezone( new DateTimeZone( 'UTC' ) );
+				$postarr['post_date_gmt'] = $dt->format( 'Y-m-d H:i:s' );
+			} catch ( Exception $e ) {
+				$ts = strtotime( $date );
+				if ( $ts ) {
+					$postarr['post_date']     = gmdate( 'Y-m-d H:i:s', $ts );
+					$postarr['post_date_gmt'] = gmdate( 'Y-m-d H:i:s', $ts );
+				}
+			}
+		}
+
+		if ( $existing ) {
+			$postarr['ID'] = (int) $existing->ID;
+			$post_id       = wp_update_post( $postarr, true );
+		} else {
+			$post_id        = wp_insert_post( $postarr, true );
+			$row['created'] = true;
+		}
+		if ( is_wp_error( $post_id ) || ! $post_id ) {
+			$row['error'] = is_wp_error( $post_id ) ? $post_id->get_error_message() : __( 'Could not create the post.', 'fw' );
+			return $row;
+		}
+
+		$post_id     = (int) $post_id;
+		$row['id']   = $post_id;
+		$row['slug'] = get_post_field( 'post_name', $post_id );
+
+		// Taxonomy: the source's term NAMES, created when the install does not have them. This is the whole
+		// point of importing an article as a post — the category pages the source had now work here too.
+		foreach ( array( 'categories' => 'category', 'tags' => 'post_tag' ) as $key => $tax ) {
+			$terms = self::pluck( $spec, array( $key ), array() );
+			if ( ! is_array( $terms ) || ! $terms ) { continue; }
+			$clean = array();
+			foreach ( $terms as $t ) {
+				$t = trim( (string) $t );
+				if ( '' !== $t && mb_strlen( $t ) <= 80 ) { $clean[] = $t; }
+			}
+			if ( ! $clean ) { continue; }
+			// A HIERARCHICAL taxonomy will not take names. wp_set_post_terms() auto-creates missing terms only
+			// for a flat taxonomy; hand `category` the string 'Blog' and it is read as a term ID, finds nothing
+			// and silently sets nothing — the tag landed and the category did not, with no error either way.
+			// So resolve each name to an id first, creating it when the install does not have it.
+			if ( is_taxonomy_hierarchical( $tax ) ) {
+				$ids = array();
+				foreach ( $clean as $name ) {
+					$term = term_exists( $name, $tax );
+					if ( ! $term ) { $term = wp_insert_term( $name, $tax ); }
+					if ( ! is_wp_error( $term ) && isset( $term['term_id'] ) ) { $ids[] = (int) $term['term_id']; }
+				}
+				if ( $ids ) { wp_set_post_terms( $post_id, $ids, $tax, false ); }
+			} else {
+				wp_set_post_terms( $post_id, $clean, $tax, false );
+			}
+		}
+
+		if ( '' !== $src ) { update_post_meta( $post_id, '_upw_source_url', $src ); }
+		$author = trim( (string) self::pluck( $spec, array( 'author' ), '' ) );
+		if ( '' !== $author ) { update_post_meta( $post_id, '_upw_source_author', $author ); }
+
+		// Featured image: sideload it when the media importer is here, and keep the URL either way so a later
+		// pass (or a human) can still resolve it.
+		$feat = trim( (string) self::pluck( $spec, array( 'featured', 'featured_image', 'thumbnail' ), '' ) );
+		if ( '' !== $feat ) {
+			update_post_meta( $post_id, '_upw_source_featured', $feat );
+			if ( ! has_post_thumbnail( $post_id ) && class_exists( 'FW_Site_Converter_Media' ) && method_exists( 'FW_Site_Converter_Media', 'sideload' ) ) {
+				$att = FW_Site_Converter_Media::sideload( $feat, $post_id, $title );
+				if ( $att && ! is_wp_error( $att ) && is_numeric( $att ) ) { set_post_thumbnail( $post_id, (int) $att ); }
+			}
+		}
+
+		return $row;
+	}
+
 	private static function import_one( array $spec ) {
+		// A blog ARTICLE is a post, not a page. The classification rides on the spec (discovery reads it from
+		// the sitemap WordPress splits by post type), and everything below here is the PAGE path — hierarchy,
+		// builder tree, front-page handling — none of which an article wants.
+		$kind = strtolower( trim( (string) self::pluck( $spec, array( 'kind', 'post_type', 'type' ), '' ) ) );
+		if ( 'post' === $kind ) { return self::import_post( $spec ); }
 		$title  = trim( (string) self::pluck( $spec, array( 'title', 'name', 'label' ), '' ) );
 		$slug   = trim( (string) self::pluck( $spec, array( 'slug', 'post_name' ), '' ) );
 		$status = sanitize_key( (string) self::pluck( $spec, array( 'status', 'post_status' ), 'publish' ) );

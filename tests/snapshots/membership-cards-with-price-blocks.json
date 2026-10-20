@@ -1,0 +1,2990 @@
+{
+    "mapping": {
+        "include_animations": false,
+        "pages": [
+            {
+                "title": "Snapshot",
+                "slug": "",
+                "front_page": true,
+                "sections": [
+                    {
+                        "sectionClass": "",
+                        "sectionRawClass": "",
+                        "sectionCs": "background-color:rgb(9,9,11);padding:96px 0px;display:block",
+                        "sectionCsSm": "",
+                        "sectionCsMd": "",
+                        "sectionCsXl": "",
+                        "bandPlace": [],
+                        "phonePass": false,
+                        "sectionLayers": [
+                            {
+                                "cls": "",
+                                "style": "",
+                                "cs": "font-size:40px;line-height:44px;font-weight:900"
+                            },
+                            {
+                                "cls": "grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8 items-stretch",
+                                "style": "",
+                                "cs": "color:rgb(255, 255, 255);font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;height:590px;display:grid;gap:32px;grid-template-columns:426.656px 426.672px 426.656px;justify-content:normal;align-items:stretch;flex-direction:row;transition:all"
+                            }
+                        ],
+                        "sectionBgImage": [],
+                        "sectionBgVideo": [],
+                        "sectionContainerW": null,
+                        "sectionFullBleed": false,
+                        "sectionHeroHeight": "",
+                        "sectionValign": "middle",
+                        "sectionBandW": null,
+                        "sectionLeftCap": 0,
+                        "sectionNoGutter": false,
+                        "css_id": "section-1",
+                        "sectionId": "",
+                        "heroTopPad": 0,
+                        "heroInFlowClear": false,
+                        "omit": false,
+                        "verbatim": false,
+                        "align": "",
+                        "bgPattern": null,
+                        "bgEffects": [],
+                        "divider": null,
+                        "blocks": [
+                            {
+                                "t": "heading",
+                                "role": "title",
+                                "level": 2,
+                                "cls": "",
+                                "cs": "font-size:40px;line-height:44px;font-weight:900",
+                                "csSm": "",
+                                "align": "",
+                                "text": "Membership Privileges",
+                                "html": "Membership Privileges"
+                            },
+                            {
+                                "t": "pricing",
+                                "plans": [
+                                    {
+                                        "title": "BLACK CARD",
+                                        "subtitle": "Cancel or pause anytime. No long-term lock-in.",
+                                        "currency": "$",
+                                        "price": "81",
+                                        "period": "/year",
+                                        "features": "INCLUDED PRIVILEGES:\n2 Precision Haircuts per month included\nPriority booking queue (skip weekend waits)\n10% off all grooming & beard products\nComplimentary scalp massage & hot towel each visit\nFlexible rescheduling up to 4 hours in advance",
+                                        "featured": "no",
+                                        "ribbon": "",
+                                        "btn_label": "JOIN BLACK CARD",
+                                        "btn_url": ""
+                                    },
+                                    {
+                                        "title": "STUDIO VIP",
+                                        "subtitle": "MOST POPULAR",
+                                        "currency": "$",
+                                        "price": "153",
+                                        "period": "/year",
+                                        "features": "INCLUDED PRIVILEGES:\nUnlimited touch-ups & neck cleans\n3 Precision Cuts or Beard Sculpt sessions per month\nDirect line & priority with Senior Master Stylists\n20% off styling products and special treatments\nComplimentary top-shelf whiskey or espresso bar access\nExclusive invite to seasonal styling events",
+                                        "featured": "yes",
+                                        "ribbon": "MOST POPULAR",
+                                        "btn_label": "JOIN STUDIO VIP",
+                                        "btn_url": ""
+                                    },
+                                    {
+                                        "title": "FOUNDERS PATRON",
+                                        "subtitle": "Cancel or pause anytime. No long-term lock-in.",
+                                        "currency": "$",
+                                        "price": "272",
+                                        "period": "/year",
+                                        "features": "INCLUDED PRIVILEGES:\nUnlimited cuts, beard sculpting & premium washes\nGuaranteed private booth or after-hours booking option\n1 complimentary signature friend pass per month\nCurated quarterly grooming package shipped to your door\nDirect WhatsApp concierge with Founder Alex Russo",
+                                        "featured": "no",
+                                        "ribbon": "",
+                                        "btn_label": "JOIN FOUNDERS PATRON",
+                                        "btn_url": ""
+                                    }
+                                ],
+                                "design": "dark",
+                                "cardBox": {
+                                    "bg": "rgb(18, 18, 21)",
+                                    "gradient": "",
+                                    "radius": "0px",
+                                    "borderW": "1px",
+                                    "borderColor": "rgb(36, 36, 41)",
+                                    "padding": "36px",
+                                    "backdrop": "",
+                                    "extra": "",
+                                    "shadow": "",
+                                    "hover": {
+                                        "bd": "rgb(82 82 91)"
+                                    },
+                                    "clip": false,
+                                    "hov": "hover-self{border-color:rgb(82 82 91/var(--tw-border-opacity,1));border-color:rgb(82 82 91/var(--tw-border-opacity,1))}",
+                                    "kf": "",
+                                    "pseudoOwned": false
+                                },
+                                "accent": "",
+                                "btnOutlineCss": "",
+                                "feat": {
+                                    "align": "",
+                                    "color": "",
+                                    "dividers": "",
+                                    "fontSize": ""
+                                },
+                                "layout": "grid",
+                                "nameFont": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif",
+                                "cols": 3,
+                                "rows": {
+                                    "rule": true,
+                                    "gap": 32,
+                                    "pad": 36,
+                                    "price_size": 48,
+                                    "price_weight": 900,
+                                    "price_font": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "mainClass": "",
+                "mainCs": "",
+                "chrome": {
+                    "header": false,
+                    "footer": false
+                },
+                "source_url": "https://fixture.invalid"
+            }
+        ]
+    },
+    "files": {
+        "bundle.json": {
+            "name": "Google Stitch import",
+            "source": "stitch"
+        },
+        "conversion-drops.json": {
+            "total": 0,
+            "rescued": 0,
+            "decorative": 0,
+            "by_kind": [],
+            "top_patterns": [],
+            "items": [],
+            "text_coverage": {
+                "checked": 32,
+                "missing": 6,
+                "coverage_pct": 81.3,
+                "pages": 1,
+                "by_page": {
+                    "page-1": {
+                        "checked": 32,
+                        "missing": 6,
+                        "coverage_pct": 81.3
+                    }
+                },
+                "note": "Visible source phrases (2+ real words, excluding hidden / display:none twins) absent from the built pages + theme settings, checked on EVERY captured page. Unlike the drop log above, this shares no code path with the builder, so it also catches text lost to a RECOGNIZER claiming a container and ignoring part of it, and text glued to a neighbour so the phrase no longer exists as itself. `items` is content we should have kept (each tagged with the page it came from); `out_of_scope` is text we deliberately did not carry.",
+                "items": [
+                    {
+                        "tag": "div",
+                        "class": "text-[10px] text-[#ddff00] font-bold uppercase tracking-wider mt-1",
+                        "text": "Billed annually ($3264/year)",
+                        "page": "page-1"
+                    },
+                    {
+                        "tag": "p",
+                        "class": "text-xs text-zinc-400 leading-relaxed mb-6 min-h-[36px]",
+                        "text": "Complete bespoke styling and full private concierge service.",
+                        "page": "page-1"
+                    },
+                    {
+                        "tag": "div",
+                        "class": "text-[10px] text-[#ddff00] font-bold uppercase tracking-wider mt-1",
+                        "text": "Billed annually ($1836/year)",
+                        "page": "page-1"
+                    },
+                    {
+                        "tag": "p",
+                        "class": "text-xs text-zinc-400 leading-relaxed mb-6 min-h-[36px]",
+                        "text": "The ultimate signature experience with master stylists and full styling freedom.",
+                        "page": "page-1"
+                    },
+                    {
+                        "tag": "div",
+                        "class": "text-[10px] text-[#ddff00] font-bold uppercase tracking-wider mt-1",
+                        "text": "Billed annually ($972/year)",
+                        "page": "page-1"
+                    },
+                    {
+                        "tag": "p",
+                        "class": "text-xs text-zinc-400 leading-relaxed mb-6 min-h-[36px]",
+                        "text": "For the sharp, regular urban professional who prioritizes clean grooming.",
+                        "page": "page-1"
+                    }
+                ],
+                "out_of_scope": []
+            }
+        },
+        "class-coverage.json": {
+            "schema": "unysonplus-class-coverage/1",
+            "elements_audited": 0,
+            "elements_with_untranslated": 0,
+            "untranslated_significant": [],
+            "note": "Significant (look-carrying) SOURCE classes that became NO native option and NO scoped CSS — ranked by how many elements dropped each. Each is a candidate for a new deterministic class→value translation rule (fix the rule in BOTH the PHP + JS paths, then re-prove). Coverage spans elements that pass through the class-drop collector (headings / text / cards); whole-element structural drops live in conversion-drops.json."
+        },
+        "theme-design.json": {
+            "theme": {
+                "name": "Snapshot",
+                "slug": "snapshot",
+                "mode": "child"
+            },
+            "favicon": "",
+            "css_vars": [],
+            "fonts": {
+                "heading": "",
+                "heading_stack": "",
+                "body": "",
+                "google": ""
+            },
+            "colors": {
+                "ink": "#1a1a1a",
+                "accent": "#ddff00",
+                "bg": "#ffffff",
+                "header_bg": "",
+                "header_border": "#ececec",
+                "footer_bg": "#141414",
+                "footer_text": "#f5f5f5"
+            },
+            "header": {
+                "style": "bar",
+                "sticky": false,
+                "menu_location": "primary",
+                "menu": [],
+                "menu_secondary": [],
+                "cta": {
+                    "enabled": false,
+                    "label": "Get started",
+                    "href": "#"
+                }
+            },
+            "footer": {
+                "brand": true,
+                "widget_area": false,
+                "copyright": "All rights reserved.",
+                "menu": []
+            },
+            "background": {
+                "dotted": false,
+                "canvas": "#ffffff"
+            },
+            "custom_css": ".sc-tw .material-symbols-outlined{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;word-wrap:normal;direction:ltr;-webkit-font-feature-settings:'liga';font-feature-settings:'liga';-webkit-font-smoothing:antialiased;}\n.sc-tw .custom-logo{max-height:2.4rem;width:auto;height:auto;display:inline-block;vertical-align:middle;}\r\n.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:32px !important;}\n@media screen and (max-width:782px){.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:46px !important;}}\n.sc-mirror{padding-top:0 !important;padding-bottom:0 !important;}\n.sc-mirror .fw-container{max-width:none !important;width:100% !important;padding-left:0 !important;padding-right:0 !important;}\n.sc-mirror .fw-row{margin-left:0 !important;margin-right:0 !important;}\n.sc-mirror .fw-row > .fw-col-12{padding-left:0 !important;padding-right:0 !important;}\n/* ---- reproduced Tailwind CSS (offline) ---- */\n.sc-tw{font-family:'Inter',system-ui,-apple-system,sans-serif;}\n.sc-tw *,.sc-tw ::before,.sc-tw ::after{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}\n.sc-tw ::before,.sc-tw ::after{--tw-content:''}\n.sc-tw h1,.sc-tw h2,.sc-tw h3,.sc-tw h4,.sc-tw h5,.sc-tw h6{font-size:inherit;font-weight:inherit;margin:0}\n.sc-tw p,.sc-tw blockquote,.sc-tw figure,.sc-tw pre,.sc-tw dl,.sc-tw dd{margin:0}\n.sc-tw a{color:inherit;text-decoration:inherit}\n.sc-tw b,.sc-tw strong{font-weight:bolder}\n.sc-tw ul,.sc-tw ol,.sc-tw menu{list-style:none;margin:0;padding:0}\n.sc-tw button,.sc-tw input,.sc-tw select,.sc-tw textarea{font-family:inherit;font-size:100%;font-weight:inherit;line-height:inherit;color:inherit;margin:0;padding:0}\n.sc-tw button,.sc-tw [role=button]{cursor:pointer;background-color:transparent;background-image:none}\n.sc-tw img,.sc-tw svg,.sc-tw video,.sc-tw canvas,.sc-tw audio,.sc-tw iframe,.sc-tw embed,.sc-tw object{display:block;vertical-align:middle}\n.sc-tw img,.sc-tw video{max-width:100%;height:auto}\n.sc-tw .grid{display:grid !important}\n.sc-tw .grid-cols-1{grid-template-columns:repeat(1, minmax(0, 1fr)) !important}\n.sc-tw .gap-6{gap:1.5rem !important}\n.sc-tw .relative{position:relative !important}\n.sc-tw .flex{display:flex !important}\n.sc-tw .flex-col{flex-direction:column !important}\n.sc-tw .justify-between{justify-content:space-between !important}\n.sc-tw .p-7{padding:1.75rem !important}\n.sc-tw .transition-all{transition-property:all !important;transition-timing-function:cubic-bezier(0.4,0,0.2,1) !important;transition-duration:150ms !important}\n.sc-tw .border{border-width:1px !important}\n.sc-tw .bg-\\[\\#121215\\]{background-color:#121215 !important}\n.sc-tw .border-\\[\\#242429\\]{border-color:#242429 !important}\n.sc-tw .hover\\:border-zinc-600:hover{--tw-border-opacity:1 !important;border-color:rgb(82 82 91 / var(--tw-border-opacity, 1)) !important}\n.sc-tw .items-center{align-items:center !important}\n.sc-tw .mb-4{margin-bottom:1rem !important}\n.sc-tw .text-xl{font-size:1.25rem !important;line-height:1.75rem !important}\n.sc-tw .uppercase{text-transform:uppercase !important}\n.sc-tw .tracking-tight{letter-spacing:-0.025em !important}\n.sc-tw .text-white{--tw-text-opacity:1 !important;color:rgb(255 255 255 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .gap-2{gap:0.5rem !important}\n.sc-tw .w-4{width:1rem !important}\n.sc-tw .h-4{height:1rem !important}\n.sc-tw .rounded-full{border-radius:9999px !important}\n.sc-tw .border-zinc-600{--tw-border-opacity:1 !important;border-color:rgb(82 82 91 / var(--tw-border-opacity, 1)) !important}\n.sc-tw .justify-center{justify-content:center !important}\n.sc-tw .p-0\\.5{padding:0.125rem !important}\n.sc-tw .text-xs{font-size:0.75rem !important;line-height:1rem !important}\n.sc-tw .text-zinc-400{--tw-text-opacity:1 !important;color:rgb(161 161 170 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .leading-relaxed{line-height:1.625 !important}\n.sc-tw .mb-6{margin-bottom:1.5rem !important}\n.sc-tw .min-h-\\[36px\\]{min-height:36px !important}\n.sc-tw .pb-6{padding-bottom:1.5rem !important}\n.sc-tw .border-b{border-bottom-width:1px !important}\n.sc-tw .gap-1{gap:0.25rem !important}\n.sc-tw .text-4xl{font-size:2.25rem !important;line-height:2.5rem !important}\n.sc-tw .font-bold{font-weight:700 !important}\n.sc-tw .tracking-wider{letter-spacing:0.05em !important}\n.sc-tw .text-\\[10px\\]{font-size:10px !important}\n.sc-tw .text-\\[\\#ddff00\\]{color:#ddff00 !important}\n.sc-tw .mt-1{margin-top:0.25rem !important}\n.sc-tw .space-y-3\\.5 > :not([hidden]) ~ :not([hidden]){margin-top:0.875rem !important;margin-bottom:0 !important}\n.sc-tw .mb-8{margin-bottom:2rem !important}\n.sc-tw .tracking-widest{letter-spacing:0.1em !important}\n.sc-tw .items-start{align-items:flex-start !important}\n.sc-tw .gap-2\\.5{gap:0.625rem !important}\n.sc-tw .text-zinc-300{--tw-text-opacity:1 !important;color:rgb(212 212 216 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .mt-0\\.5{margin-top:0.125rem !important}\n.sc-tw .w-full{width:100% !important}\n.sc-tw .py-4{padding-top:1rem !important;padding-bottom:1rem !important}\n.sc-tw .bg-zinc-900{--tw-bg-opacity:1 !important;background-color:rgb(24 24 27 / var(--tw-bg-opacity, 1)) !important}\n.sc-tw .hover\\:bg-zinc-800:hover{--tw-bg-opacity:1 !important;background-color:rgb(39 39 42 / var(--tw-bg-opacity, 1)) !important}\n.sc-tw .border-zinc-700{--tw-border-opacity:1 !important;border-color:rgb(63 63 70 / var(--tw-border-opacity, 1)) !important}\n.sc-tw .w-3\\.5{width:0.875rem !important}\n.sc-tw .h-3\\.5{height:0.875rem !important}\n.sc-tw .transition-transform{transition-property:transform !important;transition-timing-function:cubic-bezier(0.4,0,0.2,1) !important;transition-duration:150ms !important}\n.sc-tw .text-center{text-align:center !important}\n.sc-tw .text-zinc-500{--tw-text-opacity:1 !important;color:rgb(113 113 122 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .mt-2\\.5{margin-top:0.625rem !important}\n.sc-tw .bg-\\[\\#141418\\]{background-color:#141418 !important}\n.sc-tw .border-\\[\\#ddff00\\]{border-color:#ddff00 !important}\n.sc-tw .absolute{position:absolute !important}\n.sc-tw .right-6{right:1.5rem !important}\n.sc-tw .bg-\\[\\#ddff00\\]{background-color:#ddff00 !important}\n.sc-tw .text-black{--tw-text-opacity:1 !important;color:rgb(0 0 0 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .px-3{padding-left:0.75rem !important;padding-right:0.75rem !important}\n.sc-tw .py-1{padding-top:0.25rem !important;padding-bottom:0.25rem !important}\n.sc-tw .shadow-md{box-shadow:0 4px 6px -1px rgb(0 0 0 / 0.1) !important}\n.sc-tw .w-3{width:0.75rem !important}\n.sc-tw .h-3{height:0.75rem !important}\n.sc-tw .h-full{height:100% !important}\n.sc-tw .hover\\:bg-\\[\\#c8ea00\\]:hover{background-color:#c8ea00 !important}\n@media (min-width:640px){.sc-tw .sm\\:p-9{padding:2.25rem !important}.sc-tw .sm\\:text-5xl{font-size:3rem !important;line-height:1 !important}}\n@media (min-width:768px){.sc-tw .md\\:grid-cols-3{grid-template-columns:repeat(3, minmax(0, 1fr)) !important}}\n@media (min-width:1024px){.sc-tw .lg\\:gap-8{gap:2rem !important}}\n\n/* SC:REGCSS:START */\n/* ---- mapped box containers (clean semantic CSS from the source) ---- */\n#section-1 h2:not([class*=\"boxp-\"] *){font-size:40px !important;font-weight:900 !important;line-height:44px !important;}\n/* SC:REGCSS:END */",
+            "font_links": [],
+            "raw_chrome": {
+                "header_html": "",
+                "footer_html": "",
+                "nav_tree": [],
+                "nav_style": [],
+                "footer_cols": [],
+                "footer_copyright": ""
+            },
+            "source_url": "https://fixture.invalid",
+            "conversion_map": {
+                "h-1": {
+                    "sc": "section",
+                    "mapped": {
+                        "variant": "dark",
+                        "content_valign": "top"
+                    }
+                },
+                "h-2": {
+                    "sc": "flexbox",
+                    "mapped": {
+                        "html_tag": "div",
+                        "display": "flex",
+                        "grid_columns": "3",
+                        "grid_min": "240px",
+                        "content_width": "wide-xl"
+                    }
+                },
+                "h-3": {
+                    "sc": "flexbox",
+                    "mapped": {
+                        "html_tag": "div",
+                        "display": "block",
+                        "grid_columns": "3",
+                        "grid_min": "240px"
+                    }
+                },
+                "h-4": {
+                    "sc": "special_heading",
+                    "mapped": {
+                        "overline_icon_position": "before",
+                        "title": "Membership Privileges",
+                        "heading": "h2"
+                    },
+                    "custom_css": "selector .heading-title{font-weight:900 !important;}selector .heading-title{text-transform:none !important;}selector .heading-title{font-size:40px !important;line-height:44px !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:0 !important;}"
+                },
+                "h-5": {
+                    "sc": "flexbox",
+                    "mapped": {
+                        "html_tag": "div",
+                        "display": "block",
+                        "grid_columns": "3",
+                        "grid_min": "240px"
+                    }
+                },
+                "h-6": {
+                    "sc": "pricing_table",
+                    "mapped": {
+                        "billing_default": "monthly",
+                        "billing_monthly_label": "Bill Monthly",
+                        "billing_yearly_label": "Bill Yearly",
+                        "design": "dark",
+                        "design_settings": "grid",
+                        "columns": "3",
+                        "gap": "4",
+                        "featured_style": "raise,highlight,glow,badge,accent_button",
+                        "align": "center",
+                        "feature_dividers": "yes",
+                        "box_style": "boxp-box-f0332685",
+                        "card_bg": "rgb(18, 18, 21)",
+                        "title_color": "rgb(245, 245, 245)",
+                        "price_color": "rgb(245, 245, 245)",
+                        "text_color": "rgb(210, 210, 210)",
+                        "interaction_scope": "each",
+                        "scroll_var": "off",
+                        "flip_card": "off",
+                        "scroll_text_highlight": "off",
+                        "dc_logged": "all"
+                    },
+                    "custom_css": "selector .fw-pt__name.fw-pt__name{font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif !important;}"
+                }
+            },
+            "chrome_via_settings": true,
+            "site_title": "M"
+        },
+        "pages.json": {
+            "pages": [
+                {
+                    "title": "Snapshot",
+                    "slug": "home",
+                    "status": "publish",
+                    "front_page": true,
+                    "source_url": "https://fixture.invalid",
+                    "builder": [
+                        {
+                            "type": "section",
+                            "atts": {
+                                "variant": "dark",
+                                "is_fullwidth": false,
+                                "min_height": {
+                                    "preset": "auto",
+                                    "custom": {
+                                        "custom_height": {
+                                            "value": "",
+                                            "unit": "px"
+                                        }
+                                    }
+                                },
+                                "content_valign": "top",
+                                "text_align": "",
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": ""
+                                        }
+                                    },
+                                    "gradient": {
+                                        "data": {
+                                            "type": "linear",
+                                            "angle": 90,
+                                            "stops": []
+                                        }
+                                    },
+                                    "image": {
+                                        "src": [],
+                                        "position": "center center",
+                                        "size": {
+                                            "selected": "cover",
+                                            "custom": ""
+                                        },
+                                        "repeat": "no-repeat",
+                                        "attachment": "scroll"
+                                    },
+                                    "video": {
+                                        "enabled": "no",
+                                        "external_url": "",
+                                        "source_mp4": [],
+                                        "source_webm": [],
+                                        "poster": [],
+                                        "fallback": [],
+                                        "loop": "yes",
+                                        "autoplay": "yes",
+                                        "mute": "yes",
+                                        "playsinline": "yes"
+                                    },
+                                    "advanced": []
+                                },
+                                "padding_top": {
+                                    "base": "pt-10",
+                                    "md": "",
+                                    "lg": ""
+                                },
+                                "padding_bottom": {
+                                    "base": "pb-10",
+                                    "md": "",
+                                    "lg": ""
+                                },
+                                "gap": "",
+                                "gap_x": "",
+                                "gap_y": "",
+                                "animation": {
+                                    "effect": "none"
+                                },
+                                "unique_id": "uid-1",
+                                "css_id": "section-1",
+                                "css_class": "",
+                                "custom_css": "",
+                                "responsive_hide": [],
+                                "custom_attrs": []
+                            },
+                            "_items": [
+                                {
+                                    "type": "flexbox",
+                                    "atts": {
+                                        "html_tag": "div",
+                                        "display": "flex",
+                                        "grid_columns": "3",
+                                        "grid_autofit": "no",
+                                        "grid_min": {
+                                            "value": "240",
+                                            "unit": "px"
+                                        },
+                                        "direction": {
+                                            "base": "row",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "gap": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "justify_content": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_items": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "wrap": {
+                                            "base": "yes",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "reverse": {
+                                            "base": "no",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_content": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "width": {
+                                            "base": {
+                                                "preset": "none"
+                                            },
+                                            "md": {
+                                                "preset": "none"
+                                            },
+                                            "lg": {
+                                                "preset": "none"
+                                            }
+                                        },
+                                        "flex_grow": {
+                                            "base": "no",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_self": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "order": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "background": {
+                                            "color": {
+                                                "value": {
+                                                    "predefined": "",
+                                                    "custom": ""
+                                                }
+                                            },
+                                            "gradient": {
+                                                "data": {
+                                                    "type": "linear",
+                                                    "angle": 90,
+                                                    "stops": []
+                                                }
+                                            },
+                                            "image": {
+                                                "src": [],
+                                                "position": "center center",
+                                                "size": {
+                                                    "selected": "cover",
+                                                    "custom": ""
+                                                },
+                                                "repeat": "no-repeat",
+                                                "attachment": "scroll"
+                                            },
+                                            "video": {
+                                                "enabled": "no",
+                                                "external_url": "",
+                                                "source_mp4": [],
+                                                "source_webm": [],
+                                                "poster": [],
+                                                "fallback": [],
+                                                "loop": "yes",
+                                                "autoplay": "yes",
+                                                "mute": "yes",
+                                                "playsinline": "yes"
+                                            },
+                                            "advanced": []
+                                        },
+                                        "border_preset": "",
+                                        "min_height": {
+                                            "base": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            },
+                                            "md": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            },
+                                            "lg": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            }
+                                        },
+                                        "spacing": {
+                                            "margin": {
+                                                "all": "",
+                                                "top": "",
+                                                "right": "",
+                                                "bottom": "",
+                                                "left": ""
+                                            },
+                                            "padding": {
+                                                "all": "",
+                                                "top": "",
+                                                "right": "",
+                                                "bottom": "",
+                                                "left": ""
+                                            },
+                                            "advanced": {
+                                                "md": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    }
+                                                },
+                                                "lg": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "animation": {
+                                            "effect": "none"
+                                        },
+                                        "unique_id": "uid-2",
+                                        "css_id": "",
+                                        "css_class": "",
+                                        "custom_css": "",
+                                        "responsive_hide": [],
+                                        "custom_attrs": [],
+                                        "content_width": {
+                                            "preset": "wide-xl"
+                                        }
+                                    },
+                                    "_items": [
+                                        {
+                                            "type": "flexbox",
+                                            "atts": {
+                                                "html_tag": "div",
+                                                "display": "block",
+                                                "grid_columns": "3",
+                                                "grid_autofit": "no",
+                                                "grid_min": {
+                                                    "value": "240",
+                                                    "unit": "px"
+                                                },
+                                                "direction": {
+                                                    "base": "row",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "gap": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "justify_content": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "align_items": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "wrap": {
+                                                    "base": "yes",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "reverse": {
+                                                    "base": "no",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "align_content": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "width": {
+                                                    "base": {
+                                                        "preset": "12"
+                                                    },
+                                                    "md": {
+                                                        "preset": "none"
+                                                    },
+                                                    "lg": {
+                                                        "preset": "none"
+                                                    }
+                                                },
+                                                "flex_grow": {
+                                                    "base": "no",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "align_self": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "order": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "background": {
+                                                    "color": {
+                                                        "value": {
+                                                            "predefined": "",
+                                                            "custom": ""
+                                                        }
+                                                    },
+                                                    "gradient": {
+                                                        "data": {
+                                                            "type": "linear",
+                                                            "angle": 90,
+                                                            "stops": []
+                                                        }
+                                                    },
+                                                    "image": {
+                                                        "src": [],
+                                                        "position": "center center",
+                                                        "size": {
+                                                            "selected": "cover",
+                                                            "custom": ""
+                                                        },
+                                                        "repeat": "no-repeat",
+                                                        "attachment": "scroll"
+                                                    },
+                                                    "video": {
+                                                        "enabled": "no",
+                                                        "external_url": "",
+                                                        "source_mp4": [],
+                                                        "source_webm": [],
+                                                        "poster": [],
+                                                        "fallback": [],
+                                                        "loop": "yes",
+                                                        "autoplay": "yes",
+                                                        "mute": "yes",
+                                                        "playsinline": "yes"
+                                                    },
+                                                    "advanced": []
+                                                },
+                                                "border_preset": "",
+                                                "min_height": {
+                                                    "base": {
+                                                        "value": "",
+                                                        "unit": "vh"
+                                                    },
+                                                    "md": {
+                                                        "value": "",
+                                                        "unit": "vh"
+                                                    },
+                                                    "lg": {
+                                                        "value": "",
+                                                        "unit": "vh"
+                                                    }
+                                                },
+                                                "spacing": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "advanced": {
+                                                        "md": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            }
+                                                        },
+                                                        "lg": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "animation": {
+                                                    "effect": "none"
+                                                },
+                                                "unique_id": "uid-3",
+                                                "css_id": "",
+                                                "css_class": "",
+                                                "custom_css": "",
+                                                "responsive_hide": [],
+                                                "custom_attrs": []
+                                            },
+                                            "_items": [
+                                                {
+                                                    "type": "simple",
+                                                    "shortcode": "special_heading",
+                                                    "_items": [],
+                                                    "atts": {
+                                                        "unique_id": "uid-4",
+                                                        "css_id": "",
+                                                        "css_class": "",
+                                                        "custom_css": "selector .heading-title{font-weight:900 !important;}selector .heading-title{text-transform:none !important;}selector .heading-title{font-size:40px !important;line-height:44px !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:0 !important;}",
+                                                        "overline": "",
+                                                        "overline_uppercase": "no",
+                                                        "overline_icon": {
+                                                            "type": "none"
+                                                        },
+                                                        "overline_icon_position": "before",
+                                                        "overline_container": "",
+                                                        "overline_color": {
+                                                            "predefined": "",
+                                                            "custom": ""
+                                                        },
+                                                        "title": "Membership Privileges",
+                                                        "subtitle": "",
+                                                        "heading": "h2",
+                                                        "alignment": "",
+                                                        "element_spacing": "",
+                                                        "block_max_width": {
+                                                            "value": "",
+                                                            "unit": "px"
+                                                        },
+                                                        "spacing": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "mb-0",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "advanced": []
+                                                        },
+                                                        "overline_class": "",
+                                                        "title_class": "",
+                                                        "subtitle_class": "",
+                                                        "subtitle_size": "",
+                                                        "subtitle_color": {
+                                                            "predefined": "",
+                                                            "custom": ""
+                                                        },
+                                                        "title_color": {
+                                                            "predefined": "",
+                                                            "custom": ""
+                                                        }
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "type": "flexbox",
+                                            "atts": {
+                                                "html_tag": "div",
+                                                "display": "block",
+                                                "grid_columns": "3",
+                                                "grid_autofit": "no",
+                                                "grid_min": {
+                                                    "value": "240",
+                                                    "unit": "px"
+                                                },
+                                                "direction": {
+                                                    "base": "row",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "gap": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "justify_content": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "align_items": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "wrap": {
+                                                    "base": "yes",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "reverse": {
+                                                    "base": "no",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "align_content": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "width": {
+                                                    "base": {
+                                                        "preset": "12"
+                                                    },
+                                                    "md": {
+                                                        "preset": "none"
+                                                    },
+                                                    "lg": {
+                                                        "preset": "none"
+                                                    }
+                                                },
+                                                "flex_grow": {
+                                                    "base": "no",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "align_self": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "order": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "background": {
+                                                    "color": {
+                                                        "value": {
+                                                            "predefined": "",
+                                                            "custom": ""
+                                                        }
+                                                    },
+                                                    "gradient": {
+                                                        "data": {
+                                                            "type": "linear",
+                                                            "angle": 90,
+                                                            "stops": []
+                                                        }
+                                                    },
+                                                    "image": {
+                                                        "src": [],
+                                                        "position": "center center",
+                                                        "size": {
+                                                            "selected": "cover",
+                                                            "custom": ""
+                                                        },
+                                                        "repeat": "no-repeat",
+                                                        "attachment": "scroll"
+                                                    },
+                                                    "video": {
+                                                        "enabled": "no",
+                                                        "external_url": "",
+                                                        "source_mp4": [],
+                                                        "source_webm": [],
+                                                        "poster": [],
+                                                        "fallback": [],
+                                                        "loop": "yes",
+                                                        "autoplay": "yes",
+                                                        "mute": "yes",
+                                                        "playsinline": "yes"
+                                                    },
+                                                    "advanced": []
+                                                },
+                                                "border_preset": "",
+                                                "min_height": {
+                                                    "base": {
+                                                        "value": "",
+                                                        "unit": "vh"
+                                                    },
+                                                    "md": {
+                                                        "value": "",
+                                                        "unit": "vh"
+                                                    },
+                                                    "lg": {
+                                                        "value": "",
+                                                        "unit": "vh"
+                                                    }
+                                                },
+                                                "spacing": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "advanced": {
+                                                        "md": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            }
+                                                        },
+                                                        "lg": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "animation": {
+                                                    "effect": "none"
+                                                },
+                                                "unique_id": "uid-5",
+                                                "css_id": "",
+                                                "css_class": "",
+                                                "custom_css": "",
+                                                "responsive_hide": [],
+                                                "custom_attrs": []
+                                            },
+                                            "_items": [
+                                                {
+                                                    "type": "simple",
+                                                    "shortcode": "pricing_table",
+                                                    "_items": [],
+                                                    "atts": {
+                                                        "plans": [
+                                                            {
+                                                                "plan_title": "BLACK CARD",
+                                                                "icon": {
+                                                                    "type": "none",
+                                                                    "icon-class": "",
+                                                                    "icon-class-without-root": false,
+                                                                    "pack-name": false,
+                                                                    "pack-css-uri": false
+                                                                },
+                                                                "subtitle": "Cancel or pause anytime. No long-term lock-in.",
+                                                                "currency": "$",
+                                                                "price": {
+                                                                    "monthly": "81",
+                                                                    "yearly": ""
+                                                                },
+                                                                "period": {
+                                                                    "monthly": "/year",
+                                                                    "yearly": "/yr"
+                                                                },
+                                                                "original_price": {
+                                                                    "monthly": "",
+                                                                    "yearly": ""
+                                                                },
+                                                                "features": "INCLUDED PRIVILEGES:\n2 Precision Haircuts per month included\nPriority booking queue (skip weekend waits)\n10% off all grooming & beard products\nComplimentary scalp massage & hot towel each visit\nFlexible rescheduling up to 4 hours in advance",
+                                                                "featured": "no",
+                                                                "ribbon": "",
+                                                                "button_label": "JOIN BLACK CARD",
+                                                                "button_url": "",
+                                                                "button_target": "_self"
+                                                            },
+                                                            {
+                                                                "plan_title": "STUDIO VIP",
+                                                                "icon": {
+                                                                    "type": "none",
+                                                                    "icon-class": "",
+                                                                    "icon-class-without-root": false,
+                                                                    "pack-name": false,
+                                                                    "pack-css-uri": false
+                                                                },
+                                                                "subtitle": "MOST POPULAR",
+                                                                "currency": "$",
+                                                                "price": {
+                                                                    "monthly": "153",
+                                                                    "yearly": ""
+                                                                },
+                                                                "period": {
+                                                                    "monthly": "/year",
+                                                                    "yearly": "/yr"
+                                                                },
+                                                                "original_price": {
+                                                                    "monthly": "",
+                                                                    "yearly": ""
+                                                                },
+                                                                "features": "INCLUDED PRIVILEGES:\nUnlimited touch-ups & neck cleans\n3 Precision Cuts or Beard Sculpt sessions per month\nDirect line & priority with Senior Master Stylists\n20% off styling products and special treatments\nComplimentary top-shelf whiskey or espresso bar access\nExclusive invite to seasonal styling events",
+                                                                "featured": "yes",
+                                                                "ribbon": "MOST POPULAR",
+                                                                "button_label": "JOIN STUDIO VIP",
+                                                                "button_url": "",
+                                                                "button_target": "_self"
+                                                            },
+                                                            {
+                                                                "plan_title": "FOUNDERS PATRON",
+                                                                "icon": {
+                                                                    "type": "none",
+                                                                    "icon-class": "",
+                                                                    "icon-class-without-root": false,
+                                                                    "pack-name": false,
+                                                                    "pack-css-uri": false
+                                                                },
+                                                                "subtitle": "Cancel or pause anytime. No long-term lock-in.",
+                                                                "currency": "$",
+                                                                "price": {
+                                                                    "monthly": "272",
+                                                                    "yearly": ""
+                                                                },
+                                                                "period": {
+                                                                    "monthly": "/year",
+                                                                    "yearly": "/yr"
+                                                                },
+                                                                "original_price": {
+                                                                    "monthly": "",
+                                                                    "yearly": ""
+                                                                },
+                                                                "features": "INCLUDED PRIVILEGES:\nUnlimited cuts, beard sculpting & premium washes\nGuaranteed private booth or after-hours booking option\n1 complimentary signature friend pass per month\nCurated quarterly grooming package shipped to your door\nDirect WhatsApp concierge with Founder Alex Russo",
+                                                                "featured": "no",
+                                                                "ribbon": "",
+                                                                "button_label": "JOIN FOUNDERS PATRON",
+                                                                "button_url": "",
+                                                                "button_target": "_self"
+                                                            }
+                                                        ],
+                                                        "billing_toggle": "no",
+                                                        "billing_default": "monthly",
+                                                        "billing_monthly_label": "Bill Monthly",
+                                                        "billing_yearly_label": "Bill Yearly",
+                                                        "billing_note": "",
+                                                        "design": "dark",
+                                                        "design_settings": {
+                                                            "layout": "grid"
+                                                        },
+                                                        "columns": "3",
+                                                        "gap": "4",
+                                                        "featured_style": [
+                                                            "raise",
+                                                            "highlight",
+                                                            "glow",
+                                                            "badge",
+                                                            "accent_button"
+                                                        ],
+                                                        "button_preset": "",
+                                                        "align": "center",
+                                                        "feature_dividers": "yes",
+                                                        "product_schema": "no",
+                                                        "box_style": "boxp-box-f0332685",
+                                                        "icon_badge_preset": "",
+                                                        "accent_color": {
+                                                            "predefined": "",
+                                                            "custom": ""
+                                                        },
+                                                        "bg_color": {
+                                                            "predefined": "",
+                                                            "custom": ""
+                                                        },
+                                                        "card_bg": {
+                                                            "predefined": "",
+                                                            "custom": "rgb(18, 18, 21)"
+                                                        },
+                                                        "title_color": {
+                                                            "predefined": "",
+                                                            "custom": "rgb(245, 245, 245)"
+                                                        },
+                                                        "price_color": {
+                                                            "predefined": "",
+                                                            "custom": "rgb(245, 245, 245)"
+                                                        },
+                                                        "text_color": {
+                                                            "predefined": "",
+                                                            "custom": "rgb(210, 210, 210)"
+                                                        },
+                                                        "font_size_preset": "",
+                                                        "spacing": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "advanced": {
+                                                                "md": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
+                                                                },
+                                                                "lg": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        "animation": {
+                                                            "effect": "none"
+                                                        },
+                                                        "animation_settings": {
+                                                            "trigger": [
+                                                                "view"
+                                                            ],
+                                                            "speed_preset": "",
+                                                            "advanced_tweaks_heading": "",
+                                                            "delay": 0,
+                                                            "custom_duration": 0,
+                                                            "repeat_count": 1,
+                                                            "loop_forever": "no",
+                                                            "replay_on_scroll": "no",
+                                                            "sequence": "yes",
+                                                            "sequence_stagger": 90,
+                                                            "easing": "default"
+                                                        },
+                                                        "gsap_motion": {
+                                                            "effect": "none"
+                                                        },
+                                                        "interaction": {
+                                                            "effect": "none"
+                                                        },
+                                                        "interaction__2": {
+                                                            "effect": "none"
+                                                        },
+                                                        "interaction_scope": {
+                                                            "scope": "each"
+                                                        },
+                                                        "physics": {
+                                                            "effect": "none"
+                                                        },
+                                                        "parallax": {
+                                                            "role": "none"
+                                                        },
+                                                        "marquee": {
+                                                            "mode": "none"
+                                                        },
+                                                        "text_effect": {
+                                                            "effect": "none"
+                                                        },
+                                                        "scroll_var": {
+                                                            "mode": "off"
+                                                        },
+                                                        "scroll_reveal": {
+                                                            "mode": "none"
+                                                        },
+                                                        "flip_card": {
+                                                            "mode": "off"
+                                                        },
+                                                        "scroll_text_highlight": {
+                                                            "mode": "off"
+                                                        },
+                                                        "scroll_keyframes": {
+                                                            "mode": "none"
+                                                        },
+                                                        "motion_path": {
+                                                            "mode": "none"
+                                                        },
+                                                        "confetti": {
+                                                            "style": "none"
+                                                        },
+                                                        "unique_id": "uid-6",
+                                                        "css_id": "",
+                                                        "css_class": "",
+                                                        "custom_css": "selector .fw-pt__name.fw-pt__name{font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif !important;}",
+                                                        "element_position": {
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
+                                                        "responsive_hide": [],
+                                                        "dc_logged": "all",
+                                                        "dc_roles": [],
+                                                        "dc_start": "",
+                                                        "dc_end": "",
+                                                        "custom_attrs": []
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "page_options": {
+                        "hide_site_footer": "yes",
+                        "hide_site_header": "yes"
+                    }
+                }
+            ]
+        },
+        "theme-settings.json": {
+            "values": {
+                "header_logo": {
+                    "logo_type": {
+                        "logo_type": "custom",
+                        "custom": {
+                            "site_title": "Snapshot",
+                            "logo_layout": "inline-left",
+                            "title_weight": "700",
+                            "color": {
+                                "predefined": "",
+                                "custom": "#111111"
+                            }
+                        },
+                        "simple": []
+                    }
+                },
+                "header_main": {
+                    "main_left": [
+                        {
+                            "element_type": {
+                                "element": "logo"
+                            }
+                        }
+                    ],
+                    "main_center": [
+                        {
+                            "element_type": {
+                                "element": "menu_area",
+                                "menu_area": {
+                                    "menu_location": "primary"
+                                }
+                            }
+                        }
+                    ],
+                    "main_right": []
+                },
+                "header_menu": {
+                    "menu_link_color": {
+                        "predefined": "",
+                        "custom": "#94a3b8"
+                    },
+                    "menu_link_hover_color": {
+                        "predefined": "",
+                        "custom": "#94a3b8"
+                    }
+                },
+                "header_layout": {
+                    "header_mode": {
+                        "mode": "top",
+                        "top": {
+                            "header_design": {
+                                "design": "classic"
+                            }
+                        }
+                    },
+                    "header_position": "static",
+                    "header_uppercase_nav": "no",
+                    "bg_color": {
+                        "predefined": "bg-ink",
+                        "custom": ""
+                    },
+                    "header_glass": "no",
+                    "header_border": "no",
+                    "header_shadow": "no"
+                },
+                "drawer_link_color": "#1a1a1a",
+                "mobile_bar_bg": "#141414",
+                "header_topbar": {
+                    "topbar_left": [],
+                    "topbar_center": [],
+                    "topbar_right": [],
+                    "topbar_custom_styling": {
+                        "enabled": "no"
+                    }
+                },
+                "header_bottombar": {
+                    "bottombar_left": [],
+                    "bottombar_center": [],
+                    "bottombar_right": []
+                },
+                "footer_background": {
+                    "color": {
+                        "value": {
+                            "predefined": "",
+                            "custom": "#141414"
+                        }
+                    }
+                },
+                "footer_text_color": {
+                    "predefined": "",
+                    "custom": "#94a3b8"
+                },
+                "footer_link_color": {
+                    "predefined": "",
+                    "custom": "#94a3b8"
+                },
+                "general_layout": {
+                    "site_background": {
+                        "color": {
+                            "value": {
+                                "predefined": "",
+                                "custom": "#0a0a0f"
+                            }
+                        }
+                    },
+                    "layout_container_width": {
+                        "base": {
+                            "value": "100",
+                            "unit": "%"
+                        },
+                        "md": {
+                            "value": "720",
+                            "unit": "px"
+                        },
+                        "lg": {
+                            "value": "1280",
+                            "unit": "px"
+                        }
+                    },
+                    "layout_border_color": {
+                        "predefined": "",
+                        "custom": "#52525b"
+                    },
+                    "layout_roundness": "soft"
+                },
+                "misc_custom_css": {
+                    "custom_css": "/* converted header/footer styles */\n.footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:#94a3b8 !important}\n.footer .site-logo__mark:not(.site-logo__mark--framed){color:#94a3b8 !important}"
+                },
+                "main_footer_columns": {
+                    "count": "1",
+                    "1": {
+                        "main_footer_col_1": [
+                            {
+                                "element_type": {
+                                    "element": "logo"
+                                }
+                            }
+                        ]
+                    }
+                },
+                "copyright_settings": {
+                    "enabled": "no"
+                },
+                "button_colors": [
+                    {
+                        "id": "0000000004",
+                        "color_name": "Fill",
+                        "slug": "fill",
+                        "role": "fill",
+                        "font": {
+                            "family": "-apple-system",
+                            "weight": "900",
+                            "letter-spacing": "1.2px"
+                        },
+                        "custom_css": "{{SELECTOR}} { transition: 0.15s cubic-bezier(0.4, 0, 0.2, 1); }",
+                        "states": {
+                            "default": {
+                                "text_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(255, 255, 255)"
+                                },
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(24, 24, 27)"
+                                },
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(63, 63, 70)"
+                                },
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "text_transform": "uppercase"
+                            },
+                            "hover": {
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(39, 39, 42)"
+                                }
+                            },
+                            "active": [],
+                            "focus": [],
+                            "disabled": []
+                        }
+                    },
+                    {
+                        "id": "000000002",
+                        "color_name": "Fill 2",
+                        "slug": "fill-2",
+                        "role": "fill 2",
+                        "font": {
+                            "family": "-apple-system",
+                            "weight": "900",
+                            "letter-spacing": "1.2px"
+                        },
+                        "custom_css": "{{SELECTOR}} { transition: 0.15s cubic-bezier(0.4, 0, 0.2, 1); }\n{{SELECTOR}} { box-shadow: rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(221, 255, 0, 0.2) 0px 0px 20px 0px; }",
+                        "states": {
+                            "default": {
+                                "text_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(0, 0, 0)"
+                                },
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(221, 255, 0)"
+                                },
+                                "border_style": "none",
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 0,
+                                    "blur": 20,
+                                    "spread": 0,
+                                    "color": "rgba(221, 255, 0, 0.2)",
+                                    "inset": false
+                                },
+                                "text_transform": "uppercase"
+                            },
+                            "hover": {
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": "rgba(221, 255, 0, 0.9)"
+                                }
+                            },
+                            "active": [],
+                            "focus": [],
+                            "disabled": []
+                        }
+                    }
+                ],
+                "button_sizes": [
+                    {
+                        "id": "0000010003",
+                        "size_name": "Default",
+                        "slug": "md",
+                        "font_size": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "line_height": "16px",
+                        "padding_y": {
+                            "value": "16",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "0",
+                            "unit": "px"
+                        }
+                    }
+                ],
+                "section_style_presets": [
+                    {
+                        "id": "s000000001",
+                        "style_name": "Dark",
+                        "background": {
+                            "color": {
+                                "value": {
+                                    "predefined": "",
+                                    "custom": "rgb(9, 9, 11)"
+                                }
+                            }
+                        },
+                        "text_color": {
+                            "predefined": "",
+                            "custom": ""
+                        },
+                        "heading_color": {
+                            "predefined": "",
+                            "custom": ""
+                        },
+                        "link_color": {
+                            "predefined": "",
+                            "custom": ""
+                        },
+                        "border": {
+                            "width": {
+                                "value": "",
+                                "unit": "px"
+                            },
+                            "style": "",
+                            "color": {
+                                "predefined": "",
+                                "custom": ""
+                            }
+                        },
+                        "border_sides": [
+                            "top",
+                            "right",
+                            "bottom",
+                            "left"
+                        ],
+                        "border_extent": {
+                            "mode": "full"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        }
+                    }
+                ],
+                "container_width_presets": [
+                    {
+                        "id": "cw_small",
+                        "width_name": "Small",
+                        "width": {
+                            "value": "640",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_prose",
+                        "width_name": "Prose",
+                        "width": {
+                            "value": "672",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_narrow",
+                        "width_name": "Narrow",
+                        "width": {
+                            "value": "768",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_medium",
+                        "width_name": "Medium",
+                        "width": {
+                            "value": "896",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide",
+                        "width_name": "Wide",
+                        "width": {
+                            "value": "1024",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-l",
+                        "width_name": "Wide L",
+                        "width": {
+                            "value": "1152",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xl",
+                        "width_name": "Wide XL",
+                        "width": {
+                            "value": "1280",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xxl",
+                        "width_name": "Wide XXL",
+                        "width": {
+                            "value": "1440",
+                            "unit": "px"
+                        }
+                    }
+                ],
+                "border_presets": [
+                    {
+                        "id": "b000000101",
+                        "preset_name": "Outline",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "9999",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": ""
+                                        }
+                                    }
+                                },
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(82, 82, 91)"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000102",
+                        "preset_name": "Card",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "rgb(20, 20, 24)"
+                                        }
+                                    }
+                                },
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(221, 255, 0)"
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 0,
+                                    "blur": 35,
+                                    "spread": 0,
+                                    "color": "rgba(221, 255, 0, 0.12)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000103",
+                        "preset_name": "Elevated",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "{{SELECTOR}}{box-shadow:rgba(0, 0, 0, 0.1) 0px 4px 6px -1px, rgba(0, 0, 0, 0.1) 0px 2px 4px -2px !important;}",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "rgb(221, 255, 0)"
+                                        }
+                                    }
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 4,
+                                    "blur": 6,
+                                    "spread": -1,
+                                    "color": "rgba(0, 0, 0, 0.1)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000104",
+                        "preset_name": "Tinted",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "9999",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "rgb(221, 255, 0)"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "r685164ff",
+                        "preset_name": "Box f0332685",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "0",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_animation": "",
+                        "hover_fx": [],
+                        "custom_css": "{{SELECTOR}}{padding:36px;box-sizing:border-box;}",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "rgb(18, 18, 21)"
+                                        }
+                                    }
+                                },
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(36, 36, 41)"
+                                }
+                            },
+                            "hover": {
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(82, 82, 91)"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000001",
+                        "preset_name": "Card",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "8",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "lift"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "light-gray",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 1,
+                                    "blur": 3,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.08)",
+                                    "inset": false
+                                }
+                            },
+                            "hover": {
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 8,
+                                    "blur": 20,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.12)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000002",
+                        "preset_name": "Outline",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "6",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "2",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": {
+                                "border_color": {
+                                    "predefined": "indigo",
+                                    "custom": ""
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000003",
+                        "preset_name": "Soft Shadow",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "250",
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 4,
+                                    "blur": 14,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.08)",
+                                    "inset": false
+                                }
+                            },
+                            "hover": {
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 12,
+                                    "blur": 30,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.16)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000004",
+                        "preset_name": "Hover Lift",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "8",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "lift",
+                            "glow"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "light-gray",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": {
+                                "border_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 10,
+                                    "blur": 24,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.14)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000005",
+                        "preset_name": "Hover Grow",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_animation": "btnfx-grow",
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "light-gray",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 2,
+                                    "blur": 8,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.06)",
+                                    "inset": false
+                                }
+                            },
+                            "hover": {
+                                "border_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                }
+                            }
+                        }
+                    }
+                ],
+                "box_lookup": {
+                    "|9999px|1px|rgb(82, 82, 91)": "outline",
+                    "rgb(20, 20, 24)||1px|rgb(221, 255, 0)": "card",
+                    "rgb(221, 255, 0)|||": "elevated",
+                    "rgb(221, 255, 0)|9999px||": "tinted"
+                },
+                "font_sizes": [
+                    {
+                        "name": "Display 1",
+                        "size": "20",
+                        "weight": "",
+                        "line_height": "1.75rem",
+                        "letter_spacing": "",
+                        "transform": "",
+                        "class": "display-1"
+                    },
+                    {
+                        "name": "Lead",
+                        "size": "20",
+                        "weight": "",
+                        "line_height": "",
+                        "letter_spacing": "",
+                        "transform": "",
+                        "class": "lead"
+                    },
+                    {
+                        "name": "Eyebrow",
+                        "size": "10",
+                        "weight": "700",
+                        "line_height": "",
+                        "letter_spacing": "0.05em",
+                        "transform": "uppercase",
+                        "class": ""
+                    }
+                ],
+                "theme_colors": [
+                    {
+                        "name": "Primary",
+                        "color": "#ddff00"
+                    },
+                    {
+                        "name": "Ink",
+                        "color": "#ffffff"
+                    },
+                    {
+                        "name": "Muted",
+                        "color": "#a1a1aa"
+                    },
+                    {
+                        "name": "Secondary",
+                        "color": "#6c757d"
+                    },
+                    {
+                        "name": "Accent",
+                        "color": "#fd7e14"
+                    },
+                    {
+                        "name": "Black",
+                        "color": "#000"
+                    },
+                    {
+                        "name": "Gray",
+                        "color": "#636c72"
+                    },
+                    {
+                        "name": "Light Gray",
+                        "color": "#bdbdbd"
+                    },
+                    {
+                        "name": "Red",
+                        "color": "#dc3545"
+                    },
+                    {
+                        "name": "Pink",
+                        "color": "#e91e63"
+                    },
+                    {
+                        "name": "Purple",
+                        "color": "#9c27b0"
+                    },
+                    {
+                        "name": "Deep Purple",
+                        "color": "#673ab7"
+                    },
+                    {
+                        "name": "Indigo",
+                        "color": "#3f51b5"
+                    },
+                    {
+                        "name": "Blue",
+                        "color": "#286090"
+                    },
+                    {
+                        "name": "Light Blue",
+                        "color": "#03a9f4"
+                    },
+                    {
+                        "name": "Cyan",
+                        "color": "#00bcd4"
+                    },
+                    {
+                        "name": "Teal",
+                        "color": "#009688"
+                    },
+                    {
+                        "name": "Green",
+                        "color": "#5cb85c"
+                    },
+                    {
+                        "name": "Light Green",
+                        "color": "#8bc34a"
+                    },
+                    {
+                        "name": "Lime",
+                        "color": "#cddc39"
+                    },
+                    {
+                        "name": "Yellow",
+                        "color": "#ffeb3b"
+                    },
+                    {
+                        "name": "Amber",
+                        "color": "#ffc107"
+                    },
+                    {
+                        "name": "Orange",
+                        "color": "#ff9800"
+                    },
+                    {
+                        "name": "Deep Orange",
+                        "color": "#ff5722"
+                    },
+                    {
+                        "name": "Brown",
+                        "color": "#795548"
+                    },
+                    {
+                        "name": "Blue Gray",
+                        "color": "#607d8b"
+                    }
+                ],
+                "icon_badge_presets": [
+                    {
+                        "id": "i000000001",
+                        "preset_name": "Circle",
+                        "badge_shape": "circle",
+                        "badge_size": {
+                            "value": "48",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "24",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "lift",
+                            "glow"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#0d6efd"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "white",
+                                    "custom": ""
+                                },
+                                "border_style": "",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 4,
+                                    "blur": 12,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.15)",
+                                    "inset": false
+                                }
+                            },
+                            "hover": {
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 8,
+                                    "blur": 20,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.22)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "i000000002",
+                        "preset_name": "Soft Tile",
+                        "badge_shape": "rounded",
+                        "badge_size": {
+                            "value": "52",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "26",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "14",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "pop"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#eef2ff"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                },
+                                "border_style": "",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#e0e7ff"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "i000000003",
+                        "preset_name": "Outline Ring",
+                        "badge_shape": "circle",
+                        "badge_size": {
+                            "value": "48",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "22",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": ""
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                },
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "2",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#0d6efd"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "white",
+                                    "custom": ""
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "i000000004",
+                        "preset_name": "Hexagon",
+                        "badge_shape": "hexagon",
+                        "badge_size": {
+                            "value": "54",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "26",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "glow"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#6610f2"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "white",
+                                    "custom": ""
+                                },
+                                "border_style": "",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": []
+                        }
+                    },
+                    {
+                        "id": "i000000101",
+                        "preset_name": "Square",
+                        "badge_shape": "square",
+                        "badge_size": {
+                            "value": "48",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "24",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "rgb(18, 18, 21)"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(221, 255, 0)"
+                                },
+                                "border_style": "solid",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(36, 36, 41)"
+                                },
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                }
+                            },
+                            "hover": []
+                        }
+                    },
+                    {
+                        "id": "i000000102",
+                        "preset_name": "Square 2",
+                        "badge_shape": "square",
+                        "badge_size": {
+                            "value": "48",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "24",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "rgb(20, 20, 24)"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                },
+                                "border_style": "solid",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(221, 255, 0)"
+                                },
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                }
+                            },
+                            "hover": []
+                        }
+                    },
+                    {
+                        "id": "i000000103",
+                        "preset_name": "Square 3",
+                        "badge_shape": "square",
+                        "badge_size": {
+                            "value": "48",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "24",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "rgb(221, 255, 0)"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(0, 0, 0)"
+                                },
+                                "border_style": "",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": []
+                        }
+                    }
+                ],
+                "spacing_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    }
+                ],
+                "gap_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "[32px]",
+                        "size": "32px"
+                    },
+                    {
+                        "name": "[40px]",
+                        "size": "40px"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    }
+                ],
+                "typography": {
+                    "body": {
+                        "family": "",
+                        "variation": "regular",
+                        "color": "#ffffff",
+                        "size": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "line-height": "1.63"
+                    },
+                    "h2": {
+                        "family": "",
+                        "variation": "900",
+                        "color": "",
+                        "size": {
+                            "value": "40",
+                            "unit": "px"
+                        },
+                        "line-height": "1.1"
+                    },
+                    "h3": {
+                        "family": "",
+                        "variation": "900",
+                        "color": "",
+                        "size": {
+                            "value": "20",
+                            "unit": "px"
+                        },
+                        "line-height": "1.4",
+                        "letter-spacing": "-0.5",
+                        "text-transform": "uppercase"
+                    },
+                    "type_fluid_enable": "no"
+                }
+            }
+        },
+        "conversion-parity.json": {
+            "schema": "unysonplus-conversion-parity/1",
+            "score": 100,
+            "passed": 5,
+            "total": 5,
+            "checks": [
+                {
+                    "id": "border_color",
+                    "label": "Border / divider colour",
+                    "source": "rgb(82, 82, 91)",
+                    "converted": "#52525b",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "roundness",
+                    "label": "Corner roundness",
+                    "source": "soft",
+                    "converted": "soft",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "section_count",
+                    "label": "Section count",
+                    "source": 1,
+                    "converted": 1,
+                    "pass": true,
+                    "note": "tolerance ±1"
+                },
+                {
+                    "id": "dropped_measures",
+                    "label": "Unmapped width classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "max-w/min-w must map to a native width or carried CSS"
+                },
+                {
+                    "id": "dropped_chrome",
+                    "label": "Unmapped chrome classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "logo/menu/footer typography must map to a native option or carried CSS"
+                }
+            ]
+        }
+    }
+}

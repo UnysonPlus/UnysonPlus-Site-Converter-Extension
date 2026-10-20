@@ -54,10 +54,45 @@ final class FW_SC_Site_Model {
 				'slug'       => (string) ( $p['slug'] ?? '' ),
 				'front_page' => ! empty( $p['front_page'] ),
 				'source_url' => (string) ( $p['source_url'] ?? '' ),
+				'main'       => self::main( (string) ( $p['mainCs'] ?? '' ) ),
 				'sections'   => $sections,
 			);
 		}
 		return array( 'schema' => self::SCHEMA, 'version' => self::VERSION, 'pages' => $pages );
+	}
+
+	/**
+	 * The source <main>'s vertical padding — page padding, often the fixed header's clearance. Horizontal
+	 * padding is left out on purpose: on the page root it would inset every section's background, while in the
+	 * source that gutter sits inside full-bleed sections (the native output drops it for the same reason).
+	 */
+	private static function main( $cs ) {
+		$st  = FW_SC_Style::parse( $cs );
+		$box = FW_SC_Style::box( $st['padding'] ?? '' ) ?: array( 0, 0, 0, 0 );
+		$top = isset( $st['padding-top'] ) ? (float) FW_SC_Style::px( $st['padding-top'] ) : (float) $box[0];
+		$bot = isset( $st['padding-bottom'] ) ? (float) FW_SC_Style::px( $st['padding-bottom'] ) : (float) $box[2];
+		return array( 'padding_top' => max( 0, $top ), 'padding_bottom' => max( 0, $bot ) );
+	}
+
+	/**
+	 * The block's PHONE style. The capture runs at one viewport, so `csSm` is usually empty; the source's own
+	 * responsive Tailwind classes still say how the text shrinks: an unprefixed `text-7xl` beside an `md:` / `lg:`
+	 * size is the size below that breakpoint (72px), where the desktop 112px overflowed a phone.
+	 */
+	private static function phone_style( array $sm, $cls ) {
+		if ( ! empty( $sm['font-size'] ) || '' === trim( $cls ) ) { return $sm; }
+		$tokens = preg_split( '/\s+/', trim( $cls ) );
+		$base = null; $responsive = false;
+		foreach ( $tokens as $t ) {
+			if ( preg_match( '/^(sm|md|lg|xl|2xl):text-(xs|sm|base|lg|[2-9]?xl|\[[\d.]+(?:px|rem)\])$/', $t ) ) { $responsive = true; continue; }
+			if ( null === $base && preg_match( '/^text-(xs|sm|base|lg|[2-9]?xl|\[[\d.]+(?:px|rem)\])$/', $t, $m ) ) { $base = $m[1]; }
+		}
+		if ( ! $responsive || null === $base ) { return $sm; }
+		$scale = array( 'xs' => 12, 'sm' => 14, 'base' => 16, 'lg' => 18, 'xl' => 20, '2xl' => 24, '3xl' => 30, '4xl' => 36, '5xl' => 48, '6xl' => 60, '7xl' => 72, '8xl' => 96, '9xl' => 128 );
+		$px = isset( $scale[ $base ] ) ? $scale[ $base ] : 0;
+		if ( ! $px && preg_match( '/^\[([\d.]+)(px|rem)\]$/', $base, $m ) ) { $px = 'rem' === $m[2] ? (float) $m[1] * 16 : (float) $m[1]; }
+		if ( $px > 0 ) { $sm['font-size'] = round( $px, 2 ) . 'px'; }
+		return $sm;
 	}
 
 	/* ------------------------------------------------------------------ *
@@ -79,6 +114,28 @@ final class FW_SC_Site_Model {
 
 		$id = (string) ( $s['css_id'] ?? ( $s['sectionId'] ?? '' ) );
 
+		$blocks     = self::blocks( (array) ( $s['blocks'] ?? array() ), $pal );
+		$min_height = (string) ( $s['sectionHeroHeight'] ?? '' );
+		$valign     = (string) ( $s['sectionValign'] ?? '' );
+		// A background video recorded on the section brings its hero height, centring and overlay with it.
+		if ( is_array( $vid ) && ! empty( $vid['src'] ) ) {
+			if ( '' === $min_height && ! empty( $vid['hero_height'] ) ) { $min_height = (string) $vid['hero_height']; }
+			if ( '' === $valign && ! empty( $vid['valign'] ) ) { $valign = (string) $vid['valign']; }
+			if ( '' === $bg['overlay'] && ! empty( $vid['overlay'] ) ) { $bg['overlay'] = (string) $vid['overlay']; }
+		}
+		// A hero's BACKGROUND video arrives as a video block (`bg:true`, absolute inset-0 behind the copy): it is the
+		// section's background video, with its overlay, height and centring — the native build does the same.
+		foreach ( $blocks as $i => $b ) {
+			if ( 'video' !== $b['type'] || empty( $b['bg'] ) || '' !== $bg['video'] ) { continue; }
+			$bg['video'] = $b['src'];
+			if ( '' === $bg['overlay'] ) { $bg['overlay'] = $b['overlay']; }
+			if ( '' === $min_height && '' !== $b['hero_height'] ) { $min_height = $b['hero_height']; }
+			if ( '' === $valign && '' !== $b['valign'] ) { $valign = $b['valign']; }
+			unset( $blocks[ $i ] );
+			$blocks = array_values( $blocks );
+			break;
+		}
+
 		return array(
 			'id'              => $id,
 			'style'           => FW_SC_Style::parse( $s['sectionCs'] ?? '' ),
@@ -86,12 +143,12 @@ final class FW_SC_Site_Model {
 			'inner_style'     => $inner,
 			'container_width' => self::container_px( $s['sectionContainerW'] ?? null ),
 			'full_bleed'      => ! empty( $s['sectionFullBleed'] ),
-			'min_height'      => (string) ( $s['sectionHeroHeight'] ?? '' ),
-			'valign'          => (string) ( $s['sectionValign'] ?? '' ),
+			'min_height'      => $min_height,
+			'valign'          => $valign,
 			'align'           => (string) ( $s['align'] ?? '' ),
 			'verbatim'        => ! empty( $s['verbatim'] ),
 			'background'      => $bg,
-			'blocks'          => self::blocks( (array) ( $s['blocks'] ?? array() ), $pal ),
+			'blocks'          => $blocks,
 		);
 	}
 
@@ -138,7 +195,7 @@ final class FW_SC_Site_Model {
 		);
 		$base = array(
 			'style'    => FW_SC_Style::parse( $b['cs'] ?? '' ),
-			'style_sm' => FW_SC_Style::parse( $b['csSm'] ?? '' ),
+			'style_sm' => self::phone_style( FW_SC_Style::parse( $b['csSm'] ?? '' ), (string) ( $b['cls'] ?? '' ) ),
 			'margin'   => $margin,
 		);
 
@@ -196,8 +253,26 @@ final class FW_SC_Site_Model {
 					);
 				}
 				$n = count( $cols );
+				// A no-wrap row whose columns declare no width (a CTA beside a stat) is a row of content-sized
+				// items: each hugs its content, the gap between them. The fallback span below still gives every
+				// column a real 1–12 span, but a target lays this row out by content, not by equal shares.
+				$declared = false;
+				foreach ( $cols as $c ) { if ( $c['span'] > 0 ) { $declared = true; break; } }
+				// …and a JUSTIFIED row (space-between / center / end) lays its cells out by content even when they
+				// declare spans: a heading beside a capped intro takes its natural width (the native Mapper's rule).
+				$justified     = in_array( (string) ( $b['justify'] ?? '' ), array( 'space-between', 'between', 'space-around', 'space-evenly', 'center', 'flex-end', 'end' ), true );
+				$content_sized = $n > 1 && empty( $b['srcGrid'] ) && ( ( ! $declared && ! empty( $b['nowrap'] ) ) || $justified );
 				foreach ( $cols as $i => $c ) { if ( $c['span'] <= 0 && $n ) { $cols[ $i ]['span'] = (int) max( 1, floor( 12 / $n ) ); } }
+				// N EQUAL columns where N does not divide 12 (seven cards, five steps): the 12-span model cannot
+				// express them (spans of 2 sum past 12 and wrap 6 + 1), so the row is N equal tracks — the native
+				// Mapper renders the same case as an N-track grid.
+				$tracks = 0;
+				if ( $n >= 3 && $n <= 12 && 0 !== 12 % $n && ! $content_sized ) {
+					$spans = array_unique( array_map( function ( $c ) { return (int) $c['span']; }, $cols ) );
+					$tracks = ( 1 === count( $spans ) ) ? $n : 0;
+				}
 				return array( 'type' => 'row', 'gap' => self::num( $b['gap'] ?? 0 ), 'gap_resp' => (array) ( $b['gapResp'] ?? array() ),
+					'content_sized' => $content_sized, 'tracks' => $tracks,
 					'valign' => (string) ( $b['valign'] ?? '' ), 'justify' => (string) ( $b['justify'] ?? '' ),
 					'stack_bp' => (string) ( $b['stackBp'] ?? 'md' ), 'max_width' => (string) ( $b['capW'] ?? '' ),
 					'columns' => $cols ) + $base;
@@ -230,6 +305,41 @@ final class FW_SC_Site_Model {
 					'align' => (string) ( $b['align'] ?? '' ),
 					'style' => FW_SC_Style::parse( $b['pillCs'] ?? '' ), 'text_style' => FW_SC_Style::parse( $b['msgCs'] ?? '' ),
 					'style_sm' => array(), 'margin' => $margin );
+
+			case 'image_box':
+				// A photo card: its card (image, title, text, button) and, when the caption sits OVER the photo, the
+				// overlay (scrim gradient, placement, inset).
+				$ov = isset( $b['overlay'] ) && is_array( $b['overlay'] ) ? $b['overlay'] : array();
+				return array( 'type' => 'image_box', 'card' => self::card( (array) ( $b['card'] ?? array() ) ),
+					'overlay' => $ov ? array( 'scrim' => (string) ( $ov['scrim'] ?? '' ), 'place' => (string) ( $ov['place'] ?? 'bottom' ),
+						'align' => (string) ( $ov['align'] ?? '' ), 'inset' => self::num( $ov['inset'] ?? 0 ) ) : null ) + $base;
+
+			case 'video':
+				// A video: the section's background (`bg`, promoted in section()) or an inline player. Its height is
+				// the source's own `h-[…]` (the first height utility on the element).
+				$h = 0;
+				if ( preg_match( '/(?:^|\s)h-\[([\d.]+)(rem|px)\]/', (string) ( $b['rhideCls'] ?? '' ), $hm ) ) { $h = 'rem' === $hm[2] ? (float) $hm[1] * 16 : (float) $hm[1]; }
+				$yes = function ( $k, $d ) use ( $b ) { $v = $b[ $k ] ?? $d; return true === $v || 'yes' === $v; };
+				return array( 'type' => 'video', 'src' => (string) ( $b['src'] ?? '' ), 'webm' => (string) ( $b['webm'] ?? '' ),
+					'poster' => (string) ( $b['poster'] ?? '' ), 'bg' => ! empty( $b['bg'] ), 'overlay' => (string) ( $b['overlay'] ?? '' ),
+					'hero_height' => (string) ( $b['hero_height'] ?? '' ), 'valign' => (string) ( $b['valign'] ?? '' ),
+					'cover' => ! empty( $b['cover'] ), 'height' => $h, 'card_css' => (string) ( $b['card_css'] ?? '' ),
+					'autoplay' => $yes( 'autoplay', 'no' ), 'muted' => $yes( 'muted', 'no' ), 'loop' => $yes( 'loop', 'no' ),
+					'controls' => $yes( 'controls', 'yes' ) ) + $base;
+
+			case 'chips':
+				// A row of pills (tags, filters, materials): each its own text and pill skin.
+				$chips = array();
+				foreach ( (array) ( $b['items'] ?? array() ) as $it ) {
+					if ( ! is_array( $it ) ) { continue; }
+					$text = trim( (string) ( $it['text'] ?? '' ) );
+					if ( '' === $text && ! empty( $it['html'] ) ) { $text = trim( wp_strip_all_tags( (string) $it['html'] ) ); }
+					if ( '' === $text ) { continue; }
+					$chips[] = array( 'text' => $text, 'icon_svg' => (string) ( $it['iconSvg'] ?? '' ),
+						'style' => FW_SC_Style::parse( $it['cs'] ?? '' ) );
+				}
+				return array( 'type' => 'chips', 'items' => $chips, 'gap' => self::num( $b['gap'] ?? 0 ),
+					'align' => (string) ( $b['align'] ?? '' ) ) + $base;
 
 			case 'feature_list':
 				$items = array();
@@ -374,6 +484,11 @@ final class FW_SC_Site_Model {
 			'link'         => array( 'href' => (string) ( $link['href'] ?? ( $link['url'] ?? ( $btn['href'] ?? '' ) ) ), 'label' => (string) ( $link['label'] ?? ( $btn['label'] ?? '' ) ) ),
 			'center'       => ! empty( $c['center'] ),
 			'style'        => FW_SC_Style::parse( $c['cardCs'] ?? ( $c['cs'] ?? '' ) ),
+			// The card's own call to action, as a button block (its measured skin), when it has a label.
+			'button'       => ( '' !== trim( (string) ( $btn['label'] ?? '' ) ) ) ? array( 'type' => 'button',
+				'label' => (string) $btn['label'], 'href' => (string) ( $btn['href'] ?? '' ), 'icon_svg' => '',
+				'icon_pos' => 'after', 'align' => '', 'hover_css' => '', 'group_style' => array(),
+				'style' => FW_SC_Style::parse( $btn['cs'] ?? '' ), 'style_sm' => array(), 'margin' => array( 'top' => 16, 'bottom' => 0 ) ) : null,
 		);
 	}
 

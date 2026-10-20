@@ -5,7 +5,7 @@
  * rendered inside the Unyson+ parent theme, which keeps the header, footer and Theme Settings.
  *
  *   design   Theme Settings are imported as for every target, then mirrored into the Elementor Site Kit
- *            through the Builder Sync extension (colours, fonts, headings, links, container, button).
+ *            through the Elementor extension's design sync (colours, fonts, headings, links, container, button).
  *   pages    Site Model → FW_SC_Elementor_Emitter → Document::save(), on the "Elementor Full Width"
  *            template so the theme's header and footer frame the page.
  *   CSS      what Elementor's free controls cannot express (gradients, shadows, absolute positioning)
@@ -71,27 +71,39 @@ class FW_SC_Target_Elementor extends FW_SC_Target {
 	public function after_design_import( array $ctx = array() ) {
 		if ( ! $this->elementor_active() ) { return array(); }
 		$sync = self::sync_extension();
-		if ( ! $sync ) { return array( 'kit' => 'builder-sync unavailable' ); }
+		if ( ! $sync ) { return array( 'kit' => 'design sync unavailable (Elementor extension not installed)' ); }
 		$res = $sync->push( 'elementor' );
 		return array( 'kit' => isset( $res['elementor'] ) ? count( (array) $res['elementor'] ) . ' kit settings updated' : 'unchanged' );
 	}
 
 	/**
-	 * The Builder Sync extension: activated on first use, because an Elementor conversion is exactly the
-	 * situation it exists for. In the request that activates it the extension is not loaded yet, so its
-	 * classes are loaded directly for this one push.
+	 * The design sync of the Elementor extension: activated on first use, because an Elementor conversion
+	 * is exactly the situation it exists for. In the request that activates it the extension is not loaded
+	 * yet, so its classes are loaded directly for this one push. The retired Builder Sync extension, while
+	 * a site still has it active, does the same job.
 	 *
 	 * @return object|null something with push( $slug )
 	 */
 	private static function sync_extension() {
 		if ( function_exists( 'fw_ext' ) && fw_ext( 'builder-sync' ) ) { return fw_ext( 'builder-sync' ); }
-		if ( function_exists( 'fw' ) && fw()->extensions->manager->can_activate() ) {
-			fw()->extensions->manager->activate_extensions( array( 'builder-sync' => array() ) );
+		if ( function_exists( 'fw_ext' ) && fw_ext( 'elementor' ) ) {
+			$ext = fw_ext( 'elementor' );
+			return new class( $ext ) {
+				private $ext;
+				public function __construct( $ext ) { $this->ext = $ext; }
+				public function push( $only ) { return $this->ext->sync_push( $only ); }
+			};
 		}
-		$dir = dirname( __FILE__, 5 ) . '/builder-sync/includes';
-		foreach ( array( '/class-fw-builder-sync-design.php', '/class-fw-builder-sync-provider.php', '/providers/class-fw-builder-sync-elementor.php' ) as $f ) {
-			if ( ! is_file( $dir . $f ) ) { return null; }
-			require_once $dir . $f;
+		if ( function_exists( 'fw' ) && fw()->extensions->manager->can_activate() ) {
+			fw()->extensions->manager->activate_extensions( array( 'elementor' => array() ) );
+		}
+		$main = dirname( __FILE__, 5 ) . '/elementor/class-fw-extension-elementor.php';
+		if ( ! is_file( $main ) ) { return null; }
+		$dir = dirname( $main ) . '/lib/sync';
+		foreach ( array( 'FW_Builder_Sync_Design' => 'design', 'FW_Builder_Sync_Provider' => 'provider', 'FW_Builder_Sync_Elementor' => 'elementor' ) as $class => $file ) {
+			if ( class_exists( $class, false ) ) { continue; }
+			if ( ! is_file( $dir . '/class-fw-builder-sync-' . $file . '.php' ) ) { return null; }
+			require_once $dir . '/class-fw-builder-sync-' . $file . '.php';
 		}
 		return new class() {
 			public function push( $only ) {
@@ -128,7 +140,7 @@ class FW_SC_Target_Elementor extends FW_SC_Target {
 		$specs = array();
 		foreach ( $model['pages'] as $i => $page ) {
 			$base           = '' !== $page['source_url'] ? $page['source_url'] : (string) ( $ctx['source_url'] ?? '' );
-			$opts['media']  = function ( $url ) use ( $base ) { return self::media( $url, $base ); };
+			$opts['media']  = function ( $url, $alt = '' ) use ( $base ) { return self::media( $url, $base, $alt ); };
 			$opts['html']   = function ( $html ) use ( $base ) { return self::localize_html( $html, $base ); };
 			$opts['native'] = $this->native_resolver( $page, $this->built_page( $built, $page, $i ) );
 			$opts['seed']   = ( '' !== $page['slug'] ? $page['slug'] : 'home' ) . '-' . $i;
@@ -301,7 +313,7 @@ class FW_SC_Target_Elementor extends FW_SC_Target {
 	 * ------------------------------------------------------------------ */
 
 	/**
-	 * Palette colour → Elementor global id, for the colours Builder Sync put in the kit. Primary, secondary
+	 * Palette colour → Elementor global id, for the colours the design sync put in the kit. Primary, secondary
 	 * and accent are Elementor's system colours; the body text colour is its system "text".
 	 */
 	private function global_colors( array $palette ) {
@@ -337,7 +349,7 @@ class FW_SC_Target_Elementor extends FW_SC_Target {
 	private static $site_cw = 0;
 
 	private function site_container_vote( array $model ) {
-		$cw = class_exists( 'FW_WP_Option' ) && function_exists( 'fw' ) ? FW_WP_Option::get( 'fw_theme_settings_options:' . fw()->theme->manifest->get_id(), 'layout_container_width', array() ) : array();
+		$cw = class_exists( 'FW_WP_Option' ) && function_exists( 'fw' ) ? FW_WP_Option::get( 'fw_theme_settings_options:' . fw()->theme->manifest->get_id(), 'general_layout/layout_container_width', array() ) : array();
 		if ( isset( $cw['lg']['value'] ) && 'px' === ( $cw['lg']['unit'] ?? 'px' ) && (float) $cw['lg']['value'] > 0 ) { return (int) $cw['lg']['value']; }
 		$votes = array();
 		foreach ( (array) $model['pages'] as $p ) {
@@ -360,7 +372,7 @@ class FW_SC_Target_Elementor extends FW_SC_Target {
 	}
 
 	/** A source image URL → its imported attachment (the media phase ran first), else the absolute URL. */
-	private static function media( $url, $base ) {
+	private static function media( $url, $base, $alt = '' ) {
 		$url = trim( (string) $url );
 		if ( '' === $url || 0 === strpos( $url, 'data:' ) ) { return array( 'id' => 0, 'url' => $url ); }
 		$abs = ( class_exists( 'FW_Site_Converter_Media' ) && '' !== $base ) ? FW_Site_Converter_Media::absolutize( $url, $base ) : $url;
@@ -369,6 +381,11 @@ class FW_SC_Target_Elementor extends FW_SC_Target {
 				$id = FW_Site_Converter_Media::find_by_source( $try );
 				if ( $id ) {
 					$local = wp_get_attachment_url( $id );
+					// Elementor renders a library image's alt from the attachment: give it the source's alt text when it
+					// has none yet (never overwrite an alt someone wrote).
+					if ( '' !== $alt && '' === trim( (string) get_post_meta( $id, '_wp_attachment_image_alt', true ) ) ) {
+						update_post_meta( $id, '_wp_attachment_image_alt', sanitize_text_field( $alt ) );
+					}
 					if ( $local ) { return array( 'id' => (int) $id, 'url' => $local ); }
 				}
 			}

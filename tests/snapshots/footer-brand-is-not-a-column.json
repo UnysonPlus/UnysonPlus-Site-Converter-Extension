@@ -1,0 +1,1469 @@
+{
+    "mapping": {
+        "include_animations": false,
+        "pages": [
+            {
+                "title": "Snapshot",
+                "slug": "",
+                "front_page": true,
+                "sections": [
+                    {
+                        "sectionClass": "",
+                        "sectionRawClass": "",
+                        "sectionCs": "padding:40px 0px;display:block",
+                        "sectionCsSm": "",
+                        "sectionCsMd": "",
+                        "sectionCsXl": "",
+                        "bandPlace": [],
+                        "phonePass": false,
+                        "sectionLayers": [
+                            {
+                                "cls": "",
+                                "style": "",
+                                "cs": "font-size:16px"
+                            }
+                        ],
+                        "sectionBgImage": [],
+                        "sectionBgVideo": [],
+                        "sectionContainerW": null,
+                        "sectionFullBleed": false,
+                        "sectionHeroHeight": "",
+                        "sectionValign": "middle",
+                        "sectionBandW": null,
+                        "sectionLeftCap": 0,
+                        "sectionNoGutter": false,
+                        "css_id": "section-1",
+                        "sectionId": "",
+                        "heroTopPad": 0,
+                        "heroInFlowClear": false,
+                        "omit": false,
+                        "verbatim": false,
+                        "align": "",
+                        "bgPattern": null,
+                        "bgEffects": [],
+                        "divider": null,
+                        "blocks": [
+                            {
+                                "t": "text",
+                                "role": "text",
+                                "cls": "",
+                                "cs": "font-size:16px",
+                                "csSm": "",
+                                "maxWidth": "",
+                                "text": "Placeholder band so the footer is not the only block on the page.",
+                                "html": "<p>Placeholder band so the footer is not the only block on the page.</p>",
+                                "linkCs": ""
+                            }
+                        ]
+                    }
+                ],
+                "mainClass": "",
+                "mainCs": "",
+                "chrome": {
+                    "header": false,
+                    "footer": true
+                },
+                "source_url": "https://fixture.invalid"
+            }
+        ]
+    },
+    "files": {
+        "bundle.json": {
+            "name": "Google Stitch import",
+            "source": "stitch"
+        },
+        "conversion-drops.json": {
+            "total": 0,
+            "rescued": 0,
+            "decorative": 0,
+            "by_kind": [],
+            "top_patterns": [],
+            "items": [],
+            "text_coverage": {
+                "checked": 10,
+                "missing": 0,
+                "coverage_pct": 100,
+                "pages": 1,
+                "by_page": {
+                    "page-1": {
+                        "checked": 10,
+                        "missing": 0,
+                        "coverage_pct": 100
+                    }
+                },
+                "note": "Visible source phrases (2+ real words, excluding hidden / display:none twins) absent from the built pages + theme settings, checked on EVERY captured page. Unlike the drop log above, this shares no code path with the builder, so it also catches text lost to a RECOGNIZER claiming a container and ignoring part of it, and text glued to a neighbour so the phrase no longer exists as itself. `items` is content we should have kept (each tagged with the page it came from); `out_of_scope` is text we deliberately did not carry.",
+                "items": [],
+                "out_of_scope": []
+            }
+        },
+        "class-coverage.json": {
+            "schema": "unysonplus-class-coverage/1",
+            "elements_audited": 0,
+            "elements_with_untranslated": 0,
+            "untranslated_significant": [],
+            "note": "Significant (look-carrying) SOURCE classes that became NO native option and NO scoped CSS — ranked by how many elements dropped each. Each is a candidate for a new deterministic class→value translation rule (fix the rule in BOTH the PHP + JS paths, then re-prove). Coverage spans elements that pass through the class-drop collector (headings / text / cards); whole-element structural drops live in conversion-drops.json."
+        },
+        "theme-design.json": {
+            "theme": {
+                "name": "Snapshot",
+                "slug": "snapshot",
+                "mode": "child"
+            },
+            "favicon": "",
+            "css_vars": [],
+            "fonts": {
+                "heading": "",
+                "heading_stack": "",
+                "body": "",
+                "google": ""
+            },
+            "colors": {
+                "ink": "#1a1a1a",
+                "accent": "#ddff00",
+                "bg": "#0c0c0d",
+                "header_bg": "",
+                "header_border": "#ececec",
+                "footer_bg": "#141414",
+                "footer_text": "#f5f5f5"
+            },
+            "header": {
+                "style": "bar",
+                "sticky": false,
+                "menu_location": "primary",
+                "menu": [],
+                "menu_secondary": [],
+                "cta": {
+                    "enabled": false,
+                    "label": "Get started",
+                    "href": "#"
+                }
+            },
+            "footer": {
+                "brand": true,
+                "widget_area": false,
+                "copyright": "&copy; {{current_year}} X/23 Studio.\nAll Rights Reserved.",
+                "menu": [
+                    {
+                        "label": "About Us",
+                        "url": "#studio"
+                    },
+                    {
+                        "label": "Our Space",
+                        "url": "#studio"
+                    },
+                    {
+                        "label": "Stylists",
+                        "url": "#stylists"
+                    },
+                    {
+                        "label": "Careers",
+                        "url": "#reviews"
+                    },
+                    {
+                        "label": "Contact",
+                        "url": "#hours"
+                    },
+                    {
+                        "label": "Haircuts",
+                        "url": "#services"
+                    },
+                    {
+                        "label": "Beard & Shave",
+                        "url": "#services"
+                    },
+                    {
+                        "label": "Color",
+                        "url": "#services"
+                    },
+                    {
+                        "label": "Styling",
+                        "url": "#services"
+                    },
+                    {
+                        "label": "Packages",
+                        "url": "#services"
+                    },
+                    {
+                        "label": "Privacy Policy",
+                        "url": "#"
+                    },
+                    {
+                        "label": "Terms & Conditions",
+                        "url": "#"
+                    },
+                    {
+                        "label": "Cookies Policy",
+                        "url": "#"
+                    }
+                ]
+            },
+            "background": {
+                "dotted": false,
+                "canvas": "#0c0c0d"
+            },
+            "custom_css": ".sc-tw .material-symbols-outlined{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;word-wrap:normal;direction:ltr;-webkit-font-feature-settings:'liga';font-feature-settings:'liga';-webkit-font-smoothing:antialiased;}\n.sc-tw .custom-logo{max-height:2.4rem;width:auto;height:auto;display:inline-block;vertical-align:middle;}\r\n.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:32px !important;}\n@media screen and (max-width:782px){.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:46px !important;}}\n.sc-mirror{padding-top:0 !important;padding-bottom:0 !important;}\n.sc-mirror .fw-container{max-width:none !important;width:100% !important;padding-left:0 !important;padding-right:0 !important;}\n.sc-mirror .fw-row{margin-left:0 !important;margin-right:0 !important;}\n.sc-mirror .fw-row > .fw-col-12{padding-left:0 !important;padding-right:0 !important;}\n/* ---- reproduced Tailwind CSS (offline) ---- */\n.sc-tw{font-family:'Inter',system-ui,-apple-system,sans-serif;}\n.sc-tw *,.sc-tw ::before,.sc-tw ::after{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}\n.sc-tw ::before,.sc-tw ::after{--tw-content:''}\n.sc-tw h1,.sc-tw h2,.sc-tw h3,.sc-tw h4,.sc-tw h5,.sc-tw h6{font-size:inherit;font-weight:inherit;margin:0}\n.sc-tw p,.sc-tw blockquote,.sc-tw figure,.sc-tw pre,.sc-tw dl,.sc-tw dd{margin:0}\n.sc-tw a{color:inherit;text-decoration:inherit}\n.sc-tw b,.sc-tw strong{font-weight:bolder}\n.sc-tw ul,.sc-tw ol,.sc-tw menu{list-style:none;margin:0;padding:0}\n.sc-tw button,.sc-tw input,.sc-tw select,.sc-tw textarea{font-family:inherit;font-size:100%;font-weight:inherit;line-height:inherit;color:inherit;margin:0;padding:0}\n.sc-tw button,.sc-tw [role=button]{cursor:pointer;background-color:transparent;background-image:none}\n.sc-tw img,.sc-tw svg,.sc-tw video,.sc-tw canvas,.sc-tw audio,.sc-tw iframe,.sc-tw embed,.sc-tw object{display:block;vertical-align:middle}\n.sc-tw img,.sc-tw video{max-width:100%;height:auto}\n.sc-tw .border-t{border-top-width:1px !important}\n.sc-tw .border-\\[\\#222225\\]{border-color:#222225 !important}\n.sc-tw .bg-\\[\\#0c0c0d\\]{background-color:#0c0c0d !important}\n.sc-tw .text-zinc-400{--tw-text-opacity:1 !important;color:rgb(161 161 170 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .py-16{padding-top:4rem !important;padding-bottom:4rem !important}\n.sc-tw .px-5{padding-left:1.25rem !important;padding-right:1.25rem !important}\n.sc-tw .max-w-\\[1440px\\]{max-width:1440px !important}\n.sc-tw .mx-auto{margin-left:auto !important;margin-right:auto !important}\n.sc-tw .grid{display:grid !important}\n.sc-tw .grid-cols-1{grid-template-columns:repeat(1, minmax(0, 1fr)) !important}\n.sc-tw .gap-10{gap:2.5rem !important}\n.sc-tw .space-y-4 > :not([hidden]) ~ :not([hidden]){margin-top:1rem !important;margin-bottom:0 !important}\n.sc-tw .flex{display:flex !important}\n.sc-tw .flex-col{flex-direction:column !important}\n.sc-tw .text-3xl{font-size:1.875rem !important;line-height:2.25rem !important}\n.sc-tw .tracking-tighter{letter-spacing:-0.05em !important}\n.sc-tw .text-white{--tw-text-opacity:1 !important;color:rgb(255 255 255 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .items-center{align-items:center !important}\n.sc-tw .gap-2{gap:0.5rem !important}\n.sc-tw .w-2\\.5{width:0.625rem !important}\n.sc-tw .h-2\\.5{height:0.625rem !important}\n.sc-tw .bg-\\[\\#ddff00\\]{background-color:#ddff00 !important}\n.sc-tw .text-xs{font-size:0.75rem !important;line-height:1rem !important}\n.sc-tw .font-bold{font-weight:700 !important}\n.sc-tw .uppercase{text-transform:uppercase !important}\n.sc-tw .leading-relaxed{line-height:1.625 !important}\n.sc-tw .max-w-sm{max-width:24rem !important}\n.sc-tw .gap-4{gap:1rem !important}\n.sc-tw .pt-2{padding-top:0.5rem !important}\n.sc-tw .hover\\:text-\\[\\#ddff00\\]:hover{color:#ddff00 !important}\n.sc-tw .transition-colors{transition-property:color,background-color,border-color,fill,stroke !important;transition-timing-function:cubic-bezier(0.4,0,0.2,1) !important;transition-duration:150ms !important}\n.sc-tw .w-5{width:1.25rem !important}\n.sc-tw .h-5{height:1.25rem !important}\n.sc-tw .space-y-3 > :not([hidden]) ~ :not([hidden]){margin-top:0.75rem !important;margin-bottom:0 !important}\n.sc-tw .tracking-widest{letter-spacing:0.1em !important}\n.sc-tw .space-y-2 > :not([hidden]) ~ :not([hidden]){margin-top:0.5rem !important;margin-bottom:0 !important}\n.sc-tw .hover\\:text-white:hover{--tw-text-opacity:1 !important;color:rgb(255 255 255 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .justify-between{justify-content:space-between !important}\n.sc-tw .pt-4{padding-top:1rem !important}\n.sc-tw .border-zinc-800{--tw-border-opacity:1 !important;border-color:rgb(39 39 42 / var(--tw-border-opacity, 1)) !important}\n.sc-tw .text-\\[11px\\]{font-size:11px !important}\n.sc-tw .tracking-wider{letter-spacing:0.05em !important}\n@media (min-width:640px){.sc-tw .sm\\:px-8{padding-left:2rem !important;padding-right:2rem !important}}\n@media (min-width:768px){.sc-tw .md\\:grid-cols-2{grid-template-columns:repeat(2, minmax(0, 1fr)) !important}}\n@media (min-width:1024px){.sc-tw .lg\\:px-12{padding-left:3rem !important;padding-right:3rem !important}.sc-tw .lg\\:grid-cols-12{grid-template-columns:repeat(12, minmax(0, 1fr)) !important}.sc-tw .lg\\:col-span-4{grid-column:span 4 / span 4 !important}.sc-tw .lg\\:col-span-2{grid-column:span 2 / span 2 !important}}",
+            "font_links": [],
+            "raw_chrome": {
+                "header_html": "",
+                "footer_html": "<footer class=\"border-t border-[#222225] bg-[#0c0c0d] text-zinc-400 py-16 px-5 sm:px-8 lg:px-12\" data-sc-cs-sm=\"padding:64px 20px\" data-sc-cs-md=\"padding:64px 32px\" data-sc-footer=\"col-gap:40px;link-hover:rgb(255, 255, 255)\"><div class=\"max-w-[1440px] mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-10\" data-sc-cs-sm=\"grid-template-columns:350px\" data-sc-cs-md=\"grid-template-columns:358px 358px\" data-sc-cs-xl=\"margin:0px 192px;grid-template-columns:83.3281px 83.3281px 83.3281px 83.3281px 83.3281px 83.3281px 83.3281px 83.3281px 83.3281px 83.3281px 83.3281px 83.3281px\"><!--SC_FCOL_0--><!--SC_FCOL_1--><!--SC_FCOL_2--><!--SC_FCOL_3--><!--SC_FCOL_4--></div></footer>",
+                "nav_tree": [],
+                "nav_style": [],
+                "footer_cols": [
+                    "<div class=\"flex flex-col\"><span class=\"font-black text-3xl tracking-tighter text-white flex items-center gap-2\">X/23<span class=\"w-2.5 h-2.5 bg-[#ddff00]\" data-sc-cs-sm=\"track-frac:0.029\" data-sc-cs-md=\"track-frac:0.028\" data-sc-cs-xl=\"track-frac:0.022\"></span></span><span class=\"text-xs tracking-[0.25em] text-zinc-400 font-bold uppercase\">STUDIO</span></div><p class=\"text-xs leading-relaxed max-w-sm text-zinc-400\">A barbershop and hair studio built on precision, style, and confidence. Proudly serving New York City since 2016.</p><div class=\"flex items-center gap-4 text-zinc-400 pt-2\"><a href=\"#\" class=\"hover:text-[#ddff00] transition-colors\" aria-label=\"Instagram\" data-sc-cs-sm=\"track-frac:0.057\" data-sc-cs-md=\"track-frac:0.056\" data-sc-cs-xl=\"track-frac:0.044\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-instagram w-5 h-5\" aria-hidden=\"true\"><rect width=\"20\" height=\"20\" x=\"2\" y=\"2\" rx=\"5\" ry=\"5\"></rect><path d=\"M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z\"></path><line x1=\"17.5\" x2=\"17.51\" y1=\"6.5\" y2=\"6.5\"></line></svg></a><a href=\"#\" class=\"hover:text-[#ddff00] transition-colors\" aria-label=\"Facebook\" data-sc-cs-sm=\"track-frac:0.057\" data-sc-cs-md=\"track-frac:0.056\" data-sc-cs-xl=\"track-frac:0.044\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-facebook w-5 h-5\" aria-hidden=\"true\"><path d=\"M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z\"></path></svg></a><a href=\"#\" class=\"hover:text-[#ddff00] transition-colors\" aria-label=\"Twitter\" data-sc-cs-sm=\"track-frac:0.057\" data-sc-cs-md=\"track-frac:0.056\" data-sc-cs-xl=\"track-frac:0.044\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-twitter w-5 h-5\" aria-hidden=\"true\"><path d=\"M22 4s-.7 2.1-2 3.4c1.6 10-9.4 17.3-18 11.6 2.2.1 4.4-.6 6-2C3 15.5.5 9.6 3 5c2.2 2.6 5.6 4.1 9 4-.9-4.2 4-6.6 7-3.8 1.1 0 3-1.2 3-1.2z\"></path></svg></a></div>",
+                    "<h4 class=\"text-xs font-black uppercase tracking-widest text-white\">STUDIO</h4><ul class=\"space-y-2 text-xs\"><li><a href=\"#studio\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">About Us</a></li><li><a href=\"#studio\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Our Space</a></li><li><a href=\"#stylists\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Stylists</a></li><li><a href=\"#reviews\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Careers</a></li><li><a href=\"#hours\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Contact</a></li></ul>",
+                    "<h4 class=\"text-xs font-black uppercase tracking-widest text-white\">SERVICES</h4><ul class=\"space-y-2 text-xs\"><li><a href=\"#services\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Haircuts</a></li><li><a href=\"#services\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Beard &amp; Shave</a></li><li><a href=\"#services\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Color</a></li><li><a href=\"#services\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Styling</a></li><li><a href=\"#services\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Packages</a></li></ul>",
+                    "<h4 class=\"text-xs font-black uppercase tracking-widest text-white\">LEGAL</h4><ul class=\"space-y-2 text-xs\"><li><a href=\"#\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Privacy Policy</a></li><li><a href=\"#\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Terms &amp; Conditions</a></li><li><a href=\"#\" class=\"hover:text-white transition-colors\" data-sc-hover=\"hover-self{color:rgb(255 255 255/var(--tw-text-opacity,1))}\">Cookies Policy</a></li></ul>",
+                    "<p class=\"text-zinc-400\">© 2026 X/23 Studio. <br>All Rights Reserved.</p><div class=\"pt-4 border-t border-zinc-800 text-[11px] font-bold text-zinc-400 tracking-wider uppercase\">NEW YORK CITY, NY</div>"
+                ],
+                "footer_copyright": "© 2026 X/23 Studio. <br>All Rights Reserved."
+            },
+            "source_url": "https://fixture.invalid",
+            "conversion_map": {
+                "h-1": {
+                    "sc": "section",
+                    "mapped": {
+                        "content_valign": "top"
+                    }
+                },
+                "h-2": {
+                    "sc": "flexbox",
+                    "mapped": {
+                        "html_tag": "div",
+                        "display": "block",
+                        "grid_columns": "3",
+                        "grid_min": "240px",
+                        "content_width": "wide-xxl"
+                    },
+                    "custom_css": "selector{width:100%;}"
+                },
+                "h-3": {
+                    "sc": "text_block",
+                    "mapped": {
+                        "text": "<p>Placeholder band so the footer is not the only block on the page.</p>",
+                        "font_size_preset": "font-small"
+                    }
+                }
+            },
+            "chrome_via_settings": true
+        },
+        "pages.json": {
+            "pages": [
+                {
+                    "title": "Snapshot",
+                    "slug": "home",
+                    "status": "publish",
+                    "front_page": true,
+                    "source_url": "https://fixture.invalid",
+                    "builder": [
+                        {
+                            "type": "section",
+                            "atts": {
+                                "variant": "",
+                                "is_fullwidth": false,
+                                "min_height": {
+                                    "preset": "auto",
+                                    "custom": {
+                                        "custom_height": {
+                                            "value": "",
+                                            "unit": "px"
+                                        }
+                                    }
+                                },
+                                "content_valign": "top",
+                                "text_align": "",
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": ""
+                                        }
+                                    },
+                                    "gradient": {
+                                        "data": {
+                                            "type": "linear",
+                                            "angle": 90,
+                                            "stops": []
+                                        }
+                                    },
+                                    "image": {
+                                        "src": [],
+                                        "position": "center center",
+                                        "size": {
+                                            "selected": "cover",
+                                            "custom": ""
+                                        },
+                                        "repeat": "no-repeat",
+                                        "attachment": "scroll"
+                                    },
+                                    "video": {
+                                        "enabled": "no",
+                                        "external_url": "",
+                                        "source_mp4": [],
+                                        "source_webm": [],
+                                        "poster": [],
+                                        "fallback": [],
+                                        "loop": "yes",
+                                        "autoplay": "yes",
+                                        "mute": "yes",
+                                        "playsinline": "yes"
+                                    },
+                                    "advanced": []
+                                },
+                                "padding_top": {
+                                    "base": "pt-[40px]",
+                                    "md": "",
+                                    "lg": ""
+                                },
+                                "padding_bottom": {
+                                    "base": "pb-[40px]",
+                                    "md": "",
+                                    "lg": ""
+                                },
+                                "gap": "",
+                                "gap_x": "",
+                                "gap_y": "",
+                                "animation": {
+                                    "effect": "none"
+                                },
+                                "unique_id": "uid-1",
+                                "css_id": "section-1",
+                                "css_class": "",
+                                "custom_css": "",
+                                "responsive_hide": [],
+                                "custom_attrs": []
+                            },
+                            "_items": [
+                                {
+                                    "type": "flexbox",
+                                    "atts": {
+                                        "html_tag": "div",
+                                        "display": "block",
+                                        "grid_columns": "3",
+                                        "grid_autofit": "no",
+                                        "grid_min": {
+                                            "value": "240",
+                                            "unit": "px"
+                                        },
+                                        "direction": {
+                                            "base": "row",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "gap": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "justify_content": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_items": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "wrap": {
+                                            "base": "yes",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "reverse": {
+                                            "base": "no",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_content": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "width": {
+                                            "base": {
+                                                "preset": "none"
+                                            },
+                                            "md": {
+                                                "preset": "none"
+                                            },
+                                            "lg": {
+                                                "preset": "none"
+                                            }
+                                        },
+                                        "flex_grow": {
+                                            "base": "no",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_self": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "order": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "background": {
+                                            "color": {
+                                                "value": {
+                                                    "predefined": "",
+                                                    "custom": ""
+                                                }
+                                            },
+                                            "gradient": {
+                                                "data": {
+                                                    "type": "linear",
+                                                    "angle": 90,
+                                                    "stops": []
+                                                }
+                                            },
+                                            "image": {
+                                                "src": [],
+                                                "position": "center center",
+                                                "size": {
+                                                    "selected": "cover",
+                                                    "custom": ""
+                                                },
+                                                "repeat": "no-repeat",
+                                                "attachment": "scroll"
+                                            },
+                                            "video": {
+                                                "enabled": "no",
+                                                "external_url": "",
+                                                "source_mp4": [],
+                                                "source_webm": [],
+                                                "poster": [],
+                                                "fallback": [],
+                                                "loop": "yes",
+                                                "autoplay": "yes",
+                                                "mute": "yes",
+                                                "playsinline": "yes"
+                                            },
+                                            "advanced": []
+                                        },
+                                        "border_preset": "",
+                                        "min_height": {
+                                            "base": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            },
+                                            "md": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            },
+                                            "lg": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            }
+                                        },
+                                        "spacing": {
+                                            "margin": {
+                                                "all": "",
+                                                "top": "",
+                                                "right": "",
+                                                "bottom": "",
+                                                "left": ""
+                                            },
+                                            "padding": {
+                                                "all": "",
+                                                "top": "",
+                                                "right": "",
+                                                "bottom": "",
+                                                "left": ""
+                                            },
+                                            "advanced": {
+                                                "md": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    }
+                                                },
+                                                "lg": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "animation": {
+                                            "effect": "none"
+                                        },
+                                        "unique_id": "uid-2",
+                                        "css_id": "",
+                                        "css_class": "",
+                                        "custom_css": "selector{width:100%;}",
+                                        "responsive_hide": [],
+                                        "custom_attrs": [],
+                                        "content_width": {
+                                            "preset": "wide-xxl"
+                                        }
+                                    },
+                                    "_items": [
+                                        {
+                                            "type": "simple",
+                                            "shortcode": "text_block",
+                                            "_items": [],
+                                            "atts": {
+                                                "text": "<p>Placeholder band so the footer is not the only block on the page.</p>",
+                                                "animation": {
+                                                    "effect": "none"
+                                                },
+                                                "font_size_preset": "font-small",
+                                                "unique_id": "uid-3",
+                                                "css_id": "",
+                                                "css_class": "",
+                                                "custom_css": "",
+                                                "responsive_hide": [],
+                                                "custom_attrs": [],
+                                                "spacing": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "advanced": []
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "page_options": {
+                        "hide_site_header": "yes"
+                    }
+                }
+            ]
+        },
+        "theme-settings.json": {
+            "values": {
+                "header_logo": {
+                    "logo_type": {
+                        "logo_type": "custom",
+                        "custom": {
+                            "site_title": "Snapshot",
+                            "logo_layout": "inline-left",
+                            "title_weight": "700",
+                            "color": {
+                                "predefined": "",
+                                "custom": "#111111"
+                            }
+                        },
+                        "simple": []
+                    }
+                },
+                "header_main": {
+                    "main_left": [
+                        {
+                            "element_type": {
+                                "element": "logo"
+                            }
+                        }
+                    ],
+                    "main_center": [
+                        {
+                            "element_type": {
+                                "element": "menu_area",
+                                "menu_area": {
+                                    "menu_location": "primary"
+                                }
+                            }
+                        }
+                    ],
+                    "main_right": []
+                },
+                "header_menu": {
+                    "menu_link_color": {
+                        "predefined": "",
+                        "custom": "#94a3b8"
+                    },
+                    "menu_link_hover_color": {
+                        "predefined": "",
+                        "custom": "#94a3b8"
+                    }
+                },
+                "header_layout": {
+                    "header_mode": {
+                        "mode": "top",
+                        "top": {
+                            "header_design": {
+                                "design": "classic"
+                            }
+                        }
+                    },
+                    "header_position": "static",
+                    "header_uppercase_nav": "no",
+                    "bg_color": {
+                        "predefined": "bg-ink",
+                        "custom": ""
+                    },
+                    "header_glass": "no",
+                    "header_border": "no",
+                    "header_shadow": "no"
+                },
+                "drawer_link_color": "#1a1a1a",
+                "mobile_bar_bg": "#141414",
+                "header_topbar": {
+                    "topbar_left": [],
+                    "topbar_center": [],
+                    "topbar_right": [],
+                    "topbar_custom_styling": {
+                        "enabled": "no"
+                    }
+                },
+                "header_bottombar": {
+                    "bottombar_left": [],
+                    "bottombar_center": [],
+                    "bottombar_right": []
+                },
+                "footer_background": {
+                    "color": {
+                        "value": {
+                            "predefined": "",
+                            "custom": "rgb(12, 12, 13)"
+                        }
+                    }
+                },
+                "footer_text_color": {
+                    "predefined": "",
+                    "custom": "#a1a1aa"
+                },
+                "footer_link_color": {
+                    "predefined": "",
+                    "custom": "#a1a1aa"
+                },
+                "footer_link_hover_color": {
+                    "predefined": "",
+                    "custom": "#ffffff"
+                },
+                "footer_padding_top_custom": {
+                    "value": "64",
+                    "unit": "px"
+                },
+                "footer_padding_bottom_custom": {
+                    "value": "64",
+                    "unit": "px"
+                },
+                "general_layout": {
+                    "site_background": {
+                        "color": {
+                            "value": {
+                                "predefined": "",
+                                "custom": "#0c0c0d"
+                            }
+                        }
+                    },
+                    "layout_container_width": {
+                        "base": {
+                            "value": "100",
+                            "unit": "%"
+                        },
+                        "md": {
+                            "value": "720",
+                            "unit": "px"
+                        },
+                        "lg": {
+                            "value": "1392",
+                            "unit": "px"
+                        }
+                    },
+                    "layout_border_color": {
+                        "predefined": "",
+                        "custom": "#222225"
+                    }
+                },
+                "footer_padding_top": "4rem",
+                "footer_padding_bottom": "4rem",
+                "main_footer_custom_styling": {
+                    "enabled": "yes",
+                    "yes": {
+                        "main_footer_padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "",
+                                "top": "pt-0",
+                                "right": "",
+                                "bottom": "pb-0",
+                                "left": ""
+                            },
+                            "advanced": []
+                        },
+                        "main_footer_typography": {
+                            "size": {
+                                "value": "12",
+                                "unit": "px"
+                            }
+                        },
+                        "main_footer_container": "container"
+                    }
+                },
+                "footer_border_top": {
+                    "width": {
+                        "value": "1",
+                        "unit": "px"
+                    },
+                    "style": "solid",
+                    "color": {
+                        "predefined": "",
+                        "custom": "#222225"
+                    }
+                },
+                "footer_border_sides": [
+                    "top"
+                ],
+                "footer_border_top_extent": {
+                    "mode": "full"
+                },
+                "misc_custom_css": {
+                    "custom_css": "/* converted header/footer styles */\n.footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:rgb(161, 161, 170) !important}\n.footer .site-logo__mark:not(.site-logo__mark--framed){color:rgb(161, 161, 170) !important}\n.footer-links-title{font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif !important;text-transform:uppercase !important;letter-spacing:1.2px !important;font-weight:900 !important;font-size:12px !important;line-height:16px !important;color:rgb(255, 255, 255) !important;}\n.footer-column .footer-link{font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;font-weight:400;font-size:12px;}.footer-column .footer-links-list>li,.footer-column .footer-link,.footer-column .footer-links-list .list-item__text{line-height:16px}\n.footer-tagline{font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif !important;max-width:384px !important;margin-top:16px !important;font-size:12px !important;line-height:19.5px !important;color:rgb(161, 161, 170) !important;}\r\n/* Source footer: the small print's own type */\r\n.footer-disclaimer{font-size:12px;line-height:19.5px;font-weight:400;}\r\n.footer-section--copyright .footer-disclaimer.footer-disclaimer{color:rgb(161, 161, 170) !important;}"
+                },
+                "social_profiles": [
+                    {
+                        "name": "Instagram",
+                        "link": "#",
+                        "new_tab": "yes",
+                        "icon": {
+                            "type": "svg",
+                            "svg-source": "library",
+                            "svg-id": "tabler/brand-instagram"
+                        }
+                    },
+                    {
+                        "name": "Facebook",
+                        "link": "#",
+                        "new_tab": "yes",
+                        "icon": {
+                            "type": "svg",
+                            "svg-source": "library",
+                            "svg-id": "tabler/brand-facebook"
+                        }
+                    },
+                    {
+                        "name": "Twitter",
+                        "link": "#",
+                        "new_tab": "yes",
+                        "icon": {
+                            "type": "svg",
+                            "svg-source": "library",
+                            "svg-id": "tabler/brand-twitter"
+                        }
+                    }
+                ],
+                "main_footer_columns": {
+                    "count": "1",
+                    "1": {
+                        "main_footer_col_1": [
+                            {
+                                "element_type": {
+                                    "element": "logo"
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "text",
+                                    "text": {
+                                        "text_content": "<p class=\"footer-tagline\">A barbershop and hair studio built on precision, style, and confidence. Proudly serving New York City since 2016.</p>"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "social_icons"
+                                }
+                            }
+                        ]
+                    }
+                },
+                "post_footer_columns": {
+                    "count": "3",
+                    "3": {
+                        "post_footer_col_1": [
+                            {
+                                "element_type": {
+                                    "element": "heading",
+                                    "heading": {
+                                        "heading_text": "STUDIO",
+                                        "heading_level": "h4"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "About Us",
+                                        "li_link_type": "url",
+                                        "li_link": "#studio",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Our Space",
+                                        "li_link_type": "url",
+                                        "li_link": "#studio",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Stylists",
+                                        "li_link_type": "url",
+                                        "li_link": "#stylists",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Careers",
+                                        "li_link_type": "url",
+                                        "li_link": "#reviews",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Contact",
+                                        "li_link_type": "url",
+                                        "li_link": "#hours",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            }
+                        ],
+                        "post_footer_col_2": [
+                            {
+                                "element_type": {
+                                    "element": "heading",
+                                    "heading": {
+                                        "heading_text": "SERVICES",
+                                        "heading_level": "h4"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Haircuts",
+                                        "li_link_type": "url",
+                                        "li_link": "#services",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Beard & Shave",
+                                        "li_link_type": "url",
+                                        "li_link": "#services",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Color",
+                                        "li_link_type": "url",
+                                        "li_link": "#services",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Styling",
+                                        "li_link_type": "url",
+                                        "li_link": "#services",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Packages",
+                                        "li_link_type": "url",
+                                        "li_link": "#services",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            }
+                        ],
+                        "post_footer_col_3": [
+                            {
+                                "element_type": {
+                                    "element": "heading",
+                                    "heading": {
+                                        "heading_text": "LEGAL",
+                                        "heading_level": "h4"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Privacy Policy",
+                                        "li_link_type": "url",
+                                        "li_link": "#",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Terms & Conditions",
+                                        "li_link_type": "url",
+                                        "li_link": "#",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "Cookies Policy",
+                                        "li_link_type": "url",
+                                        "li_link": "#",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            }
+                        ],
+                        "post_footer_split": [
+                            {
+                                "w": 50,
+                                "name": ""
+                            },
+                            {
+                                "w": 25,
+                                "name": ""
+                            },
+                            {
+                                "w": 25,
+                                "name": ""
+                            }
+                        ]
+                    }
+                },
+                "copyright_settings": {
+                    "enabled": "yes",
+                    "yes": {
+                        "copyright_columns": {
+                            "count": "2",
+                            "2": {
+                                "copyright_col_1": [
+                                    {
+                                        "element_type": {
+                                            "element": "text",
+                                            "text": {
+                                                "text_content": "&copy; {{current_year}} X/23 Studio.\nAll Rights Reserved."
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "element_type": {
+                                            "element": "text",
+                                            "text": {
+                                                "text_content": "<p class=\"footer-disclaimer\">A barbershop and hair studio built on precision, style, and confidence. Proudly serving New York City since 2016.</p>"
+                                            }
+                                        }
+                                    }
+                                ],
+                                "copyright_col_2": [
+                                    {
+                                        "element_type": {
+                                            "element": "text",
+                                            "text": {
+                                                "text_content": "<p>NEW YORK CITY, NY</p>"
+                                            }
+                                        },
+                                        "element_css_class": "text-end"
+                                    }
+                                ],
+                                "copyright_auto": "yes",
+                                "copyright_justify": "between"
+                            }
+                        },
+                        "copyright_custom_styling": {
+                            "enabled": "yes",
+                            "yes": {
+                                "copyright_container": "container",
+                                "copyright_typography": {
+                                    "family": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+                                    "size": {
+                                        "value": "12",
+                                        "unit": "px"
+                                    },
+                                    "line-height": "16",
+                                    "weight": "400",
+                                    "color": "#a1a1aa"
+                                }
+                            }
+                        }
+                    }
+                },
+                "container_width_presets": [
+                    {
+                        "id": "cw_small",
+                        "width_name": "Small",
+                        "width": {
+                            "value": "640",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_prose",
+                        "width_name": "Prose",
+                        "width": {
+                            "value": "672",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_narrow",
+                        "width_name": "Narrow",
+                        "width": {
+                            "value": "768",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_medium",
+                        "width_name": "Medium",
+                        "width": {
+                            "value": "896",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide",
+                        "width_name": "Wide",
+                        "width": {
+                            "value": "1024",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-l",
+                        "width_name": "Wide L",
+                        "width": {
+                            "value": "1152",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xl",
+                        "width_name": "Wide XL",
+                        "width": {
+                            "value": "1280",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xxl",
+                        "width_name": "Wide XXL",
+                        "width": {
+                            "value": "1440",
+                            "unit": "px"
+                        }
+                    }
+                ],
+                "font_sizes": [
+                    {
+                        "name": "Lead",
+                        "size": "20",
+                        "weight": "",
+                        "line_height": "",
+                        "letter_spacing": "",
+                        "transform": "",
+                        "class": "lead"
+                    },
+                    {
+                        "name": "Small",
+                        "size": "16",
+                        "weight": "",
+                        "line_height": "",
+                        "letter_spacing": "",
+                        "transform": "",
+                        "class": "font-small"
+                    },
+                    {
+                        "name": "Eyebrow",
+                        "size": "11",
+                        "weight": "700",
+                        "line_height": "",
+                        "letter_spacing": "0.05em",
+                        "transform": "uppercase",
+                        "class": ""
+                    }
+                ],
+                "theme_colors": [
+                    {
+                        "name": "Primary",
+                        "color": "#ddff00"
+                    },
+                    {
+                        "name": "Ink",
+                        "color": "#ffffff"
+                    },
+                    {
+                        "name": "Muted",
+                        "color": "#a1a1aa"
+                    },
+                    {
+                        "name": "Light",
+                        "color": "#0c0c0d"
+                    },
+                    {
+                        "name": "Secondary",
+                        "color": "#6c757d"
+                    },
+                    {
+                        "name": "Accent",
+                        "color": "#fd7e14"
+                    },
+                    {
+                        "name": "Black",
+                        "color": "#000"
+                    },
+                    {
+                        "name": "Gray",
+                        "color": "#636c72"
+                    },
+                    {
+                        "name": "Light Gray",
+                        "color": "#bdbdbd"
+                    },
+                    {
+                        "name": "Red",
+                        "color": "#dc3545"
+                    },
+                    {
+                        "name": "Pink",
+                        "color": "#e91e63"
+                    },
+                    {
+                        "name": "Purple",
+                        "color": "#9c27b0"
+                    },
+                    {
+                        "name": "Deep Purple",
+                        "color": "#673ab7"
+                    },
+                    {
+                        "name": "Indigo",
+                        "color": "#3f51b5"
+                    },
+                    {
+                        "name": "Blue",
+                        "color": "#286090"
+                    },
+                    {
+                        "name": "Light Blue",
+                        "color": "#03a9f4"
+                    },
+                    {
+                        "name": "Cyan",
+                        "color": "#00bcd4"
+                    },
+                    {
+                        "name": "Teal",
+                        "color": "#009688"
+                    },
+                    {
+                        "name": "Green",
+                        "color": "#5cb85c"
+                    },
+                    {
+                        "name": "Light Green",
+                        "color": "#8bc34a"
+                    },
+                    {
+                        "name": "Lime",
+                        "color": "#cddc39"
+                    },
+                    {
+                        "name": "Yellow",
+                        "color": "#ffeb3b"
+                    },
+                    {
+                        "name": "Amber",
+                        "color": "#ffc107"
+                    },
+                    {
+                        "name": "Orange",
+                        "color": "#ff9800"
+                    },
+                    {
+                        "name": "Deep Orange",
+                        "color": "#ff5722"
+                    },
+                    {
+                        "name": "Brown",
+                        "color": "#795548"
+                    },
+                    {
+                        "name": "Blue Gray",
+                        "color": "#607d8b"
+                    }
+                ],
+                "spacing_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    },
+                    {
+                        "name": "[40px]",
+                        "size": "40px"
+                    }
+                ],
+                "gap_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "[32px]",
+                        "size": "32px"
+                    },
+                    {
+                        "name": "[40px]",
+                        "size": "40px"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    }
+                ],
+                "typography": {
+                    "body": {
+                        "family": "",
+                        "variation": "regular",
+                        "color": "#ffffff",
+                        "size": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "line-height": "1.63"
+                    },
+                    "h4": {
+                        "family": "",
+                        "variation": "900",
+                        "color": "",
+                        "size": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "line-height": "1.33",
+                        "letter-spacing": "1.2",
+                        "text-transform": "uppercase"
+                    },
+                    "type_fluid_enable": "no"
+                }
+            }
+        },
+        "conversion-parity.json": {
+            "schema": "unysonplus-conversion-parity/1",
+            "score": 100,
+            "passed": 5,
+            "total": 5,
+            "checks": [
+                {
+                    "id": "border_color",
+                    "label": "Border / divider colour",
+                    "source": "rgb(34, 34, 37)",
+                    "converted": "#222225",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "section_count",
+                    "label": "Section count",
+                    "source": 1,
+                    "converted": 1,
+                    "pass": true,
+                    "note": "tolerance ±1"
+                },
+                {
+                    "id": "footer",
+                    "label": "Footer chrome",
+                    "source": "present",
+                    "converted": "mapped",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "dropped_measures",
+                    "label": "Unmapped width classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "max-w/min-w must map to a native width or carried CSS"
+                },
+                {
+                    "id": "dropped_chrome",
+                    "label": "Unmapped chrome classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "logo/menu/footer typography must map to a native option or carried CSS"
+                }
+            ]
+        }
+    }
+}

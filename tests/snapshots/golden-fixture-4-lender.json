@@ -56,6 +56,7 @@
                             {
                                 "t": "row",
                                 "role": "columns",
+                                "srcGrid": true,
                                 "valign": "center",
                                 "gap": 64,
                                 "gapResp": {
@@ -635,6 +636,7 @@
                                     {
                                         "t": "row",
                                         "role": "columns",
+                                        "srcGrid": true,
                                         "valign": "",
                                         "gap": 24,
                                         "gapResp": {
@@ -686,6 +688,7 @@
                                                     "lucide": "lucide/file-text",
                                                     "imgIcon": "",
                                                     "imgIconH": 0,
+                                                    "imgIconW": 0,
                                                     "image": [],
                                                     "title": "How Financing Works",
                                                     "titleTag": "h2",
@@ -749,6 +752,7 @@
                                                             "lucide": "lucide/house",
                                                             "imgIcon": "",
                                                             "imgIconH": 0,
+                                                            "imgIconW": 0,
                                                             "image": [],
                                                             "title": "Loan Types Available",
                                                             "titleTag": "h2",
@@ -861,6 +865,7 @@
                                     {
                                         "t": "row",
                                         "role": "columns",
+                                        "srcGrid": true,
                                         "valign": "",
                                         "gap": 24,
                                         "gapResp": {
@@ -912,6 +917,7 @@
                                                     "lucide": "lucide/users",
                                                     "imgIcon": "",
                                                     "imgIconH": 0,
+                                                    "imgIconW": 0,
                                                     "image": [],
                                                     "title": "Who We Help",
                                                     "titleTag": "h2",
@@ -992,6 +998,7 @@
                                                     "lucide": "lucide/circle-help",
                                                     "imgIcon": "",
                                                     "imgIconH": 0,
+                                                    "imgIconW": 0,
                                                     "image": [],
                                                     "title": "Why Prefab Financing Is Different",
                                                     "titleTag": "h2",
@@ -1130,6 +1137,7 @@
                             {
                                 "t": "row",
                                 "role": "columns",
+                                "srcGrid": true,
                                 "valign": "",
                                 "gap": 32,
                                 "gapResp": {
@@ -1184,6 +1192,7 @@
                                                         "lucide": "lucide/ban",
                                                         "imgIcon": "",
                                                         "imgIconH": 0,
+                                                        "imgIconW": 0,
                                                         "image": [],
                                                         "title": "Misclassified as 'Mobile Homes'",
                                                         "titleTag": "h3",
@@ -1261,6 +1270,7 @@
                                                         "lucide": "lucide/clock",
                                                         "imgIcon": "",
                                                         "imgIconH": 0,
+                                                        "imgIconW": 0,
                                                         "image": [],
                                                         "title": "60+ Day Approval Delays",
                                                         "titleTag": "h3",
@@ -1338,6 +1348,7 @@
                                                         "lucide": "lucide/dollar-sign",
                                                         "imgIcon": "",
                                                         "imgIconH": 0,
+                                                        "imgIconW": 0,
                                                         "image": [],
                                                         "title": "2-3% Hidden Closing Fees",
                                                         "titleTag": "h3",
@@ -1428,6 +1439,7 @@
                                                         "lucide": "lucide/zap",
                                                         "imgIcon": "",
                                                         "imgIconH": 0,
+                                                        "imgIconW": 0,
                                                         "image": [],
                                                         "title": "7-Day Approvals",
                                                         "titleTag": "h3",
@@ -1505,6 +1517,7 @@
                                                         "lucide": "lucide/leaf",
                                                         "imgIcon": "",
                                                         "imgIconH": 0,
+                                                        "imgIconW": 0,
                                                         "image": [],
                                                         "title": "Green Mortgage Discounts",
                                                         "titleTag": "h3",
@@ -1582,6 +1595,7 @@
                                                         "lucide": "lucide/shield",
                                                         "imgIcon": "",
                                                         "imgIconH": 0,
+                                                        "imgIconW": 0,
                                                         "image": [],
                                                         "title": "Deal Protection",
                                                         "titleTag": "h3",
@@ -1897,8 +1911,6 @@
                                         "look": {
                                             "avatarPx": 48,
                                             "cardPad": "32px 32px 32px 32px",
-                                            "avatarRing": "1px solid rgb(220, 229, 224)",
-                                            "avatarRingRadius": "16px",
                                             "quoteCs": "color:rgb(21, 40, 32);font-size:16px;font-weight:400;line-height:26px;font-family:\"DM Sans\", system-ui, sans-serif",
                                             "nameCs": "color:rgb(21, 40, 32);font-size:16px;font-weight:600;line-height:24px;font-family:\"DM Sans\", system-ui, sans-serif",
                                             "jobCs": "color:rgb(103, 126, 117);font-size:14px;font-weight:400;line-height:20px;font-family:\"DM Sans\", system-ui, sans-serif",
@@ -1924,8 +1936,6 @@
                                         "look": {
                                             "avatarPx": 48,
                                             "cardPad": "32px 32px 32px 32px",
-                                            "avatarRing": "1px solid rgb(220, 229, 224)",
-                                            "avatarRingRadius": "16px",
                                             "quoteCs": "color:rgb(21, 40, 32);font-size:16px;font-weight:400;line-height:26px;font-family:\"DM Sans\", system-ui, sans-serif",
                                             "nameCs": "color:rgb(21, 40, 32);font-size:16px;font-weight:600;line-height:24px;font-family:\"DM Sans\", system-ui, sans-serif",
                                             "jobCs": "color:rgb(103, 126, 117);font-size:14px;font-weight:400;line-height:20px;font-family:\"DM Sans\", system-ui, sans-serif",
@@ -1951,8 +1961,6 @@
                                         "look": {
                                             "avatarPx": 48,
                                             "cardPad": "32px 32px 32px 32px",
-                                            "avatarRing": "1px solid rgb(220, 229, 224)",
-                                            "avatarRingRadius": "16px",
                                             "quoteCs": "color:rgb(21, 40, 32);font-size:16px;font-weight:400;line-height:26px;font-family:\"DM Sans\", system-ui, sans-serif",
                                             "nameCs": "color:rgb(39, 104, 77);font-size:20px;font-weight:700;line-height:28px;font-family:\"DM Sans\", system-ui, sans-serif",
                                             "jobCs": "color:rgb(21, 40, 32);font-size:16px;font-weight:600;line-height:24px;font-family:\"DM Sans\", system-ui, sans-serif",
@@ -2061,6 +2069,7 @@
                             {
                                 "t": "row",
                                 "role": "columns",
+                                "srcGrid": true,
                                 "valign": "",
                                 "gap": 24,
                                 "gapResp": {
@@ -2111,6 +2120,7 @@
                                             "lucide": "lucide/shield",
                                             "imgIcon": "",
                                             "imgIconH": 0,
+                                            "imgIconW": 0,
                                             "image": [],
                                             "title": "Editorially Independent",
                                             "titleTag": "h3",
@@ -2189,6 +2199,7 @@
                                             "lucide": "lucide/book-open",
                                             "imgIcon": "",
                                             "imgIconH": 0,
+                                            "imgIconW": 0,
                                             "image": [],
                                             "title": "Government Sources",
                                             "titleTag": "h3",
@@ -2267,6 +2278,7 @@
                                             "lucide": "lucide/users",
                                             "imgIcon": "",
                                             "imgIconH": 0,
+                                            "imgIconW": 0,
                                             "image": [],
                                             "title": "Expert Reviewed",
                                             "titleTag": "h3",
@@ -2545,6 +2557,7 @@
                             {
                                 "t": "row",
                                 "role": "columns",
+                                "srcGrid": false,
                                 "valign": "center",
                                 "gap": 12,
                                 "gapResp": {
@@ -3126,7 +3139,7 @@
                         "subtitle_color": "rgba(255, 255, 255, 0.9)",
                         "title_color": "#ffffff"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:60px !important;line-height:60px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-overline--pill .heading-overline__label,selector .heading-overline__label{display:inline-flex;align-items:center;gap:0.5rem;background:rgba(255, 255, 255, 0.15);backdrop-filter:…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:20px !important;line-height:28px !important;}selector .heading-title{font-size:60px !important;line-height:60px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-overline--pill .heading-overline__label,selector .heading-overli…",
                     "src_cls": "font-display text-4xl md:text-5xl lg:text-6xl font-bold leading-tight mb-6 text-lg md:text-xl text-white/90 mb-8 leading-relaxed",
                     "dropped": [
                         "font-display",
@@ -3209,7 +3222,7 @@
                         "subtitle_color": "rgba(255, 255, 255, 0.7)",
                         "title_color": "#ffffff"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:20px !important;line-height:28px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:8px !important;}selector .heading-subtitle{font-size:14px !important;line-height:20px !important;}selector…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:14px !important;line-height:20px !important;}selector .heading-title{font-size:20px !important;line-height:28px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-…",
                     "src_cls": "font-display text-xl font-bold text-white mb-2 text-white/70 text-sm",
                     "dropped": [
                         "font-display",
@@ -3456,7 +3469,7 @@
                         "subtitle_color": "#677e75",
                         "title_color": "#152820"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-overline--pill .heading-overline__label,selector .heading-overline__label{display:inline-flex;align-items:center;gap:0.5rem;background:rgba(39, 104, 77, 0.1);border-radius:9999p…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:20px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-overline--pill .heading-overline__label,selector .heading-overli…",
                     "src_cls": "font-display text-3xl md:text-4xl lg:text-5xl font-bold text-foreground mb-6 text-lg md:text-xl text-muted-foreground max-w-3xl mx-auto leading-relaxed",
                     "dropped": [
                         "font-display",
@@ -3522,7 +3535,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);} :where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}} selector.icon-box__wrapper{padding:0;}",
+                    "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);} :where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767p…",
                     "src_cls": "group bg-card rounded-xl p-5 md:p-6 border border-border/50 shadow-sm hover:shadow-md hover:border-primary/20 transition-all duration-300",
                     "dropped": [
                         "p-5",
@@ -3562,7 +3575,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);} :where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}} selector.icon-box__wrapper{padding:0;} …",
+                    "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);} :where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767p…",
                     "src_cls": "group bg-card rounded-xl p-5 md:p-6 border border-border/50 shadow-sm hover:shadow-md hover:border-primary/20 transition-all duration-300",
                     "dropped": [
                         "p-5",
@@ -3631,7 +3644,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);} :where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}} selector.icon-box__wrapper{padding:0;}",
+                    "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);} :where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767p…",
                     "src_cls": "group bg-card rounded-xl p-5 md:p-6 border border-border/50 shadow-sm hover:shadow-md hover:border-primary/20 transition-all duration-300",
                     "dropped": [
                         "p-5",
@@ -3672,7 +3685,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);} :where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}} selector.icon-box__wrapper{padding:0;}",
+                    "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);} :where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767p…",
                     "src_cls": "group bg-card rounded-xl p-5 md:p-6 border border-border/50 shadow-sm hover:shadow-md hover:border-primary/20 transition-all duration-300",
                     "dropped": [
                         "p-5",
@@ -3727,7 +3740,7 @@
                         "subtitle_color": "#677e75",
                         "title_color": "#152820"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}@medi…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:18px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-…",
                     "src_cls": "font-display text-3xl md:text-4xl lg:text-5xl font-bold text-foreground mb-6 text-lg text-muted-foreground",
                     "dropped": [
                         "font-display",
@@ -3770,7 +3783,7 @@
                         "overline_color": "#dc2828",
                         "heading": "h3"
                     },
-                    "custom_css": "selector .heading-overline{font-weight:500 !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;}"
+                    "custom_css": "selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;}"
                 },
                 "h-51": {
                     "sc": "icon_box",
@@ -3796,7 +3809,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                     "src_cls": "flex gap-4 p-5 rounded-xl border border-destructive/20 bg-destructive/5",
                     "dropped": [
                         "gap-4",
@@ -3827,7 +3840,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                     "src_cls": "flex gap-4 p-5 rounded-xl border border-destructive/20 bg-destructive/5",
                     "dropped": [
                         "gap-4",
@@ -3857,7 +3870,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                     "src_cls": "flex gap-4 p-5 rounded-xl border border-destructive/20 bg-destructive/5",
                     "dropped": [
                         "gap-4",
@@ -3883,7 +3896,7 @@
                         "overline_color": "#27684d",
                         "heading": "h3"
                     },
-                    "custom_css": "selector .heading-overline{font-weight:500 !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;}"
+                    "custom_css": "selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;}"
                 },
                 "h-56": {
                     "sc": "icon_box",
@@ -3909,7 +3922,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                     "src_cls": "flex gap-4 p-5 rounded-xl border border-primary/20 bg-primary/5",
                     "dropped": [
                         "gap-4",
@@ -3940,7 +3953,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                     "src_cls": "flex gap-4 p-5 rounded-xl border border-primary/20 bg-primary/5",
                     "dropped": [
                         "gap-4",
@@ -3970,7 +3983,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                    "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                     "src_cls": "flex gap-4 p-5 rounded-xl border border-primary/20 bg-primary/5",
                     "dropped": [
                         "gap-4",
@@ -4047,7 +4060,7 @@
                         "subtitle_color": "#677e75",
                         "title_color": "#152820"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:18px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{fo…",
                     "src_cls": "text-uppercase font-display text-3xl md:text-4xl lg:text-5xl font-bold text-foreground mt-4 mb-6 text-lg text-muted-foreground",
                     "dropped": [
                         "font-display",
@@ -4132,7 +4145,7 @@
                         "subtitle_color": "#677e75",
                         "title_color": "#152820"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:18px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{fo…",
                     "src_cls": "text-uppercase font-display text-3xl md:text-4xl lg:text-5xl font-bold text-foreground mt-4 mb-6 text-lg text-muted-foreground",
                     "dropped": [
                         "font-display",
@@ -4202,7 +4215,7 @@
                         "subtitle_color": "#677e75",
                         "title_color": "#152820"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:30px !important;line-height:36px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-subtitle{max-width:42rem !important;margin-left:auto !important;margin-right:auto !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-b…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:16px !important;line-height:24px !important;}selector .heading-title{font-size:30px !important;line-height:36px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-subtitle{max-width:42rem !important;margin-left:auto !important;…",
                     "src_cls": "font-display text-2xl md:text-3xl font-bold text-foreground mb-3 text-muted-foreground max-w-2xl mx-auto",
                     "dropped": [
                         "font-display",
@@ -4259,7 +4272,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
+                    "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
                     "src_cls": "bg-card border border-border rounded-xl p-6 text-center",
                     "dropped": [
                         "p-6",
@@ -4301,7 +4314,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
+                    "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
                     "src_cls": "bg-card border border-border rounded-xl p-6 text-center",
                     "dropped": [
                         "p-6",
@@ -4343,7 +4356,7 @@
                         "scroll_text_highlight": "off",
                         "dc_logged": "all"
                     },
-                    "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
+                    "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
                     "src_cls": "bg-card border border-border rounded-xl p-6 text-center",
                     "dropped": [
                         "p-6",
@@ -4415,7 +4428,7 @@
                         "subtitle_color": "#677e75",
                         "title_color": "#152820"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:18px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{fo…",
                     "src_cls": "text-uppercase font-display text-3xl md:text-4xl lg:text-5xl font-bold text-foreground mt-4 mb-6 text-lg text-muted-foreground",
                     "dropped": [
                         "font-display",
@@ -4497,7 +4510,7 @@
                         "subtitle_color": "rgba(253, 253, 252, 0.8)",
                         "title_color": "#fdfdfc"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selec…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:20px !important;line-height:33px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-…",
                     "src_cls": "font-display text-3xl md:text-4xl lg:text-5xl font-bold text-primary-foreground mb-6 text-xl text-primary-foreground/80 mb-10 leading-relaxed",
                     "dropped": [
                         "font-display",
@@ -5287,7 +5300,7 @@
                                                                 "unique_id": "uid-5",
                                                                 "css_id": "",
                                                                 "css_class": "",
-                                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:60px !important;line-height:60px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-overline--pill .heading-overline__label,selector .heading-overline__label{display:inline-flex;align-items:center;gap:0.5rem;background:rgba(255, 255, 255, 0.15);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);border:1px solid rgba(255, 255, 255, 0.3);border-radius:9999px;padding:8px 16px 8px 16px;}selector .heading-overline{font-size:0.875rem;line-height:1.25rem;font-weight:500;color:rgb(255, 255, 255);}selector .heading-overline{margin-bottom:24px;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector .heading-subtitle{font-size:18px !important;line-height:29.25px !important;}}@media (max-width:767px){selector.heading .heading-title{font-size:36px !important;line-height:45px !important;}}",
+                                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:20px !important;line-height:28px !important;}selector .heading-title{font-size:60px !important;line-height:60px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-overline--pill .heading-overline__label,selector .heading-overline__label{display:inline-flex;align-items:center;gap:0.5rem;background:rgba(255, 255, 255, 0.15);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);border:1px solid rgba(255, 255, 255, 0.3);border-radius:9999px;padding:8px 16px 8px 16px;}selector .heading-overline{font-size:0.875rem;line-height:1.25rem;font-weight:500;color:rgb(255, 255, 255);}selector .heading-overline{margin-bottom:24px;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector .heading-subtitle{font-size:18px !important;line-height:29.25px !important;}}@media (max-width:767px){selector.heading .heading-title{font-size:36px !important;line-height:45px !important;}}",
                                                                 "overline": "The #1 Prefab Home Mortgage Platform",
                                                                 "overline_uppercase": "no",
                                                                 "overline_icon": {
@@ -5562,6 +5575,22 @@
                                                                                 "bottom": "",
                                                                                 "left": ""
                                                                             }
+                                                                        },
+                                                                        "xl": {
+                                                                            "margin": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            },
+                                                                            "padding": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            }
                                                                         }
                                                                     }
                                                                 },
@@ -5633,9 +5662,19 @@
                                                                 "css_class": "",
                                                                 "custom_css": "selector.fw-fl--orient-horizontal{column-gap:20px;}\nselector .fw-fl__text{font-size:14px;}\nselector .fw-fl__item{gap:8px;}",
                                                                 "element_position": {
-                                                                    "position": "default"
+                                                                    "base": {
+                                                                        "position": "default"
+                                                                    },
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
                                                                 },
-                                                                "element_overflow": "",
+                                                                "element_overflow": {
+                                                                    "base": "",
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
+                                                                },
                                                                 "responsive_hide": [],
                                                                 "dc_logged": "all",
                                                                 "dc_roles": [],
@@ -6038,7 +6077,7 @@
                                                                 "unique_id": "uid-10",
                                                                 "css_id": "",
                                                                 "css_class": "",
-                                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:20px !important;line-height:28px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:8px !important;}selector .heading-subtitle{font-size:14px !important;line-height:20px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}",
+                                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:14px !important;line-height:20px !important;}selector .heading-title{font-size:20px !important;line-height:28px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:8px !important;}selector .heading-subtitle{font-size:14px !important;line-height:20px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}",
                                                                 "overline": "",
                                                                 "overline_uppercase": "no",
                                                                 "overline_icon": {
@@ -8106,6 +8145,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -8177,9 +8232,19 @@
                                                         "css_class": "",
                                                         "custom_css": "selector{opacity:0.8;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -8485,7 +8550,7 @@
                                                 "unique_id": "uid-31",
                                                 "css_id": "",
                                                 "css_class": "",
-                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-overline--pill .heading-overline__label,selector .heading-overline__label{display:inline-flex;align-items:center;gap:0.5rem;background:rgba(39, 104, 77, 0.1);border-radius:9999px;padding:8px 16px 8px 16px;}selector .heading-overline{font-size:0.875rem;line-height:1.25rem;font-weight:500;color:rgb(39, 104, 77);}selector .heading-overline{margin-bottom:24px;}selector .heading-subtitle{max-width:48rem !important;margin-left:auto !important;margin-right:auto !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector .heading-subtitle{font-size:18px !important;line-height:29.25px !important;}}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
+                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:20px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-overline--pill .heading-overline__label,selector .heading-overline__label{display:inline-flex;align-items:center;gap:0.5rem;background:rgba(39, 104, 77, 0.1);border-radius:9999px;padding:8px 16px 8px 16px;}selector .heading-overline{font-size:0.875rem;line-height:1.25rem;font-weight:500;color:rgb(39, 104, 77);}selector .heading-overline{margin-bottom:24px;}selector .heading-subtitle{max-width:48rem !important;margin-left:auto !important;margin-right:auto !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector .heading-subtitle{font-size:18px !important;line-height:29.25px !important;}}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
                                                 "overline": "Your Prefab Financing Partner",
                                                 "overline_uppercase": "no",
                                                 "overline_icon": {
@@ -9195,6 +9260,22 @@
                                                                                         "bottom": "",
                                                                                         "left": ""
                                                                                     }
+                                                                                },
+                                                                                "xl": {
+                                                                                    "margin": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    },
+                                                                                    "padding": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         },
@@ -9264,11 +9345,21 @@
                                                                         "unique_id": "uid-35",
                                                                         "css_id": "",
                                                                         "css_class": "",
-                                                                        "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);}\n:where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}}\nselector.icon-box__wrapper{padding:0;}",
+                                                                        "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);}\n:where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}}\nselector.icon-box__wrapper{padding:0;}",
                                                                         "element_position": {
-                                                                            "position": "default"
+                                                                            "base": {
+                                                                                "position": "default"
+                                                                            },
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
                                                                         },
-                                                                        "element_overflow": "",
+                                                                        "element_overflow": {
+                                                                            "base": "",
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
+                                                                        },
                                                                         "responsive_hide": [],
                                                                         "dc_logged": "all",
                                                                         "dc_roles": [],
@@ -9564,6 +9655,22 @@
                                                                                         "bottom": "",
                                                                                         "left": ""
                                                                                     }
+                                                                                },
+                                                                                "xl": {
+                                                                                    "margin": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    },
+                                                                                    "padding": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         },
@@ -9633,11 +9740,21 @@
                                                                         "unique_id": "uid-37",
                                                                         "css_id": "",
                                                                         "css_class": "",
-                                                                        "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);}\n:where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}}\nselector.icon-box__wrapper{padding:0;}\nselector.icon-box__wrapper{padding:0;}",
+                                                                        "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);}\n:where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}}\nselector.icon-box__wrapper{padding:0;}\nselector.icon-box__wrapper{padding:0;}",
                                                                         "element_position": {
-                                                                            "position": "default"
+                                                                            "base": {
+                                                                                "position": "default"
+                                                                            },
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
                                                                         },
-                                                                        "element_overflow": "",
+                                                                        "element_overflow": {
+                                                                            "base": "",
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
+                                                                        },
                                                                         "responsive_hide": [],
                                                                         "dc_logged": "all",
                                                                         "dc_roles": [],
@@ -9796,6 +9913,22 @@
                                                                                         "bottom": "",
                                                                                         "left": ""
                                                                                     }
+                                                                                },
+                                                                                "xl": {
+                                                                                    "margin": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    },
+                                                                                    "padding": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         },
@@ -9867,9 +10000,19 @@
                                                                         "css_class": "",
                                                                         "custom_css": "selector .fw-fl__text{font-size:14px;}\nselector .fw-fl__item{gap:8px;}",
                                                                         "element_position": {
-                                                                            "position": "default"
+                                                                            "base": {
+                                                                                "position": "default"
+                                                                            },
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
                                                                         },
-                                                                        "element_overflow": "",
+                                                                        "element_overflow": {
+                                                                            "base": "",
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
+                                                                        },
                                                                         "responsive_hide": [],
                                                                         "dc_logged": "all",
                                                                         "dc_roles": [],
@@ -10352,6 +10495,22 @@
                                                                                         "bottom": "",
                                                                                         "left": ""
                                                                                     }
+                                                                                },
+                                                                                "xl": {
+                                                                                    "margin": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    },
+                                                                                    "padding": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         },
@@ -10421,11 +10580,21 @@
                                                                         "unique_id": "uid-41",
                                                                         "css_id": "",
                                                                         "css_class": "",
-                                                                        "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);}\n:where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}}\nselector.icon-box__wrapper{padding:0;}",
+                                                                        "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);}\n:where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}}\nselector.icon-box__wrapper{padding:0;}",
                                                                         "element_position": {
-                                                                            "position": "default"
+                                                                            "base": {
+                                                                                "position": "default"
+                                                                            },
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
                                                                         },
-                                                                        "element_overflow": "",
+                                                                        "element_overflow": {
+                                                                            "base": "",
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
+                                                                        },
                                                                         "responsive_hide": [],
                                                                         "dc_logged": "all",
                                                                         "dc_roles": [],
@@ -10721,6 +10890,22 @@
                                                                                         "bottom": "",
                                                                                         "left": ""
                                                                                     }
+                                                                                },
+                                                                                "xl": {
+                                                                                    "margin": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    },
+                                                                                    "padding": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         },
@@ -10790,11 +10975,21 @@
                                                                         "unique_id": "uid-43",
                                                                         "css_id": "",
                                                                         "css_class": "",
-                                                                        "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);}\n:where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}}\nselector.icon-box__wrapper{padding:0;}",
+                                                                        "custom_css": "selector .icon-box__icon{border-radius:12px;width:2.5rem;height:2.5rem;min-height:2.5rem;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;} selector .icon-box__icon{transition:transform 300ms ease;}selector:hover .icon-box__icon{transform:scale(1.1);}\n:where(selector){transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);} selector .icon-box__content{font-size:14px;line-height:22.75px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{line-height:28px;font-weight:600 !important;} @media (max-width:767px){selector .icon-box__title{font-size:18px !important;}}\nselector.icon-box__wrapper{padding:0;}",
                                                                         "element_position": {
-                                                                            "position": "default"
+                                                                            "base": {
+                                                                                "position": "default"
+                                                                            },
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
                                                                         },
-                                                                        "element_overflow": "",
+                                                                        "element_overflow": {
+                                                                            "base": "",
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
+                                                                        },
                                                                         "responsive_hide": [],
                                                                         "dc_logged": "all",
                                                                         "dc_roles": [],
@@ -11185,7 +11380,7 @@
                                                 "unique_id": "uid-47",
                                                 "css_id": "",
                                                 "css_class": "",
-                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
+                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:18px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
                                                 "overline": "",
                                                 "overline_uppercase": "no",
                                                 "overline_icon": {
@@ -11627,7 +11822,7 @@
                                                         "unique_id": "uid-50",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "selector .heading-overline{font-weight:500 !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;}",
+                                                        "custom_css": "selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;}",
                                                         "overline": "The Problem",
                                                         "overline_uppercase": "yes",
                                                         "overline_icon": {
@@ -11780,6 +11975,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -11849,11 +12060,21 @@
                                                         "unique_id": "uid-51",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -11964,6 +12185,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -12033,11 +12270,21 @@
                                                         "unique_id": "uid-52",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -12148,6 +12395,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -12217,11 +12480,21 @@
                                                         "unique_id": "uid-53",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -12432,7 +12705,7 @@
                                                         "unique_id": "uid-55",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "selector .heading-overline{font-weight:500 !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;}",
+                                                        "custom_css": "selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;}",
                                                         "overline": "Our Solution",
                                                         "overline_uppercase": "yes",
                                                         "overline_icon": {
@@ -12585,6 +12858,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -12654,11 +12943,21 @@
                                                         "unique_id": "uid-56",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -12769,6 +13068,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -12838,11 +13153,21 @@
                                                         "unique_id": "uid-57",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -12953,6 +13278,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -13022,11 +13363,21 @@
                                                         "unique_id": "uid-58",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
+                                                        "custom_css": ":where(selector){transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;margin-bottom:4px;font-weight:600 !important;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -13786,7 +14137,7 @@
                                                         "unique_id": "uid-64",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;margin-bottom:16px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
+                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:18px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;margin-bottom:16px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
                                                         "overline": "How It Works",
                                                         "overline_uppercase": "yes",
                                                         "overline_icon": {
@@ -14165,6 +14516,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -14234,11 +14601,21 @@
                                                         "unique_id": "uid-66",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "selector{--st-size:56px !important;}\r\nselector.fw-steps .fw-steps__item{padding:32px;}\nselector .fw-steps__item{position:relative;}selector .fw-steps__num-inline{position:absolute;margin:0;pointer-events:none;top:16px;right:16px;}selector .fw-steps__num-inline{font-size:60px;font-weight:700;line-height:60px;color:rgba(39, 104, 77, 0.1);font-family:Outfit, system-ui, sans-serif;}selector .fw-steps__title{color:rgb(21, 40, 32);font-size:20px;font-weight:600;line-height:28px;font-family:Outfit, system-ui, sans-serif;margin-bottom:12px;}selector .fw-steps__text,selector .fw-steps__text p{color:rgb(103, 126, 117);font-size:16px;font-weight:400;line-height:24px;font-family:\"DM Sans\", system-ui, sans-serif;}\nselector{max-width:1024px !important;margin-left:auto !important;margin-right:auto !important;width:100%;box-sizing:border-box;}",
+                                                        "custom_css": "selector{--st-size:56px !important;}\nselector.fw-steps .fw-steps__item{padding:32px;}\nselector .fw-steps__item{position:relative;}selector .fw-steps__num-inline{position:absolute;margin:0;pointer-events:none;top:16px;right:16px;}selector .fw-steps__num-inline{font-size:60px;font-weight:700;line-height:60px;color:rgba(39, 104, 77, 0.1);font-family:Outfit, system-ui, sans-serif;}selector .fw-steps__title{color:rgb(21, 40, 32);font-size:20px;font-weight:600;line-height:28px;font-family:Outfit, system-ui, sans-serif;margin-bottom:12px;}selector .fw-steps__text,selector .fw-steps__text p{color:rgb(103, 126, 117);font-size:16px;font-weight:400;line-height:24px;font-family:\"DM Sans\", system-ui, sans-serif;}\nselector{max-width:1024px !important;margin-left:auto !important;margin-right:auto !important;width:100%;box-sizing:border-box;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -14726,7 +15103,7 @@
                                                         "unique_id": "uid-70",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;margin-bottom:16px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
+                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:18px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;margin-bottom:16px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
                                                         "overline": "Success Stories",
                                                         "overline_uppercase": "yes",
                                                         "overline_icon": {
@@ -15221,7 +15598,7 @@
                                                         "unique_id": "uid-72",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "selector .ts-card__rating .sc-rating__fill,selector .testimonial-rating .ts-star{color:rgb(21, 40, 32) !important;}selector .testimonial-avatar img{width:48px !important;height:48px !important;}selector .testimonial-quote{margin-left:0;margin-right:0;padding-left:0;padding-right:0;}selector .testimonial-quote,selector .testimonial-quote p{color:rgb(21, 40, 32);font-size:16px;font-weight:400;line-height:26px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .testimonial-author{color:rgb(21, 40, 32);font-size:16px;font-weight:600;line-height:24px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .testimonial-meta.small .testimonial-job{font-size:14px;font-weight:400;line-height:20px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .ts-card__extra-label{color:rgb(103, 126, 117);font-size:14px;font-weight:400;line-height:20px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .ts-card__extra-value{color:rgb(39, 104, 77);font-size:20px;font-weight:700;line-height:28px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .ts-card__extra{margin-top:24px;padding-top:24px;border-top-color:rgb(220, 229, 224);}\nselector .testimonials-grid{--tg-gap:32px !important;}\r\nselector .testimonials-container,selector .testimonials-container--fluid{padding-left:0 !important;padding-right:0 !important;}\nselector .testimonial-item{padding:32px 32px 32px 32px !important;}\r\nselector .testimonial-avatar{border:1px solid rgb(220, 229, 224) !important;border-radius:16px !important;}\nselector{max-width:1152px !important;margin-left:auto !important;margin-right:auto !important;width:100%;box-sizing:border-box;}",
+                                                        "custom_css": "selector .ts-card__rating .sc-rating__fill,selector .testimonial-rating .ts-star{color:rgb(21, 40, 32) !important;}selector .testimonial-avatar img{width:48px !important;height:48px !important;}selector .testimonial-quote{margin-left:0;margin-right:0;padding-left:0;padding-right:0;}selector .testimonial-quote,selector .testimonial-quote p{color:rgb(21, 40, 32);font-size:16px;font-weight:400;line-height:26px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .testimonial-author{color:rgb(21, 40, 32);font-size:16px;font-weight:600;line-height:24px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .testimonial-meta.small .testimonial-job{font-size:14px;font-weight:400;line-height:20px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .ts-card__extra-label{color:rgb(103, 126, 117);font-size:14px;font-weight:400;line-height:20px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .ts-card__extra-value{color:rgb(39, 104, 77);font-size:20px;font-weight:700;line-height:28px;font-family:\"DM Sans\", system-ui, sans-serif;}selector .ts-card__extra{margin-top:24px;padding-top:24px;border-top-color:rgb(220, 229, 224);}\nselector .testimonials-grid{--tg-gap:32px !important;}\nselector .testimonials-container,selector .testimonials-container--fluid{padding-left:0 !important;padding-right:0 !important;}\nselector .testimonial-item{padding:32px 32px 32px 32px !important;}\nselector{max-width:1152px !important;margin-left:auto !important;margin-right:auto !important;width:100%;box-sizing:border-box;}",
                                                         "responsive_hide": [],
                                                         "custom_attrs": [],
                                                         "box_style": "boxp-box-da8b60f8"
@@ -15515,7 +15892,7 @@
                                                 "unique_id": "uid-75",
                                                 "css_id": "",
                                                 "css_class": "",
-                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:30px !important;line-height:36px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-subtitle{max-width:42rem !important;margin-left:auto !important;margin-right:auto !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:12px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector.heading .heading-title{font-size:24px !important;line-height:32px !important;}}",
+                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:16px !important;line-height:24px !important;}selector .heading-title{font-size:30px !important;line-height:36px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-subtitle{max-width:42rem !important;margin-left:auto !important;margin-right:auto !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:12px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector.heading .heading-title{font-size:24px !important;line-height:32px !important;}}",
                                                 "overline": "",
                                                 "overline_uppercase": "no",
                                                 "overline_icon": {
@@ -16051,6 +16428,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -16120,11 +16513,21 @@
                                                         "unique_id": "uid-78",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
+                                                        "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -16429,6 +16832,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -16498,11 +16917,21 @@
                                                         "unique_id": "uid-80",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
+                                                        "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -16807,6 +17236,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -16876,11 +17321,21 @@
                                                         "unique_id": "uid-82",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
+                                                        "custom_css": ":where(selector){text-align:center;transition:all;} selector .icon-box__content{font-size:14px;line-height:20px;} selector .icon-box__title.icon-box__title{font-family:Outfit, system-ui, sans-serif !important;} selector .icon-box__title{font-size:16px;line-height:24px;font-weight:600 !important;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -17591,7 +18046,7 @@
                                                         "unique_id": "uid-88",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;margin-bottom:16px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
+                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-overline{font-weight:500 !important;}selector .heading-overline{font-size:14px !important;line-height:20px !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:18px !important;line-height:28px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-overline{font-size:14px !important;letter-spacing:0.7px !important;line-height:20px !important;margin-bottom:16px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
                                                         "overline": "FAQ",
                                                         "overline_uppercase": "yes",
                                                         "overline_icon": {
@@ -17962,6 +18417,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -18033,9 +18504,19 @@
                                                         "css_class": "",
                                                         "custom_css": "selector .accordion-item{background:#f9f8f5 !important;}selector .accordion-title,selector .accordion-content{background:transparent !important;}selector .accordion-item{border:1px solid #dce5e0 !important;}selector .accordion-item{border-radius:12px !important;overflow:hidden;}\nselector{max-width:768px !important;margin-left:auto !important;margin-right:auto !important;width:100%;box-sizing:border-box;}",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -18345,7 +18826,7 @@
                                                 "unique_id": "uid-93",
                                                 "css_id": "",
                                                 "css_class": "",
-                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
+                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{text-transform:none !important;}selector .heading-subtitle{font-weight:400 !important;}selector .heading-subtitle{font-size:20px !important;line-height:33px !important;}selector .heading-title{font-size:48px !important;line-height:48px !important;}selector .heading-title.heading-title{font-family:Outfit, system-ui, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-family:\"DM Sans\", system-ui, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector.heading .heading-title{font-size:30px !important;line-height:36px !important;}}",
                                                 "overline": "",
                                                 "overline_uppercase": "no",
                                                 "overline_icon": {
@@ -18941,6 +19422,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -19012,9 +19509,19 @@
                                                         "css_class": "",
                                                         "custom_css": "",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -19484,7 +19991,7 @@
                                 "value": "32",
                                 "unit": "px"
                             },
-                            "logo_custom_css": ".site-title-text .accent,.site-title-text b,.site-title-text strong{color:rgb(39, 104, 77)}"
+                            "logo_custom_css": ".site-title-text .accent,.site-title-text b,.site-title-text strong{color:rgb(39, 104, 77)}.site-title-text{line-height:28px;}"
                         },
                         "simple": []
                     }
@@ -19709,7 +20216,7 @@
                     "mode": "full"
                 },
                 "misc_custom_css": {
-                    "custom_css": "/* converted header/footer styles */\n.site-header,.site-header .header-main{-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)}\n.footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:rgb(103, 126, 117) !important}\n.footer .site-logo__mark:not(.site-logo__mark--framed){color:rgb(103, 126, 117) !important}\n.footer-links-title{font-family:Outfit, system-ui, sans-serif !important;font-weight:600 !important;font-size:16px !important;color:rgb(21, 40, 32) !important;}\n.footer-column .footer-link{font-family:\"DM Sans\", system-ui, sans-serif;font-weight:400;font-size:16px;}.footer-column .footer-links-list>li,.footer-column .footer-link,.footer-column .footer-links-list .list-item__text{line-height:24px}.footer-column .footer-links-list>li:not(:last-child){margin-bottom:12px}\n.footer-tagline{font-family:\"DM Sans\", system-ui, sans-serif !important;max-width:320px !important;margin-bottom:16px !important;font-size:16px !important;line-height:24px !important;color:rgb(103, 126, 117) !important;}\n.footer a[href^=\"mailto:\"],.footer a[href^=\"mailto:\"] .list-item__text{font-family:\"DM Sans\", system-ui, sans-serif !important;font-size:16px !important;line-height:24px !important;color:rgb(103, 126, 117) !important;}\n/* Source header hairline colour */\n.site-header.site-header--border{box-shadow:none !important;border-bottom:1px solid rgba(220, 229, 224, 0.5) !important;}\n/* Source nav item gap (padding-less links) */\n.site-header .primary-menu{gap:32px;}\r\n/* Footer: the source grid's measured tracks */\r\n@media (min-width:783px){.footer-section .footer-row--equal{gap:32px;justify-content:flex-start;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(1){flex:0 0 318px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(2){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(3){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(4){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(5){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(6){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(7){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(8){flex:0 0 143px;min-width:0;}}\n/* Footer column titles: the source's own gap under a column heading */\n.footer-column .footer-links-title,.footer-column .hf-heading{margin-top:0 !important;margin-bottom:16px !important;}\n"
+                    "custom_css": "/* converted header/footer styles */\n.site-header,.site-header .header-main{-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)}\n.footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:rgb(103, 126, 117) !important}\n.footer .site-logo__mark:not(.site-logo__mark--framed){color:rgb(103, 126, 117) !important}\n.footer-links-title{font-family:Outfit, system-ui, sans-serif !important;font-weight:600 !important;font-size:16px !important;line-height:24px !important;color:rgb(21, 40, 32) !important;}\n.footer-column .footer-link{font-family:\"DM Sans\", system-ui, sans-serif;font-weight:400;font-size:16px;}.footer-column .footer-links-list>li,.footer-column .footer-link,.footer-column .footer-links-list .list-item__text{line-height:24px}.footer-column .footer-links-list>li:not(:last-child){margin-bottom:12px}\n.footer-tagline{font-family:\"DM Sans\", system-ui, sans-serif !important;max-width:320px !important;margin-bottom:16px !important;font-size:16px !important;line-height:24px !important;color:rgb(103, 126, 117) !important;}\n.footer a[href^=\"mailto:\"],.footer a[href^=\"mailto:\"] .list-item__text{font-family:\"DM Sans\", system-ui, sans-serif !important;font-size:16px !important;line-height:24px !important;color:rgb(103, 126, 117) !important;}\n/* Source header hairline colour */\n.site-header.site-header--border{box-shadow:none !important;border-bottom:1px solid rgba(220, 229, 224, 0.5) !important;}\n/* Source nav item gap (padding-less links) */\n.site-header .primary-menu{gap:32px;}\r\n/* Source nav line box */\r\n.site-header .primary-menu,.site-header .primary-menu a{line-height:20px;}\r\n/* Footer bands: the source's exact vertical padding (off the spacing scale) */\r\n.footer-section--copyright{padding-top:32px !important;}\n\r\n/* Footer: the source grid's measured tracks */\r\n@media (min-width:783px){.footer-section .footer-row--equal{gap:32px;justify-content:flex-start;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(1){flex:0 0 318px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(2){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(3){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(4){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(5){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(6){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(7){flex:0 0 143px;min-width:0;}.footer-section .footer-row--equal > .footer-col--auto:nth-child(8){flex:0 0 143px;min-width:0;}}\n/* Footer column titles: the source's own gap under a column heading */\n.footer-column .footer-links-title,.footer-column .hf-heading{margin-top:0 !important;margin-bottom:16px !important;}\n\r\n/* Source footer: the small print's own type */\r\n.footer-disclaimer{font-size:12px;line-height:16px;font-weight:400;}\r\n.footer-section--copyright .footer-disclaimer.footer-disclaimer{color:rgb(103, 126, 117) !important;}"
                 },
                 "social_profiles": [
                     {
@@ -20270,6 +20777,7 @@
                                         "value": "14",
                                         "unit": "px"
                                     },
+                                    "line-height": "20",
                                     "weight": "400",
                                     "color": "#677e75"
                                 }

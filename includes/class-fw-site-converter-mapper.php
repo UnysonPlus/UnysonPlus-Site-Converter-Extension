@@ -228,6 +228,42 @@ class FW_Site_Converter_Mapper {
 		return 'boxp-' . $slug;
 	}
 
+	/**
+	 * FORM STYLE PRESET from a captured form-field skin. The look a source gives its inputs and labels belongs on
+	 * a Form Styles preset (Theme Settings → Components → Form Styles), the same rule buttons and boxes follow:
+	 * every form wearing it matches, and one edit restyles them all. Emitted per conversion by
+	 * Stitch::build_form_style_presets() from captured('form_style'); the form points at `formp-<slug>`.
+	 *
+	 * @param array $field cs_decls() of the field   (background-color, border*, border-radius, color, font-*, …)
+	 * @param array $label cs_decls() of the label   (color, font-size, font-weight, text-transform, …)
+	 * @param bool  $transparent the field's ground is transparent (a `bg-transparent` class, nothing stamped)
+	 * @return string `formp-form-<hash>`, or '' when the skin says nothing a preset would hold
+	 */
+	public static function register_form_style( array $field, array $label, $transparent = false ) {
+		$clean = function ( array $d ) {
+			$o = array();
+			foreach ( $d as $p => $v ) {
+				$v = trim( (string) $v );
+				if ( '' !== $v && preg_match( '/^[a-z0-9#(),.%\s\'"\/-]+$/i', $v ) && ! ( 'border' === $p && preg_match( '/^0px/', $v ) ) ) {
+					$o[ $p ] = str_replace( '"', "'", $v );
+				}
+			}
+			ksort( $o );
+			return $o;
+		};
+		$f = $clean( $field );
+		$l = $clean( $label );
+		if ( $transparent && ! isset( $f['background-color'] ) ) {
+			$f['background-color'] = 'transparent';
+		}
+		if ( ! $f && ! $l ) {
+			return '';
+		}
+		$slug = 'form-' . substr( md5( wp_json_encode( array( $f, $l ) ) ), 0, 8 );
+		self::register_captured( 'form_style', $slug, array( 'field' => $f, 'label' => $l ) );
+		return 'formp-' . $slug;
+	}
+
 	/** Deterministic Icon Badge Preset slug from a captured icon-chip skin — `badge-<hash>`, whose slugified
 	 *  preset_name equals it, so register_icon_badge_preset() (assigns) and build_icon_badge_presets() (emits)
 	 *  agree without an ordering dependency. Returns '' for a trivial chip (no fill AND no border) so the caller
@@ -1434,6 +1470,28 @@ class FW_Site_Converter_Mapper {
 
 	/** Inline any `<img src=*.svg>` inside verbatim HTML as sanitised inline <svg> — WordPress can't host SVG
 	 *  in the media library, so a relative/sideloaded <img> 404s. Leaves non-SVG / un-fetchable imgs alone. */
+	/**
+	 * The inline style for an inlined SVG illustration, carrying the ORIGINAL <img>'s own width cap.
+	 *
+	 * WordPress cannot host SVG in the media library, so an `<img src=*.svg>` is replaced by the markup itself.
+	 * Both inliners threw away everything the <img> said about its size, so an illustration the source capped
+	 * (`w-full max-w-md`) stretched to fill its column. Measured on a captured band: an <img> stamped
+	 * `max-width:448px` in a 636px column rendered 636 x 530 — 42% oversized.
+	 *
+	 * The cap goes on the <svg> as its SINGLE max-width, with `width:100%` so it still shrinks on a narrow
+	 * screen. It has to be the only one: WordPress's inline-style filter keeps one max-width per element, so a
+	 * second declaration beside a wrapper's `max-width:100%` is dropped and the page stays oversized even though
+	 * the emitted markup looks right. `none` and `100%` are defaults and state nothing.
+	 */
+	private static function svg_inline_style( $img_html ) {
+		if ( preg_match( '/data-sc-cs\s*=\s*"([^"]*)"/i', (string) $img_html, $csm )
+			&& preg_match( '/(?:^|;)\s*max-width:\s*([0-9.]+)px/i', $csm[1], $mw ) && (float) $mw[1] > 0 ) {
+			$cap = (float) $mw[1];
+			return 'max-width:' . ( (float) (int) $cap === $cap ? (string) (int) $cap : (string) $cap ) . 'px;width:100%;height:auto';
+		}
+		return 'max-width:100%;height:auto';
+	}
+
 	private static function inline_svg_imgs( $html ) {
 		if ( stripos( $html, '.svg' ) === false ) { return $html; }
 		return preg_replace_callback(
@@ -1445,7 +1503,8 @@ class FW_Site_Converter_Mapper {
 					$abs = self::abs_asset( $m[2] );
 					return ( $abs !== $m[2] ) ? str_replace( $m[2], $abs, $m[0] ) : $m[0];
 				}
-				$svg = preg_replace( '/<svg\b/i', '<svg style="max-width:100%;height:auto"', $svg, 1 );
+				$svg_style = self::svg_inline_style( $m[0] );
+				$svg = preg_replace( '/<svg\b/i', '<svg style="' . $svg_style . '"', $svg, 1 );
 				return '<span class="sc-illustration" style="display:inline-block;max-width:100%;">' . $svg . '</span>';
 			},
 			$html
@@ -1686,6 +1745,51 @@ class FW_Site_Converter_Mapper {
 	 * background (layer_band_bg only hoists SOLID colours). Returns the `linear-gradient(…)` CSS or ''.
 	 * Rejects a low-alpha / `transparent`-stop SCRIM (a photo overlay), which is not a band fill.
 	 */
+	/**
+	 * A full-bleed TRANSLUCENT cover, as a CSS background-image layer — the scrim a photo band needs so
+	 * its text stays readable. The complement of `layer_band_gradient()`: that one looks for an opaque
+	 * band FILL and refuses transparency; this one wants exactly the cases it refuses.
+	 *
+	 * Returns '' for anything opaque (that is a band fill, not a scrim) and for anything that is not
+	 * pinned to all four edges. A flat translucent colour is returned as a two-stop gradient of itself,
+	 * so a wash and a gradient can ride in the same comma-separated background list.
+	 *
+	 * @param array $layer a sectionLayers entry
+	 * @return string a background-image layer, or ''
+	 */
+	private static function layer_scrim( $layer ) {
+		$cls = ' ' . strtolower( (string) ( $layer['cls'] ?? '' ) ) . ' ';
+		$cs  = (string) ( $layer['cs'] ?? '' );
+		$full_bleed = ( false !== strpos( $cls, ' inset-0 ' ) )
+			|| ( preg_match( '/(?:^|;)\s*position:\s*(?:absolute|fixed)/i', $cs )
+				&& preg_match( '/(?:^|;)\s*top:\s*0px/i', $cs ) && preg_match( '/(?:^|;)\s*bottom:\s*0px/i', $cs )
+				&& preg_match( '/(?:^|;)\s*left:\s*0px/i', $cs ) && preg_match( '/(?:^|;)\s*right:\s*0px/i', $cs ) );
+		if ( ! $full_bleed ) { return ''; }
+
+		// A GRADIENT cover is a scrim when any stop is translucent; a fully opaque one is a band fill.
+		if ( preg_match( '/(?:^|;)\s*background-image:\s*((?:linear|radial|conic)-gradient\([^;]*\))/i', $cs, $m ) ) {
+			$grad = trim( $m[1] );
+			if ( false !== stripos( $grad, 'transparent' ) ) { return $grad; }
+			if ( preg_match_all( '/rgba?\([^)]*\)/i', $grad, $cm ) ) {
+				foreach ( $cm[0] as $col ) {
+					if ( preg_match( '/[,\/]\s*(0?\.\d+|0)\s*\)\s*$/', $col, $am ) && (float) $am[1] < 0.95 ) { return $grad; }
+				}
+			}
+			return '';
+		}
+
+		// A FLAT translucent wash — expressed as a two-stop gradient so it can layer like one.
+		if ( preg_match( '/(?:^|;)\s*background-color:\s*(rgba?\([^)]*\))/i', $cs, $bm ) ) {
+			$col = trim( $bm[1] );
+			if ( preg_match( '/[,\/]\s*(0?\.\d+|0)\s*\)\s*$/', $col, $am ) ) {
+				$a = (float) $am[1];
+				// A fully transparent cover paints nothing; a near-opaque one is a fill.
+				if ( $a > 0.02 && $a < 0.95 ) { return 'linear-gradient(' . $col . ',' . $col . ')'; }
+			}
+		}
+		return '';
+	}
+
 	private static function layer_band_gradient( $layer ) {
 		$cls = ' ' . strtolower( (string) ( $layer['cls'] ?? '' ) ) . ' ';
 		$cs  = (string) ( $layer['cs'] ?? '' );
@@ -1983,8 +2087,17 @@ class FW_Site_Converter_Mapper {
 				// so in a flex-row + flex-wrap column two full-width buttons WRAP and stack — the "hero buttons
 				// aren't inline" bug. flex:0 0 auto + width:auto keeps each at content width, side-by-side (parity
 				// with the old btn_row_class / btn_group_class rule the native content_direction path had dropped).
-				$col['atts']['custom_css'] = $grp_col ? 'selector .btn{flex:0 0 auto !important;width:100% !important;}' : 'selector .btn{flex:0 0 auto !important;width:auto !important;}';
-				if ( $grp_resp ) { $col['atts']['custom_css'] = 'selector .btn{flex:0 0 auto !important;width:100% !important;}@media (min-width:' . ( '' === $col['atts']['content_direction_resp']['md'] ? '1024px' : '768px' ) . '){selector .btn{width:auto !important;}}'; } // `w-full sm:w-auto`
+				// …AND THE ALIGNMENT WRAPPER, not only the .btn. The button renders inside a `div.sc-btn-align`,
+				// which is `display:block` and takes the row's FULL width. Sizing only the `.btn` leaves two
+				// full-width wrappers as the flex children, and they wrap onto separate lines — the exact bug this
+				// rule was written to prevent, reappearing one level up after the wrapper was introduced. Measured:
+				// a source's side-by-side CTA pair rendered stacked, 80px apart, while the flex row itself was
+				// correct (display:flex, row, gap 32px) and the buttons themselves were content-width.
+				$btn_sel = $grp_col
+					? 'selector .btn{flex:0 0 auto !important;width:100% !important;}selector .sc-btn-align{flex:0 0 auto !important;width:100% !important;}'
+					: 'selector .btn{flex:0 0 auto !important;width:auto !important;}selector .sc-btn-align{flex:0 0 auto !important;width:auto !important;}';
+				$col['atts']['custom_css'] = $btn_sel;
+				if ( $grp_resp ) { $bp = ( '' === $col['atts']['content_direction_resp']['md'] ? '1024px' : '768px' ); $col['atts']['custom_css'] = 'selector .btn,selector .sc-btn-align{flex:0 0 auto !important;width:100% !important;}@media (min-width:' . $bp . '){selector .btn,selector .sc-btn-align{width:auto !important;}}'; } // `w-full sm:w-auto`
 				$gap = ( $grp && preg_match( '/gap:\s*([0-9.]+)px/', (string) ( $grp['cs'] ?? '' ), $gm ) ) ? self::gap_slug( $gm[1] ) : '';
 				$col['atts']['content_gap'] = array( 'base' => ( $gap !== '' ? $gap : '3' ), 'md' => '', 'lg' => '' );
 				// Horizontal placement = the SOURCE button container's real flex main-axis alignment (NOT a blind
@@ -4265,7 +4378,13 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 
 		// A pure single-element wrapper (no own text) that has NO box styling of its own → unwrap (no needless
 		// flexbox level). A wrapper WITH a box (a coloured band, a card, a measure) is kept so its style survives.
-		if ( 1 === count( $kids ) && '' === $own_text && '' === self::mirror_box_css( $el ) ) { return self::mirror_el( $kids[0], $depth ); }
+		// …unless it is OUT OF FLOW, where the wrapper's position IS its purpose. Measured on a captured hero: a
+		// collage of three `div.absolute` tiles, each wrapping one <img> with no text and no box styling, was
+		// unwrapped as a needless level, so three 240x300 tiles at (1148,334), (852,434) and a third offset again
+		// rendered as a flush column at x=752, y=245/545/845. The sizes were already exact; only the placement
+		// was thrown away, and with the wrapper gone there was nothing left to carry it on.
+		$oof = self::element_position_from( (string) $el->getAttribute( 'class' ), (string) $el->getAttribute( 'data-sc-cs' ) );
+		if ( 1 === count( $kids ) && '' === $own_text && '' === self::mirror_box_css( $el ) && ! $oof ) { return self::mirror_el( $kids[0], $depth ); }
 
 		// An INLINE LABEL ROW — a horizontal flex row of nothing but short leaf labels and painted dots (a hero's
 		// "SUB-MILLISECOND FINALITY · AUTOMATED RECONCILIATION", a meta line "12 min read · Design") → ONE text block of
@@ -4373,7 +4492,26 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			}
 			if ( $short ) { $over['responsive_collapse'] = 'no'; }
 		}
-		return self::n_flexbox( $items, $over );
+		$wnode = self::n_flexbox( $items, $over );
+		// A HOST OF OUT-OF-FLOW CHILDREN MUST BE THEIR CONTAINING BLOCK. An absolutely placed child resolves
+		// its offsets against the nearest POSITIONED ancestor; if the host stays static they resolve against
+		// something further out. Measured: with the tiles positioned but the host static, a collage landed at
+		// (0,0), (1200,80) and (100,700) — one of them outside the hero entirely — against the source's
+		// (1148,334) and (852,434). The source says so itself: the host is `relative h-[480px]`, so its own
+		// height is carried too, since out-of-flow children contribute none and the box would otherwise collapse.
+		$has_oof = false;
+		foreach ( $items as $it ) { if ( is_array( $it ) && ! empty( $it['atts']['element_position'] ) ) { $has_oof = true; break; } }
+		if ( $has_oof ) {
+			$hcs  = (string) $el->getAttribute( 'data-sc-cs' );
+			$hdec = array( 'position:relative' );
+			if ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+px)/i', $hcs, $hm ) ) { $hdec[] = 'min-height:' . $hm[1]; }
+			$wnode['atts']['custom_css'] = trim( (string) ( $wnode['atts']['custom_css'] ?? '' ) . "
+" . 'selector{' . implode( ';', $hdec ) . ';}' );
+		}
+		// …and an out-of-flow wrapper keeps its measured placement as the native Position option, the same way a
+		// watermark heading and a pinned icon already do.
+		if ( $oof ) { $wnode['atts']['element_position'] = $oof; }
+		return $wnode;
 	}
 
 	/**
@@ -4838,6 +4976,13 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 			elseif ( preg_match( '/(?:^|;)\s*height:\s*([0-9.]+)px/i', $icss, $hm ) ) { $h = (float) $hm[1]; }
 			if ( $h < 80 || $h > 1600 ) { return ''; }
 			$own = 'selector img{width:100%;height:' . (int) round( $h ) . 'px;object-fit:cover;display:block;';
+			// …plus the WIDTH CAP the source gave it. `width:100%` fills the column, which is right for a full-bleed
+			// banner and wrong for an image the source capped: measured, `max-w-md` stamps max-width:448px, and
+			// without it a 448x672 photo rendered 636x954 and pushed its band from 896px to 1178px. The cap only
+			// stops it GROWING past the chosen size; width:100% still lets it shrink on a narrow screen.
+			$mw = self::cs_decls( $icss, array( 'max-width' ) );
+			$mwv = isset( $mw['max-width'] ) ? trim( (string) $mw['max-width'] ) : '';
+			if ( '' !== $mwv && 'none' !== strtolower( $mwv ) && '100%' !== $mwv && preg_match( '/^[0-9.]+(px|rem|em|%)$/i', $mwv ) ) { $own .= 'max-width:' . $mwv . ';'; }
 			$d   = self::cs_decls( $icss, array( 'border-radius', 'box-shadow' ) );
 			if ( ! empty( $d['border-radius'] ) && preg_match( '/^[0-9a-z%.\s]+$/i', (string) $d['border-radius'] ) && '0px' !== trim( (string) $d['border-radius'] ) ) { $own .= 'border-radius:' . trim( (string) $d['border-radius'] ) . ';'; }
 			if ( ! empty( $d['box-shadow'] ) && 'none' !== strtolower( trim( (string) $d['box-shadow'] ) ) && preg_match( '/^[a-z0-9#(),.%\s-]+$/i', (string) $d['box-shadow'] ) ) { $own .= 'box-shadow:' . trim( (string) $d['box-shadow'] ) . ';'; }
@@ -4866,6 +5011,8 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 	}
 
 	private static function n_media_image( $html, $skin_css = '' ) {
+
+
 		$html     = (string) $html;
 		$skin_css = (string) $skin_css;
 		// No caller-supplied skin: try to recover the source's crop box from the wrapper's classes.
@@ -4883,7 +5030,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		if ( preg_match( '/\.svg(?:$|\?)/i', $src ) ) {
 			$svg = self::fetch_svg_cached( $src );
 			if ( $svg !== '' ) {
-				$svg = preg_replace( '/<svg\b/i', '<svg style="max-width:100%;height:auto"', $svg, 1 );
+				$svg = preg_replace( '/<svg\b/i', '<svg style="' . self::svg_inline_style( $html ) . '"', $svg, 1 );
 				return self::n_code( '<div class="sc-illustration" style="max-width:100%;">' . $svg . '</div>' );
 			}
 			// Couldn't inline → hotlink the ABSOLUTE source SVG (200) instead of a relative /assets path (404).
@@ -5595,12 +5742,28 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		$items = array( array( 'type' => 'form-header-title', 'shortcode' => 'form_header_title', 'width' => '', 'options' => array( 'title' => '', 'subtitle' => '' ) ) );
 		$n = 0;
 		foreach ( $fields as $f ) {
-			$type = in_array( (string) ( $f['type'] ?? '' ), array( 'text', 'email', 'website', 'number', 'textarea', 'select' ), true ) ? (string) $f['type'] : 'text';
+			// `radio` joins the list because a row of mutually exclusive chips IS a radio group, and the form
+			// builder already has that field with `choices` -- see Stitch::form_chip_group(). Nothing new is
+			// added to the product surface for it; without the type here the field silently became a text box.
+			$type = in_array( (string) ( $f['type'] ?? '' ), array( 'text', 'email', 'website', 'number', 'textarea', 'select', 'radio' ), true ) ? (string) $f['type'] : 'text';
 			// EVERY key the item VIEW reads, present: `info` (the help line under the field) was missing and the form-builder views read
 			// it unguarded (`if ($options['info'])`) — the built page printed 'Undefined array key "info"' as visible text (three sites)
 			$opts = array( 'label' => (string) ( $f['label'] ?? '' ), 'required' => ! empty( $f['required'] ), 'placeholder' => (string) ( $f['placeholder'] ?? '' ), 'default_value' => '', 'info' => (string) ( $f['info'] ?? '' ) );
 			if ( 'text' === $type || 'textarea' === $type ) { $opts['constraints'] = array( 'constraint' => 'characters', 'characters' => array( 'min' => 0, 'max' => '' ), 'words' => array( 'min' => 0, 'max' => '' ) ); }
-			if ( 'select' === $type ) { $opts['choices'] = array_map( function ( $c ) { return array( 'label' => $c, 'value' => $c ); }, (array) ( $f['choices'] ?? array() ) ); }
+			// A CHOICE IS A PLAIN STRING. The form builder's select stores `choices` as an `addable-option` of
+			// `type => text`, and the item's own default is `$choices[] = __( 'Dropdown' )`. Wrapping each one as
+			// `array( 'label' => …, 'value' => … )` looked richer and broke the renderer: it casts with
+			// `(string) $choice`, so every choice raised `Array to string conversion` — four warnings printed on the
+			// front end of a converted page, one of them INSIDE the select's first option where a visitor reads it.
+			// Found by looking at the rendered form; no data-level check would have shown it.
+			if ( 'select' === $type || 'radio' === $type ) {
+				$opts['choices'] = array_values( array_filter( array_map(
+					function ( $c ) { return is_scalar( $c ) ? (string) $c : ''; },
+					(array) ( $f['choices'] ?? array() )
+				), function ( $c ) { return '' !== $c; } ) );
+				// The chip the source shows filled is the one already chosen.
+				if ( 'radio' === $type && '' !== (string) ( $f['default'] ?? '' ) ) { $opts['default_value'] = (string) $f['default']; }
+			}
 			$items[] = array( 'type' => $type, 'shortcode' => str_replace( '-', '_', $type ) . '_' . substr( md5( $type . '|' . $n++ . '|' . (string) ( $f['label'] ?? '' ) ), 0, 7 ), 'width' => self::form_item_width( $f ), 'options' => $opts );
 		}
 		$atts = self::shortcode_default_atts( 'contact_form' );
@@ -5615,9 +5778,38 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 		// the FIELD skin the source drew (an underline-only `border-b` input on a transparent ground, a mono face) → scoped CSS on the
 		// form's inputs (the theme's boxed input skin won otherwise); the SUBMIT keeps its measured fill / ink / case / padding
 		$fd = self::cs_decls( (string) ( $b['field_cs'] ?? '' ), array( 'background-color', 'border', 'border-top', 'border-right', 'border-bottom', 'border-left', 'border-radius', 'color', 'font-family', 'font-size', 'text-transform', 'letter-spacing', 'padding', 'height' ) );
+		// THE FIELD + LABEL SKIN IS A PRESET. It used to ride the element's own Custom CSS with !important, which
+		// is the per-element copy the house rule forbids for buttons and boxes: a second form on the page did not
+		// match, and a later edit of the site's form style could not reach it. Now it registers a Form Styles
+		// preset (Stitch::build_form_style_presets) and the form picks it; nothing of it stays on the element.
+		$ld0       = self::cs_decls( (string) ( $b['label_cs'] ?? '' ), array( 'color', 'font-size', 'font-weight', 'text-transform', 'letter-spacing', 'font-family' ) );
+		// A CLASS-ONLY UNDERLINE. `border-b border-border` paints a 1px bottom rule, but the capture stamps only the
+		// preflight `border-top-style` / `border-top-color` (no width), so the stamp alone reads as "no border" and the
+		// field lost its underline. The class names the edge; the stamped colour is its colour (the same reading the
+		// transparent ground gets from `bg-transparent` below). A boxed `border` class is left alone.
+		$fcls = ' ' . (string) ( $b['field_cls'] ?? '' ) . ' ';
+		if ( ! isset( $fd['border'] ) && ! isset( $fd['border-bottom'] ) && preg_match( '/\sborder-b(?:-[0-9]+)?\s/', $fcls ) && ! preg_match( '/\sborder(?:-[0-9]+)?\s/', $fcls ) ) {
+			$bw_c = preg_match( '/\sborder-b-([0-9]+)\s/', $fcls, $bm ) ? $bm[1] . 'px' : '1px';
+			$bc_c = preg_match( '/(?:^|;)\s*border-(?:bottom|top)-color:\s*([^;]+)/i', (string) ( $b['field_cs'] ?? '' ), $cm ) ? trim( $cm[1] ) : 'currentColor';
+			$fd['border-bottom'] = $bw_c . ' solid ' . $bc_c;
+		}
+		$fs_class  = self::register_form_style( $fd, $ld0, ! isset( $fd['background-color'] ) && preg_match( '/(?:^|\s)bg-transparent(?:\s|$)/', ' ' . (string) ( $b['field_cls'] ?? '' ) . ' ' ) );
+		if ( '' !== $fs_class ) {
+			$atts['form_style'] = $fs_class;
+			$fd                 = array(); // carried by the preset
+			$b['label_cs']      = '';
+			$b['field_cls']     = '';
+		}
 		$fdecl = array();
 		foreach ( $fd as $pr => $v ) { $v = trim( (string) $v ); if ( '' === $v || ! preg_match( '/^[a-z0-9#(),.%\s\'"-]+$/i', $v ) ) { continue; } if ( 'border' === $pr && preg_match( '/^0px/', $v ) ) { continue; } $fdecl[] = $pr . ':' . str_replace( '"', "'", $v ) . ' !important'; }
 		if ( isset( $fd['border-bottom'] ) && ! isset( $fd['border'] ) ) { $fdecl[] = 'border-top:0 !important'; $fdecl[] = 'border-left:0 !important'; $fdecl[] = 'border-right:0 !important'; } // an underline input
+		// A TRANSPARENT field is an instruction too — the same point the submit's fill makes below. The capture
+		// stamps no `background-color` at all when it resolves to transparent, so there is nothing in `field_cs`
+		// to read and the theme's white input sat on the source's tinted band. Measured on a captured contact
+		// page: `bg-transparent` underline inputs rendered as white boxes. The class is where the source says it.
+		if ( ! isset( $fd['background-color'] ) && preg_match( '/(?:^|\s)bg-transparent(?:\s|$)/', ' ' . (string) ( $b['field_cls'] ?? '' ) . ' ' ) ) {
+			$fdecl[] = 'background-color:transparent !important';
+		}
 		if ( $fdecl ) { $css .= 'selector input[type=text],selector input[type=email],selector input[type=url],selector input[type=number],selector textarea,selector select{' . implode( ';', $fdecl ) . ';}'; }
 		// …including background-IMAGE. These buttons are filled with a gradient and declare no background-COLOR
 		// at all, so reading only the colour found nothing and the submit fell back to the browser's default
@@ -5677,7 +5869,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 	}
 
 	private static function n_newsletter( array $b ) {
-		self::require_extension( 'newsletter-crm' ); // a converted signup form → activate the Subscriber CRM so submissions are captured
+		self::require_extension( 'crm' ); // a converted signup form → activate the CRM so submissions are captured
 		$atts = self::shortcode_default_atts( 'newsletter' );
 		if ( ! is_array( $atts ) ) { $atts = array(); }
 		$atts['title']       = '';
@@ -6031,6 +6223,9 @@ selector .testimonials-container,selector .testimonials-container--fluid{padding
 			// …and the portrait's own TREATMENT: the filter it is rendered through and the ring around it.
 			$av_skin = '';
 			if ( ! empty( $look['avatarFilter'] ) ) { $av_skin .= 'filter:' . $look['avatarFilter'] . ' !important;'; }
+			// …the photo's own RING (a Tailwind `ring-*` = a spread-only box-shadow). It rides on the IMG, as the
+			// source has it, so it follows the circular crop; emitted on a frame it would draw square.
+			if ( ! empty( $look['avatarRingShadow'] ) ) { $av_skin .= 'box-shadow:' . $look['avatarRingShadow'] . ' !important;'; }
 			if ( '' !== $av_skin ) { $custom_css = trim( $custom_css . "\nselector .testimonial-avatar img{" . $av_skin . '}' ); }
 			if ( ! empty( $look['avatarRing'] ) ) {
 				// …and the frame's ROUNDING, or the ring draws as a square around a circular photo.
@@ -6468,6 +6663,41 @@ selector .testimonial-avatar,selector .testimonial-avatar img{width:" . (int) $a
 	 * Each `<li>` → one item (icon-v2 `none` fallback marker); `<ol>` → `design:'numbered'`, `<ul>` → `design:'check'`.
 	 * See feature-list.md.
 	 */
+	/**
+	 * A recognised MAP embed (Stitch recognizer 'map') → the native `map` shortcode.
+	 *
+	 * The source's embed is an iframe pointed at a centre; the native shortcode takes a Custom location list,
+	 * so the one marker is emitted with the measured coordinates. That keeps the map EDITABLE (the Locations
+	 * option) rather than freezing third-party markup into a code block, and it is the converter's standing
+	 * preference for anything a native element can express.
+	 *
+	 * @param array $b { lat, lng, height, title }
+	 * @return array|null
+	 */
+	private static function n_map( array $b ) {
+		$lat = isset( $b['lat'] ) ? (float) $b['lat'] : 0.0;
+		$lng = isset( $b['lng'] ) ? (float) $b['lng'] : 0.0;
+		if ( 0.0 === $lat && 0.0 === $lng ) { return null; } // null island is not a location
+		$atts = self::shortcode_default_atts( 'map' );
+		if ( ! is_array( $atts ) ) { $atts = array(); }
+		$atts['data_provider'] = array(
+			'population_method' => 'custom',
+			'custom'            => array(
+				'locations' => array(
+					array(
+						'location'    => array( 'coordinates' => array( 'lat' => $lat, 'lng' => $lng ) ),
+						'title'       => (string) ( $b['title'] ?? '' ),
+						'description' => '',
+						'url'         => '',
+					),
+				),
+			),
+		);
+		$hh = isset( $b['height'] ) ? (int) $b['height'] : 0;
+		if ( $hh >= 80 && $hh <= 1200 ) { $atts['map_height'] = (string) $hh; }
+		return array( 'type' => 'simple', 'shortcode' => 'map', '_items' => array(), 'atts' => $atts );
+	}
+
 	private static function n_feature_list( array $b ) {
 		$src = ( isset( $b['items'] ) && is_array( $b['items'] ) ) ? $b['items'] : array();
 		$icon_none = array( 'type' => 'none', 'icon-class' => '', 'icon-class-without-root' => false, 'pack-name' => false, 'pack-css-uri' => false );
@@ -6543,14 +6773,24 @@ selector.fw-fl--orient-horizontal{" . implode( ';', $rd ) . ';}' ); }
 		// whose content already matched exactly, which misregisters the whole row against its source.
 		$fl_ics = (string) ( $b['item_cs'] ?? '' );
 		if ( '' !== $fl_ics ) {
-			$fl_d = self::cs_decls( $fl_ics, array( 'font-size', 'line-height' ) );
+			// …and its WEIGHT and COLOUR. Only size and line-height were read, so a measured 400 weight and the
+			// source's ink were dropped and the shortcode's own 500 / #1a1a1a stood (a captured hero: three items,
+			// three deltas each). Same stamp, same rule — the source is the truth and the preset is the guess.
+			$fl_d = self::cs_decls( $fl_ics, array( 'font-size', 'line-height', 'font-weight', 'color' ) );
 			$fl_box = array();
 			if ( isset( $fl_d['font-size'] ) && self::px_of( $fl_d['font-size'] ) > 0 ) { $fl_box[] = 'font-size:' . (int) round( self::px_of( $fl_d['font-size'] ) ) . 'px'; }
+			if ( isset( $fl_d['font-weight'] ) && preg_match( '/^[1-9]00$/', trim( (string) $fl_d['font-weight'] ) ) ) { $fl_box[] = 'font-weight:' . trim( (string) $fl_d['font-weight'] ); }
+			if ( isset( $fl_d['color'] ) && preg_match( '/^(?:#[0-9a-f]{3,8}|rgba?\([0-9.,%\/\s]+\))$/i', trim( (string) $fl_d['color'] ) ) ) { $fl_box[] = 'color:' . trim( (string) $fl_d['color'] ); }
 			if ( isset( $fl_d['line-height'] ) && self::px_of( $fl_d['line-height'] ) > 0 ) { $fl_box[] = 'line-height:' . (int) round( self::px_of( $fl_d['line-height'] ) ) . 'px'; }
 			if ( $fl_box ) {
 				$cur = isset( $atts['custom_css'] ) ? (string) $atts['custom_css'] : '';
+				// …ON THE LABEL TOO. The shortcode styles the inner `.fw-fl__text` (its own 500 weight), which is
+				// more specific than the row, so a measured weight pinned only on `.fw-fl__item` was overridden and
+				// the items still rendered semibold. The row keeps the rule as well, because the row's line box is
+				// what sets the band's height.
 				$atts['custom_css'] = trim( $cur . ( '' !== $cur ? "
-" : '' ) . 'selector .fw-fl__item{' . implode( ';', $fl_box ) . ';}' );
+" : '' ) . 'selector .fw-fl__item{' . implode( ';', $fl_box ) . ';}'
+					. ' selector .fw-fl__text{' . implode( ';', $fl_box ) . ';}' );
 			}
 		}
 		if ( $fl_igap > 0 && abs( $fl_igap - 12 ) >= 1 ) {
@@ -8208,6 +8448,19 @@ selector.fw-steps .fw-steps__item{padding:" . $dz['box']['padding'] . ';}' ); } 
 		if ( preg_match( '/^(\d+(?:\.\d+)?)px$/', $ffs, $m ) && ( (float) $m[1] < 14 || (float) $m[1] > 15.5 ) ) {
 			$overlay['custom_css'] = trim( (string) ( $overlay['custom_css'] ?? '' ) . 'selector .fw-pt__feature{font-size:' . $ffs . ';}' );
 		}
+		// THE PLAN NAME KEEPS THE SOURCE'S FACE.
+		//
+		// A plan name renders as an <h4>, so the generated theme's
+		//   :is(h1..h6):not(.hf-heading):not(.elementor-heading-title){font-family:<display face> !important}
+		// paints it at (0,2,1). Measured on a real conversion: a price list set in the source's body sans came out
+		// in a display serif, wide enough that two-word plan names wrapped to a second line. The class is repeated
+		// for (0,3,0), exactly as heading_family_css() and n_icon_box() do -- this is the third element that needed
+		// the same answer, so it is written the same way in all three.
+		$pt_ff = trim( (string) ( $b['nameFont'] ?? '' ) );
+		if ( '' !== $pt_ff ) {
+			$overlay['custom_css'] = trim( (string) ( $overlay['custom_css'] ?? '' )
+				. 'selector .fw-pt__name.fw-pt__name{font-family:' . $pt_ff . ' !important;}' );
+		}
 		// READABILITY GUARD: a uniform pricing_table can't carry per-plan backgrounds, so a source whose menu
 		// bands ALTERNATE dark/red/cream flattens to one card_bg. On that single card_bg the theme-default plan
 		// title/price — and a feature colour captured for a DIFFERENTLY-coloured source band — can render at near-
@@ -9335,6 +9588,101 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 	 * @param array $card { icon, customIcon, title, titleTag, text, link, cls }
 	 * @return array
 	 */
+	/**
+	 * Does this link LABEL merely repeat the card's own TITLE?
+	 *
+	 * A whole-card link appends its label as an affordance row, which is right for a phrase of its own
+	 * ("Learn more") and wrong when the source's clickable row IS the title. Measured on a captured band of
+	 * eight cards: each rendered `h3.icon-box__title` and `p.icon-box__more` with the same words, so every
+	 * label appeared twice.
+	 *
+	 * Compared after normalising what does not change the words: tags, case, whitespace, a trailing arrow or
+	 * chevron, and trailing punctuation. "Traffic accident →" is the title, not a new label.
+	 */
+	private static function label_echoes_title( $label, $title ) {
+		$norm = function ( $v ) {
+			$v = wp_strip_all_tags( (string) $v );
+			$v = preg_replace( '/[\x{2190}-\x{21FF}\x{2794}-\x{27BF}\x{203A}\x{00BB}\x{3009}>]+/u', ' ', $v );
+			$v = preg_replace( '/[\s\x{00A0}]+/u', ' ', $v );
+			$v = trim( (string) $v );
+			$v = rtrim( $v, ".:;,!?-\xe2\x80\x93\xe2\x80\x94 " );
+			return function_exists( 'mb_strtolower' ) ? mb_strtolower( $v ) : strtolower( $v );
+		};
+		$l = $norm( $label );
+		$t = $norm( $title );
+		return ( '' !== $l && '' !== $t && $l === $t );
+	}
+
+	/**
+	 * A post card's META (author / date) that the source places ABOVE the title → its own block.
+	 *
+	 * A decomposed post card arrives with its title in the title slot and everything else in the body, plus the
+	 * meta line isolated as `overline`. icon_box renders title-then-content and has no eyebrow slot, so the meta
+	 * rendered BELOW the title however the source ordered it — and because the overline repeats a body
+	 * paragraph, the date rendered twice. The body also carries ONE style for all its paragraphs, so a
+	 * 600-weight author and a 12px grey date could not be told apart.
+	 *
+	 * The overline names where the meta ends, so this takes the body's LEADING paragraphs up to and including
+	 * the one that repeats it — exact, not a length heuristic — hands them back with the overline's measured
+	 * style, and strips them from the body. Returns null when that shape isn't there, and never empties a card.
+	 *
+	 * @param array $card modified in place: the lifted paragraphs are removed from `text`
+	 * @return array|null { html, cs }
+	 */
+	private static function card_meta_lift( array &$card ) {
+		$ov = isset( $card['overline']['text'] ) ? trim( preg_replace( '/\s+/', ' ', (string) $card['overline']['text'] ) ) : '';
+		$body = isset( $card['text'] ) ? (string) $card['text'] : '';
+		if ( '' === $ov ) { return null; }
+		// THE OVERLINE IS NOT ALWAYS REPEATED IN THE BODY.
+		//
+		// The lift below handles a POST card, whose meta (author / date) appears both as the eyebrow and again as
+		// the leading paragraphs of the body — it matches the repetition and strips the duplicates. An ARTICLE
+		// card writes its meta as a ROW OF SPANS above the title ("Eco-Living" / "6 min read") that appears
+		// nowhere in the body, so the match found nothing, this returned null, and the overline — captured,
+		// carried through the mapping, and correct — was dropped at the last step because icon_box has no eyebrow
+		// slot. Measured: six strings lost across three cards on one page.
+		//
+		// It belongs above the title either way, so with no body to lift from it simply becomes its own block.
+		// …but NOT when the body already says it. A card whose only paragraph repeats the overline would get the
+		// same words twice — once in the block above and once in the body — and emptying the body instead is the
+		// case the lift below deliberately refuses. Only text the body does NOT carry is worth a block of its own.
+		$body_txt = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $body ) ) );
+		if ( '' === trim( $body ) || ! preg_match_all( '#<p(?![a-z])[^>]*>.*?</p>#is', $body, $pm ) || count( $pm[0] ) < 2 ) {
+			if ( '' !== $body_txt && false !== strpos( $body_txt, $ov ) ) { return null; }
+			return array( 'html' => '<p>' . esc_html( $ov ) . '</p>', 'cs' => (string) ( $card['overline']['cs'] ?? '' ) );
+		}
+		$ps = $pm[0];
+		$hit = -1;
+		foreach ( $ps as $i => $pp ) {
+			if ( $i > 2 ) { break; } // the meta leads the card; a date at the END of a long body is not leading meta
+			if ( trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $pp ) ) ) === $ov ) { $hit = $i; break; }
+		}
+		if ( $hit < 0 || $hit + 1 >= count( $ps ) ) { return null; } // nothing matched, or lifting would empty the body
+		$meta = array_slice( $ps, 0, $hit + 1 );
+		$rest = array_slice( $ps, $hit + 1 );
+		$card['text'] = implode( '', $rest );
+		$ov_cs = (string) ( $card['overline']['cs'] ?? '' );
+		// THE TWO META LINES ARE NOT THE SAME LINE. A source sets the author and the date differently — measured
+		// on a captured card, a 14px/600 navy author over a 12px/400 grey date — and one shared style rendered
+		// both in the date's grey. The overline's stamp describes the DATE; the paragraphs before it are the
+		// author, whose typography the card already carries as `bodyCs`. Give each the one that measured it.
+		$au_cs = (string) ( $card['bodyCs'] ?? '' );
+		$pick  = function ( $cs ) {
+			$d = self::cs_decls( (string) $cs, array( 'color', 'font-size', 'font-weight', 'line-height', 'font-family' ) );
+			$o = array();
+			foreach ( $d as $k => $v ) { if ( '' !== trim( (string) $v ) ) { $o[] = $k . ':' . $v; } }
+			return implode( ';', $o );
+		};
+		$au_decl = ( '' !== $au_cs && $hit > 0 ) ? $pick( $au_cs ) : '';
+		if ( '' !== $au_decl ) {
+			foreach ( $meta as $mi => $mp ) {
+				if ( $mi >= $hit ) { break; } // the overline paragraph keeps its own stamp, carried on the block
+				$meta[ $mi ] = preg_replace( '#^<p\s#i', '<p style="' . esc_attr( $au_decl ) . '" ', preg_replace( '#^<p>#i', '<p style="' . esc_attr( $au_decl ) . '">', $mp ) );
+			}
+		}
+		return array( 'html' => implode( '', $meta ), 'cs' => $ov_cs );
+	}
+
 	private static function n_icon_box( array $card ) {
 		$atts = self::shortcode_default_atts( 'icon_box' );
 
@@ -9354,7 +9702,9 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 				// option's own help says so) and browsers recover from it unpredictably. The row is rendered as
 				// plain marked-up text and the box carries the href.
 				$atts['box_link'] = $href;
-				if ( '' !== $label ) {
+				// …unless the label merely repeats the title, which would print the card's own words twice
+				// (see label_echoes_title). The box keeps the link either way, so the card stays clickable.
+				if ( '' !== $label && ! self::label_echoes_title( $label, (string) ( $card['title'] ?? '' ) ) ) {
 					// The arrow rides WITH the label — it is the affordance, not decoration. Inline-flex so the
 					// glyph sits on the text's baseline-ish centre as the source draws it.
 					$g = (string) ( $card['link']['glyph'] ?? '' );
@@ -9601,7 +9951,13 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 		// from the theme's 16px, so a body that matches the theme's size but sets its own leading lost it --
 		// and a few px per line, across three lines in every card of a grid, is a visibly taller card.
 		$body_decls = array();
-		if ( preg_match( '/^([0-9.]+)px$/', $bfs, $bm ) && abs( (float) $bm[1] - 16 ) > 0.5 && (float) $bm[1] >= 9 && (float) $bm[1] <= 28 ) {
+		// MEASURED, NOT ASSUMED. This used to skip the rule when the size was within half a pixel of 16px, on the
+		// reasoning that 16px is the theme's body size and needs no restating. That is an assumption about the
+		// theme, and on a converted site it is wrong: the generated theme renders card content at 18px, so a
+		// source measured at exactly 16px lost its size and every card rendered a size too large — different
+		// wrapping, taller cards, the whole band's rhythm shifted. A rule that restates the theme's own value is
+		// harmless; a missing one is visible. Only an implausible measurement is refused.
+		if ( preg_match( '/^([0-9.]+)px$/', $bfs, $bm ) && (float) $bm[1] >= 9 && (float) $bm[1] <= 28 ) {
 			$body_decls[] = 'font-size:' . $bfs;
 		}
 		$blh = isset( $card['bodyLineHeight'] ) ? trim( (string) $card['bodyLineHeight'] ) : '';
@@ -9650,6 +10006,36 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 		$tw0 = self::heading_part_weight( (string) ( $card['titleWeight'] ?? '' ), '' );
 		if ( '' === $tw0 && preg_match( '/(?:^|;)\s*font-weight:\s*([1-9]00)\b/i', (string) ( $card['titleCs'] ?? '' ), $twm ) ) { $tw0 = $twm[1]; }
 		if ( '' !== $tw0 ) { $title_decls[] = 'font-weight:' . $tw0 . ' !important'; }
+		// …and the title's MEASURED FONT FAMILY, for exactly the same reason. The theme styles every heading with
+		// its display face, so a source pairing a serif for display headings with a SANS for small card labels — a
+		// very common pairing — had the sans silently replaced by the serif on every card, the title being an hN.
+		// Measured on a captured band of eight cards: stamped `font-family:Inter, system-ui, sans-serif`, rendered
+		// `"Playfair Display", Georgia, serif`, on all eight. !important for the hN rule, as with the weight.
+		// It needs MORE than !important. The generated child theme emits
+		//   :is(h1..h6):not(.hf-heading):not(.elementor-heading-title){font-family:<display face> !important}
+		// to outrank the parent theme's heading rules, and its (0,2,1) beats a scoped `.uXXXX .icon-box__title`
+		// (0,2,0) — so the measured family lost even important-vs-important (CDP getMatchedStylesForNode named it
+		// as the winner). The generator already exempts `.hf-heading` because it carries MEASURED type; same
+		// principle here, so the family goes out at (0,3,0) by repeating the title's own class.
+		$tff = '';
+		if ( preg_match( '/(?:^|;)\s*font-family:\s*([^;]+)/i', $tcs0, $tfm1 ) ) { $tff = trim( $tfm1[1] ); }
+		if ( '' !== $tff && ! preg_match( '/^(?:inherit|initial|unset|revert)$/i', $tff )
+			&& preg_match( '/^[a-z0-9 ,"_-]+$/i', $tff ) ) {
+			$node['atts']['custom_css'] = trim( ( isset( $node['atts']['custom_css'] ) ? (string) $node['atts']['custom_css'] : '' )
+				. ' selector .icon-box__title.icon-box__title{font-family:' . $tff . ' !important;}' );
+		}
+		// A LANDSCAPE illustration icon keeps its measured BOX. icon_size is a single number (it drives
+		// font-size), which yields a SQUARE icon box — right for a glyph, wrong for a wide drawing, which is
+		// then scaled down to fit the width. Measured on a captured band: a 257x144 illustration in a 144px
+		// container rendered ~81px tall, little over half the source's height, on all eight cards. A square or
+		// portrait icon is left alone — one number already describes it.
+		$iiw = isset( $card['imgIconW'] ) ? (int) $card['imgIconW'] : 0;
+		$iih = isset( $card['imgIconH'] ) ? (int) $card['imgIconH'] : 0;
+		if ( ! empty( $card['imgIcon'] ) && $iiw > 0 && $iih > 0 && $iiw > $iih * 1.15 && $iiw <= 600 ) {
+			$node['atts']['custom_css'] = trim( ( isset( $node['atts']['custom_css'] ) ? (string) $node['atts']['custom_css'] : '' )
+				. ' selector .icon-box__icon{width:' . $iiw . 'px;height:' . $iih . 'px;}'
+				. ' selector .icon-box__icon > svg{width:100%;height:100%;}' );
+		}
 		if ( $title_decls ) {
 			$title_css = 'selector .icon-box__title{' . implode( ';', $title_decls ) . ';}';
 			$node['atts']['custom_css'] = trim( ( isset( $node['atts']['custom_css'] ) ? (string) $node['atts']['custom_css'] : '' ) . ' ' . $title_css );
@@ -10782,6 +11168,16 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 			// Dispatch them here — mirroring the section loop — so e.g. the hero's check-icon list renders as a
 			// feature_list instead of vanishing.
 			$bt = isset( $b['t'] ) ? (string) $b['t'] : '';
+			if ( $bt === 'form' ) {
+				$node = self::n_contact_form( $b );
+				if ( $node ) { self::apply_block_margins( $node, $b ); self::apply_block_anim( $node, $b ); $items[] = $node; }
+				continue;
+			}
+			if ( $bt === 'map' ) {
+				$node = self::n_map( $b );
+				if ( $node ) { self::apply_block_margins( $node, $b ); self::apply_block_anim( $node, $b ); $items[] = $node; }
+				continue;
+			}
 			if ( $bt === 'feature_list' && ! empty( $b['items'] ) && is_array( $b['items'] ) ) {
 				$node = self::n_feature_list( $b ); self::apply_block_margins( $node, $b ); self::apply_block_anim( $node, $b ); $items[] = $node; continue;
 			}
@@ -11371,6 +11767,31 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 				}
 			}
 			if ( '' !== $w ) { $css .= 'selector ' . $sel . '{font-weight:' . $w . ' !important;}'; }
+			// …and the SOURCE's ITALIC. A heading set italic AS A WHOLE (`<h1 class="font-display … italic">`)
+			// rendered upright: the stamp carried `font-style:italic` and nothing read it, while the shortcode and
+			// the generated theme both style hN. Measured on a captured contact page, three headings in a row.
+			// (A heading with an italic SPAN inside is unaffected — that italic rides in the title HTML.)
+			// `normal` is the default and says nothing, so only a deliberate italic / oblique is carried.
+			$pcs_i = (string) ( $h[ $part . '_cs' ] ?? '' );
+			if ( '' !== $pcs_i && preg_match( '/(?:^|;)\s*font-style\s*:\s*(italic|oblique)/i', $pcs_i, $fsm ) ) {
+				$css .= 'selector ' . $sel . '{font-style:' . strtolower( $fsm[1] ) . ' !important;}';
+			}
+			// …and the SUBTITLE / OVERLINE's own SIZE and LINE BOX. The size normally rides a Text Style preset
+			// class, but `.heading-subtitle` is more specific than `.font-small`, so the theme's 16px subtitle beat
+			// the preset. Measured on a captured contact page: the address lines are a heading's subtitle, stamped
+			// 14px / 20px and rendered 16px / 26.08px — four property deltas on one band. The TITLE is left alone:
+			// its size is the heading level's job (h2/h3) and the generated theme sets the scale.
+			if ( 'title' !== $part && '' !== $pcs_i ) {
+				$pd_sz = self::cs_decls( $pcs_i, array( 'font-size', 'line-height' ) );
+				$szd   = array();
+				if ( isset( $pd_sz['font-size'] ) && preg_match( '/^([0-9.]+)px$/', trim( (string) $pd_sz['font-size'] ), $szm ) && (float) $szm[1] >= 8 && (float) $szm[1] <= 48 ) {
+					$szd[] = 'font-size:' . (int) round( (float) $szm[1] ) . 'px !important';
+				}
+				if ( $szd && isset( $pd_sz['line-height'] ) && preg_match( '/^([0-9.]+)px$/', trim( (string) $pd_sz['line-height'] ), $lhm2 ) ) {
+					$szd[] = 'line-height:' . (int) round( (float) $lhm2[1] ) . 'px !important';
+				}
+				if ( $szd ) { $css .= 'selector ' . $sel . '{' . implode( ';', $szd ) . ';}'; }
+			}
 			// …and the SOURCE casing: a TITLE whose stamp says text-transform:none (or carries none) is sentence case, and says so —
 			// a site-wide heading style (a Display preset sampled from an all-caps wordmark / hero) re-cased every h2 to UPPERCASE
 			// on three sites in the feed. Emitted for the title only (the overline / subtitle carry their own case css).
@@ -11476,7 +11897,20 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 			// The primary family must be a REAL face (not a bare generic), else there is nothing to re-assert.
 			$primary = strtolower( trim( preg_replace( '/^["\']|["\']$/', '', trim( explode( ',', $stack )[0] ) ) ) );
 			if ( '' === $primary || in_array( $primary, $generic, true ) ) { continue; }
-			$css .= 'selector ' . $sel . '{font-family:' . $stack . ' !important;}';
+			// IT NEEDS MORE THAN !important, so the class is repeated.
+			//
+			// Measured on a real conversion: three bands rendered their titles in the site's DISPLAY serif where the
+			// source used its body sans — size, weight and line-height all matched, only the family was wrong, which
+			// is why no size-based lens saw it. This function was already emitting the right family; it was simply
+			// losing the cascade. The generated child theme emits
+			//   :is(h1..h6):not(.hf-heading):not(.elementor-heading-title){font-family:<display face> !important}
+			// at (0,2,1), which beats a scoped `.uXXXX .heading-title` (0,2,0) even important-vs-important. Repeating
+			// the part's own class takes it to (0,3,0) and the measured family wins.
+			//
+			// Upgraded HERE rather than emitted again from heading_weight_css(): a second rule would be a duplicate in
+			// the wrong place, and the same question answered twice is how this class of defect started.
+			// (n_icon_box() does exactly this for `.icon-box__title`, which is why icon_box titles were already right.)
+			$css .= 'selector ' . $sel . $sel . '{font-family:' . $stack . ' !important;}';
 		}
 		return $css;
 	}
@@ -12537,7 +12971,7 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 	}
 
 	/** Bundled UnysonPlus extensions THIS build needs active because it emitted a feature that depends on one
-	 *  (svg_draw → animation-engine; a newsletter signup → newsletter-crm). The importer reads
+	 *  (svg_draw → animation-engine; a newsletter signup → crm). The importer reads
 	 *  needed_extensions() and auto-activates each — activate-on-EMISSION, mirroring the Mega Menu activation.
 	 *  Any n_* builder that emits an extension-owned feature calls require_extension(). Reset each build. */
 	public static $needed_extensions = array();
@@ -13591,7 +14025,15 @@ selector{display:inline-block;width:max-content;max-width:100%;}' );
 			// A cover-FILL only makes sense beside its text cell (a side-by-side row); stacked on a phone the source image sits at
 			// its natural height, so the fill rides a min-width:992px rule. JS parity: mediaImageNode.
 			if ( ! empty( $b['fill'] ) ) { $skin = trim( $skin . ' @media (min-width:992px){selector{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;}selector img{flex:1 1 auto;width:100%;min-height:0;object-fit:cover;display:block;}}' ); }
-			return self::n_media_image( (string) ( $b['html'] ?? '' ), $skin );
+			$mnode = self::n_media_image( (string) ( $b['html'] ?? '' ), $skin );
+			// AN OUT-OF-FLOW TILE KEEPS ITS PLACE. A watermark heading and a pinned icon already ask
+			// element_position_from() for their measured placement; a media tile never did, so a photo collage
+			// fell into normal flow. Measured on a captured hero: three 240x300 tiles at (1148,334), (852,434) and
+			// a third offset again became a flush column at x=752, y=245/545/845. The sizes were already exact —
+			// only the placement was lost. Nothing is invented: an in-flow tile yields no Position at all.
+			$mep = self::element_position_from( (string) ( $b['cls'] ?? '' ), (string) ( $b['cs'] ?? '' ) );
+			if ( $mep ) { $mnode['atts']['element_position'] = $mep; }
+			return $mnode;
 		} );
 		self::register_builder( 'badge', function ( $b ) {
 			$node = self::n_badge( $b );
@@ -14913,15 +15355,31 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 										foreach ( array( "all", "top", "right", "bottom", "left" ) as $ms ) { $ibn["atts"]["spacing"]["margin"][ $ms ] = ""; }
 									}
 									$inner_items[] = $ibn;
-								} elseif ( ! empty( $gc['text'] ) ) {
+								// A CELL'S `text` COMES IN TWO SHAPES, and only one of them is a text cell.
+								//
+								// An ARRAY is the structured text cell ( overline / title / subtitle ) that n_text_cell() turns
+								// into a special_heading. A STRING is a role-tagged text block: the cell walker writes
+								// `role => 'text'` with the cell's HTML when a cell is text-only, and says so in its own
+								// comment -- "an editable text_block, NOT an opaque code_block". Handing that string to an
+								// array-typed parameter was a FATAL that stopped a whole multi-page import on its pricing
+								// page, so every page after it was never converted.
+								//
+								// Two of the four call sites already asked `is_array()`; these two asked only whether the key
+								// was non-empty. One question, four places, three private answers -- so both now route the
+								// string the way the column path already routes it, through cell_by_role(), not a fourth way.
+								} elseif ( isset( $gc['text'] ) && is_array( $gc['text'] ) && ! empty( $gc['text'] ) ) {
 									foreach ( self::n_text_cell( $gc['text'] ) as $ti ) { $inner_items[] = $ti; }
+								} elseif ( ! empty( $gc['text'] ) ) {
+									foreach ( self::cell_by_role( 'text', $gc, (string) $gc['text'] ) as $ti ) { $inner_items[] = $ti; }
 								} else {
 									$inner_items[] = self::n_code( (string) ( $gc['html'] ?? '' ) );
 								}
 								continue;
 							}
 							if ( ! empty( $gc['card'] ) )     { $gi = array( self::n_icon_box( $gc['card'] ) ); }
-							elseif ( ! empty( $gc['text'] ) ) { $gi = self::n_text_cell( $gc['text'] ); }
+							elseif ( isset( $gc['text'] ) && is_array( $gc['text'] ) && ! empty( $gc['text'] ) ) { $gi = self::n_text_cell( $gc['text'] ); }
+							// ...and the string shape, same reason as the sibling branch above: a role-tagged text block.
+							elseif ( ! empty( $gc['text'] ) ) { $gi = self::cell_by_role( 'text', $gc, (string) $gc['text'] ); }
 							else                              { $gi = array( self::n_code( (string) ( $gc['html'] ?? '' ) ) ); }
 							$nlay = self::col_layout( (string) ( $gc['cls'] ?? '' ) );
 							if ( $nlay === null ) { $nlay = self::geom_layout( isset( $gc['wResp'] ) ? $gc['wResp'] : null ); }
@@ -15000,6 +15458,14 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 						$card = $c['card'];
 						$cc   = (string) ( $card['cls'] ?? '' );
 						$ccs  = (string) ( $card['cs'] ?? '' ); // the card container's resolved computed style (data-sc-cs)
+						// A post card's META (author / date) belongs ABOVE the title where the source put it, and icon_box
+						// has no eyebrow slot — so it becomes its own block before the card. card_meta_lift() also strips
+						// those paragraphs from the body, where the overline was otherwise repeating the date verbatim.
+						$meta_node = null;
+						$meta_lift = self::card_meta_lift( $card );
+						if ( is_array( $meta_lift ) ) {
+							$meta_node = self::n_text( (string) $meta_lift['html'], '', '', (string) $meta_lift['cs'] );
+						}
 						$ib   = self::n_icon_box( $card );
 						$is_box = self::is_box_class( $cc ) || self::cs_is_box( $ccs );
 						if ( $is_box && empty( $card['button'] ) && $grid_has_decomposed ) {
@@ -15049,6 +15515,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 						} else {
 							$inner_items = array( $ib );
 						}
+						if ( $meta_node ) { array_unshift( $inner_items, $meta_node ); } // the meta leads the card, as in the source
 					} elseif ( ! empty( $c['buttons'] ) && is_array( $c['buttons'] ) ) {
 						// A CTA button-group cell (no heading/prose) → real button shortcodes. Two+ buttons
 						// would STACK in a builder column, so wrap them in a `.btn-row` flex-row Inner Wrapper
@@ -15420,7 +15887,120 @@ selector ." . $mw_cls . "{max-width:" . (string) $c['maxw'] . ";margin-right:aut
 		// its two columns become true ~50vw each instead of being squeezed into the ~1280 container (the fix for
 		// a large fluid hero title overflowing its column into the media column).
 		$section_fullwidth = $hero_fullbleed || ! empty( $sec['sectionFullBleed'] );
+		// FULL-VIEWPORT HERO — now wired, on the ROW. Putting `min_height` on the SECTION renders it
+		// `display:flex`, and that flex container shrinks a full-width flexbox child back to content width,
+		// which re-overlaps the media column — which is why this was carried but not applied. The right home
+		// was always a FLEXBOX-level min_height on the row itself, so its columns stretch full-height and centre
+		// their own content; `flexbox` has carried a responsive `min_height` and `align_items` since, so it can.
+		// The section is still left alone, so the overlap cannot come back.
+		// Measured on a captured hero: `display:flex; align-items:center; min-height:800px` rendered as
+		// `display:block; align-items:normal; min-height:0`. It only looked right because the content happened
+		// to exceed 80vh; a shorter hero collapses to its content.
+		$hero_h = trim( (string) ( $sec['sectionHeroHeight'] ?? '' ) );
+		if ( '' !== $hero_h && preg_match( '/^([0-9.]+)(vh|px|rem|%)$/', $hero_h, $hhm ) ) {
+			// THE SOURCE'S HEIGHT INCLUDES ITS PADDING. `min-h-[80vh]` sits on the SECTION, and a section's
+			// min-height is its whole box — the 112px of top and bottom padding live INSIDE the 80vh. Putting the
+			// same 80vh on the row instead stacks the padding on top of it: measured, an 800px source band came
+			// out 1024px (800 + 224). So the row takes the height MINUS the band's own vertical padding.
+			// That subtraction needs calc(), which the unit-input option cannot hold, so it rides the row's scoped
+			// CSS — the same place every other measured value no option can express already goes. calc() keeps it
+			// exact at every viewport height, which a vh-converted padding would not be.
+			$pad_y = 0.0;
+			if ( preg_match( '/(?:^|;)\s*padding:\s*([0-9.]+)px/i', (string) ( $sec['sectionCs'] ?? '' ), $pm ) ) { $pad_y = 2 * (float) $pm[1]; }
+			$hero_mid = 'middle' === (string) ( $sec['sectionValign'] ?? '' );
+			$mh       = ( $pad_y > 0 )
+				? 'calc(' . $hhm[1] . $hhm[2] . ' - ' . (int) round( $pad_y ) . 'px)'
+				: $hhm[1] . $hhm[2];
+			// WHOSE HEIGHT IS IT? The measured value describes the BAND. Writing it onto the first row and
+			// breaking ("the hero's own row, not every row in the band") is right only when the band HAS one
+			// row — there the row is the band.
+			//
+			// With SIBLING rows it lands on whichever happens to come first, and that is routinely something
+			// small. Measured on a layered band: the first row was a few-word eyebrow, it was inflated from
+			// roughly 100px to 850px by an 85vh carry, and the heading block and stats row then stacked below
+			// it rather than inside it — 850 + 510 + 92 + padding = 1742px against the source's 1000px. That
+			// one row was 86% of the whole page's height error.
+			//
+			// So a multi-row band takes the height on the SECTION. It goes in the section's scoped CSS rather
+			// than its `min_height` OPTION on purpose: the option renders the section `display:flex`, and that
+			// flex container shrinks a full-width flexbox row back to content width — which is the reason this
+			// value was moved off the section in the first place. Scoped CSS sets the height without changing
+			// what kind of box the section is.
+			$hero_rows = 0;
+			foreach ( $items as $it ) {
+				if ( is_array( $it ) && 'flexbox' === ( $it['type'] ?? '' )
+					&& is_array( $it['atts']['min_height'] ?? null )
+					&& array_key_exists( 'base', $it['atts']['min_height'] ) ) {
+					$hero_rows++;
+				}
+			}
+			if ( $hero_rows > 1 ) {
+				// THE BAND ALSO HAS TO CENTRE ITS ROWS, and the section is now the only box that can.
+				// Moving the height here broke the centring fix made for a multi-row hero the round before:
+				// that one worked by turning the FIRST row into a centring column, and with the height gone
+				// from that row the whole per-row pass is skipped. The two fixes collided, and its golden
+				// caught it — `direction='row'` where it wanted `column`.
+				//
+				// So mirror what such a source does on its own section (`flex flex-col justify-center`):
+				// centre on the column's MAIN axis, which is the vertical one, and leave `align-items` at its
+				// default `stretch` so every row keeps its full width. That last part is what makes this safe
+				// here while the section's `min_height` OPTION is not: the option's flex container is a ROW,
+				// and a row flex shrinks a full-width child back to content width.
+				//
+				// It rides the section's own `custom_css`, which is where every other measured section value
+				// that no option can express already goes (this same band carries its border rules there). The
+				// `$css` argument to n_section() is NOT the place: that parameter is documented as "kept for
+				// callers" and is dropped on the floor, so appending to it changes nothing — measured, by the
+				// golden staying red after exactly that edit.
+				$band_min_css = $hero_mid
+					? 'selector{min-height:' . $mh . ';display:flex;flex-direction:column;justify-content:center;}'
+					: 'selector{min-height:' . $mh . ';}';
+				$hero_rows    = -1; // handled; skip the per-row carry below
+			}
+			foreach ( $hero_rows < 0 ? array() : $items as $ii => $it ) {
+				if ( ! is_array( $it ) || 'flexbox' !== ( $it['type'] ?? '' ) || ! isset( $it['atts'] ) ) { continue; }
+				if ( ! is_array( $it['atts']['min_height'] ?? null ) || ! array_key_exists( 'base', $it['atts']['min_height'] ) ) { continue; }
+				$cur = isset( $it['atts']['custom_css'] ) ? (string) $it['atts']['custom_css'] : '';
+				$items[ $ii ]['atts']['custom_css'] = trim( $cur . ' selector{min-height:' . $mh . ';}' );
+				if ( $hero_mid ) {
+					// CENTRING ONLY WORKS ON A FLEX CONTAINER. This set `align_items` and left `display` alone,
+					// so on a `display:block` row it was inert and the hero text sat at the top of the band with
+					// ~530px of empty space beneath it. The framework cannot rescue it either: the only rule that
+					// gives `.fw-flexbox` a display is gated on a span-classed child
+					// (`:has(> [class*=fw-span-])`), which a hero wrapper has no reason to have — measured, 44 of
+					// 51 `.fw-flexbox` elements on one converted page fail that gate.
+					//
+					// THE AXIS IS THE SUBTLE PART. On a ROW flex `align-items:center` does centre vertically, so
+					// merely flipping `display` to flex looks right in isolation — but a block wrapper STACKS its
+					// children, and this one holds the eyebrow and the heading; a row flex would put them side by
+					// side. So mirror what the source actually does (`flex-direction:column` +
+					// `justify-content:center`): centre on the column's MAIN axis, and CLEAR `align_items`, which
+					// on a column is the horizontal axis and would otherwise centre text the source left-aligns.
+					// `wrap:no` because `.fw-flex` sets `flex-wrap:wrap`, and a wrapping column with a fixed
+					// min-height can spill its children into a second column.
+					$h_atts = $items[ $ii ]['atts'];
+					if ( 'block' === (string) ( $h_atts['display'] ?? '' ) ) {
+						$items[ $ii ]['atts']['display'] = 'flex';
+						if ( is_array( $h_atts['direction'] ?? null ) )       { $items[ $ii ]['atts']['direction']['base'] = 'column'; }
+						if ( is_array( $h_atts['justify_content'] ?? null ) ) { $items[ $ii ]['atts']['justify_content']['base'] = 'center'; }
+						if ( is_array( $h_atts['align_items'] ?? null ) )     { $items[ $ii ]['atts']['align_items']['base'] = ''; }
+						if ( is_array( $h_atts['wrap'] ?? null ) )            { $items[ $ii ]['atts']['wrap']['base'] = 'no'; }
+					} elseif ( is_array( $h_atts['align_items'] ?? null ) ) {
+						// Already a real row flex (a two-column hero: text beside media). There the cross axis IS
+						// the vertical one, so this is the correct centring and must not be rewritten.
+						$items[ $ii ]['atts']['align_items']['base'] = 'center';
+					}
+				}
+				break; // the hero's own row, not every row in the band
+			}
+		}
+
 		$sec_node = self::n_section( $src_cls_str, $css_id, $css, $items, $section_fullwidth );
+		// A multi-row band's measured height, from the hero-height carry above.
+		if ( isset( $band_min_css ) && '' !== $band_min_css ) {
+			$sec_cur = (string) ( $sec_node['atts']['custom_css'] ?? '' );
+			$sec_node['atts']['custom_css'] = trim( $sec_cur . ' ' . $band_min_css );
+		}
 		// FULL-BLEED SPLIT HERO — full-viewport HEIGHT (`min-h-screen`) + vertical CENTERING (`flex-col
 		// justify-center`) are NOT applied here on purpose. The section's `min_height` option renders the section
 		// `display:flex`, and that flex container SHRINKS a full-width flexbox child back to content width (which
@@ -15650,6 +16230,44 @@ selector{max-width:100% !important;}" );
 					foreach ( $sec['sectionLayers'] as $layer ) {
 						$grad = self::layer_band_gradient( is_array( $layer ) ? $layer : array() );
 						if ( '' !== $grad ) { $secd['background-image'] = $grad; break; }
+					}
+				}
+			}
+
+			// THE SCRIM — a translucent full-bleed cover OVER a photo.
+			//
+			// Nothing above owns this, and neither piece is wrong. The gradient hoist is guarded by
+			// `! isset( $secd['background-image'] )`, so a section that already has a PHOTO never reaches it —
+			// and a scrim over a photo is the entire point of a scrim. `layer_band_gradient()` then refuses a
+			// translucent gradient deliberately ("A SCRIM carries transparency in its stops — not a solid band
+			// fill"), which is correct about ITS job. The case simply had no owner, so the cover was dropped.
+			//
+			// Measured: a band converted with its photo at full brightness where the source darkens it heavily,
+			// leaving white copy on bright water reflections — 57.1% pixel and 24.65% perceptual difference, the
+			// largest on that page, and the same defect on the hero, so it is systemic to photo bands.
+			//
+			// It rides as an explicit OVERLAY rather than as another entry in the background list, because the
+			// photo does not always arrive through `$secd`: it is usually the section's native background.image
+			// option, which a background-image string cannot layer onto. An ::after pinned to the section covers
+			// the photo however the photo got there. The section is made a containing block for it, and the
+			// section's own children are lifted above it so the scrim darkens the photo and not the text.
+			if ( ! empty( $sec['sectionLayers'] ) && is_array( $sec['sectionLayers'] ) ) {
+				$has_photo = ( isset( $secd['background-image'] ) && false !== stripos( (string) $secd['background-image'], 'url(' ) )
+					|| ! empty( $sec['sectionBgImage']['src'] )
+					|| ! empty( $sec_node['atts']['background']['image']['src'] );
+				if ( $has_photo ) {
+					$scrims = array();
+					foreach ( $sec['sectionLayers'] as $layer ) {
+						$sc = self::layer_scrim( is_array( $layer ) ? $layer : array() );
+						if ( '' !== $sc && ! in_array( $sc, $scrims, true ) ) { $scrims[] = $sc; }
+					}
+					if ( $scrims ) {
+						$ov = 'selector{position:relative;}'
+							. 'selector::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:1;'
+							. 'background-image:' . implode( ',', $scrims ) . ';}'
+							. 'selector > *{position:relative;z-index:2;}';
+						$cur_css = (string) ( $sec_node['atts']['custom_css'] ?? '' );
+						$sec_node['atts']['custom_css'] = trim( $cur_css . ' ' . $ov );
 					}
 				}
 			}

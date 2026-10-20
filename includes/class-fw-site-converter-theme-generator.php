@@ -620,7 +620,21 @@ class FW_Site_Converter_Theme_Generator {
 		$first = trim( $first[0] );
 		$first = trim( $first, "\"'" );
 		// Skip a bare generic (the source had only a generic primary).
-		if ( in_array( strtolower( $first ), array( 'serif', 'sans-serif', 'monospace', 'system-ui', 'ui-sans-serif', 'ui-serif', 'inherit' ), true ) ) {
+		//
+		// `-apple-system` and `blinkmacsystemfont` BELONG IN THIS LIST. They are system keywords, not font
+		// names, and they lead the stack every site that asks for "the OS UI font" ships:
+		//
+		//     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif
+		//
+		// Without them this returned `-apple-system` as if it were a real family, and the generated theme
+		// emitted `font-family:-apple-system` with NOTHING after it. On Apple hardware that looks correct,
+		// which is why it survived; everywhere else the element loses Segoe UI / Roboto / Helvetica / Arial
+		// and falls back to the browser default, so the build rendered differently per operating system.
+		// Returning '' instead keeps the theme's own complete system stack.
+		//
+		// The same list exists in `detect_computed_fonts()` in the stitch, where these keywords were already
+		// present -- two copies of one list, only one of them maintained. Keep them in step.
+		if ( in_array( strtolower( $first ), array( 'serif', 'sans-serif', 'monospace', 'system-ui', 'ui-sans-serif', 'ui-serif', 'ui-monospace', 'inherit', 'initial', '-apple-system', 'blinkmacsystemfont', 'cursive', 'fantasy' ), true ) ) {
 			return '';
 		}
 		return $first;

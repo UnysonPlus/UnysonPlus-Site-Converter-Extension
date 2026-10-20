@@ -311,5 +311,58 @@ $ok( $wm_brand && '' === (string) $wm_oos->invoke( null, $wm_brand ),
 	'[WM] NEGATIVE: a branding container alone does not excuse text from the audit',
 	'reason=' . ( $wm_brand ? var_export( $wm_oos->invoke( null, $wm_brand ), true ) : 'leaf not found' ) );
 
+/* ------------------------------- 4. a line break is whitespace, not nothing -- */
+echo "\n=== A MULTILINE PHRASE: <br> is a space to a reader, so it must be one to the audit ===\n";
+
+// A footer address is written as two lines in one element: `123 Example Street<br>Springfield, SP 12345`.
+// The source element's own direct text is those two text nodes with a gap between them, which is the phrase
+// the audit goes looking for. What it searches is the built output run through strip_tags() -- and strip_tags
+// DELETES a <br> rather than standing a space in its place, so the haystack reads "StreetSpringfield" and the
+// address is reported LOST while sitting in the footer settings, intact, with its break preserved.
+//
+// Measured on a captured footer the moment the contact row started carrying its break instead of folding it
+// to one line: coverage 100% -> 97.1%, one item missing, and `theme-settings.json` holding exactly
+// `"li_text":"123 Fresh Meadow Lane<br>Springfield, SP 12345"`. The conversion had got BETTER and the
+// instrument said it got worse. Same class of defect as the three already recorded inside
+// build_text_coverage(): the instrument's own blind spot, acted on as though it were content loss.
+//
+// Driven directly rather than through a built page, because the defect is in how the HAYSTACK is normalised
+// -- going via the footer recognizer would make the test depend on that recognizer claiming the column.
+$cov_fn = new ReflectionMethod( 'FW_Site_Converter_Stitch', 'build_text_coverage' );
+$cov_fn->setAccessible( true );
+
+$br_src = '<!doctype html><html><body><footer><ul>'
+	. '<li><span>123 Example Street<br>Springfield, SP 12345</span></li>'
+	. '<li><span>Open Monday to Friday<br>8am until 6pm</span></li>'
+	. '</ul></footer></body></html>';
+// What the converter now stores: the row with its break kept, which is what the source renders.
+$br_vals = array( 'footer' => array( 'rows' => array(
+	array( 'li_text' => '123 Example Street<br>Springfield, SP 12345' ),
+	array( 'li_text' => 'Open Monday to Friday<br>8am until 6pm' ),
+) ) );
+$br  = (array) $cov_fn->invoke( null, $br_src, $br_vals, array() );
+$brt = implode( ' | ', array_map( function ( $r ) { return (string) ( $r['text'] ?? '' ); }, (array) ( $br['items'] ?? array() ) ) );
+
+$ok( false === strpos( $brt, 'Example Street' ),
+	'[BR] a two-line address stored with its <br> is not reported as missing', 'items=' . ( '' === $brt ? '(none)' : $brt ) );
+$ok( false === strpos( $brt, 'Open Monday' ),
+	'[BR] nor a two-line opening time', 'items=' . ( '' === $brt ? '(none)' : $brt ) );
+
+/* NEGATIVE 1 -- text that really IS absent must still be reported. A <br> standing in for a space must not
+   become a wildcard that matches anything. */
+$br_gone = (array) $cov_fn->invoke( null, $br_src, array( 'footer' => array( 'rows' => array( array( 'li_text' => 'Nothing to do with the address' ) ) ) ), array() );
+$gt = implode( ' | ', array_map( function ( $r ) { return (string) ( $r['text'] ?? '' ); }, (array) ( $br_gone['items'] ?? array() ) ) );
+$ok( false !== strpos( $gt, 'Example Street' ),
+	'[BR] NEGATIVE: an address the output genuinely does not carry is STILL reported missing', 'items=' . ( '' === $gt ? '(none)' : $gt ) );
+
+/* NEGATIVE 2 -- the fix must not split words that the source itself ran together. An inline tag inside a
+   phrase carries no line break, so the output must still read as one continuous phrase. */
+$em_src  = '<!doctype html><html><body><footer><p>Serving Springfield since 1998</p></footer></body></html>';
+$em_vals = array( 'footer' => array( 'text' => 'Serving <em>Springfield</em> since 1998' ) );
+$em      = (array) $cov_fn->invoke( null, $em_src, $em_vals, array() );
+$ok( ! count( (array) ( $em['items'] ?? array() ) ),
+	'[BR] NEGATIVE: an inline tag inside a phrase does not break the phrase apart',
+	'items=' . wp_json_encode( $em['items'] ?? array() ) );
+
 echo "\n" . ( $fails ? "✗ {$fails} FAIL" : '✓ ALL PASS — title derivation + coverage audit guarded' ) . "\n";
 exit( $fails ? 1 : 0 );

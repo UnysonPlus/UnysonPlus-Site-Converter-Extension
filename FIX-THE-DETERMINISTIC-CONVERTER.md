@@ -157,7 +157,7 @@ does under the hood if you need to customise the assertions.
 **Step 1 — CAPTURE the URL FRESH** (the button calls the running capture service; do the same):
 
 ```bash
-# Option A: the running service (Node on :8787, started by start-converter.bat)
+# Option A: the running service (Node on :8787, started by the kit's start.bat)
 curl "http://localhost:8787/capture?url=https://amiable-arc-archive.lovable.app/&html=1" > svc-rendered.html
 # Option B: a one-off capture (spawns capture.mjs itself)
 cd "d:/Web Dev/UnysonPlus-AI-Dev-Kit/assembled/UnysonPlus-Capture-Service/tools/design-capture"

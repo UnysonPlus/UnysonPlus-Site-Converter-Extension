@@ -198,6 +198,7 @@
                             {
                                 "t": "row",
                                 "role": "columns",
+                                "srcGrid": false,
                                 "valign": "center",
                                 "gap": 64,
                                 "gapResp": {
@@ -1023,7 +1024,7 @@
                         "grid_min": "240px",
                         "content_width": "wide"
                     },
-                    "custom_css": "selector{text-align:center;} selector{width:100%;}"
+                    "custom_css": "selector{text-align:center;} selector{width:100%;} selector{min-height:85vh;}"
                 },
                 "h-3": {
                     "sc": "flexbox",
@@ -1044,7 +1045,7 @@
                         "heading": "h1",
                         "title_class": "bg-clip-text text-transparent bg-gradient-to-r from-white via-gray-400 to-[oklch(65%_0.25_45)]"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:96px !important;line-height:96px !important;letter-spacing:-4.8px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .sc-glow{text-shadow:oklch(0.65 0.25 45 / 0.6) 0px 0px 30px;}selector .heading-title{background-image:linear-gradient(to right, rgb(255, 255, 255), rgb(156, 163, 175), oklch(0.65 0.25 45));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}selector .heading-title [style*=\"color\"],selector .heading-titl…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:96px !important;line-height:96px !important;letter-spacing:-4.8px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .sc-glow{text-shadow:oklch(0.65 0.25 45 / 0.6) 0px 0px 30px;}selector .heading-title{background-image:linear-gradient(to right, rgb(255, 255, 255), rgb(156, 163, 175), oklch(0.65 0.25 45));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}selector .heading-title [style*=\"color\"],selector…",
                     "src_cls": "text-6xl md:text-8xl font-bold leading-none bg-clip-text text-transparent bg-gradient-to-r from-white via-gray-400 to-[oklch(65%_0.25_45)] uppercase tracking-tighter",
                     "dropped": [
                         "text-6xl",
@@ -1150,7 +1151,8 @@
                         "display": "flex",
                         "grid_columns": "3",
                         "grid_min": "240px"
-                    }
+                    },
+                    "custom_css": "selector{position:relative;min-height:28px;}"
                 },
                 "h-14": {
                     "sc": "icon",
@@ -1189,7 +1191,8 @@
                         "display": "flex",
                         "grid_columns": "3",
                         "grid_min": "240px"
-                    }
+                    },
+                    "custom_css": "selector{position:relative;min-height:28px;}"
                 },
                 "h-18": {
                     "sc": "icon",
@@ -1228,7 +1231,8 @@
                         "display": "flex",
                         "grid_columns": "3",
                         "grid_min": "240px"
-                    }
+                    },
+                    "custom_css": "selector{position:relative;min-height:28px;}"
                 },
                 "h-22": {
                     "sc": "icon",
@@ -1267,7 +1271,8 @@
                         "display": "flex",
                         "grid_columns": "3",
                         "grid_min": "240px"
-                    }
+                    },
+                    "custom_css": "selector{position:relative;min-height:28px;}"
                 },
                 "h-26": {
                     "sc": "icon",
@@ -1357,7 +1362,7 @@
                         "title_class": "syncopate",
                         "title_color": "#e9f0f5"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:24px !important;line-height:32px !important;letter-spacing:1.2px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;} :where(selector){transition:all;}",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:24px !important;line-height:32px !important;letter-spacing:1.2px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;} :where(selector){transition:all;}",
                     "src_cls": "text-2xl font-bold mb-4 uppercase tracking-wider syncopate",
                     "dropped": [
                         "text-2xl",
@@ -1407,7 +1412,7 @@
                         "title_class": "syncopate",
                         "title_color": "#e9f0f5"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:24px !important;line-height:32px !important;letter-spacing:1.2px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;} :where(selector){transition:all;}",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:24px !important;line-height:32px !important;letter-spacing:1.2px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;} :where(selector){transition:all;}",
                     "src_cls": "text-2xl font-bold mb-4 uppercase tracking-wider syncopate",
                     "dropped": [
                         "text-2xl",
@@ -1470,7 +1475,7 @@
                         "subtitle_color": "#d1d5db",
                         "title_color": "#e9f0f5"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:300 !important;}selector .heading-title{font-size:36px !important;line-height:40px !important;letter-spacing:-0.9px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-subtitle{font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-weight:300 !important;font-family:\"SF Pro Display\", sans-serif !important;}",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:300 !important;}selector .heading-subtitle{font-size:18px !important;line-height:29px !important;}selector .heading-title{font-size:36px !important;line-height:40px !important;letter-spacing:-0.9px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .h…",
                     "src_cls": "text-4xl font-bold mb-6 uppercase tracking-tight syncopate text-lg font-light text-gray-300 leading-relaxed",
                     "dropped": [
                         "text-4xl",
@@ -1549,7 +1554,7 @@
                         "subtitle_color": "#9ca3af",
                         "title_color": "#e9f0f5"
                     },
-                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:300 !important;}selector .heading-title{font-size:72px !important;line-height:72px !important;letter-spacing:-3.6px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-subtitle{font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{text-shadow:oklch(0.65 0.25 45 / 0.6) 0px 0px 30px;}selector .heading-subtitle{max-width:42rem !important;margin-left:auto !important;margin-right:auto !important;}selector .heading-title{margin-top:0px !im…",
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:300 !important;}selector .heading-subtitle{font-size:20px !important;line-height:28px !important;}selector .heading-title{font-size:72px !important;line-height:72px !important;letter-spacing:-3.6px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{text-shadow:oklch(0.65 0.25 45 / 0.6) 0px 0px 30px;}selector .heading-subtitle{max-width:42re…",
                     "src_cls": "text-5xl md:text-7xl font-bold mb-8 uppercase tracking-tighter syncopate glow-text text-xl font-light text-gray-400 max-w-2xl mx-auto mb-16 tracking-wide",
                     "dropped": [
                         "text-5xl",
@@ -1856,7 +1861,7 @@
                                         "unique_id": "uid-2",
                                         "css_id": "",
                                         "css_class": "",
-                                        "custom_css": "selector{text-align:center;}\r\nselector{width:100%;}",
+                                        "custom_css": "selector{text-align:center;}\nselector{width:100%;} selector{min-height:85vh;}",
                                         "responsive_hide": [],
                                         "custom_attrs": [],
                                         "content_width": {
@@ -2058,7 +2063,7 @@
                                                         "unique_id": "uid-4",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:96px !important;line-height:96px !important;letter-spacing:-4.8px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .sc-glow{text-shadow:oklch(0.65 0.25 45 / 0.6) 0px 0px 30px;}selector .heading-title{background-image:linear-gradient(to right, rgb(255, 255, 255), rgb(156, 163, 175), oklch(0.65 0.25 45));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}selector .heading-title [style*=\"color\"],selector .heading-title span[class]{-webkit-text-fill-color:currentColor}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:0 !important;}@media (max-width:767px){selector.heading .heading-title{font-size:60px !important;line-height:60px !important;}}",
+                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:96px !important;line-height:96px !important;letter-spacing:-4.8px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .sc-glow{text-shadow:oklch(0.65 0.25 45 / 0.6) 0px 0px 30px;}selector .heading-title{background-image:linear-gradient(to right, rgb(255, 255, 255), rgb(156, 163, 175), oklch(0.65 0.25 45));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}selector .heading-title [style*=\"color\"],selector .heading-title span[class]{-webkit-text-fill-color:currentColor}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:0 !important;}@media (max-width:767px){selector.heading .heading-title{font-size:60px !important;line-height:60px !important;}}",
                                                         "overline": "",
                                                         "overline_uppercase": "no",
                                                         "overline_icon": {
@@ -2332,7 +2337,7 @@
                                                 "unique_id": "uid-6",
                                                 "css_id": "",
                                                 "css_class": "",
-                                                "custom_css": "selector .btn{flex:0 0 auto !important;width:auto !important;}\r\nselector{width:100%;}",
+                                                "custom_css": "selector .btn{flex:0 0 auto !important;width:auto !important;}\nselector{width:100%;}",
                                                 "responsive_hide": [],
                                                 "custom_attrs": []
                                             },
@@ -2702,7 +2707,7 @@
                                         "unique_id": "uid-9",
                                         "css_id": "",
                                         "css_class": "",
-                                        "custom_css": "selector{margin-top:auto !important;}\nselector{text-align:center;}\r\nselector{width:100%;}",
+                                        "custom_css": "selector{margin-top:auto !important;}\nselector{text-align:center;}\nselector{width:100%;}",
                                         "responsive_hide": [],
                                         "custom_attrs": [],
                                         "content_width": {
@@ -3318,7 +3323,7 @@
                                                         "unique_id": "uid-13",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "",
+                                                        "custom_css": "selector{position:relative;min-height:28px;}",
                                                         "responsive_hide": [],
                                                         "custom_attrs": []
                                                     },
@@ -3386,6 +3391,22 @@
                                                                             }
                                                                         },
                                                                         "lg": {
+                                                                            "margin": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            },
+                                                                            "padding": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            }
+                                                                        },
+                                                                        "xl": {
                                                                             "margin": {
                                                                                 "all": "",
                                                                                 "top": "",
@@ -3471,9 +3492,19 @@
                                                                 "css_class": "",
                                                                 "custom_css": "",
                                                                 "element_position": {
-                                                                    "position": "default"
+                                                                    "base": {
+                                                                        "position": "default"
+                                                                    },
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
                                                                 },
-                                                                "element_overflow": "",
+                                                                "element_overflow": {
+                                                                    "base": "",
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
+                                                                },
                                                                 "responsive_hide": [],
                                                                 "dc_logged": "all",
                                                                 "dc_roles": [],
@@ -3881,7 +3912,7 @@
                                                         "unique_id": "uid-17",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "",
+                                                        "custom_css": "selector{position:relative;min-height:28px;}",
                                                         "responsive_hide": [],
                                                         "custom_attrs": []
                                                     },
@@ -3949,6 +3980,22 @@
                                                                             }
                                                                         },
                                                                         "lg": {
+                                                                            "margin": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            },
+                                                                            "padding": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            }
+                                                                        },
+                                                                        "xl": {
                                                                             "margin": {
                                                                                 "all": "",
                                                                                 "top": "",
@@ -4034,9 +4081,19 @@
                                                                 "css_class": "",
                                                                 "custom_css": "",
                                                                 "element_position": {
-                                                                    "position": "default"
+                                                                    "base": {
+                                                                        "position": "default"
+                                                                    },
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
                                                                 },
-                                                                "element_overflow": "",
+                                                                "element_overflow": {
+                                                                    "base": "",
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
+                                                                },
                                                                 "responsive_hide": [],
                                                                 "dc_logged": "all",
                                                                 "dc_roles": [],
@@ -4444,7 +4501,7 @@
                                                         "unique_id": "uid-21",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "",
+                                                        "custom_css": "selector{position:relative;min-height:28px;}",
                                                         "responsive_hide": [],
                                                         "custom_attrs": []
                                                     },
@@ -4512,6 +4569,22 @@
                                                                             }
                                                                         },
                                                                         "lg": {
+                                                                            "margin": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            },
+                                                                            "padding": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            }
+                                                                        },
+                                                                        "xl": {
                                                                             "margin": {
                                                                                 "all": "",
                                                                                 "top": "",
@@ -4597,9 +4670,19 @@
                                                                 "css_class": "",
                                                                 "custom_css": "",
                                                                 "element_position": {
-                                                                    "position": "default"
+                                                                    "base": {
+                                                                        "position": "default"
+                                                                    },
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
                                                                 },
-                                                                "element_overflow": "",
+                                                                "element_overflow": {
+                                                                    "base": "",
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
+                                                                },
                                                                 "responsive_hide": [],
                                                                 "dc_logged": "all",
                                                                 "dc_roles": [],
@@ -5007,7 +5090,7 @@
                                                         "unique_id": "uid-25",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "",
+                                                        "custom_css": "selector{position:relative;min-height:28px;}",
                                                         "responsive_hide": [],
                                                         "custom_attrs": []
                                                     },
@@ -5075,6 +5158,22 @@
                                                                             }
                                                                         },
                                                                         "lg": {
+                                                                            "margin": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            },
+                                                                            "padding": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            }
+                                                                        },
+                                                                        "xl": {
                                                                             "margin": {
                                                                                 "all": "",
                                                                                 "top": "",
@@ -5160,9 +5259,19 @@
                                                                 "css_class": "",
                                                                 "custom_css": "",
                                                                 "element_position": {
-                                                                    "position": "default"
+                                                                    "base": {
+                                                                        "position": "default"
+                                                                    },
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
                                                                 },
-                                                                "element_overflow": "",
+                                                                "element_overflow": {
+                                                                    "base": "",
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
+                                                                },
                                                                 "responsive_hide": [],
                                                                 "dc_logged": "all",
                                                                 "dc_roles": [],
@@ -6109,6 +6218,22 @@
                                                                                         "bottom": "",
                                                                                         "left": ""
                                                                                     }
+                                                                                },
+                                                                                "xl": {
+                                                                                    "margin": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    },
+                                                                                    "padding": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         },
@@ -6180,9 +6305,19 @@
                                                                         "css_class": "",
                                                                         "custom_css": "",
                                                                         "element_position": {
-                                                                            "position": "default"
+                                                                            "base": {
+                                                                                "position": "default"
+                                                                            },
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
                                                                         },
-                                                                        "element_overflow": "",
+                                                                        "element_overflow": {
+                                                                            "base": "",
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
+                                                                        },
                                                                         "responsive_hide": [],
                                                                         "dc_logged": "all",
                                                                         "dc_roles": [],
@@ -6199,7 +6334,7 @@
                                                                         "unique_id": "uid-34",
                                                                         "css_id": "",
                                                                         "css_class": "",
-                                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:24px !important;line-height:32px !important;letter-spacing:1.2px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}\n:where(selector){transition:all;}",
+                                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:24px !important;line-height:32px !important;letter-spacing:1.2px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}\n:where(selector){transition:all;}",
                                                                         "overline": "",
                                                                         "overline_uppercase": "no",
                                                                         "overline_icon": {
@@ -6555,6 +6690,22 @@
                                                                                         "bottom": "",
                                                                                         "left": ""
                                                                                     }
+                                                                                },
+                                                                                "xl": {
+                                                                                    "margin": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    },
+                                                                                    "padding": {
+                                                                                        "all": "",
+                                                                                        "top": "",
+                                                                                        "right": "",
+                                                                                        "bottom": "",
+                                                                                        "left": ""
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         },
@@ -6626,9 +6777,19 @@
                                                                         "css_class": "",
                                                                         "custom_css": "",
                                                                         "element_position": {
-                                                                            "position": "default"
+                                                                            "base": {
+                                                                                "position": "default"
+                                                                            },
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
                                                                         },
-                                                                        "element_overflow": "",
+                                                                        "element_overflow": {
+                                                                            "base": "",
+                                                                            "md": "",
+                                                                            "lg": "",
+                                                                            "xl": ""
+                                                                        },
                                                                         "responsive_hide": [],
                                                                         "dc_logged": "all",
                                                                         "dc_roles": [],
@@ -6645,7 +6806,7 @@
                                                                         "unique_id": "uid-38",
                                                                         "css_id": "",
                                                                         "css_class": "",
-                                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:24px !important;line-height:32px !important;letter-spacing:1.2px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}\n:where(selector){transition:all;}",
+                                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-title{font-size:24px !important;line-height:32px !important;letter-spacing:1.2px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}\n:where(selector){transition:all;}",
                                                                         "overline": "",
                                                                         "overline_uppercase": "no",
                                                                         "overline_icon": {
@@ -7197,6 +7358,22 @@
                                                                                 "bottom": "",
                                                                                 "left": ""
                                                                             }
+                                                                        },
+                                                                        "xl": {
+                                                                            "margin": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            },
+                                                                            "padding": {
+                                                                                "all": "",
+                                                                                "top": "",
+                                                                                "right": "",
+                                                                                "bottom": "",
+                                                                                "left": ""
+                                                                            }
                                                                         }
                                                                     }
                                                                 },
@@ -7268,9 +7445,19 @@
                                                                 "css_class": "",
                                                                 "custom_css": "",
                                                                 "element_position": {
-                                                                    "position": "default"
+                                                                    "base": {
+                                                                        "position": "default"
+                                                                    },
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
                                                                 },
-                                                                "element_overflow": "",
+                                                                "element_overflow": {
+                                                                    "base": "",
+                                                                    "md": "",
+                                                                    "lg": "",
+                                                                    "xl": ""
+                                                                },
                                                                 "responsive_hide": [],
                                                                 "dc_logged": "all",
                                                                 "dc_roles": [],
@@ -7287,7 +7474,7 @@
                                                                 "unique_id": "uid-43",
                                                                 "css_id": "",
                                                                 "css_class": "",
-                                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:300 !important;}selector .heading-title{font-size:36px !important;line-height:40px !important;letter-spacing:-0.9px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-subtitle{font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-weight:300 !important;font-family:\"SF Pro Display\", sans-serif !important;}",
+                                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:300 !important;}selector .heading-subtitle{font-size:18px !important;line-height:29px !important;}selector .heading-title{font-size:36px !important;line-height:40px !important;letter-spacing:-0.9px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:24px !important;}selector .heading-subtitle{font-weight:300 !important;font-family:\"SF Pro Display\", sans-serif !important;}",
                                                                 "overline": "",
                                                                 "overline_uppercase": "no",
                                                                 "overline_icon": {
@@ -7609,7 +7796,7 @@
                                         "unique_id": "uid-45",
                                         "css_id": "",
                                         "css_class": "",
-                                        "custom_css": "selector{text-align:center;}\r\nselector{width:100%;}",
+                                        "custom_css": "selector{text-align:center;}\nselector{width:100%;}",
                                         "responsive_hide": [],
                                         "custom_attrs": [],
                                         "content_width": {
@@ -8068,6 +8255,22 @@
                                                                         "bottom": "",
                                                                         "left": ""
                                                                     }
+                                                                },
+                                                                "xl": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
                                                                 }
                                                             }
                                                         },
@@ -8139,9 +8342,19 @@
                                                         "css_class": "",
                                                         "custom_css": "",
                                                         "element_position": {
-                                                            "position": "default"
+                                                            "base": {
+                                                                "position": "default"
+                                                            },
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
                                                         },
-                                                        "element_overflow": "",
+                                                        "element_overflow": {
+                                                            "base": "",
+                                                            "md": "",
+                                                            "lg": "",
+                                                            "xl": ""
+                                                        },
                                                         "responsive_hide": [],
                                                         "dc_logged": "all",
                                                         "dc_roles": [],
@@ -8158,7 +8371,7 @@
                                                         "unique_id": "uid-49",
                                                         "css_id": "",
                                                         "css_class": "",
-                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:300 !important;}selector .heading-title{font-size:72px !important;line-height:72px !important;letter-spacing:-3.6px !important;}selector .heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-subtitle{font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{text-shadow:oklch(0.65 0.25 45 / 0.6) 0px 0px 30px;}selector .heading-subtitle{max-width:42rem !important;margin-left:auto !important;margin-right:auto !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:32px !important;}selector .heading-subtitle{font-size:20px !important;line-height:28px !important;}selector .heading-subtitle{letter-spacing:0.5px !important;font-weight:300 !important;font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector.heading .heading-title{font-size:48px !important;line-height:48px !important;}}",
+                                                        "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:300 !important;}selector .heading-subtitle{font-size:20px !important;line-height:28px !important;}selector .heading-title{font-size:72px !important;line-height:72px !important;letter-spacing:-3.6px !important;}selector .heading-title.heading-title{font-family:Syncopate, sans-serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{text-shadow:oklch(0.65 0.25 45 / 0.6) 0px 0px 30px;}selector .heading-subtitle{max-width:42rem !important;margin-left:auto !important;margin-right:auto !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:32px !important;}selector .heading-subtitle{font-size:20px !important;line-height:28px !important;}selector .heading-subtitle{letter-spacing:0.5px !important;font-weight:300 !important;font-family:\"SF Pro Display\", sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:0px !important;}@media (max-width:767px){selector.heading .heading-title{font-size:48px !important;line-height:48px !important;}}",
                                                         "overline": "",
                                                         "overline_uppercase": "no",
                                                         "overline_icon": {
@@ -8520,7 +8733,7 @@
                     }
                 },
                 "misc_custom_css": {
-                    "custom_css": "/* converted header/footer styles */\n.footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:oklch(0.95 0.01 240) !important}\n.footer .site-logo__mark:not(.site-logo__mark--framed){color:oklch(0.95 0.01 240) !important}\n.footer-tagline{font-family:Inter, sans-serif !important;max-width:576px !important;font-size:11px !important;line-height:17.875px !important;text-align:right !important;color:rgba(255, 255, 255, 0.4) !important;}\n/* Source page shell (main) */\nbody:not(.wp-admin){background:var(--deep);}body:not(.wp-admin){background-color:black;}\n/* Source page-level decor layers */\nmain.site-main{position:relative;}\nmain.site-main::before{content:\"\";position:absolute;pointer-events:none;background-image:radial-gradient(circle, oklch(0.65 0.25 45 / 0.18), rgba(0, 0, 0, 0) 60%);filter:blur(120px);z-index:-1;mix-blend-mode:screen;height:1620px;top:-270px;left:-576px;right:-576px;}\n/* Site background video layer */\n.site-bg-video{top:45px !important;right:-144px !important;bottom:0px !important;left:504px !important;width:auto !important;height:auto !important;opacity:0.85 !important;filter:drop-shadow(oklch(0.65 0.25 45 / 0.3) 0px 0px 30px) !important;animation:tourbillon-float 24s cubic-bezier(0.25, 0.1, 0.25, 1) 0s infinite alternate none !important;}\n@keyframes tourbillon-float { 0% { transform: translateY(0px) rotateZ(0deg) rotateX(2deg) rotateY(-3deg) scale(1); } 50% { transform: translateY(-20px) rotateZ(1deg) rotateX(-1deg) rotateY(1deg) scale(1.02); } 100% { transform: translateY(-40px) rotateZ(-1deg) rotateX(-2deg) rotateY(4deg) scale(1.04); } }\n.site-bg-video video{transform:matrix(1.29505, -0.113302, 0.113302, 1.29505, 0, 0);filter:contrast(1.15) brightness(1.05);}"
+                    "custom_css": "/* converted header/footer styles */\n.footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:oklch(0.95 0.01 240) !important}\n.footer .site-logo__mark:not(.site-logo__mark--framed){color:oklch(0.95 0.01 240) !important}\n.footer-tagline{font-family:Inter, sans-serif !important;max-width:576px !important;font-size:11px !important;line-height:17.875px !important;text-align:right !important;color:rgba(255, 255, 255, 0.4) !important;}\n/* Source page shell (main) */\nbody:not(.wp-admin){}body:not(.wp-admin){}\n/* Source page-level decor layers */\nmain.site-main{position:relative;}\nmain.site-main::before{content:\"\";position:absolute;pointer-events:none;background-image:radial-gradient(circle, oklch(0.65 0.25 45 / 0.18), rgba(0, 0, 0, 0) 60%);filter:blur(120px);z-index:-1;mix-blend-mode:screen;height:1620px;top:-270px;left:-576px;right:-576px;}\n/* Site background video layer */\n.site-bg-video{top:45px !important;right:-144px !important;bottom:0px !important;left:504px !important;width:auto !important;height:auto !important;opacity:0.85 !important;filter:drop-shadow(oklch(0.65 0.25 45 / 0.3) 0px 0px 30px) !important;animation:tourbillon-float 24s cubic-bezier(0.25, 0.1, 0.25, 1) 0s infinite alternate none !important;}\n@keyframes tourbillon-float { 0% { transform: translateY(0px) rotateZ(0deg) rotateX(2deg) rotateY(-3deg) scale(1); } 50% { transform: translateY(-20px) rotateZ(1deg) rotateX(-1deg) rotateY(1deg) scale(1.02); } 100% { transform: translateY(-40px) rotateZ(-1deg) rotateX(-2deg) rotateY(4deg) scale(1.04); } }\n.site-bg-video video{transform:matrix(1.29505, -0.113302, 0.113302, 1.29505, 0, 0);filter:contrast(1.15) brightness(1.05);}"
                 },
                 "main_footer_columns": {
                     "count": "2",

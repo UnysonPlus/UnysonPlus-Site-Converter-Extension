@@ -1,0 +1,2864 @@
+{
+    "mapping": {
+        "include_animations": false,
+        "pages": [
+            {
+                "title": "Snapshot",
+                "slug": "",
+                "front_page": true,
+                "sections": [
+                    {
+                        "sectionClass": "",
+                        "sectionRawClass": "relative min-h-screen w-full flex flex-col justify-between pt-32 pb-16 px-6 lg:px-12 bg-cover bg-center bg-no-repeat",
+                        "sectionCs": "background-image:url(about:blank.jpg);color:rgb(229, 231, 235);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;padding:128px 48px 64px;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;height:900px;min-height:900px;display:flex;justify-content:space-between;align-items:normal;flex-direction:column;transition:all;top:0px;right:0px;bottom:0px;left:0px;background-size:cover;background-position:50% 50%;background-repeat:no-repeat",
+                        "sectionCsSm": "padding:128px 24px 64px;min-height:844px",
+                        "sectionCsMd": "padding:128px 24px 64px;min-height:1180px",
+                        "sectionCsXl": "min-height:1080px",
+                        "bandPlace": [],
+                        "phonePass": false,
+                        "sectionLayers": [
+                            {
+                                "cls": "absolute inset-0 bg-gradient-to-r from-black/85 via-black/50 to-transparent pointer-events-none",
+                                "style": "",
+                                "cs": "background-image:linear-gradient(to right, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0));color:rgb(229, 231, 235);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;height:900px;display:block;justify-content:normal;align-items:normal;flex-direction:row;transition:all;position:absolute;top:0px;right:0px;bottom:0px;left:0px"
+                            },
+                            {
+                                "cls": "absolute inset-0 bg-gradient-to-t from-[#08090c] via-transparent to-black/40 pointer-events-none",
+                                "style": "",
+                                "cs": "background-image:linear-gradient(to top, rgb(8, 9, 12), rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.4));color:rgb(229, 231, 235);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;height:900px;display:block;justify-content:normal;align-items:normal;flex-direction:row;transition:all;position:absolute;top:0px;right:0px;bottom:0px;left:0px"
+                            },
+                            {
+                                "cls": "relative z-10 max-w-7xl mx-auto w-full flex-1 flex flex-col justify-center",
+                                "style": "",
+                                "cs": "color:rgb(229, 231, 235);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;margin:0px 32px;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;max-width:1280px;height:612px;display:flex;justify-content:center;align-items:normal;flex-direction:column;transition:all;top:0px;right:0px;bottom:0px;left:0px;z-index:10"
+                            },
+                            {
+                                "cls": "relative z-10 max-w-7xl mx-auto w-full flex justify-end",
+                                "style": "",
+                                "cs": "color:rgb(229, 231, 235);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;margin:0px 32px;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;max-width:1280px;height:96px;display:flex;justify-content:flex-end;align-items:normal;flex-direction:row;transition:all;top:0px;right:0px;bottom:0px;left:0px;z-index:10"
+                            }
+                        ],
+                        "sectionBgImage": {
+                            "src": "about:blank.jpg",
+                            "contentCentred": true,
+                            "hero": true,
+                            "valign": "bottom",
+                            "hero_height": "100vh",
+                            "overlay": "linear-gradient(to right, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0))",
+                            "bgOpacity": 1
+                        },
+                        "sectionBgVideo": [],
+                        "sectionContainerW": {
+                            "preset": "wide-xl"
+                        },
+                        "sectionFullBleed": false,
+                        "sectionHeroHeight": "100vh",
+                        "sectionValign": "middle",
+                        "sectionBandW": {
+                            "preset": "wide-xl"
+                        },
+                        "sectionLeftCap": 0,
+                        "sectionNoGutter": true,
+                        "css_id": "hero",
+                        "sectionId": "hero",
+                        "heroTopPad": 96,
+                        "heroInFlowClear": false,
+                        "omit": false,
+                        "verbatim": false,
+                        "align": "",
+                        "bgPattern": null,
+                        "bgEffects": [],
+                        "divider": null,
+                        "blocks": [
+                            {
+                                "t": "heading",
+                                "role": "title",
+                                "level": 1,
+                                "cls": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-white leading-[1.05] uppercase",
+                                "cs": "color:rgb(255, 255, 255);font-family:Cinzel, \"Playfair Display\", Georgia, serif;font-size:96px;font-weight:700;line-height:96px;letter-spacing:-2.4px;text-align:start;text-transform:uppercase;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;height:288px;display:block;justify-content:normal;align-items:normal;flex-direction:row;transition:all",
+                                "csSm": "font-size:48px;line-height:50.4px",
+                                "align": "",
+                                "text": "TRAVEL BEYOND BOUNDARIES",
+                                "html": "TRAVEL <br><span style=\"color:#e59500\">BEYOND</span> <br>BOUNDARIES",
+                                "mtAdd": 48,
+                                "wrapMaxW": "672px"
+                            },
+                            {
+                                "t": "text",
+                                "role": "text",
+                                "cls": "mt-8 text-sm sm:text-base tracking-[0.18em] text-gray-300 font-medium uppercase space-y-1 leading-relaxed",
+                                "cs": "color:rgb(209, 213, 219);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:16px;font-weight:500;line-height:24px;letter-spacing:2.88px;text-align:start;text-transform:uppercase;margin:32px 0px 0px;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;height:72px;display:block;justify-content:normal;align-items:normal;flex-direction:row;transition:all",
+                                "csSm": "font-size:14px;line-height:22.75px",
+                                "maxWidth": "42rem",
+                                "text": "BESPOKE TAGLINE. CURATED EXPERIENCES. LASTING IMPRESSIONS.",
+                                "html": "<p><span>BESPOKE TAGLINE.</span> <br><span>CURATED EXPERIENCES.</span> <br><span>LASTING IMPRESSIONS.</span></p>",
+                                "linkCs": ""
+                            },
+                            {
+                                "t": "button",
+                                "role": "button",
+                                "label": "PLAN YOUR TRIP",
+                                "labelHtml": "",
+                                "boxCss": "",
+                                "href": "/section-a",
+                                "align": "",
+                                "cls": "",
+                                "srcCls": "px-8 py-4 bg-[#e59500] hover:bg-[#fbbf24] text-black font-bold text-xs sm:text-sm tracking-[0.2em] uppercase transition-all duration-300 shadow-xl shadow-[#e59500]/25 transform hover:-translate-y-0.5",
+                                "srcCs": "background-color:rgb(229, 149, 0);color:rgb(0, 0, 0);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:14px;font-weight:700;line-height:20px;letter-spacing:2.8px;text-align:start;text-transform:uppercase;padding:16px 32px;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;box-shadow:rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(229, 149, 0, 0.25) 0px 20px 25px -5px, rgba(229, 149, 0, 0.25) 0px 8px 10px -6px;height:52px;display:block;justify-content:normal;align-items:normal;flex-direction:row;transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);transform:matrix(1, 0, 0, 1, 0, 0);track-frac:0.418;track-x:0;track-w:281",
+                                "srcHover": "hover-self{transform:translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));--tw-translate-y:-.125rem}|hover-self{background-color:rgb(251 191 36/var(--tw-bg-opacity,1))}",
+                                "groupCls": "mt-10 flex flex-wrap items-center gap-4 sm:gap-6",
+                                "groupCs": "color:rgb(229, 231, 235);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;margin:40px 0px 0px;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;height:54px;display:flex;gap:24px;justify-content:normal;align-items:center;flex-direction:row;transition:all",
+                                "icon": "",
+                                "iconSvg": "",
+                                "iconPos": "after",
+                                "mtAdd": 40,
+                                "capW": "672px",
+                                "capCenter": false
+                            },
+                            {
+                                "t": "button",
+                                "role": "button",
+                                "label": "EXPLORE DESTINATIONS",
+                                "labelHtml": "",
+                                "boxCss": "",
+                                "href": "/destinations",
+                                "align": "",
+                                "cls": "btn-primary",
+                                "srcCls": "px-8 py-4 border border-[#e59500] hover:border-white text-white font-semibold text-xs sm:text-sm tracking-[0.2em] uppercase transition-all duration-300 hover:bg-white/10",
+                                "srcCs": "color:rgb(255, 255, 255);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:14px;font-weight:600;line-height:20px;letter-spacing:2.8px;text-align:start;text-transform:uppercase;padding:16px 32px;border-top-width:1px;border-top-style:solid;border-top-color:rgb(229, 149, 0);border-bottom-width:1px;border-bottom-style:solid;border-bottom-color:rgb(229, 149, 0);border-radius:0px;height:54px;display:block;justify-content:normal;align-items:normal;flex-direction:row;transition:0.3s cubic-bezier(0.4, 0, 0.2, 1);border-left-width:1px;border-left-style:solid;border-left-color:rgb(229, 149, 0);border-right-width:1px;border-right-style:solid;border-right-color:rgb(229, 149, 0);track-frac:0.431;track-x:305;track-w:289",
+                                "srcHover": "hover-self{border-color:rgb(255 255 255/var(--tw-border-opacity,1))}|hover-self{background-color:rgba(255, 255, 255, 0.1)}",
+                                "groupCls": "mt-10 flex flex-wrap items-center gap-4 sm:gap-6",
+                                "groupCs": "color:rgb(229, 231, 235);font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:start;margin:40px 0px 0px;border-top-style:solid;border-top-color:rgb(229, 231, 235);border-bottom-style:solid;border-bottom-color:rgb(229, 231, 235);border-radius:0px;height:54px;display:flex;gap:24px;justify-content:normal;align-items:center;flex-direction:row;transition:all",
+                                "icon": "",
+                                "iconSvg": "",
+                                "iconPos": "after",
+                                "capW": "672px",
+                                "capCenter": false
+                            }
+                        ]
+                    }
+                ],
+                "mainClass": "",
+                "mainCs": "",
+                "chrome": {
+                    "header": true,
+                    "footer": false
+                },
+                "source_url": "https://fixture.invalid"
+            }
+        ]
+    },
+    "files": {
+        "bundle.json": {
+            "name": "Google Stitch import",
+            "source": "stitch"
+        },
+        "conversion-drops.json": {
+            "total": 7,
+            "rescued": 0,
+            "decorative": 7,
+            "by_kind": {
+                "decorative": 7
+            },
+            "top_patterns": [
+                {
+                    "count": 1,
+                    "tag": "div",
+                    "class": "absolute inset-0 bg-gradient-to-r from-black/85 via-black/50 to-transparent pointer-events-none",
+                    "kind": "decorative",
+                    "sample": ""
+                },
+                {
+                    "count": 1,
+                    "tag": "div",
+                    "class": "absolute inset-0 bg-gradient-to-t from-[#08090c] via-transparent to-black/40 pointer-events-none",
+                    "kind": "decorative",
+                    "sample": ""
+                },
+                {
+                    "count": 1,
+                    "tag": "svg",
+                    "class": "w-full h-full fill-white/70 group-hover:fill-[#e59500] transition-colors text-[9px] tracking-[0.2em] uppercase font-sans",
+                    "kind": "decorative",
+                    "sample": ""
+                },
+                {
+                    "count": 1,
+                    "tag": "div",
+                    "class": "absolute inset-0 rounded-full animate-spin-slow",
+                    "kind": "decorative",
+                    "sample": ""
+                },
+                {
+                    "count": 1,
+                    "tag": "svg",
+                    "class": "lucide lucide-arrow-down w-5 h-5 text-white group-hover:text-[#e59500] group-hover:translate-y-1 transition-all",
+                    "kind": "decorative",
+                    "sample": ""
+                },
+                {
+                    "count": 1,
+                    "tag": "a",
+                    "class": "group flex flex-col items-center justify-center w-24 h-24 rounded-full border border-white/20 hover:border-[#e59500] transition-colors relative",
+                    "kind": "decorative",
+                    "sample": ""
+                },
+                {
+                    "count": 1,
+                    "tag": "div",
+                    "class": "relative z-10 max-w-7xl mx-auto w-full flex justify-end",
+                    "kind": "decorative",
+                    "sample": ""
+                }
+            ],
+            "items": [
+                {
+                    "tag": "div",
+                    "class": "absolute inset-0 bg-gradient-to-r from-black/85 via-black/50 to-transparent pointer-events-none",
+                    "kind": "decorative",
+                    "text": ""
+                },
+                {
+                    "tag": "div",
+                    "class": "absolute inset-0 bg-gradient-to-t from-[#08090c] via-transparent to-black/40 pointer-events-none",
+                    "kind": "decorative",
+                    "text": ""
+                },
+                {
+                    "tag": "svg",
+                    "class": "w-full h-full fill-white/70 group-hover:fill-[#e59500] transition-colors text-[9px] tracking-[0.2em] uppercase font-sans",
+                    "kind": "decorative",
+                    "text": ""
+                },
+                {
+                    "tag": "div",
+                    "class": "absolute inset-0 rounded-full animate-spin-slow",
+                    "kind": "decorative",
+                    "text": ""
+                },
+                {
+                    "tag": "svg",
+                    "class": "lucide lucide-arrow-down w-5 h-5 text-white group-hover:text-[#e59500] group-hover:translate-y-1 transition-all",
+                    "kind": "decorative",
+                    "text": ""
+                },
+                {
+                    "tag": "a",
+                    "class": "group flex flex-col items-center justify-center w-24 h-24 rounded-full border border-white/20 hover:border-[#e59500] transition-colors relative",
+                    "kind": "decorative",
+                    "text": ""
+                },
+                {
+                    "tag": "div",
+                    "class": "relative z-10 max-w-7xl mx-auto w-full flex justify-end",
+                    "kind": "decorative",
+                    "text": ""
+                }
+            ],
+            "text_coverage": {
+                "checked": 8,
+                "missing": 1,
+                "coverage_pct": 87.5,
+                "pages": 1,
+                "by_page": {
+                    "page-1": {
+                        "checked": 8,
+                        "missing": 1,
+                        "coverage_pct": 87.5
+                    }
+                },
+                "note": "Visible source phrases (2+ real words, excluding hidden / display:none twins) absent from the built pages + theme settings, checked on EVERY captured page. Unlike the drop log above, this shares no code path with the builder, so it also catches text lost to a RECOGNIZER claiming a container and ignoring part of it, and text glued to a neighbour so the phrase no longer exists as itself. `items` is content we should have kept (each tagged with the page it came from); `out_of_scope` is text we deliberately did not carry.",
+                "items": [
+                    {
+                        "tag": "h1",
+                        "class": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-white leading-[1.05] uppercase",
+                        "text": "TRAVEL BOUNDARIES",
+                        "page": "page-1"
+                    }
+                ],
+                "out_of_scope": []
+            }
+        },
+        "class-coverage.json": {
+            "schema": "unysonplus-class-coverage/1",
+            "elements_audited": 1,
+            "elements_with_untranslated": 1,
+            "untranslated_significant": [
+                {
+                    "class": "text-5xl",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "sm:text-6xl",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "lg:text-7xl",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "xl:text-8xl",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "font-bold",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "tracking-tight",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "text-white",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "leading-[1.05]",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "uppercase",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "mt-8",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "text-sm",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "sm:text-base",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "tracking-[0.18em]",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "font-medium",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                },
+                {
+                    "class": "leading-relaxed",
+                    "count": 1,
+                    "sample_element_classes": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-whit"
+                }
+            ],
+            "note": "Significant (look-carrying) SOURCE classes that became NO native option and NO scoped CSS — ranked by how many elements dropped each. Each is a candidate for a new deterministic class→value translation rule (fix the rule in BOTH the PHP + JS paths, then re-prove). Coverage spans elements that pass through the class-drop collector (headings / text / cards); whole-element structural drops live in conversion-drops.json."
+        },
+        "theme-design.json": {
+            "theme": {
+                "name": "Snapshot",
+                "slug": "snapshot",
+                "mode": "child"
+            },
+            "favicon": "",
+            "css_vars": [],
+            "fonts": {
+                "heading": "Cinzel",
+                "heading_stack": "'Cinzel','Playfair Display','Georgia',serif",
+                "body": "Plus Jakarta Sans",
+                "google": "https://fonts.googleapis.com/css2?family=Cinzel:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap"
+            },
+            "colors": {
+                "ink": "#1a1a1a",
+                "accent": "#e59500",
+                "bg": "#08090c",
+                "header_bg": "#141414",
+                "header_border": "#ececec",
+                "footer_bg": "#141414",
+                "footer_text": "#f5f5f5"
+            },
+            "header": {
+                "style": "pill",
+                "sticky": true,
+                "menu_location": "primary",
+                "menu": [
+                    {
+                        "label": "DESTINATIONS",
+                        "url": "/destinations"
+                    },
+                    {
+                        "label": "CUSTOM TAGLINE",
+                        "url": "/section-a"
+                    },
+                    {
+                        "label": "EXPERIENCES",
+                        "url": "/#section-b"
+                    },
+                    {
+                        "label": "ABOUT US",
+                        "url": "/about"
+                    }
+                ],
+                "menu_secondary": [],
+                "cta": {
+                    "enabled": true,
+                    "label": "PLAN YOUR TRIP",
+                    "href": "/section-a"
+                }
+            },
+            "footer": {
+                "brand": true,
+                "widget_area": false,
+                "copyright": "All rights reserved.",
+                "menu": []
+            },
+            "background": {
+                "dotted": false,
+                "canvas": "#08090c"
+            },
+            "custom_css": ".sc-tw .material-symbols-outlined{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;word-wrap:normal;direction:ltr;-webkit-font-feature-settings:'liga';font-feature-settings:'liga';-webkit-font-smoothing:antialiased;}\n.sc-tw .custom-logo{max-height:2.4rem;width:auto;height:auto;display:inline-block;vertical-align:middle;}\r\n.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:32px !important;}\n@media screen and (max-width:782px){.admin-bar .sc-tw nav.fixed,.admin-bar .sc-tw nav.sticky,.admin-bar .sc-tw header.fixed,.admin-bar .sc-tw header.sticky{top:46px !important;}}\n.sc-mirror{padding-top:0 !important;padding-bottom:0 !important;}\n.sc-mirror .fw-container{max-width:none !important;width:100% !important;padding-left:0 !important;padding-right:0 !important;}\n.sc-mirror .fw-row{margin-left:0 !important;margin-right:0 !important;}\n.sc-mirror .fw-row > .fw-col-12{padding-left:0 !important;padding-right:0 !important;}\n/* ---- reproduced Tailwind CSS (offline) ---- */\n.sc-tw{font-family:'Inter',system-ui,-apple-system,sans-serif;}\n.sc-tw *,.sc-tw ::before,.sc-tw ::after{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}\n.sc-tw ::before,.sc-tw ::after{--tw-content:''}\n.sc-tw h1,.sc-tw h2,.sc-tw h3,.sc-tw h4,.sc-tw h5,.sc-tw h6{font-size:inherit;font-weight:inherit;margin:0}\n.sc-tw p,.sc-tw blockquote,.sc-tw figure,.sc-tw pre,.sc-tw dl,.sc-tw dd{margin:0}\n.sc-tw a{color:inherit;text-decoration:inherit}\n.sc-tw b,.sc-tw strong{font-weight:bolder}\n.sc-tw ul,.sc-tw ol,.sc-tw menu{list-style:none;margin:0;padding:0}\n.sc-tw button,.sc-tw input,.sc-tw select,.sc-tw textarea{font-family:inherit;font-size:100%;font-weight:inherit;line-height:inherit;color:inherit;margin:0;padding:0}\n.sc-tw button,.sc-tw [role=button]{cursor:pointer;background-color:transparent;background-image:none}\n.sc-tw img,.sc-tw svg,.sc-tw video,.sc-tw canvas,.sc-tw audio,.sc-tw iframe,.sc-tw embed,.sc-tw object{display:block;vertical-align:middle}\n.sc-tw img,.sc-tw video{max-width:100%;height:auto}\n.sc-tw .absolute{position:absolute !important}\n.sc-tw .top-0{top:0px !important}\n.sc-tw .left-0{left:0px !important}\n.sc-tw .right-0{right:0px !important}\n.sc-tw .z-50{z-index:50 !important}\n.sc-tw .bg-gradient-to-b{background-image:linear-gradient(to bottom, var(--tw-gradient-stops)) !important}\n.sc-tw .from-black\\/80{--tw-gradient-from:#000000 !important;--tw-gradient-stops:var(--tw-gradient-from), var(--tw-gradient-to, rgb(255 255 255 / 0)) !important}\n.sc-tw .to-transparent{--tw-gradient-to:transparent !important}\n.sc-tw .max-w-7xl{max-width:80rem !important}\n.sc-tw .mx-auto{margin-left:auto !important;margin-right:auto !important}\n.sc-tw .px-6{padding-left:1.5rem !important;padding-right:1.5rem !important}\n.sc-tw .h-24{height:6rem !important}\n.sc-tw .flex{display:flex !important}\n.sc-tw .items-center{align-items:center !important}\n.sc-tw .justify-between{justify-content:space-between !important}\n.sc-tw .gap-3{gap:0.75rem !important}\n.sc-tw .w-10{width:2.5rem !important}\n.sc-tw .h-10{height:2.5rem !important}\n.sc-tw .rounded-full{border-radius:9999px !important}\n.sc-tw .border{border-width:1px !important}\n.sc-tw .justify-center{justify-content:center !important}\n.sc-tw .bg-black\\/40{background-color:rgb(0 0 0 / 0.4) !important}\n.sc-tw .backdrop-blur-sm{backdrop-filter:blur(4px) !important;-webkit-backdrop-filter:blur(4px) !important}\n.sc-tw .transition-colors{transition-property:color,background-color,border-color,fill,stroke !important;transition-timing-function:cubic-bezier(0.4,0,0.2,1) !important;transition-duration:150ms !important}\n.sc-tw .w-5{width:1.25rem !important}\n.sc-tw .h-5{height:1.25rem !important}\n.sc-tw .transition-transform{transition-property:transform !important;transition-timing-function:cubic-bezier(0.4,0,0.2,1) !important;transition-duration:150ms !important}\n.sc-tw .duration-500{transition-duration:500ms !important}\n.sc-tw .flex-col{flex-direction:column !important}\n.sc-tw .text-xl{font-size:1.25rem !important;line-height:1.75rem !important}\n.sc-tw .font-bold{font-weight:700 !important}\n.sc-tw .text-white{--tw-text-opacity:1 !important;color:rgb(255 255 255 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .uppercase{text-transform:uppercase !important}\n.sc-tw .leading-none{line-height:1 !important}\n.sc-tw .text-\\[10px\\]{font-size:10px !important}\n.sc-tw .font-medium{font-weight:500 !important}\n.sc-tw .mt-1{margin-top:0.25rem !important}\n.sc-tw .hidden{display:none !important}\n.sc-tw .gap-9{gap:2.25rem !important}\n.sc-tw .text-xs{font-size:0.75rem !important;line-height:1rem !important}\n.sc-tw .transition-all{transition-property:all !important;transition-timing-function:cubic-bezier(0.4,0,0.2,1) !important;transition-duration:150ms !important}\n.sc-tw .duration-300{transition-duration:300ms !important}\n.sc-tw .relative{position:relative !important}\n.sc-tw .py-1{padding-top:0.25rem !important;padding-bottom:0.25rem !important}\n.sc-tw .text-gray-300{--tw-text-opacity:1 !important;color:rgb(209 213 219 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .gap-4{gap:1rem !important}\n.sc-tw .py-3{padding-top:0.75rem !important;padding-bottom:0.75rem !important}\n.sc-tw .text-black{--tw-text-opacity:1 !important;color:rgb(0 0 0 / var(--tw-text-opacity, 1)) !important}\n.sc-tw .font-semibold{font-weight:600 !important}\n.sc-tw .shadow-lg{box-shadow:0 10px 15px -3px rgb(0 0 0 / 0.1) !important}\n.sc-tw .p-2{padding:0.5rem !important}\n.sc-tw .w-6{width:1.5rem !important}\n.sc-tw .h-6{height:1.5rem !important}\n.sc-tw .min-h-screen{min-height:100vh !important}\n.sc-tw .w-full{width:100% !important}\n.sc-tw .pt-32{padding-top:8rem !important}\n.sc-tw .pb-16{padding-bottom:4rem !important}\n.sc-tw .inset-0{top:0px !important;right:0px !important;bottom:0px !important;left:0px !important}\n.sc-tw .bg-gradient-to-r{background-image:linear-gradient(to right, var(--tw-gradient-stops)) !important}\n.sc-tw .from-black\\/85{--tw-gradient-from:#000000 !important;--tw-gradient-stops:var(--tw-gradient-from), var(--tw-gradient-to, rgb(255 255 255 / 0)) !important}\n.sc-tw .bg-gradient-to-t{background-image:linear-gradient(to top, var(--tw-gradient-stops)) !important}\n.sc-tw .from-\\[\\#08090C\\]{--tw-gradient-from:#08090C !important}\n.sc-tw .to-black\\/40{--tw-gradient-to:#000000 !important}\n.sc-tw .z-10{z-index:10 !important}\n.sc-tw .max-w-2xl{max-width:42rem !important}\n.sc-tw .mt-12{margin-top:3rem !important}\n.sc-tw .text-5xl{font-size:3rem !important;line-height:1 !important}\n.sc-tw .tracking-tight{letter-spacing:-0.025em !important}\n.sc-tw .text-\\[\\#E59500\\]{color:#E59500 !important}\n.sc-tw .mt-8{margin-top:2rem !important}\n.sc-tw .text-sm{font-size:0.875rem !important;line-height:1.25rem !important}\n.sc-tw .space-y-1 > :not([hidden]) ~ :not([hidden]){margin-top:0.25rem !important;margin-bottom:0 !important}\n.sc-tw .leading-relaxed{line-height:1.625 !important}\n.sc-tw .mt-10{margin-top:2.5rem !important}\n.sc-tw .flex-wrap{flex-wrap:wrap !important}\n.sc-tw .px-8{padding-left:2rem !important;padding-right:2rem !important}\n.sc-tw .py-4{padding-top:1rem !important;padding-bottom:1rem !important}\n.sc-tw .bg-\\[\\#E59500\\]{background-color:#E59500 !important}\n.sc-tw .hover\\:bg-\\[\\#FBBF24\\]:hover{background-color:#FBBF24 !important}\n.sc-tw .shadow-xl{box-shadow:0 20px 25px -5px rgb(0 0 0 / 0.1) !important}\n.sc-tw .border-\\[\\#E59500\\]{border-color:#E59500 !important}\n.sc-tw .hover\\:border-white:hover{--tw-border-opacity:1 !important;border-color:rgb(255 255 255 / var(--tw-border-opacity, 1)) !important}\n.sc-tw .hover\\:bg-white\\/10:hover{background-color:rgb(255 255 255 / 0.1) !important}\n.sc-tw .justify-end{justify-content:flex-end !important}\n.sc-tw .w-24{width:6rem !important}\n.sc-tw .border-white\\/20{border-color:rgb(255 255 255 / 0.2) !important}\n.sc-tw .hover\\:border-\\[\\#E59500\\]:hover{border-color:#E59500 !important}\n.sc-tw .h-full{height:100% !important}\n.sc-tw .text-\\[9px\\]{font-size:9px !important}\n.sc-tw .group:hover .group-hover\\:text-\\[\\#E59500\\]{color:#E59500 !important}\n@media (min-width:640px){.sc-tw .sm\\:text-6xl{font-size:3.75rem !important;line-height:1 !important}.sc-tw .sm\\:text-base{font-size:1rem !important;line-height:1.5rem !important}.sc-tw .sm\\:gap-6{gap:1.5rem !important}.sc-tw .sm\\:text-sm{font-size:0.875rem !important;line-height:1.25rem !important}}\n@media (min-width:1024px){.sc-tw .lg\\:px-12{padding-left:3rem !important;padding-right:3rem !important}.sc-tw .lg\\:flex{display:flex !important}.sc-tw .lg\\:hidden{display:none !important}.sc-tw .lg\\:mt-20{margin-top:5rem !important}.sc-tw .lg\\:text-7xl{font-size:4.5rem !important;line-height:1 !important}}\n\n/* SC:REGCSS:START */\n/* ---- mapped box containers (clean semantic CSS from the source) ---- */\n#hero h1:not([class*=\"boxp-\"] *){font-family:Cinzel, \"Playfair Display\", Georgia, serif !important;font-size:96px !important;font-weight:700 !important;line-height:96px !important;letter-spacing:-2.4px !important;text-transform:uppercase !important;}\n#hero .text-block{font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif !important;line-height:24px !important;}\n#hero{background-image:url(about:blank.jpg) !important;}\n#hero .fw-container{padding-left:1.5rem !important;padding-right:1.5rem !important;}\n@media (max-width:767px){#hero h1:not([class*=\"boxp-\"] *){font-size:48px !important;line-height:50.4px !important;}}\n@media (max-width:767px){#hero .text-block{font-size:14px !important;line-height:22.75px !important;}}\n/* SC:REGCSS:END */",
+            "font_links": [],
+            "raw_chrome": {
+                "header_html": "<header class=\"absolute top-0 left-0 right-0 z-50 bg-gradient-to-b from-black/80 via-black/40 to-transparent\" data-sc-header=\"rest-height:96px\"><div class=\"max-w-7xl mx-auto px-6 lg:px-12 h-24 flex items-center justify-between\" data-sc-cs-sm=\"padding:0px 24px;margin:0px\" data-sc-cs-md=\"padding:0px 24px;margin:0px\" data-sc-cs-xl=\"margin:0px 320px\" data-sc-row=\"gap:normal;justify:space-between;zones:3\"><a class=\"flex items-center gap-3 group\" href=\"/\" data-discover=\"true\" data-sc-cs-sm=\"track-frac:0.559\" data-sc-cs-md=\"track-frac:0.247\" data-sc-cs-xl=\"track-frac:0.161\" data-sc-zone=\"w:191px;h:40px;x:48px;y:28px;bg:rgba(0, 0, 0, 0);border:0px solid rgb(229, 231, 235);radius:0px;pad:0px 0px 0px 0px;justify:normal;shadow:\"><!--SC_LOGO--></a><nav class=\"hidden lg:flex items-center gap-9\" data-sc-cs-sm=\"display:none;min-height:0px\" data-sc-cs-md=\"display:none;min-height:0px\" data-sc-cs-xl=\"track-frac:0.475\" data-sc-zone=\"w:563px;h:24px;x:340px;y:36px;bg:rgba(0, 0, 0, 0);border:0px solid rgb(229, 231, 235);radius:0px;pad:0px 0px 0px 0px;justify:normal;shadow:\"><a class=\"text-xs tracking-[0.2em] font-medium transition-all duration-300 relative py-1 hover:text-gold-400 text-gray-300\" href=\"/destinations\" data-discover=\"true\" data-sc-cs-sm=\"display:inline;min-height:0px\" data-sc-cs-md=\"display:inline;min-height:0px\" data-sc-cs-xl=\"track-frac:0.204\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">DESTINATIONS</a><a class=\"text-xs tracking-[0.2em] font-medium transition-all duration-300 relative py-1 hover:text-gold-400 text-gray-300\" href=\"/section-a\" data-discover=\"true\" data-sc-cs-sm=\"display:inline;min-height:0px\" data-sc-cs-md=\"display:inline;min-height:0px\" data-sc-cs-xl=\"track-frac:0.272\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">CUSTOM TAGLINE</a><a class=\"text-xs tracking-[0.2em] font-medium transition-all duration-300 relative py-1 hover:text-gold-400 text-gray-300\" href=\"/#section-b\" data-discover=\"true\" data-sc-cs-sm=\"display:inline;min-height:0px\" data-sc-cs-md=\"display:inline;min-height:0px\" data-sc-cs-xl=\"track-frac:0.191\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">EXPERIENCES</a><a class=\"text-xs tracking-[0.2em] font-medium transition-all duration-300 relative py-1 hover:text-gold-400 text-gray-300\" href=\"/about\" data-discover=\"true\" data-sc-cs-sm=\"display:inline;min-height:0px\" data-sc-cs-md=\"display:inline;min-height:0px\" data-sc-cs-xl=\"track-frac:0.141\" data-sc-hover=\"hover-self{color:rgb(251 191 36/var(--tw-text-opacity,1))}\">ABOUT US</a></nav><div class=\"hidden lg:flex items-center gap-4\" data-sc-cs-sm=\"display:none;min-height:0px\" data-sc-cs-md=\"display:none;min-height:0px\" data-sc-cs-xl=\"track-frac:0.193\" data-sc-zone=\"w:229px;h:40px;x:1003px;y:28px;bg:rgba(0, 0, 0, 0);border:0px solid rgb(229, 231, 235);radius:0px;pad:0px 0px 0px 0px;justify:normal;shadow:\"><a class=\"px-6 py-3 bg-gold-500 hover:bg-gold-400 text-black font-semibold text-xs tracking-[0.18em] uppercase transition-all duration-300 shadow-lg shadow-gold-500/20 hover:shadow-gold-500/40 transform hover:-translate-y-0.5\" href=\"/section-a\" data-discover=\"true\" data-sc-cs-sm=\"display:inline;min-height:0px\" data-sc-cs-md=\"display:inline;min-height:0px\" data-sc-cs-xl=\"track-frac:1\" data-sc-hover=\"hover-self{transform:translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));--tw-translate-y:-.125rem}|hover-self{background-color:rgb(251 191 36/var(--tw-bg-opacity,1))}\">PLAN YOUR TRIP</a></div><div class=\"lg:hidden\" data-sc-cs-sm=\"display:block;min-height:auto;track-frac:0.117\" data-sc-cs-md=\"display:block;min-height:auto;track-frac:0.052\"><button class=\"p-2 text-white hover:text-gold-400 transition-colors\" aria-label=\"Toggle navigation menu\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-menu w-6 h-6\" aria-hidden=\"true\"><path d=\"M4 5h16\"></path><path d=\"M4 12h16\"></path><path d=\"M4 19h16\"></path></svg></button></div></div></header>",
+                "footer_html": "",
+                "nav_tree": [
+                    {
+                        "label": "DESTINATIONS",
+                        "url": "/destinations",
+                        "href": "/destinations",
+                        "children": []
+                    },
+                    {
+                        "label": "CUSTOM TAGLINE",
+                        "url": "/section-a",
+                        "href": "/section-a",
+                        "children": []
+                    },
+                    {
+                        "label": "EXPERIENCES",
+                        "url": "/#section-b",
+                        "href": "/#section-b",
+                        "children": []
+                    },
+                    {
+                        "label": "ABOUT US",
+                        "url": "/about",
+                        "href": "/about",
+                        "children": []
+                    }
+                ],
+                "nav_style": [],
+                "footer_cols": [],
+                "footer_copyright": ""
+            },
+            "source_url": "https://fixture.invalid",
+            "conversion_map": {
+                "h-1": {
+                    "sc": "section",
+                    "mapped": {
+                        "min_height": "100vh",
+                        "content_valign": "top",
+                        "column_valign": "bottom",
+                        "container_width": "wide-xl"
+                    },
+                    "custom_css": "selector > .fw-flexbox,selector > .fw-container > .fw-flexbox{width:100%;} selector{position:relative;}selector::after{content:\"\";position:absolute;inset:0;pointer-events:none;z-index:1;background-image:linear-gradient(to right, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0)),linear-gradient(to top, rgb(8, 9, 12), rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.4));}selector > *{position:relative;z-index:2;} selector{padding-left:48px;padding-right:48px;}"
+                },
+                "h-2": {
+                    "sc": "flexbox",
+                    "mapped": {
+                        "html_tag": "div",
+                        "display": "flex",
+                        "grid_columns": "3",
+                        "grid_min": "240px",
+                        "content_width": "wide-xl"
+                    },
+                    "custom_css": "selector{width:100%;} selector{min-height:calc(100vh - 256px);} @media (min-width:992px){selector{max-width:min(1280px,100%) !important;}}"
+                },
+                "h-3": {
+                    "sc": "special_heading",
+                    "mapped": {
+                        "overline_icon_position": "before",
+                        "title": "TRAVEL <br><span style=\"color:#e59500\">BEYOND</span> <br>BOUNDARIES",
+                        "subtitle": "<span>BESPOKE TAGLINE.</span> <br><span>CURATED EXPERIENCES.</span> <br><span>LASTING IMPRESSIONS.</span>",
+                        "heading": "h1",
+                        "block_max_width": "672px",
+                        "subtitle_class": "text-gray-300",
+                        "subtitle_color": "#d1d5db",
+                        "title_color": "#ffffff"
+                    },
+                    "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:500 !important;}selector .heading-subtitle{font-size:16px !important;line-height:24px !important;}selector .heading-title{font-size:96px !important;line-height:96px !important;letter-spacing:-2.4px !important;}selector .heading-title.heading-title{font-family:Cinzel, \"Playfair Display\", Georgia, serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{…",
+                    "src_cls": "font-serif text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight text-white leading-[1.05] uppercase mt-8 text-sm sm:text-base tracking-[0.18em] text-gray-300 font-medium space-y-1 leading-relaxed",
+                    "dropped": [
+                        "font-serif",
+                        "text-5xl",
+                        "sm:text-6xl",
+                        "lg:text-7xl",
+                        "xl:text-8xl",
+                        "font-bold",
+                        "tracking-tight",
+                        "text-white",
+                        "leading-[1.05]",
+                        "uppercase",
+                        "mt-8",
+                        "text-sm",
+                        "sm:text-base",
+                        "tracking-[0.18em]",
+                        "font-medium",
+                        "space-y-1",
+                        "leading-relaxed"
+                    ]
+                },
+                "h-4": {
+                    "sc": "flexbox",
+                    "mapped": {
+                        "html_tag": "div",
+                        "display": "flex",
+                        "grid_columns": "3",
+                        "grid_min": "240px"
+                    },
+                    "custom_css": "selector .btn{flex:0 0 auto !important;width:auto !important;}selector .sc-btn-align{flex:0 0 auto !important;width:auto !important;} selector{width:100%;}"
+                },
+                "h-5": {
+                    "sc": "button",
+                    "mapped": {
+                        "label": "PLAN YOUR TRIP",
+                        "link": "/section-a",
+                        "target": "_self",
+                        "icon_position": "after",
+                        "style": "btn-fill",
+                        "size": "btn-md"
+                    },
+                    "custom_css": "selector{text-transform:uppercase !important;} selector{align-self:stretch;width:100%;} selector{max-width:672px !important;box-sizing:border-box;}"
+                },
+                "h-6": {
+                    "sc": "button",
+                    "mapped": {
+                        "label": "EXPLORE DESTINATIONS",
+                        "link": "/destinations",
+                        "target": "_self",
+                        "icon_position": "after",
+                        "style": "btn-outline",
+                        "size": "btn-md"
+                    },
+                    "custom_css": "selector{text-transform:uppercase !important;} selector{align-self:stretch;width:100%;} selector{max-width:672px !important;box-sizing:border-box;}"
+                }
+            },
+            "chrome_via_settings": true
+        },
+        "pages.json": {
+            "pages": [
+                {
+                    "title": "Snapshot",
+                    "slug": "home",
+                    "status": "publish",
+                    "front_page": true,
+                    "source_url": "https://fixture.invalid",
+                    "builder": [
+                        {
+                            "type": "section",
+                            "atts": {
+                                "variant": "",
+                                "is_fullwidth": false,
+                                "min_height": {
+                                    "preset": "100vh",
+                                    "custom": {
+                                        "custom_height": {
+                                            "value": "",
+                                            "unit": "px"
+                                        }
+                                    }
+                                },
+                                "content_valign": "top",
+                                "text_align": "",
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": ""
+                                        }
+                                    },
+                                    "gradient": {
+                                        "data": {
+                                            "type": "linear",
+                                            "angle": 90,
+                                            "stops": []
+                                        }
+                                    },
+                                    "image": {
+                                        "src": {
+                                            "attachment_id": 0,
+                                            "url": "https://fixture.invalid/about:blank.jpg"
+                                        },
+                                        "position": "center center",
+                                        "size": {
+                                            "selected": "cover",
+                                            "custom": ""
+                                        },
+                                        "repeat": "no-repeat",
+                                        "attachment": "scroll"
+                                    },
+                                    "video": {
+                                        "enabled": "no",
+                                        "external_url": "",
+                                        "source_mp4": [],
+                                        "source_webm": [],
+                                        "poster": [],
+                                        "fallback": [],
+                                        "loop": "yes",
+                                        "autoplay": "yes",
+                                        "mute": "yes",
+                                        "playsinline": "yes"
+                                    },
+                                    "advanced": [],
+                                    "overlay": {
+                                        "color": "",
+                                        "gradient": {
+                                            "type": "linear",
+                                            "angle": 90,
+                                            "stops": [
+                                                {
+                                                    "color": "rgba(0, 0, 0, 0.85)",
+                                                    "position": 0
+                                                },
+                                                {
+                                                    "color": "rgba(0, 0, 0, 0.5)",
+                                                    "position": 50
+                                                },
+                                                {
+                                                    "color": "rgba(0, 0, 0, 0)",
+                                                    "position": 100
+                                                }
+                                            ]
+                                        }
+                                    }
+                                },
+                                "padding_top": {
+                                    "base": "pt-12",
+                                    "md": "",
+                                    "lg": ""
+                                },
+                                "padding_bottom": {
+                                    "base": "pb-7",
+                                    "md": "",
+                                    "lg": ""
+                                },
+                                "gap": "",
+                                "gap_x": "",
+                                "gap_y": "",
+                                "animation": {
+                                    "effect": "none"
+                                },
+                                "unique_id": "uid-1",
+                                "css_id": "hero",
+                                "css_class": "",
+                                "custom_css": "selector > .fw-flexbox,selector > .fw-container > .fw-flexbox{width:100%;} selector{position:relative;}selector::after{content:\"\";position:absolute;inset:0;pointer-events:none;z-index:1;background-image:linear-gradient(to right, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0)),linear-gradient(to top, rgb(8, 9, 12), rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.4));}selector > *{position:relative;z-index:2;}\nselector{padding-left:48px;padding-right:48px;}",
+                                "responsive_hide": [],
+                                "custom_attrs": [],
+                                "column_valign": "bottom",
+                                "container_width": {
+                                    "preset": "wide-xl"
+                                }
+                            },
+                            "_items": [
+                                {
+                                    "type": "flexbox",
+                                    "atts": {
+                                        "html_tag": "div",
+                                        "display": "flex",
+                                        "grid_columns": "3",
+                                        "grid_autofit": "no",
+                                        "grid_min": {
+                                            "value": "240",
+                                            "unit": "px"
+                                        },
+                                        "direction": {
+                                            "base": "column",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "gap": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "justify_content": {
+                                            "base": "center",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_items": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "wrap": {
+                                            "base": "no",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "reverse": {
+                                            "base": "no",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_content": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "width": {
+                                            "base": {
+                                                "preset": "none"
+                                            },
+                                            "md": {
+                                                "preset": "none"
+                                            },
+                                            "lg": {
+                                                "preset": "none"
+                                            }
+                                        },
+                                        "flex_grow": {
+                                            "base": "no",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "align_self": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "order": {
+                                            "base": "",
+                                            "md": "",
+                                            "lg": ""
+                                        },
+                                        "background": {
+                                            "color": {
+                                                "value": {
+                                                    "predefined": "",
+                                                    "custom": ""
+                                                }
+                                            },
+                                            "gradient": {
+                                                "data": {
+                                                    "type": "linear",
+                                                    "angle": 90,
+                                                    "stops": []
+                                                }
+                                            },
+                                            "image": {
+                                                "src": [],
+                                                "position": "center center",
+                                                "size": {
+                                                    "selected": "cover",
+                                                    "custom": ""
+                                                },
+                                                "repeat": "no-repeat",
+                                                "attachment": "scroll"
+                                            },
+                                            "video": {
+                                                "enabled": "no",
+                                                "external_url": "",
+                                                "source_mp4": [],
+                                                "source_webm": [],
+                                                "poster": [],
+                                                "fallback": [],
+                                                "loop": "yes",
+                                                "autoplay": "yes",
+                                                "mute": "yes",
+                                                "playsinline": "yes"
+                                            },
+                                            "advanced": []
+                                        },
+                                        "border_preset": "",
+                                        "min_height": {
+                                            "base": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            },
+                                            "md": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            },
+                                            "lg": {
+                                                "value": "",
+                                                "unit": "vh"
+                                            }
+                                        },
+                                        "spacing": {
+                                            "margin": {
+                                                "all": "",
+                                                "top": "",
+                                                "right": "",
+                                                "bottom": "",
+                                                "left": ""
+                                            },
+                                            "padding": {
+                                                "all": "",
+                                                "top": "",
+                                                "right": "",
+                                                "bottom": "",
+                                                "left": ""
+                                            },
+                                            "advanced": {
+                                                "md": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    }
+                                                },
+                                                "lg": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "animation": {
+                                            "effect": "none"
+                                        },
+                                        "unique_id": "uid-2",
+                                        "css_id": "",
+                                        "css_class": "",
+                                        "custom_css": "selector{width:100%;} selector{min-height:calc(100vh - 256px);}\n@media (min-width:992px){selector{max-width:min(1280px,100%) !important;}}",
+                                        "responsive_hide": [],
+                                        "custom_attrs": [],
+                                        "content_width": {
+                                            "preset": "wide-xl"
+                                        }
+                                    },
+                                    "_items": [
+                                        {
+                                            "type": "simple",
+                                            "shortcode": "special_heading",
+                                            "_items": [],
+                                            "atts": {
+                                                "unique_id": "uid-3",
+                                                "css_id": "",
+                                                "css_class": "",
+                                                "custom_css": "selector .heading-title{font-weight:700 !important;}selector .heading-subtitle{font-weight:500 !important;}selector .heading-subtitle{font-size:16px !important;line-height:24px !important;}selector .heading-title{font-size:96px !important;line-height:96px !important;letter-spacing:-2.4px !important;}selector .heading-title.heading-title{font-family:Cinzel, \"Playfair Display\", Georgia, serif !important;}selector .heading-subtitle.heading-subtitle{font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif !important;}selector .heading-title{margin-top:0px !important;}selector .heading-title{margin-bottom:32px !important;}selector .heading-subtitle{font-size:16px !important;line-height:24px !important;}selector .heading-subtitle{text-transform:uppercase !important;letter-spacing:2.88px !important;font-weight:500 !important;font-family:\"Plus Jakarta Sans\", Inter, system-ui, sans-serif !important;}selector .heading-title{margin-bottom:0 !important;}selector .heading-subtitle{margin-top:32px !important;}@media (max-width:767px){selector .heading-subtitle{font-size:14px !important;line-height:22.75px !important;}}@media (max-width:767px){selector.heading .heading-title{font-size:48px !important;line-height:50.4px !important;}}",
+                                                "overline": "",
+                                                "overline_uppercase": "no",
+                                                "overline_icon": {
+                                                    "type": "none"
+                                                },
+                                                "overline_icon_position": "before",
+                                                "overline_container": "",
+                                                "overline_color": {
+                                                    "predefined": "",
+                                                    "custom": ""
+                                                },
+                                                "title": "TRAVEL <br><span style=\"color:#e59500\">BEYOND</span> <br>BOUNDARIES",
+                                                "subtitle": "<span>BESPOKE TAGLINE.</span> <br><span>CURATED EXPERIENCES.</span> <br><span>LASTING IMPRESSIONS.</span>",
+                                                "heading": "h1",
+                                                "alignment": "",
+                                                "element_spacing": "",
+                                                "block_max_width": {
+                                                    "value": "672",
+                                                    "unit": "px"
+                                                },
+                                                "spacing": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "mt-5",
+                                                        "right": "",
+                                                        "bottom": "mb-0",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "advanced": []
+                                                },
+                                                "overline_class": "",
+                                                "title_class": "",
+                                                "subtitle_class": "text-gray-300",
+                                                "subtitle_size": "",
+                                                "subtitle_color": {
+                                                    "predefined": "",
+                                                    "custom": "#d1d5db"
+                                                },
+                                                "title_color": {
+                                                    "predefined": "text-white",
+                                                    "custom": ""
+                                                }
+                                            }
+                                        },
+                                        {
+                                            "type": "flexbox",
+                                            "atts": {
+                                                "html_tag": "div",
+                                                "display": "flex",
+                                                "grid_columns": "3",
+                                                "grid_autofit": "no",
+                                                "grid_min": {
+                                                    "value": "240",
+                                                    "unit": "px"
+                                                },
+                                                "direction": {
+                                                    "base": "row",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "gap": {
+                                                    "base": "4",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "justify_content": {
+                                                    "base": "start",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "align_items": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "wrap": {
+                                                    "base": "yes",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "reverse": {
+                                                    "base": "no",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "align_content": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "width": {
+                                                    "base": {
+                                                        "preset": "none"
+                                                    },
+                                                    "md": {
+                                                        "preset": "none"
+                                                    },
+                                                    "lg": {
+                                                        "preset": "none"
+                                                    }
+                                                },
+                                                "flex_grow": {
+                                                    "base": "no",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "align_self": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "order": {
+                                                    "base": "",
+                                                    "md": "",
+                                                    "lg": ""
+                                                },
+                                                "background": {
+                                                    "color": {
+                                                        "value": {
+                                                            "predefined": "",
+                                                            "custom": ""
+                                                        }
+                                                    },
+                                                    "gradient": {
+                                                        "data": {
+                                                            "type": "linear",
+                                                            "angle": 90,
+                                                            "stops": []
+                                                        }
+                                                    },
+                                                    "image": {
+                                                        "src": [],
+                                                        "position": "center center",
+                                                        "size": {
+                                                            "selected": "cover",
+                                                            "custom": ""
+                                                        },
+                                                        "repeat": "no-repeat",
+                                                        "attachment": "scroll"
+                                                    },
+                                                    "video": {
+                                                        "enabled": "no",
+                                                        "external_url": "",
+                                                        "source_mp4": [],
+                                                        "source_webm": [],
+                                                        "poster": [],
+                                                        "fallback": [],
+                                                        "loop": "yes",
+                                                        "autoplay": "yes",
+                                                        "mute": "yes",
+                                                        "playsinline": "yes"
+                                                    },
+                                                    "advanced": []
+                                                },
+                                                "border_preset": "",
+                                                "min_height": {
+                                                    "base": {
+                                                        "value": "",
+                                                        "unit": "vh"
+                                                    },
+                                                    "md": {
+                                                        "value": "",
+                                                        "unit": "vh"
+                                                    },
+                                                    "lg": {
+                                                        "value": "",
+                                                        "unit": "vh"
+                                                    }
+                                                },
+                                                "spacing": {
+                                                    "margin": {
+                                                        "all": "",
+                                                        "top": "mt-[40px]",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "padding": {
+                                                        "all": "",
+                                                        "top": "",
+                                                        "right": "",
+                                                        "bottom": "",
+                                                        "left": ""
+                                                    },
+                                                    "advanced": {
+                                                        "md": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            }
+                                                        },
+                                                        "lg": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "animation": {
+                                                    "effect": "none"
+                                                },
+                                                "unique_id": "uid-4",
+                                                "css_id": "",
+                                                "css_class": "",
+                                                "custom_css": "selector .btn{flex:0 0 auto !important;width:auto !important;}selector .sc-btn-align{flex:0 0 auto !important;width:auto !important;}\nselector{width:100%;}",
+                                                "responsive_hide": [],
+                                                "custom_attrs": []
+                                            },
+                                            "_items": [
+                                                {
+                                                    "type": "simple",
+                                                    "shortcode": "button",
+                                                    "atts": {
+                                                        "label": "PLAN YOUR TRIP",
+                                                        "link": "/section-a",
+                                                        "target": "_self",
+                                                        "icon": {
+                                                            "type": "none",
+                                                            "icon-class": "",
+                                                            "icon-class-without-root": false,
+                                                            "pack-name": false,
+                                                            "pack-css-uri": false
+                                                        },
+                                                        "icon_position": "after",
+                                                        "style": "btn-fill",
+                                                        "size": "btn-md",
+                                                        "width": {
+                                                            "mode": "w-100",
+                                                            "custom": {
+                                                                "custom_width": {
+                                                                    "value": "",
+                                                                    "unit": "px"
+                                                                }
+                                                            }
+                                                        },
+                                                        "alignment": "",
+                                                        "state": "",
+                                                        "hover_animation": "",
+                                                        "spacing": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "advanced": {
+                                                                "md": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
+                                                                },
+                                                                "lg": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        "animation": {
+                                                            "effect": "none"
+                                                        },
+                                                        "unique_id": "uid-5",
+                                                        "css_id": "",
+                                                        "css_class": "",
+                                                        "custom_css": "selector{text-transform:uppercase !important;}\nselector{align-self:stretch;width:100%;}\nselector{max-width:672px !important;box-sizing:border-box;}",
+                                                        "responsive_hide": [],
+                                                        "custom_attrs": []
+                                                    },
+                                                    "_items": []
+                                                },
+                                                {
+                                                    "type": "simple",
+                                                    "shortcode": "button",
+                                                    "atts": {
+                                                        "label": "EXPLORE DESTINATIONS",
+                                                        "link": "/destinations",
+                                                        "target": "_self",
+                                                        "icon": {
+                                                            "type": "none",
+                                                            "icon-class": "",
+                                                            "icon-class-without-root": false,
+                                                            "pack-name": false,
+                                                            "pack-css-uri": false
+                                                        },
+                                                        "icon_position": "after",
+                                                        "style": "btn-outline",
+                                                        "size": "btn-md",
+                                                        "width": {
+                                                            "mode": "w-100",
+                                                            "custom": {
+                                                                "custom_width": {
+                                                                    "value": "",
+                                                                    "unit": "px"
+                                                                }
+                                                            }
+                                                        },
+                                                        "alignment": "",
+                                                        "state": "",
+                                                        "hover_animation": "",
+                                                        "spacing": {
+                                                            "margin": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "padding": {
+                                                                "all": "",
+                                                                "top": "",
+                                                                "right": "",
+                                                                "bottom": "",
+                                                                "left": ""
+                                                            },
+                                                            "advanced": {
+                                                                "md": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
+                                                                },
+                                                                "lg": {
+                                                                    "margin": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    },
+                                                                    "padding": {
+                                                                        "all": "",
+                                                                        "top": "",
+                                                                        "right": "",
+                                                                        "bottom": "",
+                                                                        "left": ""
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        "animation": {
+                                                            "effect": "none"
+                                                        },
+                                                        "unique_id": "uid-6",
+                                                        "css_id": "",
+                                                        "css_class": "",
+                                                        "custom_css": "selector{text-transform:uppercase !important;}\nselector{align-self:stretch;width:100%;}\nselector{max-width:672px !important;box-sizing:border-box;}",
+                                                        "responsive_hide": [],
+                                                        "custom_attrs": []
+                                                    },
+                                                    "_items": []
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "page_options": {
+                        "hide_site_footer": "yes"
+                    }
+                }
+            ]
+        },
+        "theme-settings.json": {
+            "values": {
+                "header_logo": {
+                    "logo_type": {
+                        "logo_type": "custom",
+                        "custom": {
+                            "site_title": "BRANDMARK",
+                            "logo_layout": "stacked-left",
+                            "title_weight": "700",
+                            "color": {
+                                "predefined": "text-white",
+                                "custom": ""
+                            },
+                            "title_size": {
+                                "value": "20",
+                                "unit": "px"
+                            },
+                            "title_font": {
+                                "family": "Cinzel, \"Playfair Display\", Georgia, serif"
+                            },
+                            "tagline_text": "TAGLINE",
+                            "logo_icon": {
+                                "type": "svg",
+                                "svg-source": "inline",
+                                "markup": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewbox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-compass w-5 h-5 text-gold-400 group-hover:rotate-45 transition-transform duration-500\" aria-hidden=\"true\"><path d=\"m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z\"></path><circle cx=\"12\" cy=\"12\" r=\"10\"></circle></svg>"
+                            },
+                            "logo_icon_color": {
+                                "predefined": "",
+                                "custom": "#e5e7eb"
+                            },
+                            "logo_icon_size": {
+                                "value": "20",
+                                "unit": "px"
+                            },
+                            "logo_icon_frame": "circle",
+                            "logo_icon_frame_bg": {
+                                "predefined": "",
+                                "custom": "rgba(0, 0, 0, 0.4)"
+                            },
+                            "logo_custom_css": ".site-logo__mark--framed{border:1px solid rgba(229, 149, 0, 0.5);width:40px;height:40px;box-sizing:border-box;}.site-title-text{letter-spacing:5px;text-transform:uppercase;line-height:20px;}.site-logo__sub{font-size:10px;letter-spacing:3.5px;color:rgb(251, 191, 36);font-family:'Plus Jakarta Sans', Inter, system-ui, sans-serif;font-weight:500;text-transform:uppercase;line-height:15px;}"
+                        },
+                        "simple": []
+                    }
+                },
+                "header_main": {
+                    "main_left": [
+                        {
+                            "element_type": {
+                                "element": "logo"
+                            }
+                        }
+                    ],
+                    "main_center": [
+                        {
+                            "element_type": {
+                                "element": "menu_area",
+                                "menu_area": {
+                                    "menu_location": "primary"
+                                }
+                            }
+                        }
+                    ],
+                    "main_right": [
+                        {
+                            "element_type": {
+                                "element": "cta_button",
+                                "cta_button": {
+                                    "cta_text": "PLAN YOUR TRIP",
+                                    "cta_link": "/section-a",
+                                    "cta_style": "btn-fill",
+                                    "cta_size": "btn-sm"
+                                }
+                            }
+                        }
+                    ]
+                },
+                "header_menu": {
+                    "menu_link_color": {
+                        "predefined": "",
+                        "custom": "#d1d5db"
+                    },
+                    "menu_link_hover_color": {
+                        "predefined": "",
+                        "custom": "#fbbf24"
+                    },
+                    "menu_link_font_size": {
+                        "value": "12",
+                        "unit": "px"
+                    },
+                    "menu_font": {
+                        "family": "Plus Jakarta Sans"
+                    },
+                    "menu_link_font_weight": "500",
+                    "menu_link_letter_spacing": {
+                        "value": "2.4",
+                        "unit": "px"
+                    },
+                    "menu_item_style": "none",
+                    "menu_link_padding_y": {
+                        "value": 4,
+                        "unit": "px"
+                    }
+                },
+                "header_layout": {
+                    "header_mode": {
+                        "mode": "top",
+                        "top": {
+                            "header_design": {
+                                "design": "classic"
+                            }
+                        }
+                    },
+                    "header_position": "overlay",
+                    "header_uppercase_nav": "no",
+                    "bg_color": {
+                        "predefined": "",
+                        "custom": ""
+                    },
+                    "header_glass": "no",
+                    "header_border": "no",
+                    "header_shadow": "no",
+                    "min_height": {
+                        "value": "96",
+                        "unit": "px"
+                    },
+                    "container": "container"
+                },
+                "mobile_breakpoint": "lg",
+                "drawer_link_color": "#1a1a1a",
+                "mobile_bar_bg": "#141414",
+                "header_topbar": {
+                    "topbar_left": [],
+                    "topbar_center": [],
+                    "topbar_right": [],
+                    "topbar_custom_styling": {
+                        "enabled": "no"
+                    }
+                },
+                "header_bottombar": {
+                    "bottombar_left": [],
+                    "bottombar_center": [],
+                    "bottombar_right": []
+                },
+                "footer_background": {
+                    "color": {
+                        "value": {
+                            "predefined": "",
+                            "custom": "#141414"
+                        }
+                    }
+                },
+                "footer_text_color": {
+                    "predefined": "",
+                    "custom": "#94a3b8"
+                },
+                "footer_link_color": {
+                    "predefined": "",
+                    "custom": "#94a3b8"
+                },
+                "general_layout": {
+                    "site_background": {
+                        "color": {
+                            "value": {
+                                "predefined": "",
+                                "custom": "#08090c"
+                            }
+                        }
+                    },
+                    "layout_container_width": {
+                        "base": {
+                            "value": "100",
+                            "unit": "%"
+                        },
+                        "md": {
+                            "value": "720",
+                            "unit": "px"
+                        },
+                        "lg": {
+                            "value": "1232",
+                            "unit": "px"
+                        }
+                    },
+                    "layout_container_gutter": {
+                        "value": "24",
+                        "unit": "px"
+                    },
+                    "layout_border_color": {
+                        "predefined": "",
+                        "custom": "rgba(229, 149, 0, 0.5)"
+                    },
+                    "layout_roundness": "sharp"
+                },
+                "misc_custom_css": {
+                    "custom_css": "/* converted header/footer styles */\n.footer .site-title-text,.footer .site-logo__eyebrow,.footer .site-logo__sub{color:#94a3b8 !important}\n.footer .site-logo__mark:not(.site-logo__mark--framed){color:#94a3b8 !important}\r\n/* Source nav line box */\r\n.site-header .primary-menu,.site-header .primary-menu a{line-height:16px;}\r\n/* Header ground: the source's gradient fade */\r\n.site-header:not(.is-stuck){background-image:linear-gradient(rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0));}\r\n\n/* Source footer: a horizontal row of links */\n.footer-column ul.footer-links-list{display:flex;flex-wrap:wrap;list-style:none;padding:0;margin:0;align-items:center;justify-content:space-between;}\n.footer-column ul.footer-links-list > li{margin:0;}\n.footer-column ul.footer-links-list > li > .list-item{display:inline-block;font-size:16px;line-height:24px;}"
+                },
+                "main_footer_columns": {
+                    "count": "2",
+                    "2": {
+                        "main_footer_col_1": [
+                            {
+                                "element_type": {
+                                    "element": "logo"
+                                }
+                            }
+                        ],
+                        "main_footer_col_2": [
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "BRANDMARK TAGLINE",
+                                        "li_link_type": "url",
+                                        "li_link": "/",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "DESTINATIONS",
+                                        "li_link_type": "url",
+                                        "li_link": "/destinations",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "CUSTOM TAGLINE",
+                                        "li_link_type": "url",
+                                        "li_link": "/section-a",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "EXPERIENCES",
+                                        "li_link_type": "url",
+                                        "li_link": "/#section-b",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "ABOUT US",
+                                        "li_link_type": "url",
+                                        "li_link": "/about",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "PLAN YOUR TRIP",
+                                        "li_link_type": "url",
+                                        "li_link": "/section-a",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "EXPLORE DESTINATIONS",
+                                        "li_link_type": "url",
+                                        "li_link": "/destinations",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            },
+                            {
+                                "element_type": {
+                                    "element": "list_item",
+                                    "list_item": {
+                                        "li_text": "• SCROLL TO DISCOVER • EXPLORE",
+                                        "li_link_type": "url",
+                                        "li_link": "#section-b",
+                                        "li_target": "_self"
+                                    }
+                                }
+                            }
+                        ],
+                        "main_footer_split": [
+                            {
+                                "w": 50,
+                                "name": ""
+                            },
+                            {
+                                "w": 50,
+                                "name": ""
+                            }
+                        ]
+                    }
+                },
+                "copyright_settings": {
+                    "enabled": "yes",
+                    "yes": {
+                        "copyright_columns": {
+                            "count": "1",
+                            "1": {
+                                "copyright_col_1": [
+                                    {
+                                        "element_type": {
+                                            "element": "text",
+                                            "text": {
+                                                "text_content": "&copy; {{current_year}} BRANDMARK. All rights reserved."
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+                "button_colors": [
+                    {
+                        "id": "0000000003",
+                        "color_name": "Outline",
+                        "slug": "outline",
+                        "role": "outline",
+                        "font": {
+                            "family": "Plus Jakarta Sans",
+                            "weight": "600",
+                            "letter-spacing": "2.8px"
+                        },
+                        "custom_css": "{{SELECTOR}} { transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); }",
+                        "states": {
+                            "default": {
+                                "text_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(255, 255, 255)"
+                                },
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                },
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(229, 149, 0)"
+                                },
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                }
+                            },
+                            "hover": {
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": "rgba(255, 255, 255, 0.1)"
+                                },
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgba(255, 255, 255, 0.2)"
+                                }
+                            },
+                            "active": [],
+                            "focus": [],
+                            "disabled": []
+                        }
+                    },
+                    {
+                        "id": "0000000004",
+                        "color_name": "Fill",
+                        "slug": "fill",
+                        "role": "fill",
+                        "font": {
+                            "family": "Plus Jakarta Sans",
+                            "weight": "600",
+                            "letter-spacing": "2.16px"
+                        },
+                        "custom_css": "{{SELECTOR}} { transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); }\n{{SELECTOR}} { box-shadow: rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(229, 149, 0, 0.2) 0px 10px 15px -3px, rgba(229, 149, 0, 0.2) 0px 4px 6px -4px; }",
+                        "states": {
+                            "default": {
+                                "text_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(0, 0, 0)"
+                                },
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(229, 149, 0)"
+                                },
+                                "border_style": "none",
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 10,
+                                    "blur": 15,
+                                    "spread": -3,
+                                    "color": "rgba(229, 149, 0, 0.2)",
+                                    "inset": false
+                                },
+                                "text_transform": "uppercase"
+                            },
+                            "hover": {
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(229, 149, 0)"
+                                }
+                            },
+                            "active": [],
+                            "focus": [],
+                            "disabled": []
+                        }
+                    },
+                    {
+                        "id": "000000003",
+                        "color_name": "Fill 2",
+                        "slug": "fill-2",
+                        "role": "fill 2",
+                        "font": {
+                            "family": "Plus Jakarta Sans",
+                            "weight": "700",
+                            "letter-spacing": "2.8px"
+                        },
+                        "custom_css": "{{SELECTOR}} { transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); }\n{{SELECTOR}} { box-shadow: rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(229, 149, 0, 0.25) 0px 20px 25px -5px, rgba(229, 149, 0, 0.25) 0px 8px 10px -6px; }",
+                        "states": {
+                            "default": {
+                                "text_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(0, 0, 0)"
+                                },
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(229, 149, 0)"
+                                },
+                                "border_style": "none",
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 20,
+                                    "blur": 25,
+                                    "spread": -5,
+                                    "color": "rgba(229, 149, 0, 0.25)",
+                                    "inset": false
+                                },
+                                "text_transform": "uppercase"
+                            },
+                            "hover": {
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": "rgba(229, 149, 0, 0.9)"
+                                }
+                            },
+                            "active": [],
+                            "focus": [],
+                            "disabled": []
+                        }
+                    },
+                    {
+                        "id": "000000004",
+                        "color_name": "Outline 2",
+                        "slug": "outline-2",
+                        "role": "outline 2",
+                        "font": {
+                            "family": "Plus Jakarta Sans"
+                        },
+                        "custom_css": "{{SELECTOR}} { transition: color 0.15s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.15s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.15s cubic-bezier(0.4, 0, 0.2, 1), text-decoration-color 0.15s cubic-bezier(0.4, 0, 0.2, 1), fill 0.15s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.15s cubic-bezier(0.4, 0, 0.2, 1); }",
+                        "states": {
+                            "default": {
+                                "text_color": {
+                                    "predefined": "",
+                                    "custom": "rgb(229, 231, 235)"
+                                },
+                                "bg_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                },
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgba(255, 255, 255, 0.2)"
+                                },
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                }
+                            },
+                            "hover": [],
+                            "active": [],
+                            "focus": [],
+                            "disabled": []
+                        }
+                    }
+                ],
+                "button_sizes": [
+                    {
+                        "id": "0000010003",
+                        "size_name": "Default",
+                        "slug": "md",
+                        "font_size": {
+                            "value": "14",
+                            "unit": "px"
+                        },
+                        "line_height": "20px",
+                        "padding_y": {
+                            "value": "16",
+                            "unit": "px"
+                        },
+                        "padding_x": {
+                            "value": "32",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "0",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "0000010002",
+                        "size_name": "Small",
+                        "slug": "sm",
+                        "font_size": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "line_height": "16px",
+                        "padding_y": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "padding_x": {
+                            "value": "24",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "0",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "0000010001",
+                        "size_name": "X-Small",
+                        "slug": "xs",
+                        "font_size": {
+                            "value": "16",
+                            "unit": "px"
+                        },
+                        "line_height": "24px",
+                        "border_radius": {
+                            "value": "9999",
+                            "unit": "px"
+                        }
+                    }
+                ],
+                "container_width_presets": [
+                    {
+                        "id": "cw_small",
+                        "width_name": "Small",
+                        "width": {
+                            "value": "640",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_prose",
+                        "width_name": "Prose",
+                        "width": {
+                            "value": "672",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_narrow",
+                        "width_name": "Narrow",
+                        "width": {
+                            "value": "768",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_medium",
+                        "width_name": "Medium",
+                        "width": {
+                            "value": "896",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide",
+                        "width_name": "Wide",
+                        "width": {
+                            "value": "1024",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-l",
+                        "width_name": "Wide L",
+                        "width": {
+                            "value": "1152",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xl",
+                        "width_name": "Wide XL",
+                        "width": {
+                            "value": "1280",
+                            "unit": "px"
+                        }
+                    },
+                    {
+                        "id": "cw_wide-xxl",
+                        "width_name": "Wide XXL",
+                        "width": {
+                            "value": "1440",
+                            "unit": "px"
+                        }
+                    }
+                ],
+                "border_presets": [
+                    {
+                        "id": "b000000101",
+                        "preset_name": "Glass",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "9999",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "{{SELECTOR}}{backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);}",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "rgba(0, 0, 0, 0.4)"
+                                        }
+                                    }
+                                },
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": "rgba(229, 149, 0, 0.5)"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000001",
+                        "preset_name": "Card",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "8",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "lift"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "light-gray",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 1,
+                                    "blur": 3,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.08)",
+                                    "inset": false
+                                }
+                            },
+                            "hover": {
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 8,
+                                    "blur": 20,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.12)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000002",
+                        "preset_name": "Outline",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "6",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "2",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": {
+                                "border_color": {
+                                    "predefined": "indigo",
+                                    "custom": ""
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000003",
+                        "preset_name": "Soft Shadow",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "250",
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 4,
+                                    "blur": 14,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.08)",
+                                    "inset": false
+                                }
+                            },
+                            "hover": {
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 12,
+                                    "blur": 30,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.16)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000004",
+                        "preset_name": "Hover Lift",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "8",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "lift",
+                            "glow"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "light-gray",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": {
+                                "border_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 10,
+                                    "blur": 24,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.14)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "b000000005",
+                        "preset_name": "Hover Grow",
+                        "border_sides": "all",
+                        "border_radius": {
+                            "value": "12",
+                            "unit": "px"
+                        },
+                        "padding": {
+                            "margin": {
+                                "all": "",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            },
+                            "padding": {
+                                "all": "p-4",
+                                "top": "",
+                                "right": "",
+                                "bottom": "",
+                                "left": ""
+                            }
+                        },
+                        "transition": "200",
+                        "hover_animation": "btnfx-grow",
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "light-gray",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 2,
+                                    "blur": 8,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.06)",
+                                    "inset": false
+                                }
+                            },
+                            "hover": {
+                                "border_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                }
+                            }
+                        }
+                    }
+                ],
+                "box_lookup": {
+                    "rgba(0, 0, 0, 0.4)|9999px|1px|rgba(229, 149, 0, 0.5)": "glass"
+                },
+                "font_sizes": [
+                    {
+                        "name": "Display 1",
+                        "size": "48",
+                        "weight": "700",
+                        "line_height": "1",
+                        "letter_spacing": "",
+                        "transform": "",
+                        "class": "display-1"
+                    },
+                    {
+                        "name": "Lead",
+                        "size": "20",
+                        "weight": "",
+                        "line_height": "",
+                        "letter_spacing": "",
+                        "transform": "",
+                        "class": "lead"
+                    },
+                    {
+                        "name": "Eyebrow",
+                        "size": "48",
+                        "weight": "700",
+                        "line_height": "",
+                        "letter_spacing": "-0.025em",
+                        "transform": "uppercase",
+                        "class": ""
+                    }
+                ],
+                "theme_colors": [
+                    {
+                        "name": "Primary",
+                        "color": "#e59500"
+                    },
+                    {
+                        "name": "Ink",
+                        "color": "#e5e7eb"
+                    },
+                    {
+                        "name": "Light",
+                        "color": "#08090c"
+                    },
+                    {
+                        "name": "Secondary",
+                        "color": "#6c757d"
+                    },
+                    {
+                        "name": "Accent",
+                        "color": "#fd7e14"
+                    },
+                    {
+                        "name": "Muted",
+                        "color": "#5f6773"
+                    },
+                    {
+                        "name": "Black",
+                        "color": "#000"
+                    },
+                    {
+                        "name": "White",
+                        "color": "#fff"
+                    },
+                    {
+                        "name": "Gray",
+                        "color": "#636c72"
+                    },
+                    {
+                        "name": "Light Gray",
+                        "color": "#bdbdbd"
+                    },
+                    {
+                        "name": "Red",
+                        "color": "#dc3545"
+                    },
+                    {
+                        "name": "Pink",
+                        "color": "#e91e63"
+                    },
+                    {
+                        "name": "Purple",
+                        "color": "#9c27b0"
+                    },
+                    {
+                        "name": "Deep Purple",
+                        "color": "#673ab7"
+                    },
+                    {
+                        "name": "Indigo",
+                        "color": "#3f51b5"
+                    },
+                    {
+                        "name": "Blue",
+                        "color": "#286090"
+                    },
+                    {
+                        "name": "Light Blue",
+                        "color": "#03a9f4"
+                    },
+                    {
+                        "name": "Cyan",
+                        "color": "#00bcd4"
+                    },
+                    {
+                        "name": "Teal",
+                        "color": "#009688"
+                    },
+                    {
+                        "name": "Green",
+                        "color": "#5cb85c"
+                    },
+                    {
+                        "name": "Light Green",
+                        "color": "#8bc34a"
+                    },
+                    {
+                        "name": "Lime",
+                        "color": "#cddc39"
+                    },
+                    {
+                        "name": "Yellow",
+                        "color": "#ffeb3b"
+                    },
+                    {
+                        "name": "Amber",
+                        "color": "#ffc107"
+                    },
+                    {
+                        "name": "Orange",
+                        "color": "#ff9800"
+                    },
+                    {
+                        "name": "Deep Orange",
+                        "color": "#ff5722"
+                    },
+                    {
+                        "name": "Brown",
+                        "color": "#795548"
+                    },
+                    {
+                        "name": "Blue Gray",
+                        "color": "#607d8b"
+                    }
+                ],
+                "icon_badge_presets": [
+                    {
+                        "id": "i000000001",
+                        "preset_name": "Circle",
+                        "badge_shape": "circle",
+                        "badge_size": {
+                            "value": "48",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "24",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "lift",
+                            "glow"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#0d6efd"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "white",
+                                    "custom": ""
+                                },
+                                "border_style": "",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                },
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 4,
+                                    "blur": 12,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.15)",
+                                    "inset": false
+                                }
+                            },
+                            "hover": {
+                                "box_shadow": {
+                                    "x": 0,
+                                    "y": 8,
+                                    "blur": 20,
+                                    "spread": 0,
+                                    "color": "rgba(0,0,0,0.22)",
+                                    "inset": false
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "i000000002",
+                        "preset_name": "Soft Tile",
+                        "badge_shape": "rounded",
+                        "badge_size": {
+                            "value": "52",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "26",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "14",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "pop"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#eef2ff"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                },
+                                "border_style": "",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#e0e7ff"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "i000000003",
+                        "preset_name": "Outline Ring",
+                        "badge_shape": "circle",
+                        "badge_size": {
+                            "value": "48",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "22",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": ""
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                },
+                                "border_style": "solid",
+                                "border_width": {
+                                    "value": "2",
+                                    "unit": "px"
+                                },
+                                "border_color": {
+                                    "predefined": "primary",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#0d6efd"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "white",
+                                    "custom": ""
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "i000000004",
+                        "preset_name": "Hexagon",
+                        "badge_shape": "hexagon",
+                        "badge_size": {
+                            "value": "54",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "26",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [
+                            "glow"
+                        ],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "#6610f2"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "white",
+                                    "custom": ""
+                                },
+                                "border_style": "",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                }
+                            },
+                            "hover": []
+                        }
+                    },
+                    {
+                        "id": "i000000101",
+                        "preset_name": "Circle",
+                        "badge_shape": "circle",
+                        "badge_size": {
+                            "value": "40",
+                            "unit": "px"
+                        },
+                        "icon_size": {
+                            "value": "20",
+                            "unit": "px"
+                        },
+                        "border_radius": {
+                            "value": "",
+                            "unit": "px"
+                        },
+                        "transition": "200",
+                        "hover_fx": [],
+                        "custom_css": "",
+                        "states": {
+                            "default": {
+                                "background": {
+                                    "color": {
+                                        "value": {
+                                            "predefined": "",
+                                            "custom": "rgba(0, 0, 0, 0.4)"
+                                        }
+                                    }
+                                },
+                                "icon_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                },
+                                "border_style": "solid",
+                                "border_color": {
+                                    "predefined": "",
+                                    "custom": ""
+                                },
+                                "border_width": {
+                                    "value": "1",
+                                    "unit": "px"
+                                }
+                            },
+                            "hover": []
+                        }
+                    }
+                ],
+                "spacing_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    }
+                ],
+                "gap_scale": [
+                    {
+                        "name": "0",
+                        "size": "0"
+                    },
+                    {
+                        "name": "1",
+                        "size": "0.25rem"
+                    },
+                    {
+                        "name": "2",
+                        "size": "0.5rem"
+                    },
+                    {
+                        "name": "3",
+                        "size": "1rem"
+                    },
+                    {
+                        "name": "4",
+                        "size": "1.5rem"
+                    },
+                    {
+                        "name": "[32px]",
+                        "size": "32px"
+                    },
+                    {
+                        "name": "[40px]",
+                        "size": "40px"
+                    },
+                    {
+                        "name": "5",
+                        "size": "3rem"
+                    },
+                    {
+                        "name": "6",
+                        "size": "3.5rem"
+                    },
+                    {
+                        "name": "7",
+                        "size": "4rem"
+                    },
+                    {
+                        "name": "8",
+                        "size": "4.5rem"
+                    },
+                    {
+                        "name": "9",
+                        "size": "5rem"
+                    },
+                    {
+                        "name": "10",
+                        "size": "6rem"
+                    },
+                    {
+                        "name": "11",
+                        "size": "7rem"
+                    },
+                    {
+                        "name": "12",
+                        "size": "8rem"
+                    }
+                ],
+                "typography": {
+                    "heading_font": {
+                        "family": "Cinzel"
+                    },
+                    "body": {
+                        "family": "Plus Jakarta Sans",
+                        "variation": "regular",
+                        "color": "#e5e7eb",
+                        "size": {
+                            "value": "16",
+                            "unit": "px"
+                        },
+                        "line-height": "1.5",
+                        "letter-spacing": 2.88
+                    },
+                    "h1": {
+                        "family": "Cinzel",
+                        "variation": "700",
+                        "color": "",
+                        "size": {
+                            "value": "96",
+                            "unit": "px"
+                        },
+                        "line-height": "1",
+                        "letter-spacing": "-2.4",
+                        "text-transform": "uppercase"
+                    },
+                    "type_fluid_enable": "no"
+                }
+            }
+        },
+        "conversion-parity.json": {
+            "schema": "unysonplus-conversion-parity/1",
+            "score": 100,
+            "passed": 6,
+            "total": 6,
+            "checks": [
+                {
+                    "id": "border_color",
+                    "label": "Border / divider colour",
+                    "source": "rgba(229, 149, 0, 0.5)",
+                    "converted": "rgba(229, 149, 0, 0.5)",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "roundness",
+                    "label": "Corner roundness",
+                    "source": "sharp",
+                    "converted": "sharp",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "section_count",
+                    "label": "Section count",
+                    "source": 1,
+                    "converted": 1,
+                    "pass": true,
+                    "note": "tolerance ±1"
+                },
+                {
+                    "id": "header",
+                    "label": "Header chrome",
+                    "source": "present",
+                    "converted": "mapped",
+                    "pass": true,
+                    "note": ""
+                },
+                {
+                    "id": "dropped_measures",
+                    "label": "Unmapped width classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "max-w/min-w must map to a native width or carried CSS"
+                },
+                {
+                    "id": "dropped_chrome",
+                    "label": "Unmapped chrome classes (never-drop)",
+                    "source": "0 elements",
+                    "converted": "none dropped",
+                    "pass": true,
+                    "note": "logo/menu/footer typography must map to a native option or carried CSS"
+                }
+            ]
+        }
+    }
+}
