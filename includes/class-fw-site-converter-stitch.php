@@ -22182,9 +22182,40 @@ class FW_Site_Converter_Stitch {
 	 * --------------------------------------------------------------------- */
 
 	/** A currency+number price token inside a cell's text (e.g. `$29`, `€ 19`, `£9/mo`). */
+	private static function price_text( $el ) {
+		/* THE TIGHTEST NODE THAT CARRIES THE PRICE, not the whole cell's text.
+		 *
+		 * self::text() concatenates WITHOUT separators, so a plan cell reads
+		 *
+		 *     Basic$91 projectEmail support          <- <span>$9</span> then <li>1 project</li>
+		 *
+		 * and the greedy digit run in cell_price_parts() swallows the leading digit of the NEXT element:
+		 * $9 became $91 and $29 became $2910. Measured on a rendered conversion — three of four plan
+		 * prices were wrong, and wrong in the worst way, since 91 is a perfectly plausible price.
+		 * Text alone cannot tell '$9' + '1 project' from '$91', because a real price is written with no
+		 * space either. Only the DOM can, so the amount is read from the smallest descendant whose own
+		 * text holds a currency sign and a digit: the amount span, or the parent of a split
+		 * <span>$</span><span>29</span> pair.
+		 *
+		 * The whole-cell text stays the fallback (a price written directly on the cell), and the PERIOD is
+		 * still read from it, because '/mo' routinely sits in a sibling element.
+		 */
+		$all = self::text( $el );
+		if ( ! ( $el instanceof DOMElement ) ) { return $all; }
+		$best = '';
+		foreach ( $el->getElementsByTagName( '*' ) as $d ) {
+			$t = self::text( $d );
+			if ( '' === $t || ! preg_match( '/[$€£¥₹]\s?\d/u', $t ) ) { continue; }
+			if ( '' === $best || mb_strlen( $t ) < mb_strlen( $best ) ) { $best = $t; }
+		}
+		return '' !== $best ? $best : $all;
+	}
+
 	private static function cell_price_parts( $el ) {
 		$txt = self::text( $el );
 		if ( '' === $txt ) { return null; }
+		// the AMOUNT comes from the tightest node that holds it; the PERIOD still comes from the cell
+		$ptxt = self::price_text( $el );
 		// A magnitude suffix immediately on the number ($4.2B, $18M, $9K) marks a STAT/METRIC, not a plan
 		// price — capture it so a headline number isn't mistaken for pricing (build-products-that-move-money's
 		// "$4.2B" processed-volume + "$18,240,000.00" stats were mangled into a fake pricing table with a
@@ -22206,8 +22237,14 @@ class FW_Site_Converter_Stitch {
 		// Greedy digits with no boundary fixes both: `4.2` is consumed whole so `(b|m|k|bn|mn)` can see the `B`
 		// and reject the stat, while `120` is followed by `F`, which is not a magnitude letter, so it reads as a
 		// price. A `/mo` still parses, because `/` is not a magnitude letter either.
-		if ( ! preg_match( '/([$€£¥₹])\s?(\d[\d.,]*)(b|m|k|bn|mn)?/ui', $txt, $m ) ) { return null; }
+		if ( ! preg_match( '/([$€£¥₹])\s?(\d[\d.,]*)(b|m|k|bn|mn)?/ui', $ptxt, $m ) ) { return null; }
 		if ( '' !== ( $m[3] ?? '' ) ) { return null; }                 // $4.2B / $18M / $9K = a stat, not a price
+		// NO SECOND SUFFIX CHECK AGAINST THE CELL'S WHOLE TEXT. It is tempting - the tight node reads '$4.2'
+		// and cannot see a 'B' sitting in the span next door - but self::text() concatenates WITHOUT
+		// separators, so adjacency in that text means nothing: '$120' + 'monthly' reads '$120monthly' and
+		// any such guard rejects a real price as a stat. (Tried, measured, removed: it took out '$120 monthly'
+		// and '$45' + 'Book now'.) A magnitude suffix split across two elements has no population in the
+		// capture corpus, and the realistic form - '$4.2B' written as one token - is already rejected above.
 		$cur   = $m[1];
 		// A greedy run can end on punctuation ("$120." / "$99,"); that is not part of the number.
 		$m[2] = rtrim( $m[2], '.,' );
@@ -22548,6 +22585,23 @@ class FW_Site_Converter_Stitch {
 				// the longest run in the card is its feature list (an inner wrapper can repeat a shorter one)
 				usort( $runs, function ( $a, $b ) { return count( $b ) <=> count( $a ); } );
 				if ( $runs ) { $features = $runs[0]; }
+			}
+			/* A RUN THAT ONLY REPEATS THE PLAN'S OWN NAME AND SUB-LABEL IS NOT A FEATURE LIST.
+			 * The run test above asks for a container whose children are all short, full-stop-free lines -
+			 * which is exactly what a price LIST row's left block is: <h3>Regular Cleaning</h3> over
+			 * <p>Weekly or fortnightly</p>. So every row of a converted service menu rendered its own name
+			 * and sub-label a second time underneath itself, in the feature slot. Seen on the rendered page;
+			 * the builder data looked fine, because the duplication is only obvious once drawn.
+			 * Dropping the lines the plan already shows leaves a real perk list intact (a card's <ul> never
+			 * repeats its own plan name) and empties the slot for a list row, which is what it should be.
+			 */
+			if ( $features ) {
+				$norm = function ( $v ) { return mb_strtolower( trim( preg_replace( '/\s+/', ' ', (string) $v ) ) ); };
+				$own  = array_filter( array( $norm( $title ), $norm( $subtitle ) ), 'strlen' );
+				$kept = array_values( array_filter( $features, function ( $f ) use ( $own, $norm ) {
+					return ! in_array( $norm( $f ), $own, true );
+				} ) );
+				$features = count( $kept ) >= 2 ? $kept : array();
 			}
 			$btn_label = ''; $btn_url = '';
 			foreach ( array( 'a', 'button' ) as $bt ) {
