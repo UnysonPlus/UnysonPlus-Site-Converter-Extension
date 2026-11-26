@@ -2384,8 +2384,45 @@ class FW_Site_Converter_Mapper {
 		return $node;
 	}
 
+	/**
+	 * RECORDED motion (Stitch motion_of → block / cell 'motion', roadmap 10b) → a native Interaction on the node: "On page
+	 * load" or "In view" (plays once), step 1 FROM the recorded start state (opacity, x / y px, scale, rotate, blur) with the
+	 * measured duration, delay and the closest Animation Engine easing. Editable in the Live Editor's interaction timeline,
+	 * no code. A node that already has an Interaction keeps it. JS twin: motionInteraction / applyMotion (to-pages.mjs).
+	 */
+	public static function motion_interaction( $m ) {
+		if ( ! is_array( $m ) || empty( $m['ph'] ) ) { return null; }
+		$mode = 'view' === $m['ph'] ? 'view' : 'load';
+		$c    = function ( $v, $lo, $hi ) { return max( $lo, min( $hi, (float) $v ) ); };
+		$step = array(
+			'target' => 'self', 'selector' => '', 'action' => 'animate', 'direction' => 'from',
+			'x' => (int) round( $c( $m['x'] ?? 0, -600, 600 ) ), 'y' => (int) round( $c( $m['y'] ?? 0, -600, 600 ) ),
+			'scale' => round( $c( $m['s'] ?? 1, 0, 3 ), 3 ), 'rotate' => (int) round( $c( $m['r'] ?? 0, -360, 360 ) ),
+			'opacity' => round( $c( $m['o'] ?? 1, 0, 1 ), 2 ), 'blur' => round( $c( $m['b'] ?? 0, 0, 30 ), 1 ),
+			'duration' => round( $c( $m['du'] ?? 0.6, 0.05, 4 ), 3 ), 'delay' => round( $c( $m['d'] ?? 0, 0, 4 ), 3 ),
+			'ease' => (string) ( $m['e'] ?? 'soft_land' ), 'stagger' => 0, 'start' => 'after',
+		);
+		$unused = array( 'target' => 'none' );
+		$val = array( 'steps' => array( 's1' => $step, 's2' => $unused, 's3' => $unused ) );
+		if ( 'view' === $mode ) { $val['leave'] = 'keep'; }
+		return array( 'mode' => $mode, $mode => $val );
+	}
+
+	private static function apply_motion( array &$node, $m ) {
+		if ( ! is_array( $m ) || ! isset( $node['atts'] ) || ! is_array( $node['atts'] ) || 'section' === (string) ( $node['type'] ?? '' ) ) { return false; }
+		$cur = $node['atts']['upw_interactions'] ?? null;
+		if ( is_array( $cur ) && ! empty( $cur['mode'] ) && 'off' !== $cur['mode'] ) { return false; }
+		$ix = self::motion_interaction( $m );
+		if ( ! $ix ) { return false; }
+		$node['atts']['upw_interactions'] = $ix;
+		self::require_extension( 'animation-engine' );
+		return true;
+	}
+
 	private static function apply_reveal( array &$node, $rv ) {
 		if ( ! is_array( $rv ) || ! isset( $node['atts'] ) || ! is_array( $node['atts'] ) || 'section' === (string) ( $node['type'] ?? '' ) ) { return; }
+		// A recorded motion on the same node is the measured truth; the reveal guess would play it twice.
+		if ( isset( $node['atts']['upw_interactions']['mode'] ) && in_array( $node['atts']['upw_interactions']['mode'], array( 'load', 'view' ), true ) ) { return; }
 		$cur = $node['atts']['gsap_motion'] ?? null; // the key exists on the defaults only while the engine is active — the importer activates it from the recorded dependency
 		if ( is_array( $cur ) && ! empty( $cur['effect'] ) && 'none' !== $cur['effect'] ) { return; }
 		$dir   = in_array( (string) ( $rv['dir'] ?? '' ), array( 'up', 'down', 'left', 'right', 'none' ), true ) ? (string) $rv['dir'] : 'up';
@@ -2457,6 +2494,7 @@ class FW_Site_Converter_Mapper {
 
 	private static function apply_block_anim( array &$node, array $b ) {
 		self::apply_block_cap( $node, $b ); // the block's content cap (a capped wrapper / grid) — before anything else scopes the node
+		if ( ! empty( $b['motion'] ) ) { self::apply_motion( $node, $b['motion'] ); } // RECORDED motion → a native Interaction (wins over the reveal guess)
 		if ( ! empty( $b['reveal'] ) ) { self::apply_reveal( $node, $b['reveal'] ); } // a measured CSS-class reveal → Scroll Motion
 		if ( ! empty( $b['loopAnim'] ) ) { self::apply_loop_anim( $node, $b['loopAnim'] ); } // the element's own running class animation
 		self::apply_inset_x( $node, $b ); // the flattened wrapper's side inset (Stitch mxAdd) → native Spacing margin
@@ -3691,7 +3729,7 @@ if ( ! empty( $a['_row_lay'] ) )  { $over['_row_lay']  = $a['_row_lay']; } // th
 	 */
 	private static function carry_cell_geometry( array $col, $cc ) {
 		if ( ! is_array( $cc ) ) { return $col; }
-		if ( ! empty( $cc['reveal'] ) ) { self::apply_reveal( $col, $cc['reveal'] ); } // the cell's own CSS-class reveal (a staggered card) → the column's Scroll Motion
+		if ( ! empty( $cc['motion'] ) ) { self::apply_motion( $col, $cc['motion'] ); } if ( ! empty( $cc['reveal'] ) ) { self::apply_reveal( $col, $cc['reveal'] ); } // the cell's own CSS-class reveal (a staggered card) → the column's Scroll Motion
 		if ( ! empty( $cc['loopAnim'] ) ) { self::apply_loop_anim( $col, $cc['loopAnim'] ); } // the cell's own running animation
 		// The cell's own vertical margin (Stitch cell_geometry mt / mb) → the column's Spacing. JS twin: rowCols mt / mb.
 		if ( isset( $col['atts']['spacing']['margin'] ) && is_array( $col['atts']['spacing']['margin'] ) ) {
@@ -11023,7 +11061,7 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 						}
 						self::apply_inset_x( $hn, $head );
 						self::apply_mt_auto( $hn, $head );
-						if ( ! empty( $head['reveal'] ) ) { self::apply_reveal( $hn, $head['reveal'] ); }
+						if ( ! empty( $head['motion'] ) ) { self::apply_motion( $hn, $head['motion'] ); } if ( ! empty( $head['reveal'] ) ) { self::apply_reveal( $hn, $head['reveal'] ); }
 						$items[] = $hn;
 					}
 				$head = null;
@@ -11087,7 +11125,7 @@ selector .imgbox__media img{" . implode( ';', $idecl ) . ';}' );
 				if ( ! empty( $b['mbAdd'] ) ) { $head['mbAdd'] = max( (float) ( $head['mbAdd'] ?? 0 ), (float) $b['mbAdd'] ); }
 				if ( ! empty( $b['mtAdd'] ) && empty( $head['mtAdd'] ) ) { $head['mtAdd'] = (float) $b['mtAdd']; } // the wrapper's mt-* / pt-* lands on the FIRST part
 				if ( ! empty( $b['mtAuto'] ) ) { $head['mtAuto'] = true; if ( ! empty( $b['mtAutoPad'] ) ) { $head['mtAutoPad'] = (float) $b['mtAutoPad']; } }
-				if ( ! empty( $b['reveal'] ) && empty( $head['reveal'] ) ) { $head['reveal'] = $b['reveal']; } // the first part's measured CSS-class reveal rides the group (JS parity)
+				if ( ! empty( $b['motion'] ) && empty( $head['motion'] ) ) { $head['motion'] = $b['motion']; } if ( ! empty( $b['reveal'] ) && empty( $head['reveal'] ) ) { $head['reveal'] = $b['reveal']; } // the first part's measured CSS-class reveal rides the group (JS parity)
 				if ( ! empty( $b['mxAdd'] ) && is_array( $b['mxAdd'] ) && empty( $head['mxAdd'] ) ) { $head['mxAdd'] = $b['mxAdd']; } // the flattened wrapper's side inset rides the group's special_heading
 				// Carry chip-before-heading pill metadata onto the head so n_heading emits the filled-pill overline.
 				if ( 'overline' === $role ) {
@@ -14837,7 +14875,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 					// (an inner part's explicit ZERO — mb-0, "this element has no margin" — is not the group's gap; the wrapper's mbAdd is)
 					if ( ! empty( $head['mbAdd'] ) && isset( $hn['atts']['spacing']['margin'] ) && in_array( (string) $hn['atts']['spacing']['margin']['bottom'], array( '', 'mb-0' ), true ) ) { $hn['atts']['spacing']['margin']['bottom'] = self::spacing_token( 'mb', (float) $head['mbAdd'] ); }
 					if ( ! empty( $head['mtAdd'] ) && isset( $hn['atts']['spacing']['margin'] ) && in_array( (string) $hn['atts']['spacing']['margin']['top'], array( '', 'mt-0' ), true ) )    { $hn['atts']['spacing']['margin']['top']    = self::spacing_token( 'mt', (float) $head['mtAdd'] ); }
-					self::apply_inset_x( $hn, $head ); self::apply_mt_auto( $hn, $head ); if ( ! empty( $head['reveal'] ) ) { self::apply_reveal( $hn, $head['reveal'] ); } $buf[] = $hn; // (+ an `mt-auto` wrapper's push)
+					self::apply_inset_x( $hn, $head ); self::apply_mt_auto( $hn, $head ); if ( ! empty( $head['motion'] ) ) { self::apply_motion( $hn, $head['motion'] ); } if ( ! empty( $head['reveal'] ) ) { self::apply_reveal( $hn, $head['reveal'] ); } $buf[] = $hn; // (+ an `mt-auto` wrapper's push)
 				}
 				$head = null;
 			}
@@ -15149,7 +15187,7 @@ $bp = ( isset( $sec['bgPattern'] ) && is_array( $sec['bgPattern'] ) ) ? $sec['bg
 				if ( ! empty( $b['mbAdd'] ) ) { $head['mbAdd'] = max( (float) ( $head['mbAdd'] ?? 0 ), (float) $b['mbAdd'] ); } // …and its vertical margin (the wrapper's mb-* lands on the LAST part, mt-* on the first)
 				if ( ! empty( $b['mtAdd'] ) && empty( $head['mtAdd'] ) ) { $head['mtAdd'] = (float) $b['mtAdd']; }
 				if ( ! empty( $b['mtAuto'] ) ) { $head['mtAuto'] = true; if ( ! empty( $b['mtAutoPad'] ) ) { $head['mtAutoPad'] = (float) $b['mtAutoPad']; } }
-				if ( ! empty( $b['reveal'] ) && empty( $head['reveal'] ) ) { $head['reveal'] = $b['reveal']; } // the first part's measured CSS-class reveal rides the group (JS parity)
+				if ( ! empty( $b['motion'] ) && empty( $head['motion'] ) ) { $head['motion'] = $b['motion']; } if ( ! empty( $b['reveal'] ) && empty( $head['reveal'] ) ) { $head['reveal'] = $b['reveal']; } // the first part's measured CSS-class reveal rides the group (JS parity)
 				// Carry chip-before-heading pill metadata onto the head so n_heading emits the filled-pill overline.
 				if ( 'overline' === $role ) {
 					if ( isset( $b['overline_svg'] ) )   { $head['overline_svg']   = (string) $b['overline_svg']; }

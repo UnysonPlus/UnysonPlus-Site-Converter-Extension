@@ -154,8 +154,8 @@ ls=2.88px` match with the source, and the eco heading/card titles to the correct
 3. **Incremental — slowly but surely, ONE component at a time, verify each.** Do
    **colors → typography → buttons → boxes → spacing → per-element wiring**, and after each
    step VERIFY (render the page + inspect the generated `presets-{hash}.css` / theme tokens)
-   before moving on. Do **NOT** big-bang the whole design in one pass. *(The Casa Uluwatu
-   lesson: a one-shot full conversion comes out a mess; redone component-by-component with
+   before moving on. Do **NOT** big-bang the whole design in one pass. *(The lesson from a real-site conversion:
+   a one-shot full conversion comes out a mess; redone component-by-component with
    verification, it comes out right.)*
 
 4. **Source fidelity audit — element-by-element, BEFORE calling a section done.** Rebuilding

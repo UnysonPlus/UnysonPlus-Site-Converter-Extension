@@ -43,6 +43,7 @@ class FW_Extension_Site_Converter extends FW_Extension {
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-stitch.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-landing.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sources.php' );
+		require_once $this->get_declared_path( '/includes/class-fw-site-converter-motion.php' ); // recorded motion → Interactions (catch-all pass)
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-sandbox.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-kit.php' );
 		require_once $this->get_declared_path( '/includes/class-fw-site-converter-progress.php' );

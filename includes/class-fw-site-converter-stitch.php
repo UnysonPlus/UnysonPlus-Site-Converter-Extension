@@ -19902,6 +19902,24 @@ class FW_Site_Converter_Stitch {
 		return array( 'css' => $a, 'kf' => $kf );
 	}
 
+	/**
+	 * The capture's RECORDED motion (motion-record.mjs, roadmap 10a: data-sc-motion="ph=load;d=0.2;du=0.8;e=soft_land;
+	 * o=0;x=0;y=40;s=1;r=0;b=0;src=css-animation") → { ph, d, du, e, o, x, y, s, r, b, src } or null. It is measured frame
+	 * by frame, so it wins over the class-pair reveal guess. JS twin: motionOf (capture-extract.mjs).
+	 */
+	private static function motion_of( $el ) {
+		if ( ! ( $el instanceof DOMElement ) ) { return null; }
+		$v = trim( (string) $el->getAttribute( 'data-sc-motion' ) );
+		if ( '' === $v ) { return null; }
+		$o = array();
+		foreach ( explode( ';', $v ) as $part ) { $i = strpos( $part, '=' ); if ( $i > 0 ) { $o[ substr( $part, 0, $i ) ] = substr( $part, $i + 1 ); } }
+		if ( ! isset( $o['ph'] ) || ! in_array( $o['ph'], array( 'load', 'view' ), true ) ) { return null; }
+		$e = isset( $o['e'] ) ? (string) $o['e'] : '';
+		if ( ! preg_match( '/^(?:[a-z0-9_]+|cubic-bezier\([0-9.,\s-]+\))$/i', $e ) ) { $e = 'soft_land'; }
+		$n = function ( $k, $d ) use ( $o ) { return isset( $o[ $k ] ) && is_numeric( $o[ $k ] ) ? (float) $o[ $k ] : $d; };
+		return array( 'ph' => $o['ph'], 'd' => $n( 'd', 0 ), 'du' => $n( 'du', 0.6 ), 'e' => $e, 'o' => $n( 'o', 1 ), 'x' => $n( 'x', 0 ), 'y' => $n( 'y', 0 ), 's' => $n( 's', 1 ), 'r' => $n( 'r', 0 ), 'b' => $n( 'b', 0 ), 'src' => preg_replace( '/[^a-z-]/', '', (string) ( $o['src'] ?? '' ) ) );
+	}
+
 	private static function reveal_of( $el ) {
 		if ( ! ( $el instanceof DOMElement ) ) { return null; }
 		$v = trim( (string) $el->getAttribute( 'data-sc-reveal' ) );
@@ -25221,6 +25239,7 @@ class FW_Site_Converter_Stitch {
 		}
 		// The cell's own CSS-class reveal (a staggered card: delay 0 / .1 / .2s) → the column's Scroll Motion. JS twin: rowCols reveal.
 		$rv = self::reveal_of( $cell ); if ( $rv ) { $out['reveal'] = $rv; }
+		$mo = self::motion_of( $cell ); if ( $mo ) { $out['motion'] = $mo; } // the cell's RECORDED motion (a staggered card) → its column's Interaction
 		$la = self::loop_anim_of( $cell ); if ( $la ) { $out['loopAnim'] = $la; } // the cell's own running animation (a drifting shell)
 		$ccss = array();
 		$mw = trim( (string) self::sc_css( $cell, 'min-width' ) ); if ( preg_match( '/^[0-9.]+(?:px|%|rem|em|vw|ch)$/', $mw ) && '0px' !== $mw ) { $ccss[] = 'min-width:' . $mw; }
@@ -26899,6 +26918,7 @@ class FW_Site_Converter_Stitch {
 				if ( ! is_array( $out ) || ( ! isset( $out['t'] ) && ! count( $out ) ) ) { continue; }
 				$ai  = self::anim_intent( $child ); // source reveal/scroll-animation intent (AOS / animate.css / hooks)
 				$rvl = self::reveal_of( $child );   // a measured CSS-class reveal (capture data-sc-reveal) → Scroll Motion
+				$mot = self::motion_of( $child );   // RECORDED motion (capture data-sc-motion) → a native Interaction
 				$lpa = self::loop_anim_of( $child ); // the element's own running class animation (a pulse, a drift) → the block's CSS
 				$tfx = self::text_split_intent( $child ); // word/line/char split-reveal → Text Effects split_reveal
 				// the element's OWN content cap (a `max-w-5xl mx-auto` grid, a capped accordion list) → the widget block(s) it
@@ -26907,8 +26927,8 @@ class FW_Site_Converter_Stitch {
 				$ecap = self::wrapper_maxw( $child );
 				if ( '' !== $ecap && is_array( $out ) ) { $ecc = self::wrapper_centered( $child ); $ecp = self::wrapper_pad_x( $child ); $ecap = self::cap_as_content_width( $ecap, $child ); if ( isset( $out['t'] ) ) { self::stamp_cap( $out, $ecap, $ecc, $ecp ); } else { foreach ( $out as &$ob ) { if ( is_array( $ob ) ) { self::stamp_cap( $ob, $ecap, $ecc, $ecp ); } } unset( $ob ); } }
 				if ( is_array( $out ) ) {
-					if ( isset( $out['t'] ) ) { if ( '' !== $ai && empty( $out['anim'] ) ) { $out['anim'] = $ai; } if ( $rvl && empty( $out['reveal'] ) ) { $out['reveal'] = $rvl; } if ( $lpa && empty( $out['loopAnim'] ) ) { $out['loopAnim'] = $lpa; } if ( '' !== $tfx && empty( $out['text_fx'] ) ) { $out['text_fx'] = $tfx; } $blocks[] = $out; } // one block
-					else { foreach ( $out as $blk ) { if ( is_array( $blk ) && isset( $blk['t'] ) ) { if ( '' !== $ai && empty( $blk['anim'] ) ) { $blk['anim'] = $ai; } if ( $rvl && empty( $blk['reveal'] ) ) { $blk['reveal'] = $rvl; } if ( '' !== $tfx && empty( $blk['text_fx'] ) ) { $blk['text_fx'] = $tfx; } $blocks[] = $blk; } } } // a list
+					if ( isset( $out['t'] ) ) { if ( '' !== $ai && empty( $out['anim'] ) ) { $out['anim'] = $ai; } if ( $mot && empty( $out['motion'] ) ) { $out['motion'] = $mot; } if ( $rvl && empty( $out['reveal'] ) ) { $out['reveal'] = $rvl; } if ( $lpa && empty( $out['loopAnim'] ) ) { $out['loopAnim'] = $lpa; } if ( '' !== $tfx && empty( $out['text_fx'] ) ) { $out['text_fx'] = $tfx; } $blocks[] = $out; } // one block
+					else { foreach ( $out as $blk ) { if ( is_array( $blk ) && isset( $blk['t'] ) ) { if ( '' !== $ai && empty( $blk['anim'] ) ) { $blk['anim'] = $ai; } if ( $mot && empty( $blk['motion'] ) ) { $blk['motion'] = $mot; } if ( $rvl && empty( $blk['reveal'] ) ) { $blk['reveal'] = $rvl; } if ( '' !== $tfx && empty( $blk['text_fx'] ) ) { $blk['text_fx'] = $tfx; } $blocks[] = $blk; } } } // a list
 				}
 				$claimed = true;
 				break;

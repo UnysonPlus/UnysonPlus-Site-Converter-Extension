@@ -143,6 +143,8 @@ class FW_Site_Converter_Sources {
 		$id     = self::identify_html( $html );
 		$bundle = call_user_func( self::builder_for( $id['key'] ), array_merge( array( 'html' => $html, 'title' => $title ), $opts ) );
 		if ( is_array( $bundle ) ) { $bundle['source'] = $id; }
+		// Recorded motion (capture data-sc-motion) the build's own routes did not carry → native Interactions by text.
+		if ( is_array( $bundle ) && class_exists( 'FW_Site_Converter_Motion' ) ) { FW_Site_Converter_Motion::apply_to_bundle( $bundle, (string) $html ); }
 		return $bundle;
 	}
 
